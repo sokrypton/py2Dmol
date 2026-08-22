@@ -3801,9 +3801,52 @@ const RESIDUE_TO_AA = {
     DSN: 'S', DTH: 'T', DTR: 'W', DTY: 'Y', DVA: 'V'
 };
 
+// CRYSTALLISATION ADDITIVES: what a structure carries because of how it was
+// GROWN rather than because of what it does.
+//
+// Buffers, cryoprotectants, precipitants and the salts that come with them.
+// They are real atoms in the file and they are not what anyone opened the
+// structure to look at: a hen lysozyme comes with a dozen sulfates, and drawn
+// beside the one inhibitor that matters they are noise with the same weight.
+//
+// A LIST OF CODES, WHICH IS A JUDGEMENT AND NOT A FACT. Everything here is
+// something these files are grown in, but a few of them are occasionally the
+// point - a sulfate IS the ligand in a sulfate transporter. So this is a
+// default and not a rule: the Filter Additives switch turns it off and every
+// atom comes back. What is DELIBERATELY ABSENT matters as much as what is
+// here, and the borderline cases are left visible on purpose:
+//
+//   PO4  phosphate is a buffer AND half of biochemistry (4HHB carries one)
+//   BCT  bicarbonate is a standard additive AND a photosystem II cofactor
+//   SPM  spermine is a DNA crystallisation additive AND biologically real
+//   C8E  a detergent, which in a porin sits where the membrane lipid would
+//   metals - a zinc or a magnesium is structural far more often than not,
+//         and they are drawn at their own size and colour precisely so they
+//         can be read. Only the alkali/halide counter-ions below go.
+//
+// Hiding a real cofactor is a worse failure than showing a sulfate, so where
+// it is a toss-up the atom stays.
+const CRYSTAL_ADDITIVES = new Set([
+    // precipitants and cryoprotectants
+    'SO4', 'GOL', 'EDO', 'PEG', 'PG4', 'PGE', 'P6G', '1PE', '2PE', 'PE4',
+    'MPD', 'MRD', 'BU3', 'IPA', 'DIO', 'DOD', 'TRT', 'P33', 'XPE',
+    // buffers
+    'TRS', 'MES', 'EPE', 'BTB', 'CIT', 'FLC', 'TLA', 'MLA', 'MLI', 'SIN',
+    'CAC', 'BIS', 'PIN', 'HEZ', 'IMD', 'TAR', 'MOH',
+    // small anions and organics from the drop
+    'ACT', 'ACY', 'FMT', 'OXL', 'NO3', 'AZI', 'CN', 'SCN', 'THJ',
+    'DMS', 'DMF', 'ACN', 'EOH', 'MEO', 'URE', 'GAI',
+    // reducing agents and thiols
+    'BME', 'DTT', 'DTU', 'TCE', 'MTN',
+    // counter-ions: the alkali metals and halides that come with the buffer.
+    // The transition metals are NOT here - see the note above.
+    'NA', 'K', 'CS', 'RB', 'LI', 'CL', 'BR', 'IOD', 'F',
+]);
+
 // Expose globally
 if (typeof window !== 'undefined') {
     window.RESIDUE_TO_AA = RESIDUE_TO_AA;
+    window.CRYSTAL_ADDITIVES = CRYSTAL_ADDITIVES;
 }
 
 // ============================================================================

@@ -2043,6 +2043,59 @@ t('every projection sizes a position through the same rule', () => {
     }
 });
 
+t('what the crystal was grown in is filtered, and the two lists agree', () => {
+    // A BUFFER SALT IS A REAL RESIDUE AND NOT PART OF THE MOLECULE. Dropped at
+    // the atom list, before anything downstream sees it, so a sulfate does not
+    // arrive with the same weight as the one ligand that matters.
+    const sandbox = { window: {}, console, document: {} };
+    sandbox.window.window = sandbox.window;
+    require('vm').createContext(sandbox);
+    require('vm').runInContext(fs.readFileSync('web/utils.js', 'utf8'), sandbox,
+        { filename: 'utils' });
+    const js = sandbox.window.CRYSTAL_ADDITIVES;
+    if (!js || !js.size) throw new Error('web/utils.js exports no additive list');
+    // the obvious ones go...
+    for (const code of ['SO4', 'GOL', 'EDO', 'MPD', 'TRS', 'ACT', 'DMS', 'NA', 'CL']) {
+        if (!js.has(code)) throw new Error(code + ' is not filtered');
+    }
+    // ...AND THE BORDERLINE ONES STAY, which is the part worth pinning. Each of
+    // these is on somebody's additive list and each is sometimes the point:
+    // phosphate is half of biochemistry, bicarbonate is a photosystem II
+    // cofactor, spermine is real DNA chemistry, a detergent in a porin sits
+    // where the membrane lipid would, and a metal is structural far more often
+    // than not. Hiding a real cofactor is worse than showing a sulfate.
+    for (const code of ['PO4', 'BCT', 'SPM', 'C8E', 'ZN', 'MG', 'MN', 'FE', 'CA',
+        'HEM', 'HEC', 'NAG', 'ATP', 'ADP', 'GTP', 'NAD', 'FAD', 'SAM']) {
+        if (js.has(code)) {
+            throw new Error(code + ' is being filtered out as an additive - it is'
+                + ' the kind of thing people open a structure to look at');
+        }
+    }
+    // THE PYTHON COPY MUST MATCH. A structure opened in the notebook and the
+    // same one dropped on the web page cannot disagree about what is in it.
+    const py = fs.readFileSync('py2Dmol/viewer.py', 'utf8');
+    const at = py.indexOf('CRYSTAL_ADDITIVES = {');
+    if (at < 0) throw new Error('py2Dmol/viewer.py has no additive list');
+    const block = py.slice(at, py.indexOf('\n}', at));
+    const pyCodes = new Set((block.match(/'([A-Z0-9]{1,3})'/g) || [])
+        .map((q) => q.slice(1, -1)));
+    for (const code of js) {
+        if (!pyCodes.has(code)) throw new Error('viewer.py is missing ' + code);
+    }
+    for (const code of pyCodes) {
+        if (!js.has(code)) throw new Error('web/utils.js is missing ' + code);
+    }
+    // ...and the filter runs on the atom list, behind a switch
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    if (!/maybeFilterLigands\(maybeFilterAdditives\(/.test(app)) {
+        throw new Error('the additive filter is not in the load path');
+    }
+    if (!/filterAdditives === false\) return atoms/.test(app)) {
+        throw new Error('there is no way to switch the filter off, and a list of'
+            + ' codes is a judgement that has to be escapable');
+    }
+});
+
 t('a metal has a colour and a size of its own', () => {
     // A LONE ION USED TO TAKE WHATEVER THE LIGAND PALETTE HANDED IT - a zinc
     // came out orange in one chain and green in the next - and was drawn at

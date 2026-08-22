@@ -344,7 +344,8 @@ function initializeViewerConfig() {
             // ON BY DEFAULT, like the biological unit beside it. A ligand is
             // usually the reason the structure is being looked at, and leaving
             // it out silently reads as the file not having one.
-            loadLigands: true
+            loadLigands: true,
+            filterAdditives: true
         },
         viewer_id: "standalone-viewer-1"
     };
@@ -365,6 +366,13 @@ function initializeViewerConfig() {
     // Sync UI with config
     if (biounitEl) {
         biounitEl.checked = window.viewerConfig.ui.biounit;
+    }
+    const filterAddEl = document.getElementById('filterAdditivesCheckbox');
+    if (filterAddEl) {
+        filterAddEl.checked = window.viewerConfig.ui.filterAdditives !== false;
+        filterAddEl.addEventListener('change', () => {
+            window.viewerConfig.ui.filterAdditives = filterAddEl.checked;
+        });
     }
     if (loadLigandsEl) {
         loadLigandsEl.checked = window.viewerConfig.ui.loadLigands;
@@ -3311,6 +3319,27 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
         targetObject.frames.length > 0 ||
         models.length > 1);
 
+    // WHAT THE CRYSTAL BROUGHT, DROPPED BEFORE ANYTHING SEES IT. A buffer salt
+    // or a cryoprotectant is a real residue in the file and not a part of the
+    // molecule; drawn beside the one ligand that matters it has the same
+    // weight. Filtered at the ATOM list, like the ligand switch below it, so
+    // nothing downstream - positions, bonds, the sequence panel, picking -
+    // ever learns they were there. Switch it off and they all come back.
+    // See CRYSTAL_ADDITIVES in web/utils.js for what is on the list and, more
+    // importantly, what is deliberately not.
+    function maybeFilterAdditives(atoms) {
+        if (window.viewerConfig?.ui?.filterAdditives === false) return atoms;
+        const drop = window.CRYSTAL_ADDITIVES;
+        if (!drop || !drop.size) return atoms;
+        let n = 0;
+        const kept = atoms.filter((a) => {
+            if (!a || a.record !== 'HETATM' || !drop.has(a.resName)) return true;
+            n++;
+            return false;
+        });
+        return n ? kept : atoms;
+    }
+
     function maybeFilterLigands(atoms) {
         const shouldLoadLigands = window.viewerConfig?.ui?.loadLigands ?? false;
         if (shouldLoadLigands) return atoms;
@@ -3492,7 +3521,7 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
         // this loop once per model, and a model can be 0.1 ms of work against a
         // 4 ms clamped timer. See yieldIfBusy in utils.js.
         await yieldIfBusy();
-        const model = maybeFilterLigands(models[i]);
+        const model = maybeFilterLigands(maybeFilterAdditives(models[i]));
 
         // Convert parsed atoms to frame data
         // Pass conectMap (PDB) and structConn (CIF) for bond resolution

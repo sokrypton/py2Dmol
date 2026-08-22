@@ -371,6 +371,36 @@ The `persistence` parameter controls whether output cells are preserved after no
 For complete documentation, see: technical_readme.md → "Persistence Modes"
 """
 
+# CRYSTALLISATION ADDITIVES - what a structure carries because of how it was
+# GROWN rather than because of what it does: buffers, cryoprotectants,
+# precipitants and the counter-ions that come with them.
+#
+# THE SAME LIST AS CRYSTAL_ADDITIVES IN web/utils.js, and it has to stay that
+# way - a structure opened in the notebook and the same one dropped on the web
+# page must not disagree about what is in it. tests/interaction.js compares the
+# two and fails if they drift.
+#
+# Read the note beside the JS copy for what is deliberately NOT here: PO4, BCT,
+# SPM, C8E and every transition metal stay visible, because hiding a real
+# cofactor is a worse failure than showing a sulfate.
+CRYSTAL_ADDITIVES = {
+    # precipitants and cryoprotectants
+    'SO4', 'GOL', 'EDO', 'PEG', 'PG4', 'PGE', 'P6G', '1PE', '2PE', 'PE4',
+    'MPD', 'MRD', 'BU3', 'IPA', 'DIO', 'DOD', 'TRT', 'P33', 'XPE',
+    # buffers
+    'TRS', 'MES', 'EPE', 'BTB', 'CIT', 'FLC', 'TLA', 'MLA', 'MLI', 'SIN',
+    'CAC', 'BIS', 'PIN', 'HEZ', 'IMD', 'TAR', 'MOH',
+    # small anions and organics from the drop
+    'ACT', 'ACY', 'FMT', 'OXL', 'NO3', 'AZI', 'CN', 'SCN', 'THJ',
+    'DMS', 'DMF', 'ACN', 'EOH', 'MEO', 'URE', 'GAI',
+    # reducing agents and thiols
+    'BME', 'DTT', 'DTU', 'TCE', 'MTN',
+    # counter-ions: the alkali metals and halides that come with the buffer.
+    # The transition metals are NOT here.
+    'NA', 'K', 'CS', 'RB', 'LI', 'CL', 'BR', 'IOD', 'F',
+}
+
+
 class view:
     def __init__(self, size=(400,400), controls=True, box=True,
         color="auto", colorblind=False, ss_palette=None, style="tube", preset=None, smooth=None, thickness=None, sheet_flat=None, pencil=None, arrows=True, base_plates=None, detail=4, fade=0, highlight=None, outline_tint=None,
@@ -2308,7 +2338,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 self._send_incremental_update()
 
 
-    def add_pdb(self, filepath, chains=None, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, scatter=None, color=None, scatter_config=None):
+    def add_pdb(self, filepath, chains=None, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, filter_additives=True, contacts=None, scatter=None, color=None, scatter_config=None):
         """
         Loads a structure from a local PDB or CIF file and adds it to the viewer
         as a new frame (or object).
@@ -2327,6 +2357,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             load_ligands (bool): If True, loads ligand atoms. Defaults to True.
+            filter_additives (bool): If True, leaves out buffers, cryoprotectants
+                and counter-ions - what the crystal was grown in rather than what
+                the molecule is. See CRYSTAL_ADDITIVES. Defaults to True.
             contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
             scatter: Optional scatter plot data for trajectory visualization. Can be:
                     - String: filepath to CSV file (first row = header with xlabel,ylabel; subsequent rows = x,y data)
@@ -2455,7 +2488,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         for i, model in enumerate(models_to_process):
             (coords, plddts, position_chains, position_types, position_names,
              residue_numbers, position_atoms,
-             position_elements) = self._parse_model(model, chains, load_ligands=load_ligands)
+             position_elements) = self._parse_model(model, chains, load_ligands=load_ligands,
+                                                    filter_additives=filter_additives)
 
             if coords:
                 coords_np = np.array(coords)
@@ -2488,7 +2522,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     color=color if i == 0 else None) # Only add color to first frame/model call
 
 
-    def _parse_model(self, model, chains_filter, load_ligands=True):
+    def _parse_model(self, model, chains_filter, load_ligands=True, filter_additives=True):
         """
         Helper function to parse a gemmi.Model object.
 
@@ -2577,7 +2611,11 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                             position_elements.append('')
 
                     else:
-                        # Ligand: use all heavy atoms
+                        # Ligand: use all heavy atoms - unless it is something the
+                        # crystal was grown in rather than part of the molecule.
+                        # See CRYSTAL_ADDITIVES.
+                        if filter_additives and residue.name in CRYSTAL_ADDITIVES:
+                            continue
                         if load_ligands:
                             for atom in residue:
                                 if atom.element.name != 'H':
@@ -2841,7 +2879,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         return struct_filepath, pae_filepath
 
 
-    def from_pdb(self, pdb_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, scatter=None, color=None, ignore_ligands=None, show=None, scatter_config=None):
+    def from_pdb(self, pdb_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, filter_additives=True, contacts=None, scatter=None, color=None, ignore_ligands=None, show=None, scatter_config=None):
         """
         Loads a structure from a PDB code (downloads from RCSB if not found locally)
         and adds it to the viewer.
@@ -2858,6 +2896,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             load_ligands (bool): If True, loads ligand atoms. Defaults to True.
+            filter_additives (bool): If True, leaves out buffers, cryoprotectants
+                and counter-ions - what the crystal was grown in rather than what
+                the molecule is. See CRYSTAL_ADDITIVES. Defaults to True.
             contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
             scatter: Optional scatter plot data for trajectory visualization. Can be:
                     - String: filepath to CSV file (first row = header with xlabel,ylabel; subsequent rows = x,y data)
@@ -2891,6 +2932,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 use_biounit=use_biounit,
                 biounit_name=biounit_name,
                 load_ligands=load_ligands,
+                filter_additives=filter_additives,
                 contacts=contacts,
                 scatter=scatter,
                 color=color,
@@ -2923,6 +2965,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             load_ligands (bool): If True, loads ligand atoms. Defaults to True.
+            filter_additives (bool): If True, leaves out buffers, cryoprotectants
+                and counter-ions - what the crystal was grown in rather than what
+                the molecule is. See CRYSTAL_ADDITIVES. Defaults to True.
             scatter: Optional scatter plot data for trajectory visualization. Can be:
                     - String: filepath to CSV file (first row = header with xlabel,ylabel; subsequent rows = x,y data)
                     - List/array: [[x1, y1], [x2, y2], ...] - one point per model/frame
