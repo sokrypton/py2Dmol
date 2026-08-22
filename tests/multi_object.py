@@ -137,6 +137,28 @@ window.addEventListener('load', () => {
       await new Promise((s) => setTimeout(s, 200));
       R.restoredInk = ink(r);
 
+      // ...and the Object colour mode, which is only offered when there is
+      // more than one object to tell apart.
+      const colorSel = document.getElementById('colorSelect');
+      const objOpt = colorSel && colorSel.querySelector('option[value="object"]');
+      R.objectOptionShown = !!(objOpt && !objOpt.hidden);
+      if (objOpt) {
+        colorSel.value = 'object';
+        colorSel.dispatchEvent(new Event('change'));
+        r.render('object mode');
+        await new Promise((s) => setTimeout(s, 200));
+        const flat = {};
+        for (let i = 0; i < r.coords.length; i++) {
+          const c = r.getAtomColor(i, r._getEffectiveColorMode(i));
+          (flat[g[i]] = flat[g[i]] || new Set()).add([c.r, c.g, c.b].join(','));
+        }
+        R.flatPerObject = Object.values(flat).map((x) => x.size);
+        colorSel.value = 'auto';
+        colorSel.dispatchEvent(new Event('change'));
+        r.render('back to auto');
+        await new Promise((s) => setTimeout(s, 150));
+      }
+
       // THE LIST UI, driven as a user drives it: press Object, then the eye
       // on the row that is not showing.
       r.setShownObjects([names[0]]);
@@ -163,6 +185,32 @@ window.addEventListener('load', () => {
       r.setShownObjects(names);
       r.render('both again');
       await new Promise((s) => setTimeout(s, 200));
+
+      // THE TUBE STYLE, which has a GPU program of its own (VSTUBE) and its
+      // own joint handling - a merged array must be one structure to it too.
+      const styleWas = r.style;
+      r.setStyle('tube');
+      r.render('tube cpu');
+      await new Promise((s) => setTimeout(s, 250));
+      R.tubeInk = ink(r);
+      R.tubeCrossing = (() => {
+        const gg = r.sourceGroups();
+        let k = 0;
+        for (const sg of r.segmentIndices) {
+          if (sg.idx2 === undefined || sg.idx2 === sg.idx1) continue;
+          if (gg[sg.idx1] !== gg[sg.idx2]) k++;
+        }
+        return k;
+      })();
+      r.useGPU = true;
+      r.render('tube gpu');
+      await new Promise((s) => setTimeout(s, 400));
+      R.tubeGpuInk = ink(r);
+      R.tubeGpuTook = !!(r._tubeGPUWillTake && r._tubeGPUWillTake());
+      r.useGPU = false;
+      r.setStyle(styleWas);
+      r.render('back to cartoon');
+      await new Promise((s) => setTimeout(s, 250));
 
       // ...and the GPU path, in the SAME page load
       r.useGPU = true;
@@ -275,6 +323,10 @@ def main():
           f" after the eye {R.get('afterEyeInk')} ink"
           f" (merge {R.get('afterEyeMulti')}),"
           f" hiding everything leaves {R.get('lastOneLeft')}")
+    print(f"  Object mode offered: {R.get('objectOptionShown')},"
+          f" colours per object in it: {R.get('flatPerObject')}")
+    print(f"  tube:  {R.get('tubeInk')} ink, {R.get('tubeCrossing')} crossing;"
+          f" gpu {R.get('tubeGpuInk')} (path taken: {R.get('tubeGpuTook')})")
     print(f"  gpu:   {R['gpuInk']:8d} ink (path taken: {R['gpuTook']})"
           + (f"  DECLINED: {R['gpuError']}" if R.get("gpuError") else ""))
 
@@ -313,6 +365,16 @@ def main():
         bad.append("the last visible object could be hidden")
     if R.get("sharedColors"):
         bad.append(f"two objects share colours {R['sharedColors']}")
+    if not R.get("objectOptionShown"):
+        bad.append("the Object colour mode is not offered with two objects up")
+    if R.get("flatPerObject") not in ([1, 1], None):
+        bad.append(f"Object mode is not one colour per object: {R.get('flatPerObject')}")
+    if R.get("tubeCrossing"):
+        bad.append(f"{R['tubeCrossing']} tube segments join two objects")
+    if not R.get("tubeInk"):
+        bad.append("the tube style drew nothing")
+    if abs(R.get("tubeGpuInk", 0) - R.get("tubeInk", 1)) > 0.2 * R.get("tubeInk", 1):
+        bad.append("the GPU tube picture is not the CPU one")
     if R["gpuInk"] <= 0:
         bad.append("the GPU path drew nothing")
     if abs(R["gpuInk"] - R["bothInk"]) > 0.15 * R["bothInk"]:

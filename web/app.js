@@ -2119,6 +2119,26 @@ function shownObjectSet(renderer) {
     return new Set(renderer.drawnObjects ? renderer.drawnObjects() : []);
 }
 
+/**
+ * The Object colour mode is only offered when there is more than one object on
+ * screen. With one, it colours everything the same - a scheme with no meaning,
+ * which is worse than an absent one. Switched back to Auto if it was showing
+ * when the second object went away.
+ */
+function syncObjectColorOption() {
+    const renderer = viewerApi?.renderer;
+    const sel = document.getElementById('colorSelect');
+    if (!renderer || !sel) return;
+    const opt = sel.querySelector('option[value="object"]');
+    if (!opt) return;
+    const many = (renderer.drawnObjects ? renderer.drawnObjects().length : 1) > 1;
+    opt.hidden = !many;
+    if (!many && sel.value === 'object') {
+        sel.value = 'auto';
+        sel.dispatchEvent(new Event('change'));
+    }
+}
+
 function renderObjectList() {
     const { btn, list, select } = objectListEls();
     const renderer = viewerApi?.renderer;
@@ -2200,6 +2220,7 @@ function toggleObjectShown(name) {
         shown.add(name);
     }
     renderer.setShownObjects(Array.from(shown));
+    syncObjectColorOption();
     renderObjectList();
 }
 
@@ -2212,13 +2233,17 @@ function toggleObjectListOpen() {
     // The dropdown and the list are the same control in two shapes, so only
     // one of them is on screen at a time.
     select.style.display = open ? 'none' : '';
-    if (open) renderObjectList();
+    if (open) { syncObjectColorOption(); renderObjectList(); }
 }
 
 function attachObjectList() {
     const { btn, select } = objectListEls();
     if (!btn || !select) return;
     btn.addEventListener('click', toggleObjectListOpen);
+    // WHAT IS ON SCREEN CAN CHANGE WITHOUT A CLICK IN THIS LIST - a restored
+    // session, a Copy, the Python API. The colour mode that only means
+    // something with several objects follows the renderer, not the button.
+    document.addEventListener('py2dmol-color-change', syncObjectColorOption);
     // REBUILT WHENEVER THE OBJECTS CHANGE. Objects are added, renamed and
     // removed from a dozen places - a load, a Copy, a Cut, a session restore -
     // and every one of them goes through the select's options. Watching those

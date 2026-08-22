@@ -72,7 +72,7 @@ for (const name of ['selectionBandFor']) {
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','_autoColorFor','chainColorKeyAt','chainColorKeyFor','selectionForObject','_maskForObject','_editOneObject','objectSwatch',];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','_autoColorFor','chainColorKeyAt','chainColorKeyFor','selectionForObject','_maskForObject','_editOneObject','objectSwatch','addObject',];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -5341,8 +5341,18 @@ t('the colour modes are ordered by how often they are reached for', () => {
     const order = [...sel.matchAll(/<option value="(\w+)"/g)].map((m) => m[1]);
     // Auto first because it is the answer most of the time, then the three
     // that apply to any structure, then the two that only mean anything on a
-    // prediction. Entropy is last and hidden until an MSA is loaded.
-    const want = ['auto', 'rainbow', 'chain', 'ss', 'plddt', 'deepmind', 'entropy'];
+    // prediction. Entropy is last and hidden until an MSA is loaded, and
+    // Object sits with the general schemes but is hidden until there is more
+    // than one object on screen - with one it colours everything the same.
+    const want = ['auto', 'rainbow', 'chain', 'object', 'ss', 'plddt',
+        'deepmind', 'entropy'];
+    const hiddenUntilUseful = [...sel.matchAll(/<option value="(\w+)"[^>]*hidden/g)]
+        .map((m) => m[1]);
+    for (const nm of ['object', 'entropy']) {
+        if (!hiddenUntilUseful.includes(nm)) {
+            throw new Error(nm + ' is offered before it means anything');
+        }
+    }
     if (order.join() !== want.join()) {
         throw new Error('the colour modes read ' + order.join(', ')
             + ' rather than ' + want.join(', '));
@@ -6507,7 +6517,9 @@ function shownViewer() {
     v._invalidateShadowCache = function () { this.shadowCleared = true; };
     v._exitOverlayMode = function () { this.exitedOverlay = true;
         this.overlayState.enabled = false; };
-    v.clearResidueSelection = function () { this.selectionCleared = true; };
+    v.clearResidueSelection = function () {
+        this.selectionCleared = true; this.residueSelection = null;
+    };
     v.setVisibility = function (patch) { this.mask = patch; };
     v.overlayState = { enabled: false, frameIdMap: null };
     v.viewerState = { zoom: 1, center: null, extent: null };
@@ -6942,6 +6954,73 @@ t('the overlay button follows the state, not just the button', () => {
             throw new Error(fn + ' changes the overlay state without telling the button');
         }
     }
+});
+
+// A MERGE IS REBUILT FOR REASONS THAT ARE NOT A CHANGE OF OBJECTS - a frame
+// step, a side chain, a contact - and those must not undo what the user did.
+t('rebuilding the merge keeps what was hidden and what was selected', () => {
+    const v = shownViewer();
+    v.setShownObjects(['A', 'B']);
+    // B becomes the current object, on the frame it was parked on
+    v.currentObjectName = 'B';
+    v.currentFrame = 1;
+    // hide the last position and select another, both in merged indices
+    v.visibilityModel = { positions: new Set([0, 1, 2, 3]), chains: new Set(),
+        visibilityMode: 'explicit' };
+    v.residueSelection = new Set([4]);
+    v.setVisibility = function (patch) { this.mask = patch; };
+
+    // the same objects again: what a frame step does
+    v._applyShownObjects();
+    eq(Array.from(v.mask.positions).sort((a, b) => a - b).join(','), '0,1,2,3',
+        'the hidden position stayed hidden');
+    eq(v.residueSelection ? Array.from(v.residueSelection).join(',') : 'null', '4',
+        'and the selection survived a rebuild that changed no objects');
+
+    // ...whereas changing the objects does drop the selection, which was made
+    // against an array that no longer exists
+    v.setShownObjects(['A']);
+    eq(v.selectionCleared, true, 'a different set of objects clears it');
+});
+
+t('a hidden residue of the second object is not read as the first object\'s', () => {
+    const v = shownViewer();
+    v.setShownObjects(['A', 'B']);
+    v.currentObjectName = 'B';
+    v.currentFrame = 1;
+    // B is positions 3 and 4; hide 4, so the live mask is {0,1,2,3}
+    v.visibilityModel = { positions: new Set([0, 1, 2, 3]), chains: new Set() };
+    v._applyShownObjects();
+    // Read as B's OWN numbering, the live mask {0,1,2,3} says B's residues 0
+    // and 1 are both visible - so the position the user hid comes back.
+    if (!v.mask.positions.has(3)) {
+        throw new Error("B's visible position was hidden");
+    }
+    if (v.mask.positions.has(4)) {
+        throw new Error('the hidden position came back - the live mask was read'
+            + " as if it were in B's own numbering");
+    }
+    // ...and A, which nobody touched, is whole
+    for (const i of [0, 1, 2]) {
+        if (!v.mask.positions.has(i)) throw new Error('A lost position ' + i);
+    }
+});
+
+t('an object loaded while several are shown joins them', () => {
+    const v = shownViewer();
+    v.setShownObjects(['A', 'B']);
+    v.objectsData.C = { frames: [] };
+    v.addObject = Cls.prototype.addObject;
+    // just the first lines of addObject matter here: the rest wants a DOM
+    try { v.addObject('C'); } catch (e) { /* the UI half is not lifted */ }
+    if (!v.shownObjects.has('C')) {
+        throw new Error('a newly loaded object is invisible while others are shown');
+    }
+    // ...but a single-object session keeps its empty set, which is what makes
+    // "just the current one" the default
+    const w = shownViewer();
+    try { w.addObject = Cls.prototype.addObject; w.addObject('C'); } catch (e) { /* as above */ }
+    eq(w.shownObjects.size, 0, 'nothing was written down for a lone object');
 });
 
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');

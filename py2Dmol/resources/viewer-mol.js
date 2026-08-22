@@ -3091,6 +3091,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         // Add a new object
         addObject(name) {
+            // A NEW OBJECT JOINS WHAT IS ON SCREEN. The shown set is a list of
+            // names, and one that does not mention the object just loaded
+            // leaves it invisible - so a fetch, a Copy or a drag-and-drop while
+            // two structures are up would appear to have done nothing. Only
+            // when a set exists at all: empty still means "just the current
+            // one", which is every single-object session.
+            if (this.shownObjects && this.shownObjects.size) {
+                this.shownObjects.add(name);
+            }
             const objectExists = this.objectsData[name] !== undefined;
             const existingScatterConfig = objectExists
                 ? (this.objectsData[name].scatterConfig || null)
@@ -10221,6 +10230,26 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
+            // WHAT IS ON SCREEN IS THE AUTHORITY ON WHAT IS HIDDEN.
+            //
+            // The live mask covers every drawn object, in merged indices, and
+            // the merge is rebuilt for reasons that are not a change of shown
+            // objects at all - a frame step, a side chain, a contact. Rebuilt
+            // from each object's SAVED state instead, everything hidden since
+            // the merge began comes back; read as if the live mask were the
+            // current object's own numbering, an object that is not the first
+            // one reads as entirely hidden.
+            const prior = new Map();
+            if (ms.enabled && ms.sourceNames) {
+                for (const nm of ms.sourceNames) prior.set(nm, this._maskForObject(nm));
+            } else if (this.currentObjectName && this.visibilityModel) {
+                prior.set(this.currentObjectName,
+                    new Set(this.visibilityModel.positions || []));
+            }
+            const sameSources = !!(ms.enabled && ms.sourceNames
+                && ms.sourceNames.length === names.length
+                && ms.sourceNames.every((n, k) => n === names[k]));
+
             const merged = this._mergeObjects(names);
             if (!merged) return;
 
@@ -10245,9 +10274,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.lastShadowRotationMatrix = null;
             // A selection is a set of position indices against the array it
             // was made on, and that array has just changed underneath it.
-            this.clearResidueSelection();
+            // ...but only when the SOURCES change. A rebuild for a frame step
+            // or a side chain keeps the same objects at the same offsets, and
+            // dropping the selection there would clear it every time the frame
+            // slider moved.
+            if (!sameSources) this.clearResidueSelection();
             this._loadDataIntoRenderer(merged, true);
-            this._applyMergedVisibility(merged, skipRender);
+            this._applyMergedVisibility(merged, skipRender, prior);
         }
 
         /**
@@ -10310,7 +10343,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          *
          * An object nobody has hidden anything in contributes all of itself.
          */
-        _applyMergedVisibility(merged, skipRender = false) {
+        _applyMergedVisibility(merged, skipRender = false, prior = null) {
             const names = merged.sourceNames;
             const offsets = merged.sourceOffsets;
             const n = merged.coords.length;
@@ -10321,11 +10354,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const off = offsets[s];
                 const end = (s + 1 < offsets.length) ? offsets[s + 1] : n;
                 const name = names[s];
-                // the current object's mask is LIVE; the rest were saved when
-                // each was switched away from
-                const st = (name === this.currentObjectName)
+                // What that object had on screen a moment ago, if it was on
+                // screen at all; otherwise what it was left with when it was
+                // switched away from. `prior` is already in the object's own
+                // numbering - see _maskForObject - which the live mask is not.
+                const was = prior && prior.get(name);
+                const saved = (name === this.currentObjectName)
                     ? this.visibilityModel
                     : (this.objectsData[name] && this.objectsData[name].visibilityState);
+                const st = was ? { positions: was, chains: null } : saved;
                 const hasPos = st && st.positions && st.positions.size > 0;
                 const hasChains = st && st.chains && st.chains.size > 0;
                 if (!hasPos && !hasChains) {
