@@ -2833,15 +2833,33 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             } else {
                 this._switchQuiet = false;
             }
+            // THE MASK IS NOT ONE OBJECT'S WHILE SEVERAL ARE DRAWN. It covers
+            // everything on screen, in merged indices, so filing it under the
+            // object being switched away from would write another object's
+            // hidden residues into its record - and restoring the new object's
+            // copy below would hide most of the picture. Each object's share is
+            // recovered from the live mask when the merge is rebuilt; see
+            // _maskForObject.
+            const mergedMask = (this.multiState && this.multiState.enabled)
+                || this._mergeWanted();
             // Save current object's selection state and viewer state
             if (this.currentObjectName && this.currentObjectName !== newObjectName && this.objectsData[this.currentObjectName]) {
                 const obj = this.objectsData[this.currentObjectName];
-                obj.visibilityState = {
-                    positions: new Set(this.visibilityModel.positions),
-                    chains: new Set(this.visibilityModel.chains),
-                    paeBoxes: this.visibilityModel.paeBoxes.map(box => ({ ...box })),
-                    visibilityMode: this.visibilityModel.visibilityMode
-                };
+                if (!mergedMask) {
+                    obj.visibilityState = {
+                        positions: new Set(this.visibilityModel.positions),
+                        chains: new Set(this.visibilityModel.chains),
+                        paeBoxes: this.visibilityModel.paeBoxes.map(box => ({ ...box })),
+                        visibilityMode: this.visibilityModel.visibilityMode
+                    };
+                } else {
+                    obj.visibilityState = {
+                        positions: this._maskForObject(this.currentObjectName) || new Set(),
+                        chains: new Set(),
+                        paeBoxes: [],
+                        visibilityMode: this.visibilityModel.visibilityMode
+                    };
+                }
                 obj.viewerState = {
                     rotation: this._deepCopyMatrix(this.viewerState.rotation),
                     zoom: this.viewerState.zoom,
@@ -2930,18 +2948,25 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Restore selection state
             const savedState = this.objectsData[newObjectName].visibilityState;
 
-            // Apply the saved selection directly to visibilityModel (bypassing setVisibility's normalization)
-            this.visibilityModel.positions = new Set(savedState.positions);
-            this.visibilityModel.chains = new Set(savedState.chains);
-            this.visibilityModel.paeBoxes = savedState.paeBoxes.map(box => ({ ...box }));
-            this.visibilityModel.visibilityMode = savedState.visibilityMode;
+            // ...and it is not restored under a merge either: what is hidden on
+            // screen stays hidden, whichever object is being edited. Only the
+            // PAE boxes travel, since the map belongs to the new object.
+            if (mergedMask) {
+                this.visibilityModel.paeBoxes = (savedState.paeBoxes || []).map((b) => ({ ...b }));
+            } else {
+                // Apply the saved selection directly to visibilityModel (bypassing setVisibility's normalization)
+                this.visibilityModel.positions = new Set(savedState.positions);
+                this.visibilityModel.chains = new Set(savedState.chains);
+                this.visibilityModel.paeBoxes = savedState.paeBoxes.map(box => ({ ...box }));
+                this.visibilityModel.visibilityMode = savedState.visibilityMode;
 
-            // Only normalize if in default mode with empty positions, using correct coords length
-            if (this.visibilityModel.visibilityMode === 'default' &&
-                (!this.visibilityModel.positions || this.visibilityModel.positions.size === 0)) {
-                this.visibilityModel.positions = new Set();
-                for (let i = 0; i < correctCoordsLength; i++) {
-                    this.visibilityModel.positions.add(i);
+                // Only normalize if in default mode with empty positions, using correct coords length
+                if (this.visibilityModel.visibilityMode === 'default' &&
+                    (!this.visibilityModel.positions || this.visibilityModel.positions.size === 0)) {
+                    this.visibilityModel.positions = new Set();
+                    for (let i = 0; i < correctCoordsLength; i++) {
+                        this.visibilityModel.positions.add(i);
+                    }
                 }
             }
 
@@ -2990,7 +3015,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 style: null,
                 styleChosen: false
             };
-            this.viewerState = {
+            // THE CAMERA DOES NOT MOVE WHEN SEVERAL OBJECTS ARE ON SCREEN.
+            //
+            // Picking a different object to work on is not a request to look
+            // somewhere else: both structures are in front of you, framed
+            // together, and swinging to one object's saved pose would throw the
+            // other off the screen - the same complaint as clicking a name
+            // hiding the other, in a different disguise. Only the frame index
+            // is taken, since that is which frame of the new object to draw.
+            const merged = (this.multiState && this.multiState.enabled)
+                || this._mergeWanted();
+            this.viewerState = merged ? {
+                ...this.viewerState,
+                currentFrame: saved.currentFrame
+            } : {
                 rotation: this._deepCopyMatrix(saved.rotation),
                 zoom: saved.zoom,
                 // older saves carry the boolean instead; false meant orthographic
@@ -3005,10 +3043,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // ...and its clip. An object that has never been clipped comes back
             // unclipped, rather than inheriting the slab of whatever was on
             // screen before it.
-            this.clipNear = (typeof saved.clipNear === 'number') ? saved.clipNear : null;
-            this.clipFar = (typeof saved.clipFar === 'number') ? saved.clipFar : null;
-            this.clipFade = (typeof saved.clipFade === 'number')
-                ? saved.clipFade : CLIP_FADE_DEFAULT;
+            // ...and neither does the clip, for the same reason: a slab set on
+            // one of two merged structures is a slab through the picture, and
+            // the picture has not changed.
+            if (!merged) {
+                this.clipNear = (typeof saved.clipNear === 'number') ? saved.clipNear : null;
+                this.clipFar = (typeof saved.clipFar === 'number') ? saved.clipFar : null;
+                this.clipFade = (typeof saved.clipFade === 'number')
+                    ? saved.clipFade : CLIP_FADE_DEFAULT;
+            }
 
             // ...AND ITS STYLE, for the same reason the clip travels: what is
             // right for a ribosome is not right for the peptide beside it.
@@ -3019,8 +3062,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // setStyle, not an assignment: a style carries a whole profile of
             // defaults with it, and half-switching leaves the panel describing
             // one style while the renderer draws another.
-            this.styleChosen = !!saved.styleChosen;
-            if (saved.style && saved.style !== this.style && this.setStyle) {
+            // ...NOR DOES THE STYLE CHANGE UNDER A MERGE. One array is drawn
+            // one way, so taking the newly picked object's style would restyle
+            // the other structures with it - and the user asked to edit that
+            // object, not to redraw the picture.
+            this.styleChosen = merged ? this.styleChosen : !!saved.styleChosen;
+            if (!merged && saved.style && saved.style !== this.style && this.setStyle) {
                 // ...ASKED ABOUT THE OBJECT BEING SWITCHED TO, not the one on
                 // screen. The frames are loaded by the caller, after this, so
                 // this.coords is still the PREVIOUS object's - and a small
@@ -4786,7 +4833,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         _loadFrameForPlayback(frameIndex) {
             if (this.overlayState && this.overlayState.enabled) return;
-            if (this.multiState && this.multiState.enabled) {
+            if ((this.multiState && this.multiState.enabled) || this._mergeWanted()) {
                 this._applyShownObjects(true);
                 return;
             }
@@ -4851,13 +4898,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (!skipRender) {
                     this.render('setFrame-overlay');
                 }
-            } else if (this.multiState.enabled) {
+            } else if (this.multiState.enabled || this._mergeWanted()) {
                 // SEVERAL OBJECTS: the merge is rebuilt, not replaced by one
                 // frame. This object stepping a frame changes its share of the
                 // array and nothing else's, and loading the frame on its own
                 // would drop every other object off the screen - which is what
                 // switching the current object does, since that is a switch
-                // followed by setFrame(0).
+                // followed by setFrame(0). It is also how the merge STARTS:
+                // the second object to load makes drawnObjects answer with two
+                // names, and the next frame load builds it.
                 this._applyShownObjects(skipRender);
             } else {
                 // Normal mode: load individual frame data
@@ -5173,23 +5222,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Count number of objects
             const objectCount = Object.keys(this.objectsData).length;
 
-            // Handle object selection dropdown visibility
+            // BOTH OBJECT CONTROLS APPEAR WITH THE SECOND OBJECT, and neither
+            // before it: with one object loaded there is nothing to show or
+            // hide and nothing to pick between.
             if (this.objectSelect) {
-                // Hide object dropdown if only 1 object
-                const objectSelectParent = this.objectSelect.closest('.toggle-item') ||
-                    this.objectSelect.parentElement;
-                if (objectSelectParent) {
-                    objectSelectParent.style.display = (objectCount <= 1) ? 'none' : 'flex';
-                    // ...and the list that opens out of it, which is part of
-                    // the same control and would otherwise be left hanging
-                    // under a hidden row when the last object goes.
-                    const list = objectSelectParent.parentElement
-                        && objectSelectParent.parentElement.querySelector('#objectList');
-                    if (list && objectCount <= 1) {
-                        list.hidden = true;
-                        const btn = objectSelectParent.querySelector('#objectListButton');
-                        if (btn) btn.setAttribute('aria-expanded', 'false');
-                    }
+                // the picker, which now lives in the sequence header
+                this.objectSelect.style.display = (objectCount <= 1) ? 'none' : '';
+                const doc = this.objectSelect.ownerDocument || document;
+                const row = doc.getElementById('objectRow');
+                if (row) row.style.display = (objectCount <= 1) ? 'none' : 'flex';
+                const list = doc.getElementById('objectList');
+                if (list && objectCount <= 1) {
+                    list.hidden = true;
+                    const btn = doc.getElementById('objectListButton');
+                    if (btn) btn.setAttribute('aria-expanded', 'false');
                 }
 
                 // Also handle container visibility (for backward compatibility)
@@ -10172,15 +10218,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         drawnObjects() {
             const all = this.objectsData || {};
+            const names = Object.keys(all);
             const want = this.shownObjects;
             if (want && want.size) {
-                const out = [];
                 // the load order, so the list and the painting agree
-                for (const name of Object.keys(all)) {
-                    if (want.has(name)) out.push(name);
-                }
+                const out = names.filter((n) => want.has(n));
                 if (out.length) return out;
             }
+            // EMPTY MEANS ALL. Everything loaded is on screen until somebody
+            // switches one off, which is what the list's eyes are for. It used
+            // to mean "the current object", and that tied what is DRAWN to what
+            // is being EDITED: picking an object in the list took the other one
+            // off the screen, reported as "when I click one it hides the other".
+            // The two are separate questions now - the eyes answer one and the
+            // picker beside the sequence answers the other.
+            if (names.length) return names;
             return this.currentObjectName ? [this.currentObjectName] : [];
         }
 
@@ -10269,9 +10321,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const prior = new Map();
             if (ms.enabled && ms.sourceNames) {
                 for (const nm of ms.sourceNames) prior.set(nm, this._maskForObject(nm));
-            } else if (this.currentObjectName && this.visibilityModel) {
+            } else if (this.currentObjectName && this.visibilityModel
+                && this.visibilityModel.positions) {
+                // ...and only when there IS a mask. An empty set here is
+                // authoritative - "nothing of this object is visible" - so
+                // manufacturing one out of a missing mask hides the object
+                // the moment a second one joins it.
                 prior.set(this.currentObjectName,
-                    new Set(this.visibilityModel.positions || []));
+                    new Set(this.visibilityModel.positions));
             }
             const sameSources = !!(ms.enabled && ms.sourceNames
                 && ms.sourceNames.length === names.length
@@ -10443,6 +10500,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         cutSelection() { return this._editOneObject(() => this._cutSelection()); }
 
         /**
+         * IS THERE MORE THAN ONE OBJECT TO DRAW? The merge is not a mode the
+         * user turns on: it is simply what drawing two things at once means,
+         * and every path that loads coordinates asks this rather than checking
+         * whether a merge happens to be up already.
+         */
+        _mergeWanted() {
+            return this.drawnObjects().length > 1;
+        }
+
+        /**
          * RELOAD WHAT IS DRAWN, whichever that is.
          *
          * Side chains, bases and elements all change the coordinate array
@@ -10452,7 +10519,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * back in, and this is the one call the UI needs to know about.
          */
         reloadDrawn(skipRender = false) {
-            if (this.multiState && this.multiState.enabled) {
+            if ((this.multiState && this.multiState.enabled) || this._mergeWanted()) {
                 this._applyShownObjects(skipRender);
                 return;
             }
@@ -10571,33 +10638,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (!ms || !ms.enabled || !ms.sourceNames) return chainId;
             const s = ms.sourceNames.indexOf(objectName || this.currentObjectName);
             return (s < 0) ? chainId : (s + '|' + chainId);
-        }
-
-        /**
-         * THE COLOURS AN OBJECT IS ACTUALLY DRAWN IN, for the swatch in the
-         * object list - up to three, sampled across it.
-         *
-         * Not a palette entry: an object keeps its own scheme, so it can be one
-         * colour, one per chain, or a rainbow, and a single square would be a
-         * illustration of a colour rather than the colour. Three samples read
-         * correctly for all of them - flat stays flat, a rainbow reads as a
-         * gradient, a two-chain object shows both.
-         *
-         * Empty when the object is not drawn: it has no colour on screen.
-         */
-        objectSwatch(name) {
-            const { off, end } = this.localRangeOf(name);
-            const stop = Math.min(end, this._positionCount());
-            if (this.drawnObjects().indexOf(name) < 0 || !(stop > off)) return [];
-            const at = [off, Math.floor((off + stop - 1) / 2), stop - 1];
-            const out = [];
-            for (const i of at) {
-                const c = this.getAtomColor(i, this._getEffectiveColorMode(i));
-                if (!c) continue;
-                const hex = `rgb(${c.r}, ${c.g}, ${c.b})`;
-                if (out[out.length - 1] !== hex) out.push(hex);
-            }
-            return out;
         }
 
         /**
@@ -14715,8 +14755,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         || containerElement.querySelector('#saveSvgButton');
     const frameSlider = containerElement.querySelector('#frameSlider');
     const frameCounter = containerElement.querySelector('#frameCounter');
-    // objectSelect is now in the sequence header, query from container
-    const objectSelect = containerElement.querySelector('#objectSelect');
+    // WHICH OBJECT IS BEING EDITED - the picker beside the sequence strip. It
+    // sits in the sequence panel, which is a sibling of the viewer container
+    // rather than inside it, so the container query comes back empty and the
+    // renderer would have no picker at all: no options, no change listener,
+    // and no way to switch objects. Falls back to the document, and stays
+    // container-first so two viewers on one page keep their own.
+    const objectSelect = containerElement.querySelector('#objectSelect')
+        || (containerElement.ownerDocument || document).getElementById('objectSelect');
     const speedButton = containerElement.querySelector('#speedButton');
     const rotationCheckbox = containerElement.querySelector('#rotationCheckbox');
     const lineWidthSlider = containerElement.querySelector('#lineWidthSlider');

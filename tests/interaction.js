@@ -72,7 +72,7 @@ for (const name of ['selectionBandFor']) {
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','_autoColorFor','chainColorKeyAt','chainColorKeyFor','selectionForObject','_maskForObject','_editOneObject','objectSwatch','addObject',];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','_autoColorFor','chainColorKeyAt','chainColorKeyFor','selectionForObject','_maskForObject','_editOneObject','addObject',];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -5245,28 +5245,35 @@ t('the CA-CB bond is as thick as the rest of the side chain', () => {
     }
 });
 
-t('the drawn objects are asked for in one place', () => {
-    // GROUNDWORK for an Object list, not a feature. Several structures on
-    // screen at once will be ONE MERGED coordinate array - the overlay already
-    // does exactly that for the frames of a trajectory, down to handing the
-    // per-source map to the cartoon as a bonding group so nothing joins across
-    // sources. See MULTI_OBJECT_PLAN.md.
-    //
-    // What this pins is the question being asked in one place, so the day it
-    // answers with several names, the callers need no changing.
+t('the drawn objects are asked for in one place, and default to all of them', () => {
+    // ONE question, one answer: which objects does this frame draw. Everything
+    // that used to read currentObjectName for that reads this instead, so the
+    // day it returns several names the callers need no changing - and it does
+    // return several, by default.
     const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
     const at = mol.indexOf('drawnObjects() {');
     if (at < 0) throw new Error('nothing owns the list of drawn objects');
     const body = mol.slice(at, mol.indexOf('\n        }', at));
-    if (!/this\.shownObjects/.test(body) || !/this\.currentObjectName/.test(body)) {
-        throw new Error('drawnObjects does not fall back to the current object,'
-            + ' which is every session today');
+    if (!/this\.shownObjects/.test(body)) {
+        throw new Error('drawnObjects does not read the shown set');
     }
     // an object can be deleted while the set still names it
-    if (!/for \(const name of Object\.keys\(all\)\)/.test(body)) {
+    if (!/names\.filter\(\(n\) => want\.has\(n\)\)/.test(body)) {
         throw new Error('the shown set is trusted without checking the objects'
             + ' still exist');
     }
+
+    // EMPTY MEANS ALL. Tying what is drawn to what is being edited is what made
+    // picking an object in the list take the other one off the screen.
+    const v = new Cls();
+    v.objectsData = { A: {}, B: {}, C: {} };
+    v.currentObjectName = 'B';
+    v.shownObjects = new Set();
+    eq(v.drawnObjects().join(','), 'A,B,C', 'everything loaded is on screen');
+    v.shownObjects = new Set(['C', 'A']);
+    eq(v.drawnObjects().join(','), 'A,C', 'in load order, whatever order it was set in');
+    v.shownObjects = new Set(['gone']);
+    eq(v.drawnObjects().join(','), 'A,B,C', 'a set naming nothing that exists is no set');
 });
 
 t('an object switch draws once, and after the frames are in', () => {
@@ -6523,18 +6530,37 @@ function shownViewer() {
     v.setVisibility = function (patch) { this.mask = patch; };
     v.overlayState = { enabled: false, frameIdMap: null };
     v.viewerState = { zoom: 1, center: null, extent: null };
+    // TWO OBJECTS ARE LOADED, so both are on screen and merged - that is the
+    // resting state now, not something a test has to switch on. A frame load
+    // is what builds it; setFrame does this after every load.
+    v._applyShownObjects();
+    v.loaded = [];
     return v;
 }
 
-t('showing one object never enters the merge', () => {
+t('two loaded objects are both on screen without being asked', () => {
     const v = shownViewer();
-    eq(v.setShownObjects(['A']), false, 'A was already the drawn object');
+    eq(v.drawnObjects().join(','), 'A,B', 'everything loaded is drawn');
+    eq(v.multiState.enabled, true, 'and merged, without anything being switched on');
+    // ...and asking for exactly that changes nothing
+    eq(v.setShownObjects(['A', 'B']), false, 'both were already drawn');
     eq(v.loaded.length, 0, 'nothing reloaded');
-    eq(v.multiState.enabled, false, 'no merge');
+});
+
+t('showing one of two is a change, and leaves the merge', () => {
+    const v = shownViewer();
+    eq(v.setShownObjects(['A']), true, 'the picture changed');
+    eq(v.multiState.enabled, false, 'no merge for one object');
+    eq(v.loaded.length, 1, 'reloaded');
+    eq(v.loaded[0].single, 0, 'as a plain frame');
 });
 
 t('showing two objects merges them and records where each starts', () => {
     const v = shownViewer();
+    // from one object back to both: the state a hidden object leaves behind
+    v.setShownObjects(['A']);
+    v.loaded = [];
+    v.mask = null;
     eq(v.setShownObjects(['A', 'B']), true, 'the picture changed');
     eq(v.multiState.enabled, true, 'merged');
     eq(v.multiState.sourceNames.join(','), 'A,B', 'sources');
@@ -6562,7 +6588,10 @@ t('showing two objects merges them and records where each starts', () => {
 t('an object that has something hidden keeps it hidden in the merge', () => {
     const v = shownViewer();
     // B has one of its two positions hidden; A has nothing hidden at all
+    v.setShownObjects(['A']);
     v.objectsData.B.visibilityState = { positions: new Set([1]), chains: new Set() };
+    // ...and nothing live to override it with - see _maskForObject
+    v.visibilityModel = { positions: null, chains: new Set() };
     v.setShownObjects(['A', 'B']);
     eq(Array.from(v.mask.positions).sort((x, y) => x - y).join(','), '0,1,2,4',
         "A whole, and B's second position only");
@@ -6571,8 +6600,6 @@ t('an object that has something hidden keeps it hidden in the merge', () => {
 
 t('dropping back to one object leaves the merge behind', () => {
     const v = shownViewer();
-    v.setShownObjects(['A', 'B']);
-    v.loaded = [];
     eq(v.setShownObjects(['A']), true, 'changed');
     eq(v.multiState.enabled, false, 'merge off');
     eq(v.multiState.sourceIdMap, null, 'and its map with it');
@@ -6582,7 +6609,9 @@ t('dropping back to one object leaves the merge behind', () => {
 
 t('a merge of objects and a merge of frames are never both on', () => {
     const v = shownViewer();
+    v.setShownObjects(['A']);
     v.overlayState = { enabled: true, frameIdMap: [0, 0, 0] };
+    v.multiState.enabled = false;
     v.setShownObjects(['A', 'B']);
     eq(v.exitedOverlay, true, 'the overlay was left first');
     eq(v.multiState.enabled, true, 'and the object merge is on');
@@ -6591,7 +6620,7 @@ t('a merge of objects and a merge of frames are never both on', () => {
 t('a name that is not loaded is ignored, never drawn as nothing', () => {
     const v = shownViewer();
     eq(v.setShownObjects(['nope']), false, 'no change');
-    eq(v.drawnObjects().join(','), 'A', 'still the current object');
+    eq(v.drawnObjects().join(','), 'A,B', 'everything is still drawn');
     // ...and it is not REMEMBERED either. Kept, it would lie in wait: load an
     // object under that name later and it appears on screen unasked, because
     // a list the user never edited already had it ticked.
@@ -6602,6 +6631,7 @@ t("each object's side chains are read at its own offset", () => {
     const v = shownViewer();
     v.objectsData.A.sidechains = new Set([1]);
     v.objectsData.B.sidechains = new Set([0]);
+    v.setShownObjects(['A']);
     eq(Array.from(v.shownSidechainSet()).join(','), '1', 'one object, no offset');
     v.setShownObjects(['A', 'B']);
     eq(Array.from(v.shownSidechainSet()).sort().join(','), '1,3',
@@ -7101,6 +7131,43 @@ t('Hide all survives a rebuild - an empty mask is an answer', () => {
         'everything came back on screen - an empty mask was read as "nobody has'
         + ' said anything" rather than as "nothing is visible"');
     eq(v.mask.visibilityMode, 'explicit', 'and it is explicit, not default');
+});
+
+// PICKING WHICH OBJECT TO EDIT DOES NOT CHANGE THE PICTURE.
+//
+// A switch restores the new object's camera, clip, style and visibility mask -
+// right for one object at a time, and wrong the moment two are on screen: both
+// structures are in front of you, framed together, and swinging to one
+// object's saved pose throws the other off the screen. Same complaint as
+// clicking a name hiding the other, in a different disguise.
+t('switching the edited object leaves a merged picture alone', () => {
+    const src7 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = src7.indexOf('_switchToObject(newObjectName) {');
+    if (at < 0) throw new Error('_switchToObject is gone');
+    const body = src7.slice(at, src7.indexOf('\n        setFrame(', at));
+
+    // the four things a switch restores, each gated on the merge
+    const gate = /merged/;
+    for (const [what, probe] of [
+        ['the camera', /this\.viewerState = merged \?/],
+        ['the clip', /if \(!merged\) \{[\s\S]*?this\.clipNear =/],
+        ['the style', /if \(!merged && saved\.style/],
+        ['the visibility mask', /if \(mergedMask\) \{[\s\S]*?paeBoxes/],
+    ]) {
+        if (!probe.test(body)) {
+            throw new Error(what + ' is restored from the new object even when'
+                + ' several are on screen');
+        }
+    }
+    if (!gate.test(body)) throw new Error('nothing asks whether a merge is up');
+
+    // ...and the mask is not FILED under one object either: it covers
+    // everything drawn, so saving it whole would write another object's hidden
+    // residues into this one's record
+    if (!/_maskForObject\(this\.currentObjectName\)/.test(body)) {
+        throw new Error('the whole merged mask is saved onto the object being'
+            + ' switched away from');
+    }
 });
 
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');

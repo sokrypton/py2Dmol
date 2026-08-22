@@ -95,17 +95,17 @@ browser probe (`tests/multi_object.py`) turned up, in order:
 - The selection is dropped when the merge changes; it was a set of indices
   against the array that just went away.
 
-**4. The list UI.** *(done, after 5)* Object is a button; pressing it opens the
-dropdown out into a row per object with an eye, a swatch and the current object
-marked. The dropdown stays - hidden while the list is open - because it is what
-every other path drives the current object through.
+**4. The list UI.** *(done, after 5)* The **All** button opens into a row per
+object - an eye and a name, the whole row a switch - and says `2/3` once
+something is switched off. No swatch and no current-object marking: this
+control answers one question, and the second one moved to the picker beside the
+sequence strip. See "The model, as shipped" below.
 
-**ONE OBJECT IS THE MAIN ONE.** The row's NAME makes an object current; its eye
-says whether it is drawn. Everything else - the sequence strip, the panels, the
-edits, the PAE map, the MSA - follows the current object, and the others are
-extra geometry on screen. That keeps every panel answering one question about
-one structure, and it is why the strip's cells now carry MERGED indices while
-its rows are built from the object's own frame.
+**ONE OBJECT IS EDITED AT A TIME.** The sequence strip, the panels, the PAE map
+and the MSA follow the picked object, and the others are geometry on screen
+beside it. That keeps every panel answering one question about one structure,
+and it is why the strip's cells carry MERGED indices while its rows are built
+from the object's own frame.
 
 **5. Selection and picking, and every other per-object set.** One merged index
 space, so picking works unchanged - what it needs is the source map to report
@@ -196,6 +196,58 @@ Found by walking the paths a user actually clicks, not by reading the merge:
   button is styled from the state rather than from the toggle, so it cannot sit
   lit over a view that is not overlaid.
 - **setCoords does not persist a merged bond list** onto the current object.
+
+## The model, as shipped
+
+Two questions, asked in two places, and the whole design is keeping them apart:
+
+| question | control | state |
+|---|---|---|
+| which objects are ON SCREEN | the **All** button and its list of eyes | `shownObjects`, empty meaning ALL |
+| which object is being EDITED | the **picker beside the sequence strip** | `currentObjectName` |
+
+The first version tied them together - the shown set was empty and meant "the
+current object" - so picking an object in the list took the other one off the
+screen. Reported as *"it's a little confusing, when i click one it hides the
+other"*, and the fix was to make the default ALL rather than "the current one",
+and to move the editing question to where the thing it governs is: the
+sequence strip.
+
+**Nothing about the picture changes when the edited object changes.** A switch
+normally restores that object's camera, clip, style and visibility mask; under
+a merge all four are frozen, because both structures are in front of you and
+swinging to one object's saved pose throws the other off the screen. The mask
+is not filed under one object either - it covers everything drawn, and each
+object's share is recovered from the live mask when the merge is rebuilt.
+
+## What the selection still does not do
+
+Reported: *"the selection mechanism doesn't seem wired up to handle multiple
+objects"*. Where it stands:
+
+- `residueSelection` is a flat set of MERGED indices, so a selection **can**
+  span two objects, and everything that WRITES from it already splits per
+  owning object (`writeGroups`): colours, side chains, SSE, bases, elements.
+  Nothing lands on the wrong residue.
+- `describeSelectionRanges` names the object when more than one is drawn, so
+  the panel reads `1BBH/A 12-30, 1HVR/A 4-9`.
+- A canvas click can select a residue of any drawn object, and Within finds
+  neighbours across the join - which is the point of having both on screen.
+
+What is missing:
+
+- **The sequence strip shows one object**, so a selection that reaches another
+  is invisible there, and a drag in the strip can only ever select within the
+  picked object. The obvious answer is a strip per drawn object, stacked, with
+  the picker choosing which one the tools act on.
+- **Copy, Cut and Delete take the current object's share only** - see
+  `_editOneObject`, which is honest but silent: cutting a selection that spans
+  two objects quietly cuts half of it. It should say so, or copy the lot into
+  one new object.
+- **The selection panel's tallies** count merged positions, so "12 residues,
+  3 with side chains" mixes objects without saying so.
+- **The selection is dropped when the shown set changes.** Hiding an object
+  clears a selection made on the one still visible, which it should not.
 
 ## Measured
 

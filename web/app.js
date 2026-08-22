@@ -2095,16 +2095,16 @@ function updateObjectNavigationButtons() {
 // ============================================================================
 // THE OBJECT LIST
 // ============================================================================
-// Two questions, and the control answers both. The dropdown picks which object
-// is CURRENT - what Copy, Delete, the side-chain toggles and the sequence strip
-// act on. Pressing Object opens the same row out into a LIST, one row per
-// object with an eye, which says which objects are DRAWN. PyMOL's object panel
-// and Photoshop's layers both put the two side by side, and both are wanted:
-// you compare two structures on screen while editing one of them.
+// ONE QUESTION: which objects are on screen. Everything loaded is drawn until
+// an eye is clicked, so the button reads "All" and opens into a row per object
+// with an eye and a name. The whole row is the switch.
 //
-// The select stays in the DOM either way - hidden, but present - because it is
-// what every other path drives the current object through, including the
-// renderer's own change listener and the prev/next object buttons.
+// It used to answer a second question too - which object is CURRENT, the one
+// Copy, Delete, the side-chain toggles and the sequence strip act on - and
+// with the shown set empty meaning "the current object", picking one in the
+// list took the other off the screen: "when I click one it hides the other".
+// That question now belongs to the picker in the sequence header, where the
+// thing it governs is visible.
 
 function objectListEls() {
     return {
@@ -2140,9 +2140,8 @@ function syncObjectColorOption() {
 }
 
 /**
- * The button says how many objects are on screen, so the state is readable
- * without opening the list - "Object" when one is drawn, "Object 2/3" when two
- * of three are. The current object is named in the dropdown beside it.
+ * The button says what is on screen: "All" while nothing is switched off, and
+ * "2/3" once something is - so the state is readable without opening the list.
  */
 function syncObjectListButton() {
     const { btn } = objectListEls();
@@ -2150,16 +2149,16 @@ function syncObjectListButton() {
     if (!btn || !renderer) return;
     const total = Object.keys(renderer.objectsData || {}).length;
     const shown = renderer.drawnObjects ? renderer.drawnObjects().length : 1;
-    btn.textContent = (shown > 1) ? `Object ${shown}/${total}` : 'Object';
-    btn.title = (shown > 1)
-        ? `${shown} of ${total} objects are on screen - click to choose`
-        : 'Show or hide objects';
+    btn.textContent = (shown >= total) ? 'All' : `${shown}/${total}`;
+    btn.title = (shown >= total)
+        ? 'All objects are on screen - click to choose'
+        : `${shown} of ${total} objects are on screen - click to choose`;
 }
 
 function renderObjectList() {
-    const { btn, list, select } = objectListEls();
+    const { btn, list } = objectListEls();
     const renderer = viewerApi?.renderer;
-    if (!list || !btn || !select || !renderer) return;
+    if (!list || !btn || !renderer) return;
     syncObjectListButton();
     if (list.hidden) return;
 
@@ -2168,50 +2167,26 @@ function renderObjectList() {
     list.innerHTML = '';
 
     for (const name of names) {
+        const on = shown.has(name);
         const row = document.createElement('div');
-        row.className = 'object-list-row';
-        if (name === renderer.currentObjectName) row.classList.add('is-current');
-        if (!shown.has(name)) row.classList.add('is-hidden');
+        row.className = 'object-list-row' + (on ? '' : ' is-hidden');
+        row.title = on ? 'Hide this object' : 'Show this object';
 
-        const eye = document.createElement('button');
-        eye.type = 'button';
+        const eye = document.createElement('span');
         eye.className = 'object-list-eye';
-        eye.title = shown.has(name) ? 'Hide this object' : 'Show this object';
-        eye.setAttribute('aria-label', eye.title);
-        eye.innerHTML = shown.has(name)
+        eye.innerHTML = on
             ? '<i class="fa-regular fa-eye"></i>'
             : '<i class="fa-regular fa-eye-slash"></i>';
-        eye.addEventListener('click', (e) => {
-            e.stopPropagation();
-            toggleObjectShown(name);
-        });
-
-        // The colours this object is actually drawn in - one square if it is
-        // one colour, a gradient if it is a rainbow or several chains. A single
-        // flat square would be a picture of a colour the object does not have.
-        const swatch = document.createElement('span');
-        swatch.className = 'object-list-swatch';
-        const cols = (renderer.objectSwatch ? renderer.objectSwatch(name) : []) || [];
-        if (cols.length === 1) swatch.style.background = cols[0];
-        else if (cols.length > 1) {
-            swatch.style.background = `linear-gradient(135deg, ${cols.join(', ')})`;
-        } else swatch.style.visibility = 'hidden';
 
         const label = document.createElement('span');
         label.className = 'object-list-name';
         label.textContent = name;
 
-        // The NAME makes it current; the eye shows and hides. Two targets in
-        // one row, which is why the eye stops the click from reaching here.
-        row.addEventListener('click', () => {
-            if (renderer.currentObjectName === name) return;
-            select.value = name;
-            select.dispatchEvent(new Event('change'));
-            renderObjectList();
-        });
+        // THE WHOLE ROW IS THE SWITCH. One row, one thing it does - there is no
+        // second act to reserve the name for any more.
+        row.addEventListener('click', () => toggleObjectShown(name));
 
         row.appendChild(eye);
-        row.appendChild(swatch);
         row.appendChild(label);
         list.appendChild(row);
     }
@@ -2220,12 +2195,9 @@ function renderObjectList() {
 /**
  * Show or hide one object.
  *
- * THE SET STARTS EMPTY AND MEANS "just the current one" - see drawnObjects() -
- * so the first tick has to write down what is already on screen before adding
- * to it, or showing a second object would look like replacing the first.
- *
- * The last visible object cannot be hidden: an empty set falls back to the
- * current object, so the eye would appear not to work at all.
+ * The last visible object cannot be hidden: an empty set means ALL, so the
+ * picture would come back with everything in it and the eye would read as
+ * broken.
  */
 function toggleObjectShown(name) {
     const renderer = viewerApi?.renderer;
@@ -2243,14 +2215,11 @@ function toggleObjectShown(name) {
 }
 
 function toggleObjectListOpen() {
-    const { btn, list, select } = objectListEls();
-    if (!btn || !list || !select) return;
+    const { btn, list } = objectListEls();
+    if (!btn || !list) return;
     const open = list.hidden;
     list.hidden = !open;
     btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    // The dropdown and the list are the same control in two shapes, so only
-    // one of them is on screen at a time.
-    select.style.display = open ? 'none' : '';
     if (open) { syncObjectColorOption(); renderObjectList(); }
 }
 
@@ -2259,18 +2228,17 @@ function attachObjectList() {
     if (!btn || !select) return;
     btn.addEventListener('click', toggleObjectListOpen);
     // WHAT IS ON SCREEN CAN CHANGE WITHOUT A CLICK IN THIS LIST - a restored
-    // session, a Copy, the Python API. The colour mode that only means
-    // something with several objects follows the renderer, not the button.
+    // session, a Copy, the Python API - and so can which object is being
+    // edited. Both labels follow the renderer rather than the buttons.
     document.addEventListener('py2dmol-color-change', () => {
         syncObjectColorOption();
         syncObjectListButton();
         updateFrameNameLabel();
     });
-    // REBUILT WHENEVER THE OBJECTS CHANGE. Objects are added, renamed and
-    // removed from a dozen places - a load, a Copy, a Cut, a session restore -
-    // and every one of them goes through the select's options. Watching those
-    // is one hook instead of a dozen, and it cannot be forgotten by the next
-    // path that adds an object.
+    // OBJECTS ARE ADDED, RENAMED AND REMOVED FROM A DOZEN PLACES - a load, a
+    // Copy, a Cut, a session restore - and every one of them goes through the
+    // select's options. Watching those is one hook instead of a dozen, and it
+    // cannot be forgotten by the next path that adds an object.
     if (typeof MutationObserver === 'function') {
         new MutationObserver(() => renderObjectList())
             .observe(select, { childList: true });
@@ -2604,18 +2572,13 @@ function updateFrameNameLabel() {
     const obj = r && r.objectsData ? r.objectsData[r.currentObjectName] : null;
     const frames = obj && obj.frames;
     if (!frames || !frames.length) { el.textContent = ''; return; }
-    // WHOSE SEQUENCE THIS IS, when it could be anybody's. The strip shows the
-    // CURRENT object, and with several structures on screen there is nothing
-    // else to say which one - the reader is looking at two molecules and one
-    // sequence. Only then: with one object drawn, the name is noise.
-    const drawn = r.drawnObjects ? r.drawnObjects().length : 1;
-    const whose = (drawn > 1) ? r.currentObjectName : '';
     // ...and only where there is more than one FRAME, since for a single
-    // structure the object selector beside it already says the same word.
+    // structure the object picker beside it already says the same word - and
+    // with several objects it says it too, which is why the object name is not
+    // repeated here.
     const i = (typeof r.currentFrame === 'number' && r.currentFrame >= 0) ? r.currentFrame : 0;
     const f = frames[i];
-    const frameName = (frames.length > 1 && f && f.name) ? f.name : '';
-    el.textContent = [whose, frameName].filter(Boolean).join(' - ');
+    el.textContent = (frames.length > 1 && f && f.name) ? f.name : '';
     el.title = el.textContent;
 }
 

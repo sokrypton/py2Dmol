@@ -1761,11 +1761,10 @@ table.layout-table td {
     transform: translateY(-1px);
 }
 
-/* THE OBJECT LIST - PyMOL's object panel, Photoshop's layers.
-   The button opens the dropdown out into a row per object; the eye on each row
-   says whether that object is DRAWN, which is a different question from which
-   one is CURRENT (the row's name). Both are needed: edits act on the current
-   object, and several can be on screen at once for a comparison. */
+/* THE OBJECT LIST - what is on screen, and only that. The button opens into a
+   row per object, each an eye and a name, and the whole row is the switch.
+   Which object is being EDITED is asked for separately, by the picker in the
+   sequence header. */
 .object-row {
     display: flex;
     align-items: center;
@@ -1814,29 +1813,18 @@ table.layout-table td {
 .object-list-row + .object-list-row { border-top: 1px solid #f3f4f6; }
 .object-list-row:hover { background: var(--color-gray-100); }
 
-/* THE CURRENT OBJECT IS MARKED, not just selected-looking: with several drawn
-   at once there is nothing else on screen to say which one Copy, Delete and the
-   side-chain toggles are about to act on. */
-.object-list-row.is-current {
-    background: rgba(59, 130, 246, 0.08);
-    font-weight: 600;
-}
-
 .object-list-eye {
     width: 20px;
-    height: 20px;
-    padding: 0;
-    border: none;
-    background: none;
+    text-align: center;
     color: var(--color-gray-500);
-    cursor: pointer;
     font-size: 12px;
 }
 
 /* A HIDDEN OBJECT KEEPS ITS ROW but loses its ink, so the list reads as a set
    of switches rather than as a list that things vanish from. */
-.object-list-row.is-hidden .object-list-name { opacity: 0.45; }
-.object-list-eye:hover { color: var(--color-primary); }
+.object-list-row.is-hidden .object-list-name,
+.object-list-row.is-hidden .object-list-eye { opacity: 0.45; }
+.object-list-row:hover .object-list-eye { color: var(--color-primary); }
 
 .object-list-name {
     flex: 1;
@@ -1845,12 +1833,4 @@ table.layout-table td {
     white-space: nowrap;
 }
 
-/* The swatch is the colour that object is actually drawn in when the view is
-   coloured by object - see the 'object' mode in viewer-mol.js. */
-.object-list-swatch {
-    width: 10px;
-    height: 10px;
-    border-radius: 2px;
-    flex: 0 0 10px;
-    border: 1px solid rgba(0, 0, 0, 0.15);
-}
+

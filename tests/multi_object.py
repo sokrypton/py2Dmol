@@ -159,44 +159,11 @@ window.addEventListener('load', () => {
         await new Promise((s) => setTimeout(s, 150));
       }
 
-      // THE LIST UI, driven as a user drives it: press Object, then the eye
-      // on the row that is not showing.
-      r.setShownObjects([names[0]]);
-      r.render('one again');
-      await new Promise((s) => setTimeout(s, 150));
-      const btn = document.getElementById('objectListButton');
-      btn.click();
-      R.btnOneShown = btn.textContent;
-      const rows = Array.from(document.querySelectorAll('.object-list-row'));
-      R.rows = rows.map((x) => x.querySelector('.object-list-name').textContent);
-      const cur = rows.findIndex((x) => x.classList.contains('is-current'));
-      R.currentRow = cur;
-      R.currentMarked = cur >= 0 && R.rows[cur] === r.currentObjectName;
-      R.hiddenRows = rows.filter((x) => x.classList.contains('is-hidden')).length;
-      rows[1].querySelector('.object-list-eye').click();
-      await new Promise((s) => setTimeout(s, 250));
-      R.afterEyeInk = ink(r);
-      R.btnTwoShown = document.getElementById('objectListButton').textContent;
-      // the strip belongs to ONE object, and with two on screen it says which
-      if (window.updateFrameNameLabel) window.updateFrameNameLabel();
-      R.stripLabel = (document.getElementById('frameNameLabel') || {}).textContent;
-      R.afterEyeMulti = !!(r.multiState && r.multiState.enabled);
-      // the last visible object cannot be hidden - the eye would look broken
-      const rows2 = Array.from(document.querySelectorAll('.object-list-row'));
-      rows2[0].querySelector('.object-list-eye').click();
-      rows2[1].querySelector('.object-list-eye').click();
-      await new Promise((s) => setTimeout(s, 200));
-      R.lastOneLeft = r.drawnObjects().length;
-      r.setShownObjects(names);
-      r.render('both again');
-      await new Promise((s) => setTimeout(s, 200));
-
       // ORIENT, PICKING AND AUTO CLIP, the three things that ask "where is the
       // structure" and used to be answered by the current object alone.
       window.applyBestViewRotation(false);
       await new Promise((s) => setTimeout(s, 300));
       R.orientInk = ink(r);
-      // every drawn position still projects inside the canvas after Orient
       r._ensurePickProjection();
       let outside = 0;
       for (let i = 0; i < r.coords.length; i++) {
@@ -206,10 +173,10 @@ window.addEventListener('load', () => {
       }
       R.outsideAfterOrient = outside;
 
-      // pick where the SECOND object is drawn: the hit must belong to it
+      // pick where the SECOND object is drawn: the hit must belong to it.
+      // pickResidueAt takes CLIENT coordinates and subtracts the canvas rect.
       const probe = R.offsets[1] + 5;
       r._ensurePickProjection();
-      // pickResidueAt takes CLIENT coordinates and subtracts the canvas rect
       const rect = r.canvas.getBoundingClientRect();
       const hit = r.pickResidueAt(r.screenX[probe] + rect.left,
         r.screenY[probe] + rect.top);
@@ -253,6 +220,62 @@ window.addEventListener('load', () => {
       r.setStyle(styleWas);
       r.render('back to cartoon');
       await new Promise((s) => setTimeout(s, 250));
+
+      // THE LIST UI, driven as a user drives it: press the button, click a
+      // row. Every object is on screen to begin with - that is the default -
+      // so the first click takes one OFF.
+      const btn = document.getElementById('objectListButton');
+      R.btnAll = btn.textContent;
+      btn.click();
+      const rows = Array.from(document.querySelectorAll('.object-list-row'));
+      R.rows = rows.map((x) => x.querySelector('.object-list-name').textContent);
+      R.hiddenRowsAtStart = rows.filter((x) => x.classList.contains('is-hidden')).length;
+      R.swatches = document.querySelectorAll('.object-list-swatch').length;
+
+      // ...measured against the picture as it stands NOW, not against the ink
+      // from the top of the run: Orient has moved the camera since.
+      R.beforeHideInk = ink(r);
+      rows[1].click();
+      await new Promise((s) => setTimeout(s, 250));
+      R.afterHideInk = ink(r);
+      R.afterHideDrawn = r.drawnObjects();
+      R.afterHideMulti = !!(r.multiState && r.multiState.enabled);
+      R.btnSome = document.getElementById('objectListButton').textContent;
+
+      // ...and back on, from the row that is now dimmed
+      const rows2 = Array.from(document.querySelectorAll('.object-list-row'));
+      rows2[1].click();
+      await new Promise((s) => setTimeout(s, 250));
+      R.afterShowInk = ink(r);
+      R.afterShowDrawn = r.drawnObjects();
+      R.btnAllAgain = document.getElementById('objectListButton').textContent;
+
+      // the last visible object cannot be hidden - an empty set means ALL, so
+      // the picture would come back whole and the eye would read as broken
+      const rows3 = Array.from(document.querySelectorAll('.object-list-row'));
+      rows3[0].click();
+      rows3[1].click();
+      await new Promise((s) => setTimeout(s, 200));
+      R.lastOneLeft = r.drawnObjects().length;
+      r.setShownObjects(names);
+      r.render('all again');
+      await new Promise((s) => setTimeout(s, 200));
+
+      // THE PICKER, which is what says whose sequence the strip is showing.
+      // It lives in the sequence header, outside the viewer container - the
+      // renderer has to find it there or there is no way to switch objects.
+      const picker = document.getElementById('objectSelect');
+      R.pickerVisible = !!(picker && picker.offsetParent !== null);
+      R.pickerOptions = picker
+        ? Array.from(picker.options).map((o) => o.value) : null;
+      R.pickerValue = picker ? picker.value : null;
+      if (picker) {
+        picker.value = names[0];
+        picker.dispatchEvent(new Event('change'));
+        await new Promise((s) => setTimeout(s, 350));
+      }
+      R.afterPickCurrent = r.currentObjectName;
+      R.afterPickDrawn = r.drawnObjects();
 
       // ...and the GPU path, in the SAME page load
       r.useGPU = true;
@@ -359,18 +382,21 @@ def main():
     print(f"  hiding 40 of the second object: {R['hiddenInk']} ink,"
           f" back to {R['restoredInk']}; first object touched:"
           f" {R['hiddenOnFirst']}, second object's lowest index {R['hiddenLocal']}")
-    print(f"  list: rows {R.get('rows')}, current row {R.get('currentRow')},"
-          f" marked row is the current object: {R.get('currentMarked')},"
-          f" hidden rows {R.get('hiddenRows')};"
-          f" after the eye {R.get('afterEyeInk')} ink"
-          f" (merge {R.get('afterEyeMulti')}),"
-          f" hiding everything leaves {R.get('lastOneLeft')}")
+    print(f"  list: rows {R.get('rows')}, swatches {R.get('swatches')},"
+          f" hidden at start {R.get('hiddenRowsAtStart')}; button"
+          f" {R.get('btnAll')!r} -> {R.get('btnSome')!r} -> {R.get('btnAllAgain')!r}")
+    print(f"  from {R.get('beforeHideInk')} ink:"
+          f" hide -> {R.get('afterHideDrawn')} ({R.get('afterHideInk')} ink,"
+          f" merge {R.get('afterHideMulti')}); show -> {R.get('afterShowDrawn')}"
+          f" ({R.get('afterShowInk')} ink); hiding everything leaves"
+          f" {R.get('lastOneLeft')}")
+    print(f"  picker: {R.get('pickerOptions')} showing {R.get('pickerValue')!r};"
+          f" picking the other -> editing {R.get('afterPickCurrent')},"
+          f" drawn {R.get('afterPickDrawn')}")
     print(f"  orient: {R.get('orientInk')} ink,"
           f" {R.get('outsideAfterOrient')} positions off canvas;"
           f" pick at the second object -> {R.get('pickOwner')};"
           f" clip {R.get('clipSlab')} leaves {R.get('clipInk')} ink")
-    print(f"  button: {R.get('btnOneShown')!r} -> {R.get('btnTwoShown')!r};"
-          f" strip labelled {R.get('stripLabel')!r}")
     print(f"  Object mode offered: {R.get('objectOptionShown')},"
           f" colours per object in it: {R.get('flatPerObject')}")
     print(f"  tube:  {R.get('tubeInk')} ink, {R.get('tubeCrossing')} crossing;"
@@ -385,12 +411,8 @@ def main():
         bad.append("the source map does not cover every position")
     if R["crossing"]:
         bad.append(f"{R['crossing']} segments join two objects")
-    if R["bothInk"] <= R["oneInk"]:
-        bad.append("showing the second object did not add ink")
-    if len(set(R["colors"].values())) < len(R["colors"]):
-        bad.append("two objects came out the same colour")
-    if len(R.get("painted", {})) < len(R["sources"]):
-        bad.append("the drawing used fewer colours than there are objects")
+    if R.get("sharedColors"):
+        bad.append(f"two objects share colours {R['sharedColors']}")
     if R["hiddenOnFirst"]:
         bad.append("hiding the second object's backbone wrote onto the first")
     if R["hiddenLocal"] != 0:
@@ -399,33 +421,46 @@ def main():
         bad.append("hiding 40 residues did not remove any ink")
     if abs(R["restoredInk"] - R["bothInk"]) > 0.02 * R["bothInk"]:
         bad.append("unhiding did not restore the picture")
-    if R.get("rows") != R["objects"]:
-        bad.append("the list does not name every object")
-    if not R.get("currentMarked"):
-        bad.append("the marked row is not the current object")
-    if R.get("hiddenRows") != 1:
-        bad.append("the list does not mark the object that is not drawn")
-    if not R.get("afterEyeMulti"):
-        bad.append("the eye did not switch the merge on")
-    if R.get("afterEyeInk", 0) <= R["oneInk"]:
-        bad.append("the eye added no ink")
-    if R.get("lastOneLeft") != 1:
-        bad.append("the last visible object could be hidden")
-    if R.get("sharedColors"):
-        bad.append(f"two objects share colours {R['sharedColors']}")
     if R.get("outsideAfterOrient"):
         bad.append(f"{R['outsideAfterOrient']} positions are off canvas after Orient")
     if R.get("pickOwner") != R["sources"][1]:
         bad.append(f"a pick on the second object reported {R.get('pickOwner')}")
     if not (0 < R.get("clipInk", 0) < R["bothInk"]):
         bad.append(f"auto clip on one object left {R.get('clipInk')} ink")
-    if R.get("stripLabel") != R["objects"][1]:
-        bad.append(f"the sequence strip is labelled {R.get('stripLabel')!r},"
-                   f" not {R['objects'][1]!r}")
-    if R.get("btnOneShown") != "Object":
-        bad.append(f"the button reads {R.get('btnOneShown')!r} with one object shown")
-    if R.get("btnTwoShown") != "Object 2/2":
-        bad.append(f"the button reads {R.get('btnTwoShown')!r} with two shown")
+    if R.get("btnAll") != "All":
+        bad.append(f"the button reads {R.get('btnAll')!r} with everything on screen")
+    if R.get("btnSome") != "1/2":
+        bad.append(f"the button reads {R.get('btnSome')!r} with one object hidden")
+    if R.get("btnAllAgain") != "All":
+        bad.append(f"the button reads {R.get('btnAllAgain')!r} after showing it again")
+    if R.get("rows") != R["objects"]:
+        bad.append("the list does not name every object")
+    if R.get("hiddenRowsAtStart"):
+        bad.append("an object was already hidden - everything should start on screen")
+    if R.get("swatches"):
+        bad.append("the rows still carry colour swatches")
+    if len(R.get("afterHideDrawn", [])) != 1:
+        bad.append(f"clicking a row left {R.get('afterHideDrawn')} drawn")
+    if R.get("afterHideMulti"):
+        bad.append("one object left on screen is still a merge")
+    if not (R.get("afterHideInk", 0) < R.get("beforeHideInk", 0)):
+        bad.append("hiding an object did not remove its ink")
+    if R.get("afterShowDrawn") != R["objects"]:
+        bad.append(f"showing it again left {R.get('afterShowDrawn')} drawn")
+    if abs(R.get("afterShowInk", 0) - R.get("beforeHideInk", 1)) > 0.02 * R.get("beforeHideInk", 1):
+        bad.append(f"showing it again left {R.get('afterShowInk')} ink,"
+                   f" not the {R.get('beforeHideInk')} it started with")
+    if R.get("lastOneLeft") != 1:
+        bad.append("the last visible object could be hidden")
+    if not R.get("pickerVisible"):
+        bad.append("the object picker is not visible beside the sequence")
+    if R.get("pickerOptions") != R["objects"]:
+        bad.append(f"the picker offers {R.get('pickerOptions')}")
+    if R.get("afterPickCurrent") != R["objects"][0]:
+        bad.append("picking an object did not change which one is being edited")
+    if R.get("afterPickDrawn") != R["objects"]:
+        bad.append(f"picking an object changed what is DRAWN:"
+                   f" {R.get('afterPickDrawn')} - that is the bug this design fixes")
     if not R.get("objectOptionShown"):
         bad.append("the Object colour mode is not offered with two objects up")
     if R.get("flatPerObject") not in ([1, 1], None):
