@@ -1297,11 +1297,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.orthoSlider = null;
             this.shadowSlider = null;
 
-            // Recording state
+            // Recording state. The recorder itself lives in _recSink for as
+            // long as a recording is running - see _makeVideoSink.
             this.isRecording = false;
-            this.mediaRecorder = null;
-            this.recordedChunks = [];
-            this.recordingStream = null;
+            this._recSink = null;
             this.recordingEndFrame = 0;
 
             // Cache shadow/tint arrays during dragging for performance
@@ -2204,7 +2203,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     e.stopPropagation();
                     // shift-click skips the panel and writes a PNG at whatever
                     // DPI was last used, for when the settings are already right
-                    if (e.shiftKey) this.saveImage(this._saveOpts || { dpi: 300 });
+                    if (e.shiftKey) this.saveImage(this.captureOpts());
                     else this._toggleSaveImagePanel(this.saveImageButton);
                 });
             }
@@ -5275,6 +5274,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (this.updateCompositeCanvas) {
                     this.updateCompositeCanvas();
                 }
+                // ...and hand the frame over. The stream used to be left to
+                // sample the canvas on its own clock, which is why every frame
+                // had to be held on screen for 50 ms whatever the frame rate
+                // asked for; the sink takes the frame that was just rendered.
+                if (this._recSink) this._recSink.frame();
 
                 // Give MediaRecorder time to capture (MediaRecorder captures at 30fps = ~33ms per frame)
                 // Use animationSpeed or minimum 50ms to ensure capture
@@ -5322,17 +5326,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Stop any existing animation first
             this.stopAnimation();
 
-            // Clean up any existing recording state first
-            if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-                try {
-                    this.mediaRecorder.stop();
-                } catch (e) {
-                    console.warn("Error stopping existing recorder:", e);
-                }
+            // Clean up any recording still standing
+            if (this._recSink) {
+                try { this._recSink.cancel(); } catch (e) { /* already gone */ }
+                this._recSink = null;
             }
-            this._stopRecordingTracks();
-            this.mediaRecorder = null;
-            this.recordedChunks = [];
 
             // Set recording state
             this.isRecording = true;
@@ -5361,8 +5359,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 scatterContainer.style.display !== 'none' &&
                 this.scatterRenderer;
 
-            // Capture stream from canvas at 30fps for smooth playback
-            const fps = 30;
+            // The panel's settings drive this recording too - format, size,
+            // frame rate and bitrate all come from captureOpts through the
+            // shared sink. It used to be a fourth copy of the MediaRecorder
+            // dance, hard-coded to 30 fps and 20 Mbps.
+            const vopts = this.captureOpts();
+            const fps = Math.max(5, Math.min(60, Number(vopts.fps) || 30));
 
             if (hasScatter) {
                 // Create composite canvas for both molecular viewer and scatter plot
@@ -5396,54 +5398,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     ctx.drawImage(scatterCanvas, molWidth, 0, scatterScaledWidth, scatterScaledHeight);
                 };
 
-                // Capture stream from composite canvas
-                // Note: composite is updated on-demand in recordFrameSequence() after each render
-                this.recordingStream = this.recordingCompositeCanvas.captureStream(fps);
-            } else {
-                // No scatter plot - capture only the molecular viewer canvas
-                this.recordingStream = this.canvas.captureStream(fps);
-            }
-
-            // Set up MediaRecorder with very low compression (very high quality)
-            const options = {
-                mimeType: 'video/webm;codecs=vp9', // VP9 for better quality
-                videoBitsPerSecond: 20000000 // 20 Mbps for very high quality (very low compression)
-            };
-
-            // Fallback to VP8 if VP9 not supported
-            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options.mimeType = 'video/webm;codecs=vp8';
-                options.videoBitsPerSecond = 15000000; // 15 Mbps for VP8
-            }
-
-            // Fallback to default if neither supported
-            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options.mimeType = 'video/webm';
-                options.videoBitsPerSecond = 15000000;
             }
 
             try {
-                this.mediaRecorder = new MediaRecorder(this.recordingStream, options);
-
-                this.mediaRecorder.ondataavailable = (event) => {
-                    if (event.data && event.data.size > 0) {
-                        this.recordedChunks.push(event.data);
-                    }
-                };
-
-                this.mediaRecorder.onstop = () => {
-                    this.finishRecording();
-                };
-
-                this.mediaRecorder.onerror = (event) => {
-                    console.error("MediaRecorder error:", event.error);
-                    this.isRecording = false;
-                    this.updateUIControls();
-                    alert("Recording error: " + event.error.message);
-                };
-
-                // Start recording
-                this.mediaRecorder.start(100); // Collect data every 100ms
+                // A COMPOSITE IS RECORDED AS IT IS. The scatter plot beside the
+                // structure is a second canvas drawn into a third; re-rendering
+                // that at a larger size would mean re-rendering the scatter
+                // too, which is not this renderer's to do. So the size option
+                // applies to the plain path and the composite records at the
+                // size it composites at.
+                this._recSink = this._makeVideoSink(Object.assign({}, vopts, {
+                    fps,
+                    sourceCanvas: hasScatter ? this.recordingCompositeCanvas : null,
+                }));
+                if (!this._recSink) throw new Error('no recorder for this format');
 
                 // Update UI to show recording state
                 this.updateUIControls();
@@ -5498,60 +5466,29 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Stop animation (this also clears interval timer)
             this.stopAnimation();
 
-            // Stop MediaRecorder
-            if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-                this.mediaRecorder.stop();
-            }
-
-            // Stop stream
-            this._stopRecordingTracks();
-
-            // Clean up composite canvas if it exists
-            this.updateCompositeCanvas = null;
-            this.recordingCompositeCanvas = null;
+            // Hand the frames over. finishRecording is the callback rather
+            // than a MediaRecorder event, so the GIF path - which has no
+            // recorder to fire one - ends the same way.
+            const sink = this._recSink;
+            this._recSink = null;
+            if (sink) sink.finish((blob, ext) => this.finishRecording(blob, ext, sink));
+            else this.finishRecording(null, null, null);
         }
 
         // Finish recording and download file
-        finishRecording() {
-            if (this.recordedChunks.length === 0) {
-                console.warn("No video data recorded");
-                this.isRecording = false;
-                this.mediaRecorder = null;
-                if (this.recordingStream) {
-                    this.recordingStream.getTracks().forEach(track => track.stop());
-                    this.recordingStream = null;
-                }
-
-                // Clean up composite canvas if it exists
-                this.updateCompositeCanvas = null;
-                this.recordingCompositeCanvas = null;
-
-                // Ensure animation is stopped and state is clean
-                this.stopAnimation();
-                // Reset currentFrame to last valid frame before updating UI
-                const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                if (object && object.frames.length > 0) {
-                    this.currentFrame = Math.max(0, object.frames.length - 1);
-                }
-                this.updateUIControls();
-                return;
+        finishRecording(blob, ext, sink) {
+            if (blob) {
+                const frames = (this.recordingEndFrame || 0) + 1;
+                this._deliverVideo(blob, ext, 'Frames',
+                    `${frames} frames`
+                    + (sink ? `, ${sink.width}x${sink.height}${sink.note}` : ''));
+            } else if (typeof setStatus === 'function') {
+                setStatus('No video data recorded', true);
             }
 
-            // Create blob from recorded chunks
-            const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
-            const filename = `py2dmol_animation_${this.currentObjectName || 'recording'}_${Date.now()}.webm`;
-
-            // Download video directly
-            this._downloadVideo(blob, filename);
-
-
             // Clean up all recording state
-            this.recordedChunks = [];
             this.isRecording = false;
-            this.mediaRecorder = null;
-            this._stopRecordingTracks();
-
-            // Clean up composite canvas if it exists
+            this._recSink = null;
             this.updateCompositeCanvas = null;
             this.recordingCompositeCanvas = null;
 
@@ -8795,14 +8732,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
 
-        // Helper method to stop recording tracks
-        _stopRecordingTracks() {
-            if (this.recordingStream) {
-                this.recordingStream.getTracks().forEach(track => track.stop());
-                this.recordingStream = null;
-            }
-        }
-
         // Update cached canvas dimensions (call on resize)
         _updateCanvasDimensions() {
             this.displayWidth = parseInt(this.canvas.style.width) || this.canvas.width;
@@ -10358,6 +10287,261 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * remove than a transparent one is to fill. The dark preset in
          * particular would otherwise export a black slab.
          */
+        /**
+         * WHAT THE CAPTURE PANEL REMEMBERS, and what it starts at.
+         *
+         * One object for both outputs. There used to be two - _saveOpts for the
+         * image, _videoOpts for a recording - written and defaulted in four
+         * places between them, which is how the DPI default came to be 300 in
+         * one of them and 300 spelled again in the shift-click path.
+         *
+         * dpi 200: a 1000 px canvas comes out about 2000 px, which is a figure
+         * at column width in print and a file measured in single-digit
+         * megabytes. 300 is the right number for a full-page plate and was the
+         * wrong one to reach for every time.
+         *
+         * mbps 5: what the three recorders each hard-coded was 20 for VP9 and
+         * 15 for VP8, chosen as "very high quality, very low compression" - and
+         * a 6-second turn came out 15 MB. A cartoon is flat colour and clean
+         * edges, which is exactly what a codec is good at; 5 Mbps is visually
+         * clean here and about a quarter of the size.
+         */
+        static get CAPTURE_DEFAULTS() {
+            return { format: 'png', dpi: 200,
+                seconds: 6, fps: 30, mbps: 5, container: 'webm', scale: 1 };
+        }
+
+        /** The panel's state, defaults filled in, so every reader agrees. */
+        captureOpts() {
+            const d = this.constructor.CAPTURE_DEFAULTS;
+            return Object.assign({}, d, this._captureOpts || {});
+        }
+
+        /**
+         * WHICH VIDEO FORMATS THIS PAGE CAN ACTUALLY WRITE.
+         *
+         * Asked of the browser and of the page, never assumed. WebM is
+         * MediaRecorder's own and is always there; MP4 is MediaRecorder's too
+         * where the build has an H.264 encoder, which recent Chrome and Safari
+         * do and Firefox does not; GIF has no native encoder at all and is
+         * offered only where py2dmolGif is loaded - web/utils.js, which is
+         * index.html and not the notebook. A format that cannot be written must
+         * not be in the menu: a recording that fails after the fact has already
+         * cost the user the take.
+         */
+        videoFormats() {
+            const ok = (m) => (typeof MediaRecorder !== 'undefined'
+                && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m));
+            const out = [];
+            const webm = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+                .find(ok);
+            if (webm) out.push({ id: 'webm', label: 'WebM', ext: 'webm', mime: webm });
+            const mp4 = ['video/mp4;codecs=avc1.42E01E', 'video/mp4;codecs=avc1', 'video/mp4']
+                .find(ok);
+            if (mp4) out.push({ id: 'mp4', label: 'MP4', ext: 'mp4', mime: mp4 });
+            if (typeof window !== 'undefined' && typeof window.py2dmolGif === 'function') {
+                out.push({ id: 'gif', label: 'GIF', ext: 'gif', mime: null });
+            }
+            return out;
+        }
+
+        videoFormatOf(id) {
+            const all = this.videoFormats();
+            return all.find((f) => f.id === id) || all[0] || null;
+        }
+
+        /**
+         * THE SIZES A RECORDING CAN BE MADE AT, in real pixels.
+         *
+         * The old answer to "what resolution is the video" was "whatever the
+         * canvas happens to be" - the backing store, which is the panel size
+         * times the device pixel ratio and never stated anywhere. It is stated
+         * now, and can be multiplied: a frame is re-rendered at the target size
+         * rather than scaled up from the screen one, the same way a 300 dpi PNG
+         * is, so a 2x recording genuinely resolves more.
+         *
+         * Even numbers, because H.264 wants both dimensions even and simply
+         * fails on a stream that is not. Capped at 4096, the level limit most
+         * hardware encoders stop at.
+         */
+        videoSizes() {
+            const c = this.canvas;
+            if (!c || !c.width) return [];
+            const out = [];
+            for (const k of [1, 2, 3]) {
+                const w = 2 * Math.round(c.width * k / 2);
+                const h = 2 * Math.round(c.height * k / 2);
+                if (k > 1 && (w > 4096 || h > 4096)) break;
+                out.push({ scale: k, w, h, label: `${w}x${h}${k === 1 ? '' : ` (${k}x)`}` });
+            }
+            return out;
+        }
+
+        // A GIF IS NOT A VIDEO FILE and cannot be treated as one: every frame
+        // is kept in memory until the palette is known, its delays are whole
+        // centiseconds so anything past ~20 fps is a lie, and 256 colours over
+        // a megapixel is a slow quantisation and a huge file. These are the
+        // limits the panel shows and the sink enforces.
+        static get GIF_LIMITS() { return { maxPx: 640, maxFps: 20, maxFrames: 240 }; }
+
+        /**
+         * WHERE A RECORDING'S FRAMES GO. One object, three recorders, two very
+         * different destinations behind it.
+         *
+         * The turn, the drawing and the trajectory each drive their own frames
+         * for their own reasons and none of them should have to know how a file
+         * gets written. They render, then call frame(); at the end they call
+         * finish(). What that does - hand a canvas stream to MediaRecorder, or
+         * collect pixels for the GIF encoder - is decided here, once, from the
+         * panel's options.
+         *
+         * @param {object} opts - seconds/fps/mbps/container/scale, plus
+         *        sourceCanvas to record something other than the live canvas
+         *        (the trajectory recorder composites a scatter plot beside it)
+         * @returns {object|null} {frame, finish, cancel, width, height, note}
+         */
+        _makeVideoSink(opts) {
+            const o = opts || {};
+            const fmt = this.videoFormatOf(o.container);
+            if (!fmt) return null;
+            const gif = fmt.id === 'gif';
+            const LIM = this.constructor.GIF_LIMITS;
+            const fps = Math.max(5, Math.min(gif ? LIM.maxFps : 60, Number(o.fps) || 30));
+            const live = this.canvas;
+            const source = o.sourceCanvas || live;
+            const dispW = this.displayWidth || parseInt(live.style.width) || live.width;
+            const dispH = this.displayHeight || parseInt(live.style.height) || live.height;
+
+            // WHAT SIZE, AND WHETHER THAT NEEDS A SECOND CANVAS AT ALL.
+            // Scale 1 with no compositing records the live canvas directly -
+            // the path this always took, and the cheapest. Anything else needs
+            // its own canvas, and every frame is RE-RENDERED into it at that
+            // size rather than blown up from the screen.
+            let w = source.width; let h = source.height;
+            let note = '';
+            if (!o.sourceCanvas) {
+                const k = Math.max(1, Math.min(3, Number(o.scale) || 1));
+                w = 2 * Math.round(live.width * k / 2);
+                h = 2 * Math.round(live.height * k / 2);
+            }
+            if (gif) {
+                const long = Math.max(w, h);
+                if (long > LIM.maxPx) {
+                    const f = LIM.maxPx / long;
+                    w = 2 * Math.round(w * f / 2); h = 2 * Math.round(h * f / 2);
+                    note = ` (GIF capped at ${LIM.maxPx}px)`;
+                }
+            }
+            const offscreen = (w !== source.width || h !== source.height);
+            let target = source;
+            let octx = null;
+            if (offscreen) {
+                target = document.createElement('canvas');
+                target.width = w; target.height = h;
+                octx = target.getContext('2d');
+            }
+            // Re-render at the target size, exactly as the PNG export does:
+            // _exportPxScale keeps the quantities that are PIXELS by definition
+            // - outline width, selection ink - the size they are on screen,
+            // while everything measured in Angstrom follows the resolution.
+            const paint = () => {
+                if (!octx) return;
+                octx.save();
+                octx.setTransform(1, 0, 0, 1, 0, 0);
+                if (this.isTransparent) octx.clearRect(0, 0, w, h);
+                else { octx.fillStyle = this.backgroundColor || '#ffffff'; octx.fillRect(0, 0, w, h); }
+                octx.restore();
+                const prev = this._exportPxScale;
+                this._exportPxScale = w / dispW;
+                try { this._renderToContext(octx, w, h); } finally { this._exportPxScale = prev || 1; }
+            };
+
+            if (gif) {
+                const shots = [];
+                const gctx = octx || source.getContext('2d');
+                return {
+                    width: w, height: h, fps, note, ext: 'gif',
+                    frame: () => {
+                        if (shots.length >= LIM.maxFrames) return;
+                        paint();
+                        shots.push(gctx.getImageData(0, 0, w, h).data);
+                    },
+                    cancel: () => { shots.length = 0; },
+                    finish: (done) => {
+                        if (!shots.length) { done(null); return; }
+                        // Encoding a few hundred megapixels blocks the tab, so
+                        // the status line is set BEFORE it starts rather than
+                        // after, or the only sign of life is a frozen page.
+                        if (typeof setStatus === 'function') {
+                            setStatus(`Encoding ${shots.length} GIF frames...`);
+                        }
+                        setTimeout(() => {
+                            const blob = window.py2dmolGif(shots, { width: w, height: h,
+                                delayCs: Math.max(2, Math.round(100 / fps)) });
+                            shots.length = 0;
+                            done(blob, 'gif');
+                        }, 0);
+                    },
+                };
+            }
+
+            const stream = target.captureStream(fps);
+            const bits = Math.max(1, Math.min(80, Number(o.mbps) || 5)) * 1000000;
+            let rec;
+            try {
+                rec = new MediaRecorder(stream, { mimeType: fmt.mime, videoBitsPerSecond: bits });
+            } catch (err) {
+                try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* gone */ }
+                return null;
+            }
+            const chunks = [];
+            let onDone = null;
+            rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+            rec.onstop = () => {
+                try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* gone */ }
+                if (onDone) {
+                    onDone(chunks.length ? new Blob(chunks, { type: fmt.mime }) : null, fmt.ext);
+                }
+            };
+            rec.start(100);
+            const track = stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
+            return {
+                width: w, height: h, fps, note, ext: fmt.ext,
+                frame: () => {
+                    paint();
+                    // captureStream samples the canvas on its own clock;
+                    // nudging it where supported keeps one rendered frame to
+                    // one video frame.
+                    if (track && track.requestFrame) {
+                        try { track.requestFrame(); } catch (e) { /* optional */ }
+                    }
+                },
+                cancel: () => {
+                    onDone = null;
+                    try { rec.stop(); } catch (e) { /* already stopped */ }
+                },
+                finish: (done) => {
+                    onDone = done;
+                    // let the last frame land in the stream before closing
+                    setTimeout(() => { try { rec.stop(); } catch (e) { /* stopped */ } }, 1000 / fps);
+                },
+            };
+        }
+
+        /** One place that turns a finished recording into a file on disk. */
+        _deliverVideo(blob, ext, what, detail) {
+            if (!blob) {
+                if (typeof setStatus === 'function') setStatus('No video data recorded', true);
+                return;
+            }
+            const filename = this._generateFilename(this.currentObjectName, ext);
+            this._triggerDownload(blob, filename);
+            if (typeof setStatus === 'function') {
+                const mb = (blob.size / 1048576).toFixed(1);
+                setStatus(`${what} exported to ${filename} (${detail}, ${mb} MB)`);
+            }
+        }
+
         saveImage(opts) {
             const o = opts || {};
             // PNG unless asked otherwise. The panel offers SVG alongside it
@@ -10365,7 +10549,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // sub-pixel pencil and translucent stains and PNG is simply what it
             // is (see the panel for the argument).
             const format = o.format || 'png';
-            const dpi = Math.max(36, Math.min(1200, Number(o.dpi) || 300));
+            const dpi = Math.max(36, Math.min(1200, Number(o.dpi)
+                || this.constructor.CAPTURE_DEFAULTS.dpi));
 
             const prevTransparent = this.isTransparent;
             this.isTransparent = true;
@@ -10692,12 +10877,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         // the video is the animation and not a second implementation of it.
         saveDrawingVideo(opts) {
             const o = opts || {};
-            const fps = Math.max(5, Math.min(60, Number(o.fps) || 30));
             const seconds = Math.max(1, Math.min(60, Number(o.seconds) || 12));
-            const N = Math.max(2, Math.round(seconds * fps));
-            // A beat of the finished picture at the end, so the file does not
-            // stop on the frame the last change landed in.
-            const TAIL = Math.round(fps * 0.6);
 
             if (typeof MediaRecorder === 'undefined' || !this.canvas
                 || !this.canvas.captureStream) {
@@ -10722,51 +10902,29 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._drawR0 = R0;
             this._drawWasAuto = turning;
 
-            const options = { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 20000000 };
-            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options.mimeType = 'video/webm;codecs=vp8';
-                options.videoBitsPerSecond = 15000000;
-            }
-            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options.mimeType = 'video/webm';
-                options.videoBitsPerSecond = 15000000;
-            }
-
-            const stream = this.canvas.captureStream(fps);
-            const chunks = [];
-            let rec;
-            try {
-                rec = new MediaRecorder(stream, options);
-            } catch (err) {
-                this._endDrawingVideo(stream);
-                const msg = 'Failed to start recording: ' + err.message;
+            // the shared sink: format, size and bitrate come from the panel
+            const sink = this._makeVideoSink(o);
+            if (!sink) {
+                this._endDrawingVideo(null);
+                const msg = 'Failed to start recording.';
                 if (typeof setStatus === 'function') setStatus(msg, true); else alert(msg);
                 return;
             }
-            rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
-            rec.onstop = () => {
-                this._endDrawingVideo(stream);
-                if (!chunks.length) {
-                    if (typeof setStatus === 'function') setStatus('No video data recorded', true);
-                    return;
-                }
-                const blob = new Blob(chunks, { type: 'video/webm' });
-                const filename = this._generateFilename(this.currentObjectName, 'webm');
-                this._triggerDownload(blob, filename);
-                if (typeof setStatus === 'function') {
-                    setStatus(`Drawing exported to ${filename} `
-                        + `(${N + TAIL} frames, ${seconds}s at ${fps}fps)`);
-                }
-            };
-            rec.start(100);
+            const fps = sink.fps;                 // clamped for GIF - see the turn
+            const N = Math.max(2, Math.round(seconds * fps));
+            // A beat of the finished picture at the end, so the file does not
+            // stop on the frame the last change landed in.
+            const TAIL = Math.round(fps * 0.6);
 
-            const track = stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
             let i = 0;
             const tick = () => {
                 if (i > N + TAIL) {
-                    setTimeout(() => {
-                        try { rec.stop(); } catch (e) { /* already stopped */ }
-                    }, 1000 / fps);
+                    sink.finish((blob, ext) => {
+                        this._endDrawingVideo(null);
+                        this._deliverVideo(blob, ext, 'Drawing',
+                            `${N + TAIL} frames, ${seconds}s at ${fps}fps, `
+                            + `${sink.width}x${sink.height}${sink.note}`);
+                    });
                     return;
                 }
                 // Past N the run is over; the tail frames hold the finished
@@ -10777,9 +10935,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         rotationMatrixY((2 * Math.PI * i) / N), R0);
                 }
                 this.render('saveDrawingVideo');
-                if (track && track.requestFrame) {
-                    try { track.requestFrame(); } catch (e) { /* optional */ }
-                }
+                sink.frame();
                 if (typeof setStatus === 'function' && i % fps === 0) {
                     setStatus(`Recording drawing... ${Math.round((100 * i) / (N + TAIL))}%`);
                 }
@@ -10809,9 +10965,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         saveRotationVideo(opts) {
             const o = opts || {};
-            const fps = Math.max(5, Math.min(60, Number(o.fps) || 30));
             const seconds = Math.max(1, Math.min(60, Number(o.seconds) || 6));
-            const N = Math.max(2, Math.round(seconds * fps));
 
             if (typeof MediaRecorder === 'undefined' || !this.canvas || !this.canvas.captureStream) {
                 const msg = 'Video recording is not supported in this browser.';
@@ -10829,59 +10983,37 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._rotationRecording = true;
             this.canvas.style.pointerEvents = 'none';
 
-            const options = { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 20000000 };
-            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options.mimeType = 'video/webm;codecs=vp8';
-                options.videoBitsPerSecond = 15000000;
-            }
-            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options.mimeType = 'video/webm';
-                options.videoBitsPerSecond = 15000000;
-            }
-
-            const stream = this.canvas.captureStream(fps);
-            const chunks = [];
-            let rec;
-            try {
-                rec = new MediaRecorder(stream, options);
-            } catch (err) {
-                this._endRotationVideo(R0, wasAuto, stream);
-                const msg = 'Failed to start recording: ' + err.message;
+            // FORMAT, SIZE AND BITRATE ARE THE PANEL'S, not this recorder's:
+            // see _makeVideoSink, which all three recorders share.
+            const sink = this._makeVideoSink(o);
+            if (!sink) {
+                this._endRotationVideo(R0, wasAuto, null);
+                const msg = 'Failed to start recording.';
                 if (typeof setStatus === 'function') setStatus(msg, true); else alert(msg);
                 return;
             }
-            rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
-            rec.onstop = () => {
-                this._endRotationVideo(R0, wasAuto, stream);
-                if (!chunks.length) {
-                    if (typeof setStatus === 'function') setStatus('No video data recorded', true);
-                    return;
-                }
-                const blob = new Blob(chunks, { type: 'video/webm' });
-                const filename = this._generateFilename(this.currentObjectName, 'webm');
-                this._triggerDownload(blob, filename);
-                if (typeof setStatus === 'function') {
-                    setStatus(`Video exported to ${filename} `
-                        + `(${N} frames, ${seconds}s at ${fps}fps, loops seamlessly)`);
-                }
-            };
-            rec.start(100);
+            // FRAMES FROM THE SINK'S fps, NOT THE PANEL'S. A GIF is clamped to
+            // 20 - its delays are whole centiseconds - and counting frames at
+            // the asked-for 30 would then stretch one turn into one and a half.
+            const fps = sink.fps;
+            const N = Math.max(2, Math.round(seconds * fps));
 
-            const track = stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
             const step = (2 * Math.PI) / N;
             let i = 0;
             const tick = () => {
                 if (i >= N) {
-                    // let the last frame land in the stream before closing
-                    setTimeout(() => { try { rec.stop(); } catch (e) { /* already stopped */ } }, 1000 / fps);
+                    sink.finish((blob, ext) => {
+                        this._endRotationVideo(R0, wasAuto, null);
+                        this._deliverVideo(blob, ext, 'Turn',
+                            `${N} frames, ${seconds}s at ${sink.fps}fps, `
+                            + `${sink.width}x${sink.height}${sink.note}, loops seamlessly`);
+                    });
                     return;
                 }
                 this.viewerState.rotation = multiplyMatrices(rotationMatrixY(i * step), R0);
                 this.render();
-                // captureStream samples the canvas on its own clock; nudging it
-                // where supported keeps one rendered frame to one video frame
-                if (track && track.requestFrame) { try { track.requestFrame(); } catch (e) { /* optional */ } }
-                if (typeof setStatus === 'function' && i % fps === 0) {
+                sink.frame();
+                if (typeof setStatus === 'function' && i % sink.fps === 0) {
                     setStatus(`Recording rotation... ${Math.round((100 * i) / N)}%`);
                 }
                 i++;
@@ -10942,37 +11074,88 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
         }
 
+        /**
+         * THE CAPTURE PANEL: three lines, and each one is a sentence.
+         *
+         *   Image  [PNG] [200 dpi]  2000x2000   [camera]
+         *   Video  [WebM] [6 s] [30 fps] [5 Mbps] [1000x1000]
+         *   Record [Turn] [Draw] [Frames]
+         *
+         * WHAT CHANGED AND WHY. It used to be one row per OUTPUT, each row
+         * ending in its own button and each carrying its own copy of the
+         * settings - so the frame rate for a turn and the frame rate for a
+         * drawing were different controls holding the same number, the
+         * trajectory row had no settings at all (30 fps and 20 Mbps, decided in
+         * the recorder and shown nowhere), and nothing anywhere said what
+         * resolution any of it came out at. Settings on one line, sources on
+         * the next: the video row is what the file will be, the record row is
+         * what goes in it.
+         *
+         * WHAT IS OFFERED IS WHAT CAN BE MADE. Formats are asked of the browser
+         * and of the page (videoFormats), sizes of the canvas (videoSizes), and
+         * a source appears only when there is something to record: a turn needs
+         * Rotate on, a drawing needs Draw on, Frames needs a trajectory. With
+         * none of them the row says so rather than offering a dead button.
+         */
         _toggleSaveImagePanel(anchorEl) {
+            // OPEN MEANS BUILT, FRESH. The panel used to be built once and then
+            // shown and hidden, so everything it reads off the viewer - which
+            // sources can be recorded, how big the canvas is, whether the
+            // object has frames - was whatever was true the first time it was
+            // opened. Loading a trajectory with the panel already made left it
+            // with no Frames button until the mode happened to change and throw
+            // it away. It is a dozen elements; building it is free.
             if (this._savePanel) {
-                const open = this._savePanel.style.display === 'none';
-                this._savePanel.style.display = open ? 'flex' : 'none';
-                if (anchorEl) anchorEl.setAttribute('aria-expanded', String(open));
-                if (open) this._pauseForSavePanel();
-                else this._resumeFromSavePanel();
-                return;
+                const wasOpen = this._savePanel.style.display !== 'none';
+                this._savePanel.remove();
+                this._savePanel = null;
+                if (anchorEl) anchorEl.setAttribute('aria-expanded', 'false');
+                if (wasOpen) { this._resumeFromSavePanel(); return; }
             }
-            // WHAT CAN BE RECORDED FROM HERE. Three different videos, and the
-            // panel offers whichever the viewer can actually make right now:
-            //   * a drawing, if Draw is on   * a turn, if Rotate is on
-            //   * the trajectory, if the object has frames to play
-            // The last one used to belong to a separate record button in the
-            // controls bar. Two entry points for "make a video" - one of which
-            // silently did nothing on a single-frame structure - is what made
-            // this confusing, so there is one now: Save.
             const obj = this.currentObjectName
                 ? this.objectsData[this.currentObjectName] : null;
-            const canTraj = !!(obj && obj.frames && obj.frames.length > 1);
-            const video = !!this.autoRotate || !!this.drawMode;
-            if (video) this._pauseForSavePanel();
-            const prev = this._saveOpts || { format: 'png', dpi: 300 };
-            const prevV = this._videoOpts || { seconds: 6, fps: 30 };
-            // WRAPS. The embedded viewer's panel is 180px wide, and a row of
-            // two labelled numbers plus a button wants about 210 - so it hung
-            // out of the panel there while fitting fine in the standalone
-            // page's wider column. Wrapping adapts to both instead of picking
-            // one; the button simply falls to the next line when it has to.
+            const sources = [];
+            if (this.autoRotate) sources.push({ id: 'turn', label: 'Turn' });
+            if (this.drawMode) sources.push({ id: 'draw', label: 'Draw' });
+            if (obj && obj.frames && obj.frames.length > 1) {
+                sources.push({ id: 'frames', label: 'Frames' });
+            }
+            // A running animation is paused while the panel is up, so what is
+            // saved is the frame that was on screen when it was opened.
+            if (sources.length) this._pauseForSavePanel();
+            const opts = this.captureOpts();
+            const formats = this.videoFormats();
+            const sizes = this.videoSizes();
+
+            // SVG is offered on the plain panel but never with a drawing up. A
+            // vector file of a normal cartoon is the better artifact; a vector
+            // file of the drawing is not, since that look is a pencil line a
+            // fraction of a pixel wide, paint sitting off register and
+            // translucent stains.
+            const svgOk = !this.drawMode;
+
+            // WRAPS. The embedded viewer's panel is 180px wide and the
+            // standalone page's column is wider; a row that wraps fits both,
+            // where a fixed layout has to pick one and hang out of the other.
             const ROW = 'display:flex; align-items:center; gap:6px;'
                 + ' flex-wrap:wrap; row-gap:6px;';
+            // ONE SIZE FOR EVERY CONTROL, and big enough to read: two rows of
+            // controls at different weights make the eye work out which number
+            // belongs to which output.
+            const H = 28;
+            const FIELD = `height:${H}px; font-size:12px; padding:0 4px;`
+                + ' border:1px solid #d1d5db; border-radius:6px; background:#fff;'
+                + ' flex:0 0 auto; min-width:0;';
+            const NUM = FIELD + ' width:52px; padding:0 6px;';
+            const CAP = 'font-size:12px; color:#6b7280; flex:0 0 auto;';
+            const NAME = 'font-size:12px; font-weight:600; color:#374151;'
+                + ' flex:0 0 auto; width:46px;';
+            const BTN = `flex:0 0 auto; padding:0 8px; height:${H}px; line-height:1;`
+                + ' cursor:pointer; font-size:12px; border:1px solid #d1d5db;'
+                + ' border-radius:6px; background:#fff;';
+            // Styled inline rather than by borrowing the toolbar's button
+            // class: the two pages skin their buttons differently, so one
+            // class renders invisible on the other page.
 
             const p = document.createElement('div');
             p.id = 'savePanel';
@@ -10980,181 +11163,201 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 + ' box-sizing:border-box; max-width:100%;'
                 + ' border:1px solid #e5e7eb; border-radius:8px; background:#fff;'
                 + ' padding:8px; margin-top:6px;';
-            // ONE ROW PER OUTPUT, each ending in its own button: the numbers
-            // that decide a recording with a record dot after them, and the
-            // one that decides a still with a camera after that. Nothing has to
-            // be read in order or chosen between - the row you fill in is the
-            // thing you get.
-            //
-            // Glyphs rather than icon fonts: the embedded viewer does not load
-            // FontAwesome (its record button is a plain bullet), and one
-            // implementation for both pages beats two.
-            //
-            // Saving a frame while an animation runs is the point of having the
-            // camera here at all: the panel pauses whatever is running, so a
-            // half-finished drawing or a particular angle can be kept, and
-            // before it existed the only way to save one was to switch the
-            // animation off - which threw away the frame being looked at.
-            //
-            // SVG is offered on the plain panel but never with an animation up.
-            // A vector file of a normal cartoon is the better artifact; a
-            // vector file of the drawing is not, since that look is a pencil
-            // line a fraction of a pixel wide, paint sitting off register and
-            // translucent stains.
-            const svgOk = !video && !this.drawMode;
-            // ONE SIZE FOR EVERY CONTROL IN THE PANEL, and big enough to read.
-            // The numbers were 46x24 at 12px, which is a cramped target and
-            // genuinely hard to make out - worst when a video row and the still
-            // row are both up, because then the two rows sat at different
-            // weights and the eye had to work out which number belonged to
-            // which output. Same height everywhere, so the rows line up
-            // whatever combination is showing.
-            const H = 28;
-            const NUM = `width:62px; flex:0 0 auto; min-width:0; height:${H}px;`
-                + ' font-size:13px; padding:0 6px; border:1px solid #d1d5db;'
-                + ' border-radius:6px; background:#fff;';
-            const CAP = 'font-size:12px; color:#6b7280; flex:0 0 auto;';
-            // Styled inline rather than by copying the toolbar button's class:
-            // the two pages skin their buttons differently (and index.html's
-            // toggle skin lives on a span that follows a checkbox, which these
-            // do not have), so borrowing it renders one of them invisible.
-            const BTN = `flex:0 0 auto; width:${H + 8}px; min-width:0; padding:0;`
-                + ` height:${H}px; line-height:1; cursor:pointer; font-size:15px;`
-                + ' border:1px solid #d1d5db; border-radius:6px; background:#fff;';
-            // EACH ROW SAYS WHAT IT MAKES. With a video row and the still row
-            // both up, the fields alone did not say which output they belonged
-            // to - the reported "hard to see when both options are available".
-            // A fixed-width name at the head of every row lines them up and
-            // answers it without another glance.
-            const NAME = 'font-size:12px; font-weight:600; color:#374151;'
-                + ' flex:0 0 auto; width:46px;';
-            const cell = (id, label, min, max, stepv, tip) =>
-                `<label for="${id}" style="${CAP}"${tip ? ` title="${tip}"` : ''}>${label}</label>`
-                + `<input id="${id}" type="number" min="${min}" max="${max}"`
-                + ` step="${stepv}" style="${NUM}"${tip ? ` title="${tip}"` : ''}>`;
-            let html = '';
-            if (video) {
-                // SEC, NOT TURN. The row is already called Turn - it names
-                // the output - and calling the field the same thing said
-                // nothing about what the number is. It is seconds: the
-                // recording is exactly one revolution, 2*PI over seconds x fps
-                // frames, so this is how long that turn takes. The draw row
-                // already called it Sec, and one name for one unit is what the
-                // two rows should have had all along.
-                html += `<div style="${ROW}">`
-                    + `<span style="${NAME}">${this.drawMode ? 'Draw' : 'Turn'}</span>`
-                    + cell('saveSecondsInput', 'Sec', 1, 60, 1, this.drawMode
-                        ? 'How long the drawing takes, in seconds'
-                        : 'How long one full turn takes, in seconds')
-                    + cell('saveFpsInput', 'FPS', 5, 60, 1, 'Frames per second')
-                    + '<span style="flex:1 1 auto;"></span>'
-                    + `<button data-rec style="${BTN} color:#ef4444;"`
-                    + ' title="Record to a video file"><span>&#9679;</span></button></div>';
-            }
-            if (canTraj) {
-                html += `<div style="${ROW}">`
-                    + `<span style="${NAME}">Frames</span>`
-                    + `<span style="${CAP}">${obj.frames.length}</span>`
-                    + '<span style="flex:1 1 auto;"></span>'
-                    + `<button data-traj style="${BTN} color:#ef4444;"`
-                    + ' title="Record the frames playing through, as a video">'
-                    + '<span>&#9679;</span></button></div>';
-            }
-            if (!video && svgOk) {
-                html += `<div style="${ROW}">`
-                    + `<span style="${NAME}">Format</span>`
-                    + `<select id="saveFormatSelect" style="${NUM} width:auto; flex:1 1 auto;`
-                    + ' padding-right:4px;">'
-                    + '<option value="png">PNG</option>'
-                    + '<option value="svg">SVG</option>'
-                    + '<option value="svgz">SVG.gz</option>'
-                    + '</select></div>';
-            }
-            html += `<div style="${ROW}">`
-                + `<span style="${NAME}">Image</span>`
-                + `<span data-dpicell style="${ROW}">`
-                + cell('saveDpiInput', 'DPI', 36, 1200, 12) + '</span>'
-                + '<span style="flex:1 1 auto;"></span>'
-                + `<button data-ok style="${BTN}"`
-                + ` title="${video ? 'Save the frame on screen as an image'
-                    : 'Save an image'}"><span>&#128247;</span></button></div>`;
-            p.innerHTML = html;
 
-            const row = (anchorEl && (anchorEl.closest('.toolbar-row') || anchorEl.parentElement))
-                || (this.controlsContainer || document.body);
-            row.insertAdjacentElement('afterend', p);
-
-            const fSel = p.querySelector('#saveFormatSelect');
-            const dpiIn = p.querySelector('#saveDpiInput');
-            const dpiCell = p.querySelector('[data-dpicell]');
-            const okBtn = p.querySelector('[data-ok]');
-            dpiIn.value = prev.dpi;
-            if (fSel) fSel.value = svgOk ? prev.format : 'png';
-            // In Draw mode, and for a frame grabbed mid-animation, the look is
-            // PNG's whatever was last chosen.
-            const fmtOf = () => (svgOk && fSel ? fSel.value : 'png');
-            // DPI is meaningless for a vector export, so the cell is not merely
-            // disabled there - it is not shown at all. Set display rather than
-            // `hidden`: the element carries an inline display, which outranks
-            // the user-agent [hidden] rule (the same trap the Style panel
-            // documents).
-            const syncDpi = () => {
-                dpiCell.style.display = fmtOf() === 'png' ? 'flex' : 'none';
+            const el = (tag, css, text) => {
+                const n = document.createElement(tag);
+                if (css) n.style.cssText = css;
+                if (text !== undefined) n.textContent = text;
+                return n;
             };
-            syncDpi();
-            if (fSel) fSel.addEventListener('change', syncDpi);
+            const row = (name) => {
+                const r = el('div', ROW);
+                r.appendChild(el('span', NAME, name));
+                p.appendChild(r);
+                return r;
+            };
+            const menu = (id, items, value, tip) => {
+                const sel = el('select', FIELD);
+                sel.id = id;
+                if (tip) sel.title = tip;
+                for (const it of items) {
+                    const o = document.createElement('option');
+                    o.value = String(it.value);
+                    o.textContent = it.label;
+                    sel.appendChild(o);
+                }
+                sel.value = String(value);
+                return sel;
+            };
+            const num = (id, label, value, min, max, tip) => {
+                const lab = el('label', CAP, label);
+                lab.setAttribute('for', id);
+                if (tip) lab.title = tip;
+                const inp = el('input', NUM);
+                inp.type = 'number'; inp.id = id; inp.min = min; inp.max = max;
+                inp.step = '1'; inp.value = value;
+                if (tip) inp.title = tip;
+                return [lab, inp];
+            };
+            const spacer = () => el('span', 'flex:1 1 auto;');
 
-            if (video) {
-                const secIn = p.querySelector('#saveSecondsInput');
-                const fpsIn = p.querySelector('#saveFpsInput');
-                const recB = p.querySelector('[data-rec]');
-                secIn.value = prevV.seconds;
-                fpsIn.value = prevV.fps;
-                recB.addEventListener('click', (ev) => {
-                    ev.preventDefault();
-                    const vo = {
-                        seconds: Number(secIn.value) || 6,
-                        fps: Number(fpsIn.value) || 30,
-                    };
-                    this._videoOpts = vo;
-                    p.style.display = 'none';
-                    if (anchorEl) anchorEl.setAttribute('aria-expanded', 'false');
-                    // The recorders drive their own frames, so the pause the
-                    // panel put on is lifted without resuming anything.
-                    this._uiPaused = false;
-                    // Recording a drawing RESTARTS it from blank paper, so
-                    // hitting record part way through a run still gives a whole
-                    // one. Recording a rotation does not need to, since a turn
-                    // has no beginning.
-                    if (this.drawMode) this.saveDrawingVideo(vo);
-                    else this.saveRotationVideo(vo);
-                });
+            // ---- IMAGE -------------------------------------------------
+            const imgRow = row('Image');
+            const fmtSel = menu('saveFormatSelect', svgOk
+                ? [{ value: 'png', label: 'PNG' }, { value: 'svg', label: 'SVG' },
+                    { value: 'svgz', label: 'SVG.gz' }]
+                : [{ value: 'png', label: 'PNG' }],
+            svgOk ? opts.format : 'png', 'Image file format');
+            imgRow.appendChild(fmtSel);
+            // DPI AS A LIST, not a spinner. The useful values are a short list
+            // - screen, a figure, a plate - and typing 250 into a spinner is a
+            // decision nobody has a reason to make. 200 is the default: a
+            // 1000px canvas comes out about 2000px, which is a figure at column
+            // width in print.
+            const dpiSel = menu('saveDpiInput', [
+                { value: 96, label: '96 dpi (screen)' },
+                { value: 150, label: '150 dpi' },
+                { value: 200, label: '200 dpi' },
+                { value: 300, label: '300 dpi' },
+                { value: 600, label: '600 dpi' },
+            ], opts.dpi, 'Resolution of the saved image');
+            imgRow.appendChild(dpiSel);
+            const imgSize = el('span', CAP, '');
+            imgRow.appendChild(imgSize);
+            imgRow.appendChild(spacer());
+            const okBtn = el('button', BTN, '\u{1F4F7}');
+            okBtn.type = 'button';
+            okBtn.title = sources.length ? 'Save the frame on screen as an image'
+                : 'Save an image';
+            imgRow.appendChild(okBtn);
+
+            // WHAT THE FILE WILL BE, before it is written. The panel used to
+            // say nothing at all about size and the question "what resolution
+            // is this" had no answer anywhere in the UI.
+            const dispW = this.displayWidth
+                || parseInt(this.canvas && this.canvas.style.width) || 0;
+            const dispH = this.displayHeight
+                || parseInt(this.canvas && this.canvas.style.height) || 0;
+            const syncImg = () => {
+                const vector = fmtSel.value !== 'png';
+                dpiSel.style.display = vector ? 'none' : '';
+                const k = Number(dpiSel.value) / 96;
+                imgSize.textContent = vector ? 'vector'
+                    : `${Math.round(dispW * k)}x${Math.round(dispH * k)}`;
+            };
+            fmtSel.addEventListener('change', syncImg);
+            dpiSel.addEventListener('change', syncImg);
+            syncImg();
+
+            // ---- VIDEO -------------------------------------------------
+            let vFmt = null; let secIn = null; let fpsIn = null;
+            let mbpsIn = null; let sizeSel = null;
+            if (sources.length && formats.length) {
+                const vRow = row('Video');
+                vFmt = menu('saveVideoFormat', formats.map((f) => (
+                    { value: f.id, label: f.label })), opts.container,
+                'Video file format' + (formats.some((f) => f.id === 'gif')
+                    ? '' : ' (GIF needs the standalone page)'));
+                vRow.appendChild(vFmt);
+                const [secL, sec] = num('saveSecondsInput', 'Sec', opts.seconds, 1, 60,
+                    'How long the recording runs, in seconds');
+                vRow.appendChild(secL); vRow.appendChild(sec); secIn = sec;
+                const [fpsL, fps] = num('saveFpsInput', 'FPS', opts.fps, 5, 60,
+                    'Frames per second');
+                vRow.appendChild(fpsL); vRow.appendChild(fps); fpsIn = fps;
+                const [mbL, mb] = num('saveMbpsInput', 'Mbps', opts.mbps, 1, 80,
+                    'Bitrate: how many megabits a second of video is allowed. '
+                    + 'Flat colour and clean edges compress well, so 5 is '
+                    + 'visually clean here.');
+                vRow.appendChild(mbL); vRow.appendChild(mb); mbpsIn = mb;
+                if (sizes.length) {
+                    sizeSel = menu('saveVideoSize', sizes.map((z) => (
+                        { value: z.scale, label: z.label })), opts.scale,
+                    'Recording size in pixels. Frames are re-rendered at this '
+                    + 'size, not scaled up from the screen.');
+                    vRow.appendChild(sizeSel);
+                }
+                const vNote = el('span', CAP, '');
+                vRow.appendChild(vNote);
+                const syncVideo = () => {
+                    const gif = vFmt.value === 'gif';
+                    // A GIF's own limits, said out loud rather than silently
+                    // applied: whole-centisecond delays cap the frame rate, and
+                    // every frame is held in memory until the palette is known.
+                    const LIM = this.constructor.GIF_LIMITS;
+                    mbpsIn.disabled = gif;
+                    mbpsIn.style.opacity = gif ? '0.4' : '';
+                    vNote.textContent = gif
+                        ? `max ${LIM.maxFps} fps, ${LIM.maxPx}px` : '';
+                };
+                vFmt.addEventListener('change', syncVideo);
+                syncVideo();
             }
 
-            const trajB = p.querySelector('[data-traj]');
-            if (trajB) {
-                trajB.addEventListener('click', (ev) => {
-                    ev.preventDefault();
-                    p.style.display = 'none';
-                    if (anchorEl) anchorEl.setAttribute('aria-expanded', 'false');
-                    // the recorder drives its own playback, so the panel's
-                    // pause is lifted without resuming anything
-                    this._uiPaused = false;
-                    this.toggleRecording();
-                });
+            // ---- RECORD ------------------------------------------------
+            const readVideo = () => ({
+                seconds: secIn ? Number(secIn.value) || 6 : 6,
+                fps: fpsIn ? Number(fpsIn.value) || 30 : 30,
+                mbps: mbpsIn ? Number(mbpsIn.value) || 5 : 5,
+                container: vFmt ? vFmt.value : 'webm',
+                scale: sizeSel ? Number(sizeSel.value) || 1 : 1,
+            });
+            const closePanel = () => {
+                p.style.display = 'none';
+                if (anchorEl) anchorEl.setAttribute('aria-expanded', 'false');
+                // The recorders drive their own frames, so the pause the panel
+                // put on is lifted without resuming anything.
+                this._uiPaused = false;
+            };
+            const recRow = row('Record');
+            if (!sources.length) {
+                recRow.appendChild(el('span', CAP,
+                    'Turn on Rotate or Draw, or load frames'));
+            } else if (!formats.length) {
+                recRow.appendChild(el('span', CAP, 'No video format available'));
+            } else {
+                for (const src of sources) {
+                    const b = el('button', BTN + ' color:#ef4444;', '');
+                    b.type = 'button';
+                    b.dataset.rec = src.id;
+                    b.appendChild(el('span', 'color:#ef4444;', '● '));
+                    b.appendChild(document.createTextNode(src.label));
+                    b.title = src.id === 'frames'
+                        ? 'Record the frames playing through'
+                        : (src.id === 'draw' ? 'Record the drawing building up'
+                            : 'Record one full turn');
+                    b.addEventListener('click', (ev) => {
+                        ev.preventDefault();
+                        const vo = readVideo();
+                        this._captureOpts = Object.assign(this.captureOpts(), vo);
+                        closePanel();
+                        // Recording a drawing RESTARTS it from blank paper, so
+                        // pressing record part way through a run still gives a
+                        // whole one. A turn has no beginning, so it does not.
+                        if (src.id === 'draw') this.saveDrawingVideo(vo);
+                        else if (src.id === 'turn') this.saveRotationVideo(vo);
+                        else this.toggleRecording();
+                    });
+                    recRow.appendChild(b);
+                }
             }
 
             okBtn.addEventListener('click', (e) => {
                 e.preventDefault();
-                const opts = { format: fmtOf(), dpi: Number(dpiIn.value) || 300 };
-                this._saveOpts = opts;
+                const io = { format: fmtSel.value, dpi: Number(dpiSel.value) || 200 };
+                this._captureOpts = Object.assign(this.captureOpts(), io);
                 p.style.display = 'none';
                 if (anchorEl) anchorEl.setAttribute('aria-expanded', 'false');
-                this.saveImage(opts);
+                this.saveImage(io);
                 // Saving a frame is not a reason to lose the run: whatever the
                 // panel paused picks up again once the file is on its way.
                 this._resumeFromSavePanel();
             });
+
+            const anchorRow = (anchorEl && (anchorEl.closest('.toolbar-row')
+                || anchorEl.parentElement))
+                || (this.controlsContainer || document.body);
+            anchorRow.insertAdjacentElement('afterend', p);
             this._savePanel = p;
             if (anchorEl) {
                 anchorEl.setAttribute('aria-controls', 'savePanel');
@@ -11170,11 +11373,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             let name = objectName || 'viewer';
             name = name.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
             return `py2dmol_${name}_${timestamp}.${extension}`;
-        }
-
-        // Download video directly
-        _downloadVideo(blob, filename) {
-            this._triggerDownload(blob, filename);
         }
 
         // Download SVG directly

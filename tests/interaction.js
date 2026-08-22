@@ -51,7 +51,7 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_GAIN',
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -64,7 +64,8 @@ for(const nm of names){
 // ...and the STATICS the lifted methods reach through this.constructor. Only
 // the named methods are lifted, so a static one of them depends on is simply
 // absent and the method throws on a property of undefined.
-const statics=(src.match(/\n        static get ELEMENT_COLORS\(\)[\s\S]*?\n        \}/)||[''])[0];
+const statics=['ELEMENT_COLORS','CAPTURE_DEFAULTS','GIF_LIMITS'].map((nm)=>
+ (src.match(new RegExp('\\n        static get '+nm+'\\(\\)[\\s\\S]*?\\n        \\}'))||[''])[0]).join('\n');
 const Cls=new Function('document','window','return class V {'+names.map(n=>body[n]).join('\n')+statics+'}')
  ({createElement:()=>mkCanvas(0,0)}, global.window);
 function mkCtx(canvas){const ops=[];return {ops,canvas,fillStyle:'',
@@ -3410,30 +3411,28 @@ t('a side chain colour reaches its CA-CB bond', () => {
 // called Turn - it names what gets made - and the field beside it said Turn
 // again, which reads as a count of turns and is not one: the recording is
 // exactly one revolution, and this is how long that revolution takes.
-t('the capture panel calls its seconds field Sec, in both video modes', () => {
-    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
-    const at = src.indexOf("cell('saveSecondsInput'");
-    if (at < 0) throw new Error('the seconds field is gone from the capture panel');
-    const line = src.slice(at, src.indexOf('\n', src.indexOf('saveFpsInput', at)));
-    if (/'Turn'/.test(line)) {
-        throw new Error('the seconds field is labelled Turn again, beside a row'
-            + ' already called Turn: ' + line.trim());
+t('the capture panel calls its seconds field Sec, and says so once', () => {
+    // The row is called Video and the field is Sec. It used to be a row called
+    // Turn with a field called Turn beside it, which reads as a count of
+    // revolutions and is not one: the recording is exactly one revolution, and
+    // the number is how long that takes.
+    const body = capturePanelBody();
+    if (!/num\('saveSecondsInput', 'Sec'/.test(body)) {
+        throw new Error('the seconds field is not labelled Sec');
     }
-    if (!/cell\('saveSecondsInput', 'Sec'/.test(line)) {
-        throw new Error('the seconds field is not labelled Sec: ' + line.trim());
+    if (!/How long the recording runs, in seconds/.test(body)) {
+        throw new Error('nothing says what the seconds are');
     }
-    // ...and it says what the seconds are OF, which the label alone cannot
-    if (!/one full turn takes, in seconds/.test(line)) {
-        throw new Error('nothing says the seconds are one revolution');
+    // ONE set of video settings, not one per output. Two rows each carrying
+    // their own frame rate is how the same number came to be two controls.
+    for (const id of ['saveSecondsInput', 'saveFpsInput', 'saveMbpsInput']) {
+        const n = body.split(id).length - 1;
+        if (n !== 1) throw new Error(id + ' appears ' + n + ' times - the video'
+            + ' settings must exist once, not once per output');
     }
-    // the row name still names the output, and still tells the two apart
-    if (!/\$\{this\.drawMode \? 'Draw' : 'Turn'\}/.test(src)) {
-        throw new Error('the row no longer says whether it makes a turn or a drawing');
-    }
-    // one full revolution is what makes "seconds per turn" the truth here
+    // one full revolution is what makes "seconds per turn" the truth for a Turn
     if (!/const step = \(2 \* Math\.PI\) \/ N;/.test(src)) {
-        throw new Error('the recording is no longer exactly one turn, so the'
-            + ' label and the tooltip now describe something else');
+        throw new Error('the turn is no longer exactly one revolution');
     }
 });
 
@@ -3476,32 +3475,139 @@ t('the Capture button does not change identity with the animation state', () => 
 // video from the rotation and drawing ones the panel already offered: it plays
 // the frames through. The panel builds a row for it whenever the object has
 // frames to play, and that row calls toggleRecording.
+// A helper both panel tests use: the METHOD BODY, brace-matched. Slicing to
+// the first "\n        }" reads somebody else's body the moment the method
+// grows a nested block, which is how one of these first reported a feature
+// missing while it was there.
+function capturePanelBody() {
+    const at = src.indexOf('        _toggleSaveImagePanel(anchorEl) {');
+    if (at < 0) throw new Error('_toggleSaveImagePanel is gone');
+    let d = 0; let k = src.indexOf('{', at);
+    const start = k;
+    for (; k < src.length; k++) {
+        if (src[k] === '{') d++; else if (src[k] === '}' && !--d) break;
+    }
+    return src.slice(start, k + 1);
+}
+
+t('one capture model: defaults, formats and sizes', () => {
+    const v = new Cls();
+    const d = Cls.CAPTURE_DEFAULTS;
+    if (d.dpi !== 200) throw new Error('the image default is ' + d.dpi + ' dpi, not 200');
+    if (d.mbps !== 5) throw new Error('the video default is ' + d.mbps + ' Mbps, not 5');
+    // the panel writes back into ONE object, and everything reads it through
+    // captureOpts - the old pair of them defaulted 300 dpi in two places
+    v._captureOpts = { dpi: 600 };
+    if (v.captureOpts().dpi !== 600) throw new Error('a written option was lost');
+    if (v.captureOpts().fps !== d.fps) throw new Error('the untouched defaults were dropped');
+
+    // FORMATS ARE ASKED, NEVER ASSUMED. A format that cannot be written must
+    // not be in the menu: a recording that fails afterwards has cost the take.
+    const withMR = (types, gif) => {
+        const oldMR = global.MediaRecorder;
+        const oldGif = global.window.py2dmolGif;
+        global.MediaRecorder = { isTypeSupported: (m) => types.some((t) => m.startsWith(t)) };
+        global.window.py2dmolGif = gif ? (() => {}) : undefined;
+        try { return v.videoFormats().map((f) => f.id); }
+        finally { global.MediaRecorder = oldMR; global.window.py2dmolGif = oldGif; }
+    };
+    if (withMR(['video/webm'], false).join() !== 'webm') {
+        throw new Error('a webm-only browser was offered something else');
+    }
+    if (withMR(['video/webm', 'video/mp4'], false).join() !== 'webm,mp4') {
+        throw new Error('MP4 is not offered where MediaRecorder can write it');
+    }
+    if (withMR(['video/webm'], true).join() !== 'webm,gif') {
+        throw new Error('GIF is not offered where the encoder is loaded');
+    }
+    // ...and NOT where it is missing, which is the notebook: viewer.html loads
+    // py2Dmol's own resources and nothing else, so web/utils.js is not there.
+    if (withMR(['video/webm'], false).includes('gif')) {
+        throw new Error('GIF is offered without an encoder to write it');
+    }
+
+    // SIZES COME FROM THE CANVAS, in real pixels, and are even - H.264 refuses
+    // an odd dimension outright.
+    v.canvas = { width: 1001, height: 777 };
+    const sizes = v.videoSizes();
+    if (!sizes.length) throw new Error('no sizes at all');
+    if (sizes[0].w % 2 || sizes[0].h % 2) throw new Error('an odd dimension');
+    if (sizes[0].w !== 1002 && sizes[0].w !== 1000) {
+        throw new Error('1x is not the canvas size: ' + sizes[0].w);
+    }
+    if (!sizes.some((z) => z.scale === 2)) throw new Error('no 2x option');
+    v.canvas = { width: 3000, height: 3000 };
+    if (v.videoSizes().some((z) => z.w > 4096)) {
+        throw new Error('a size past the 4096 encoder limit was offered');
+    }
+});
+
+t('the GIF encoder writes a GIF, and only the web app has one', () => {
+    // Written here rather than loaded, and gated by WHERE it is loaded: the
+    // notebook viewer pulls in py2Dmol's own resources and nothing else.
+    const u = fs.readFileSync('web/utils.js', 'utf8');
+    if (!/window\.py2dmolGif = py2dmolGif/.test(u)) {
+        throw new Error('the encoder is not exposed for the panel to find');
+    }
+    const vh = fs.readFileSync('py2Dmol/resources/viewer.html', 'utf8');
+    if (/utils\.js|py2dmolGif|cdn/i.test(vh)) {
+        throw new Error('the notebook viewer picked up an external dependency');
+    }
+    // and it really encodes: header, frame count, and pixels that come back
+    const sandbox = { window: {}, console, Blob: class { constructor(p, o) { this.parts = p; this.type = o && o.type; } } };
+    sandbox.window.window = sandbox.window;
+    require('vm').createContext(sandbox);
+    require('vm').runInContext(u, sandbox, { filename: 'utils' });
+    const W = 32; const H = 24;
+    const frames = [0, 1].map((f) => {
+        const a = new Uint8ClampedArray(W * H * 4);
+        for (let i = 0; i < a.length; i += 4) {
+            a[i] = f ? 200 : 20; a[i + 1] = 40; a[i + 2] = 90; a[i + 3] = 255;
+        }
+        return a;
+    });
+    const blob = sandbox.window.py2dmolGif(frames, { width: W, height: H, delayCs: 5 });
+    if (blob.type !== 'image/gif') throw new Error('not a GIF blob');
+    const bytes = Buffer.from(blob.parts[0]);
+    if (bytes.slice(0, 6).toString() !== 'GIF89a') throw new Error('bad header');
+    // two image descriptors, one per frame
+    let images = 0;
+    for (let i = 0; i < bytes.length; i++) if (bytes[i] === 0x2C) images++;
+    if (images < 2) throw new Error('only ' + images + ' frames were written');
+    if (!bytes.includes(Buffer.from('NETSCAPE2.0'))) {
+        throw new Error('no loop block - the GIF plays once and stops');
+    }
+});
+
 t('the save panel can still record a trajectory', () => {
-    // the DEFINITION, not the call site inside setUIControls - slicing from
-    // the first match reads somebody else's body, which is how this test first
-    // reported the feature missing while it was there
-    const m = src.match(/\n        _toggleSaveImagePanel\s*\(/);
-    if (!m) throw new Error('_toggleSaveImagePanel is gone');
-    const body = src.slice(m.index, src.indexOf('\n        }\n', m.index));
-    if (!/data-traj/.test(body)) {
-        throw new Error('the save panel has no trajectory row - recording the'
-            + ' frames playing through was lost with the record button');
-    }
-    if (!/toggleRecording\(\)/.test(body)) {
-        throw new Error('the panel\'s trajectory row does not call'
-            + ' toggleRecording()');
-    }
+    const body = capturePanelBody();
+    // The Record row lists one button per SOURCE, and Frames is the one that
+    // came from a separate record button in the controls bar. It has to be
+    // gated on there being frames to play: the old button did not gate itself
+    // and silently did nothing on a single-frame structure, which is the
+    // confusion the panel exists to end.
     if (!/frames\.length > 1/.test(body)) {
-        throw new Error('the trajectory row is not gated on there being frames'
-            + ' to play - it would offer recording a single-frame structure,'
-            + ' which is what the old button did before it disabled itself');
+        throw new Error('the Frames source is not gated on there being frames'
+            + ' to play');
     }
-    // ...and the gate must be LIVE. Checking only that the strings are present
-    // passed with the row disabled outright (`if (false)`), which is the whole
-    // failure this test exists to catch.
-    if (!/if \(canTraj\) \{/.test(body)) {
-        throw new Error('the trajectory row is not emitted under `if (canTraj)`'
-            + ' - the gate is dead, so the row never appears');
+    if (!/sources\.push\(\{ id: 'frames'/.test(body)) {
+        throw new Error('the panel has no Frames source - recording the frames'
+            + ' playing through was lost');
+    }
+    if (!/this\.toggleRecording\(\)/.test(body)) {
+        throw new Error("the Frames button does not call toggleRecording()");
+    }
+    // ...and the other two, each gated on the mode that makes it possible
+    if (!/this\.autoRotate\) sources\.push/.test(body)
+        || !/this\.drawMode\) sources\.push/.test(body)) {
+        throw new Error('Turn and Draw are no longer gated on their modes');
+    }
+    if (!/saveRotationVideo\(vo\)/.test(body) || !/saveDrawingVideo\(vo\)/.test(body)) {
+        throw new Error('a source button no longer reaches its recorder');
+    }
+    // with nothing recordable the row SAYS so rather than offering a dead button
+    if (!/Turn on Rotate or Draw, or load frames/.test(body)) {
+        throw new Error('an empty Record row says nothing');
     }
 });
 
@@ -3510,31 +3616,24 @@ t('the save panel can still record a trajectory', () => {
 // them, so with a video row and the still row both up it was not obvious which
 // field belonged to which output. Reported directly.
 t('the save panel sizes its controls consistently', () => {
-    const m = src.match(/\n        _toggleSaveImagePanel\s*\(/);
-    const body = src.slice(m.index, src.indexOf('\n        }\n', m.index));
+    const body = capturePanelBody();
     const H = body.match(/const H = (\d+);/);
     if (!H) throw new Error('the panel has no single control height');
     const h = Number(H[1]);
     if (h < 26) {
-        throw new Error('the panel\'s controls are ' + h + 'px high - under 26'
+        throw new Error("the panel's controls are " + h + 'px high - under 26'
             + ' they are hard to read and hard to hit');
     }
-    // the number fields and the buttons must both be built from it, or they
-    // drift apart again the next time one of them is touched
-    for (const [name, re] of [['NUM', /const NUM = `[^`]*height:\$\{H\}px;/],
-        ['BTN', /const BTN = `[^`]*/]]) {
+    // fields and buttons both built from it, or they drift apart again the
+    // next time one of them is touched
+    for (const name of ['FIELD', 'BTN']) {
+        const re = new RegExp('const ' + name + ' = `[^`]*height:\\$\\{H\\}px');
         if (!re.test(body)) throw new Error(name + ' is not derived from H');
     }
-    if (!/height:\$\{H\}px/.test(body.slice(body.indexOf('const BTN')))) {
-        throw new Error('BTN does not take its height from H, so the buttons'
-            + ' and the fields can end up different sizes');
+    if (!/const NUM = FIELD/.test(body)) {
+        throw new Error('the number fields are not the same control as the menus');
     }
-    // the old field sizing specifically, not any 46px anywhere: the row-name
-    // label legitimately uses that width, and matching it made this fail on a
-    // correct build
-    if (/const NUM = [^;]*width:46px/.test(body)
-        || /const NUM = [^`]*height:24px/.test(body)
-        || /const CAP = 'font-size:11px/.test(body)) {
+    if (/const CAP = 'font-size:11px/.test(body)) {
         throw new Error('the panel still has the old cramped field sizing');
     }
 });
