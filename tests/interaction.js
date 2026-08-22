@@ -3512,6 +3512,30 @@ function capturePanelBody() {
 // dead and stayed dead: reported as "Capture, Rotate, Turn does not record" and
 // "the GIF path is broken", which are the same bug. This builds a sink for each
 // format against stubs and pushes frames through it.
+t('a GIF is always cut out, and says so once', () => {
+    const body = capturePanelBody();
+    const src2 = src;
+    // A CHOICE THAT IS ALWAYS THE SAME ANSWER IS NOT A CHOICE. Paper or Clear
+    // was one more control on the widest row in the panel, and a turn dropped
+    // onto a slide or a dark page wants the cut-out far more often than it
+    // wants a white square around the structure. PNG already exports this way.
+    if (/saveGifBackground/.test(body)) {
+        throw new Error('the background choice is back on the row');
+    }
+    if (!/const clear = gif;/.test(src2)) {
+        throw new Error('a GIF is no longer always transparent');
+    }
+    // ...and the limits are not spelled out beside the format: they are
+    // applied to the controls themselves (fps max, sizes greyed out), which is
+    // where a limit belongs.
+    if (/fps max, \$\{LIM\.maxPx\}px max/.test(body)) {
+        throw new Error('the static limits note is back');
+    }
+    if (!/fpsIn\.max = gif \? LIM\.maxFps : 60/.test(body)) {
+        throw new Error('the fps cap no longer reaches the control');
+    }
+});
+
 t('every capture format builds a sink and finishes a file', () => {
     const realMR = global.MediaRecorder;
     const realZip = global.JSZip; const realGif = global.window.py2dmolGif;

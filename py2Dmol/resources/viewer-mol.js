@@ -10530,7 +10530,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // A CUT-OUT GIF HAS TO BE RENDERED, not read off the screen: the
             // live canvas has the paper painted into it and every pixel is
             // opaque. So transparency forces the offscreen path even at 1x.
-            const clear = gif && !!o.transparent;
+            // A GIF IS ALWAYS CUT OUT. Its transparency is one palette entry
+            // rather than an alpha channel, so the edge is a hard cut - but a
+            // turn dropped onto a slide or a dark page wants that far more
+            // often than it wants a white square around the structure, and the
+            // choice was one more control on the widest row in the panel. PNG
+            // already exports this way; WebM and MP4 cannot, which is why it
+            // is not a question anywhere else either.
+            const clear = gif;
             // A zip is always rendered: its frames are PNGs at their own size,
             // and a PNG of the live canvas would be the screen's.
             const offscreen = zip || clear || (w !== source.width || h !== source.height);
@@ -10750,15 +10757,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const f = LIM.maxPx / Math.max(w, h);
                 w = 2 * Math.round(w * f / 2); h = 2 * Math.round(h * f / 2);
             }
-            const bits = [`${fmt.label} ${w}x${h}`, `${o.seconds}s at ${fps} fps`];
+            const bits = [`${fmt.label} ${w}x${h}`];
             lines.push('');
             if (zip) {
-                bits.push(`${o.dpi} dpi`, 'one PNG per frame');
+                // one per trajectory frame where there is a trajectory to
+                // follow, and the count otherwise
+                const traj = this.currentObjectName
+                    && this.objectsData[this.currentObjectName];
+                const n = (traj && traj.frames && traj.frames.length > 1)
+                    ? traj.frames.length + ' PNGs, one per frame'
+                    : (o.frames || 36) + ' PNGs';
+                bits.push(n, `${o.dpi} dpi`);
             } else if (gif) {
-                bits.push(`${o.colors} colours`);
-                if (o.transparent) bits.push('transparent');
+                bits.push(`${o.seconds}s at ${fps} fps`);
+                bits.push(`${o.colors} colours`, 'transparent');
             } else {
-                bits.push(`${o.mbps} Mbps`);
+                bits.push(`${o.seconds}s at ${fps} fps`, `${o.mbps} Mbps`);
             }
             lines[lines.length - 1] = bits.join(' \u00b7 ');
             this._captureStatus(lines.join('\n'));
@@ -11176,7 +11190,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 return;
             }
             const fps = sink.fps;                 // clamped for GIF - see the turn
-            const N = Math.max(2, Math.round(seconds * fps));
+            const N = (o.container === 'zip')
+                ? Math.max(2, Math.min(600, Number(o.frames) || 36))
+                : Math.max(2, Math.round(seconds * fps));
             // A beat of the finished picture at the end, so the file does not
             // stop on the frame the last change landed in.
             const TAIL = Math.round(fps * 0.6);
@@ -11262,7 +11278,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // 20 - its delays are whole centiseconds - and counting frames at
             // the asked-for 30 would then stretch one turn into one and a half.
             const fps = sink.fps;
-            const N = Math.max(2, Math.round(seconds * fps));
+            // A ZIP OF IMAGES IS COUNTED, NOT TIMED: its own control says how
+            // many PNGs a turn should come to.
+            const N = (o.container === 'zip')
+                ? Math.max(2, Math.min(600, Number(o.frames) || 36))
+                : Math.max(2, Math.round(seconds * fps));
 
             const step = (2 * Math.PI) / N;
             let i = 0;
@@ -11575,7 +11595,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 p.appendChild(hr);
             };
             let vFmt = null; let secIn = null; let fpsIn = null;
-            let mbpsIn = null; let sizeSel = null; let colorsSel = null; let bgSel = null;
+            let mbpsIn = null; let sizeSel = null; let colorsSel = null;
+            let framesIn = null;
             let videoRow = null;
             if (sources.length && formats.length) {
                 rule();
@@ -11592,6 +11613,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const [fpsL, fps] = num('saveFpsInput', 'FPS', opts.fps, 5, 60,
                     'Frames per second');
                 vRow.appendChild(fpsL); vRow.appendChild(fps); fpsIn = fps;
+                // IMAGES ARE COUNTED, NOT TIMED. A zip of PNGs has no duration
+                // and no frame rate - what you want to say is how many of them
+                // - so Sec and FPS give way to one number. On the trajectory
+                // source even that is decided for you: one PNG per frame.
+                const [frL, fr] = num('saveFrameCount', 'Frames', opts.frames || 36,
+                    2, 600, 'How many images to write, over one full turn');
+                vRow.appendChild(frL); vRow.appendChild(fr); framesIn = fr;
                 const [mbL, mb] = num('saveMbpsInput', 'Mbps', opts.mbps, 1, 80,
                     'Bitrate: how many megabits a second of video is allowed. '
                     + 'Flat colour and clean edges compress well, so 5 is '
@@ -11616,18 +11644,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 'How many colours the GIF palette holds. A cartoon has few, so '
                 + '64 is usually indistinguishable and about half the size.');
                 vRow.appendChild(colorsSel);
-                // A GIF CAN BE CUT OUT. Its transparency is one palette entry
-                // rather than an alpha channel, so the edge is a hard cut - but
-                // for a turn dropped onto a slide or a dark page that beats a
-                // white square around the structure. PNG already exports this
-                // way; WebM and MP4 cannot, so the control is GIF's.
-                bgSel = menu('saveGifBackground', [
-                    { value: 'paper', label: 'Paper' },
-                    { value: 'clear', label: 'Clear' },
-                ], opts.transparent ? 'clear' : 'paper',
-                'Paper draws the background; Clear leaves it transparent, which '
-                + 'a GIF does with one palette entry - so the edge is a hard cut.');
-                vRow.appendChild(bgSel);
                 }
                 if (sizes.length) {
                     // ...WITH ITS NAME IN FRONT OF IT, like Sec and FPS. "1x"
@@ -11642,8 +11658,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     + '- the line below says what it comes to in pixels.');
                     vRow.appendChild(sizeSel);
                 }
-                const vNote = el('span', CAP, '');
-                vRow.appendChild(vNote);
                 const syncVideo = () => {
                     const gif = vFmt.value === 'gif';
                     const zip = vFmt.value === 'zip';
@@ -11662,8 +11676,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // format does not move the rest of the row about.
                     mbL.style.display = (gif || zip) ? 'none' : '';
                     mbpsIn.style.display = (gif || zip) ? 'none' : '';
+                    // ...and the pair that times a video gives way to the one
+                    // that counts images
+                    const timed = !zip;
+                    secL.style.display = timed ? '' : 'none';
+                    secIn.style.display = timed ? '' : 'none';
+                    fpsL.style.display = timed ? '' : 'none';
+                    fpsIn.style.display = timed ? '' : 'none';
+                    const framesOnly = zip && !sources.every((x) => x.id === 'frames');
+                    frL.style.display = framesOnly ? '' : 'none';
+                    framesIn.style.display = framesOnly ? '' : 'none';
                     if (colorsSel) colorsSel.style.display = gif ? '' : 'none';
-                    if (bgSel) bgSel.style.display = gif ? '' : 'none';
                     // A GIF'S LIMITS ARE APPLIED TO THE CONTROLS, not just to
                     // the recording. The sink clamps either way, but a panel
                     // reading 30 fps and 1194x1194 over a file that came out
@@ -11684,10 +11707,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         const cur = sizeSel.selectedOptions[0];
                         if (cur && cur.disabled && fallback !== null) sizeSel.value = fallback;
                     }
-                    const z = sizes.find((q) => String(q.scale) === (sizeSel ? sizeSel.value : '1'));
-                    vNote.textContent = gif
-                        ? `${LIM.maxFps} fps max, ${LIM.maxPx}px max`
-                        : (z ? '' : '');
                 };
                 if (sizeSel) sizeSel.addEventListener('change', syncVideo);
                 fpsIn.addEventListener('change', syncVideo);
@@ -11709,9 +11728,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 container: vFmt ? vFmt.value : 'webm',
                 scale: sizeSel ? Number(sizeSel.value) || 1 : 1,
                 colors: colorsSel ? Number(colorsSel.value) || 256 : 256,
-                transparent: !!(bgSel && bgSel.value === 'clear'),
-                // the Images format renders at the Image row's resolution
+                // the Images format renders at the Image row's resolution, and
+                // is counted rather than timed
                 dpi: Number(dpiSel.value) || 200,
+                frames: framesIn ? Number(framesIn.value) || 36 : 36,
             });
             // WRITTEN BACK ON EVERY CHANGE, not read at the moment a button is
             // pressed. The panel is rebuilt whenever the canvas is resized (see
@@ -11719,7 +11739,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // would be lost with it - so it lives in _captureOpts and the DOM
             // is filled from there.
             for (const c of [fmtSel, dpiSel, vFmt, secIn, fpsIn, mbpsIn, sizeSel,
-                colorsSel, bgSel]) {
+                colorsSel, framesIn]) {
                 if (c) c.addEventListener('change', commit);
             }
             commit();
