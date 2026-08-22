@@ -367,6 +367,20 @@ function initializeViewerConfig() {
     if (biounitEl) {
         biounitEl.checked = window.viewerConfig.ui.biounit;
     }
+    // THE OPTIONS FOLD AWAY. They are defaults, and a default that is right
+    // does not need to be on screen - but it does need to be one click away,
+    // so the button says whether it is open both in its caret and in
+    // aria-expanded.
+    const optBtn = document.getElementById('fetchOptionsButton');
+    const optPanel = document.getElementById('fetchOptions');
+    if (optBtn && optPanel) {
+        optBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            const open = optPanel.hidden;
+            optPanel.hidden = !open;
+            optBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        });
+    }
     const filterAddEl = document.getElementById('filterAdditivesCheckbox');
     if (filterAddEl) {
         filterAddEl.checked = window.viewerConfig.ui.filterAdditives !== false;

@@ -2214,6 +2214,64 @@ t('every projection sizes a position through the same rule', () => {
     }
 });
 
+t('the fetch panel folds its options away, in groups', () => {
+    // It was a two-column table: an ID box on the left, seven switches
+    // standing open on the right, and the examples squeezed into half a column
+    // where the fourth wrapped onto a second row. The options are DEFAULTS -
+    // almost nobody changes them - so the layout was sized by its least used
+    // part. Measured: the panel was 189 px tall and is 78 with the options
+    // folded, and the four examples went from two rows to one.
+    const html = fs.readFileSync('index.html', 'utf8');
+    const at = html.indexOf('class="fetch-panel"');
+    if (at < 0) throw new Error('the fetch panel is gone');
+    const panel = html.slice(at, html.indexOf('id="status-message"'));
+    // EVERY CONTROL SURVIVED THE MOVE. Losing one to a rewrite is silent: the
+    // option simply stops being settable and the default stands for ever.
+    for (const id of ['fetch-id', 'fetch-btn', 'upload-button', 'file-upload',
+        'loadAsFramesCheckbox', 'alignFramesCheckbox', 'alignChainInput',
+        'loadPAECheckbox', 'loadMSACheckbox', 'biounitCheckbox',
+        'loadLigandsCheckbox', 'filterAdditivesCheckbox']) {
+        if (!panel.includes('id="' + id + '"')) {
+            throw new Error('the redesign dropped ' + id);
+        }
+    }
+    // ...folded away, and the button says so to a screen reader as well as in
+    // its caret
+    const opts = panel.indexOf('id="fetchOptions"');
+    if (opts < 0 || !/id="fetchOptions"[^>]*hidden/.test(panel)) {
+        throw new Error('the options are not hidden to start with');
+    }
+    if (!/id="fetchOptionsButton"[\s\S]{0,200}aria-controls="fetchOptions"/.test(panel)) {
+        throw new Error('the Options button does not name what it opens');
+    }
+    const css = fs.readFileSync('web/style.css', 'utf8');
+    if (!/\.fetch-options\[hidden\]\s*\{\s*display:\s*none\s*!important/.test(css)) {
+        throw new Error('[hidden] is a UA rule and display:flex outranks it -'
+            + ' the options would stand open however the flag is set');
+    }
+    // THE EXAMPLES ARE A SET AND READ AS ONE ON ONE LINE, which is what giving
+    // the row the whole width was for. nowrap keeps it that way when a fifth
+    // is added - deliberately, so that becomes a decision about width.
+    if (!/\.fetch-examples\s*\{[^}]*flex-wrap:\s*nowrap/.test(css)) {
+        throw new Error('the examples row can wrap again');
+    }
+    // ...AND THE OPTIONS ARE GROUPED BY WHAT THEY ASK. Which question a switch
+    // belongs to is not obvious from its name: Align chain is about frames,
+    // Filter Additives is about what the file contains.
+    const groups = (panel.match(/class="fetch-option-group"/g) || []).length;
+    if (groups < 3) throw new Error('the options are one flat list again');
+    for (const [title, first] of [['Frames', 'loadAsFramesCheckbox'],
+        ['Structure', 'biounitCheckbox'], ['Alongside', 'loadPAECheckbox']]) {
+        const g = panel.indexOf('>' + title + '<');
+        if (g < 0) throw new Error('no ' + title + ' group');
+        const next = panel.indexOf('class="fetch-option-group"', g);
+        const body = panel.slice(g, next < 0 ? panel.length : next);
+        if (!body.includes(first)) {
+            throw new Error(`${first} is not in the ${title} group`);
+        }
+    }
+});
+
 t('what the crystal was grown in is filtered, and the two lists agree', () => {
     // A BUFFER SALT IS A REAL RESIDUE AND NOT PART OF THE MOLECULE. Dropped at
     // the atom list, before anything downstream sees it, so a sulfate does not

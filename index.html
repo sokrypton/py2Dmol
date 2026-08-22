@@ -82,166 +82,155 @@ AI Context: STANDALONE WEB APP ENTRY POINT
 
         <div id="upload-options-container" class="container-box" style="width: 948px; margin-bottom: 10px;">
 
-            <!-- Use table for reliable layout -->
-            <table style="width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 0;">
-                <tr>
-                    <!-- Left Column: Fetch + Load -->
-                    <td style="width: 50%; padding-right: 12px; vertical-align: top;">
+            <!-- FETCH PANEL. Three lines, and the third is usually not there.
+                 It was a two-column table: an ID box and a Load button on the
+                 left, seven toggles standing open on the right, and the
+                 examples squeezed into half a column where four of them
+                 wrapped onto two rows. Everything about that layout was sized
+                 by the options, which are the part almost nobody changes -
+                 they are defaults, and a default that is right does not need
+                 to be on screen. So they fold behind a button and the row that
+                 matters gets the whole width. -->
+            <div class="fetch-panel">
+                <!-- WHAT TO LOAD, all on one line. The label the ID box used to
+                     carry is the placeholder now: it said the same words, in
+                     the same place, one line further up. -->
+                <div class="fetch-row" id="fetch-input-container">
+                    <input type="text" id="fetch-id"
+                        aria-label="PDB ID (4 characters, optionally +chains) or UniProt ID"
+                        placeholder="e.g., 1A3N, 1a3n_AB or P0A8I3">
+                    <button id="fetch-btn" class="btn btn-primary">Fetch</button>
+                    <button id="upload-button" class="btn btn-secondary">
+                        <i class="fa-solid fa-file-arrow-up"></i>
+                        <span>Files</span>
+                    </button>
+                    <input type="file" id="file-upload"
+                        accept=".pdb,.cif,.ent,.zip,.json,.cst,.a3m,.fasta,.fa,.fas,.sto,.csv" multiple
+                        class="hidden">
+                    <!-- aria-expanded and aria-controls, because a button that
+                         shows something has to say so to anything not looking
+                         at it. -->
+                    <button id="fetchOptionsButton" class="btn btn-grey" type="button"
+                        aria-expanded="false" aria-controls="fetchOptions"
+                        title="Loading options: frames, alignment, PAE, biounit, ligands">
+                        <span>Options</span>
+                        <span id="fetchOptionsCaret" aria-hidden="true">&#9662;</span>
+                    </button>
+                </div>
 
-                        <!-- Fetch Section -->
-                        <label for="fetch-id"
-                            style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">PDB
-                            (4-char, +chains) or UniProt ID</label>
-                        <div id="fetch-input-container" style="margin-bottom: 8px;">
-                            <input type="text" id="fetch-id" placeholder="e.g., 1A3N, 1a3n_AB or P0A8I3">
-                            <button id="fetch-btn" class="btn btn-primary">Fetch</button>
+                <!-- ONE ROW, which is what the whole width buys. Wired
+                     generically off data-example-value, so adding one needs no
+                     JS - but the row does not wrap any more, so adding a fifth
+                     is now a decision about width rather than a free action. -->
+                <div class="fetch-row fetch-examples">
+                    <span class="fetch-row-label">Examples</span>
+                    <button class="btn btn-success btn-small" data-example-value="6MRR">
+                        <span>6MRR</span>
+                    </button>
+                    <button class="btn btn-success btn-small" data-example-value="Q5VSL9">
+                        <span>Q5VSL9</span>
+                    </button>
+                    <button class="btn btn-success btn-small" data-example-value="1YNE">
+                        <span>1YNE</span>
+                    </button>
+                    <button class="btn btn-success btn-small" data-example-value="1A3N">
+                        <span>1A3N</span>
+                    </button>
+                </div>
+
+                <!-- ...AND THE OPTIONS, folded away, IN GROUPS. Eight
+                     switches in one flowing row is a list to read rather than
+                     a thing to scan: they answer three different questions,
+                     and which one a switch belongs to is not obvious from its
+                     name (Align chain is about frames, Filter Additives is
+                     about what the file contains). Grouped, each column is one
+                     question, and the two columns you are not asking can be
+                     skipped in a glance. -->
+                <div class="fetch-options" id="fetchOptions" hidden>
+                    <!-- MANY MODELS IN ONE FILE, and what to do with them. -->
+                    <div class="fetch-option-group">
+                        <span class="fetch-option-title">Frames</span>
+                        <div class="upload-toggle-item">
+                            <label class="switch">
+                                <input type="checkbox" id="loadAsFramesCheckbox" checked>
+                                <span class="slider-toggle"></span>
+                            </label>
+                            <label for="loadAsFramesCheckbox" class="upload-toggle-label">Load as Frames</label>
                         </div>
-
-                        <!-- Load Section -->
-                        <div style="display: flex; gap: 8px; align-items: flex-start;">
-                            <div style="flex: 1;">
-                                <label
-                                    style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Load
-                                    Files</label>
-                                <div id="uploadControlsContainer" style="display: flex; gap: 8px;">
-                                    <!-- Load Button (Triggers hidden input) -->
-                                    <button id="upload-button" class="btn btn-secondary">
-                                        <i class="fa-solid fa-file-arrow-up"></i>
-                                        <span>Choose Files</span>
-                                    </button>
-
-                                    <input type="file" id="file-upload"
-                                        accept=".pdb,.cif,.ent,.zip,.json,.cst,.a3m,.fasta,.fa,.fas,.sto,.csv" multiple
-                                        class="hidden">
-                                </div>
-                            </div>
-
-                            <!-- Separator Bar -->
-                            <div style="width: 1px; background: #e5e7eb; align-self: stretch;"></div>
-
-                            <div style="flex: 1;">
-                                <label
-                                    style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Example</label>
-                                <!-- btn-small, and one more of them: four
-                                     full-size buttons no longer fit the column.
-                                     Wired generically off data-example-value,
-                                     so adding one needs no JS. -->
-                                <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                                    <button class="btn btn-success btn-small" data-example-value="6MRR">
-                                        <span>6MRR</span>
-                                    </button>
-                                    <button class="btn btn-success btn-small" data-example-value="Q5VSL9">
-                                        <span>Q5VSL9</span>
-                                    </button>
-                                    <button class="btn btn-success btn-small" data-example-value="1YNE">
-                                        <span>1YNE</span>
-                                    </button>
-                                    <button class="btn btn-success btn-small" data-example-value="1A3N">
-                                        <span>1A3N</span>
-                                    </button>
-                                </div>
-                            </div>
+                        <div class="upload-toggle-item">
+                            <label class="switch">
+                                <input type="checkbox" id="alignFramesCheckbox" checked>
+                                <span class="slider-toggle"></span>
+                            </label>
+                            <label for="alignFramesCheckbox" class="upload-toggle-label">Align Frames</label>
                         </div>
-
-                    </td>
-
-                    <!-- Right Column: Options (split into two columns) -->
-                    <td style="vertical-align: top;">
-                        <label
-                            style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Options</label>
-
-                        <div style="display: flex; gap: 16px;">
-                            <!-- Left Column: Existing Options -->
-                            <div class="upload-options-section" style="margin-bottom: 0; flex: 1;">
-
-                                <!-- Load as Frames Toggle -->
-                                <div class="upload-toggle-item">
-                                    <label class="switch">
-                                        <input type="checkbox" id="loadAsFramesCheckbox" checked>
-                                        <span class="slider-toggle"></span>
-                                    </label>
-                                    <label for="loadAsFramesCheckbox" class="upload-toggle-label">Load as Frames</label>
-                                </div>
-
-                                <!-- Align Frames Toggle -->
-                                <div class="upload-toggle-item">
-                                    <label class="switch">
-                                        <input type="checkbox" id="alignFramesCheckbox" checked>
-                                        <span class="slider-toggle"></span>
-                                    </label>
-                                    <label for="alignFramesCheckbox" class="upload-toggle-label">Align Frames</label>
-                                </div>
-
-                                <!-- WHICH CHAIN THE FRAMES ARE ALIGNED ON. Blank keeps
-                                     the old behaviour - the first chain in the reference
-                                     frame - which is right until the first chain is not
-                                     the one you care about. Only read when Align Frames
-                                     is on. -->
-                                <div class="upload-toggle-item" id="alignChainRow">
-                                    <label for="alignChainInput" class="upload-toggle-label"
-                                        title="Align the frames on this chain. Blank uses the first chain in the structure.">Align chain</label>
-                                    <input type="text" id="alignChainInput" placeholder="auto"
-                                        maxlength="4" autocomplete="off" spellcheck="false"
-                                        style="width: 64px; height: 26px; font-size: 12px; padding: 0 6px; border: 1px solid #d1d5db; border-radius: 6px;">
-                                </div>
-
-                            </div>
-
-                            <!-- Right Column: New Options -->
-                            <div class="upload-options-section" style="margin-bottom: 0; flex: 1;">
-
-                                <!-- Load PAE Toggle -->
-                                <div class="upload-toggle-item">
-                                    <label class="switch">
-                                        <input type="checkbox" id="loadPAECheckbox" checked>
-                                        <span class="slider-toggle"></span>
-                                    </label>
-                                    <label for="loadPAECheckbox" class="upload-toggle-label">Load PAE</label>
-                                </div>
-
-                                <!-- Load MSA Toggle -->
-                                <div class="upload-toggle-item">
-                                    <label class="switch">
-                                        <input type="checkbox" id="loadMSACheckbox">
-                                        <span class="slider-toggle"></span>
-                                    </label>
-                                    <label for="loadMSACheckbox" class="upload-toggle-label">Load MSA</label>
-                                </div>
-
-                                <!-- Load Biounit Toggle -->
-                                <div class="upload-toggle-item">
-                                    <label class="switch">
-                                        <input type="checkbox" id="biounitCheckbox" checked>
-                                        <span class="slider-toggle"></span>
-                                    </label>
-                                    <label for="biounitCheckbox" class="upload-toggle-label">Load Biounit</label>
-                                </div>
-
-                                <!-- Load Ligands Toggle -->
-                                <div class="upload-toggle-item">
-                                    <label class="switch">
-                                        <input type="checkbox" id="loadLigandsCheckbox" checked>
-                                        <span class="slider-toggle"></span>
-                                    </label>
-                                    <label for="loadLigandsCheckbox" class="upload-toggle-label">Load Ligands</label>
-                                </div>
-
-                                <!-- Filter Additives Toggle -->
-                                <div class="upload-toggle-item">
-                                    <label class="switch">
-                                        <input type="checkbox" id="filterAdditivesCheckbox" checked>
-                                        <span class="slider-toggle"></span>
-                                    </label>
-                                    <label for="filterAdditivesCheckbox" class="upload-toggle-label"
-                                        title="Leave out buffers, cryoprotectants and counter-ions - what the crystal was grown in rather than what the molecule is">Filter Additives</label>
-                                </div>
-                            </div>
+                        <!-- WHICH CHAIN THE FRAMES ARE ALIGNED ON. Blank keeps
+                             the old behaviour - the first chain in the reference
+                             frame - which is right until the first chain is not
+                             the one you care about. Only read when Align Frames
+                             is on, which is why it sits under it. -->
+                        <div class="upload-toggle-item" id="alignChainRow">
+                            <label for="alignChainInput" class="upload-toggle-label"
+                                title="Align the frames on this chain. Blank uses the first chain in the structure.">Align chain</label>
+                            <input type="text" id="alignChainInput" placeholder="auto"
+                                maxlength="4" autocomplete="off" spellcheck="false"
+                                style="width: 64px; height: 26px; font-size: 12px; padding: 0 6px; border: 1px solid #d1d5db; border-radius: 6px;">
                         </div>
-                    </td>
-                </tr>
-            </table>
+                    </div>
 
-            <!-- Status message below the table -->
+                    <!-- WHAT OF THE FILE ENDS UP IN THE PICTURE. All three
+                         change which atoms are there at all, which is a
+                         different question from how they are drawn. -->
+                    <div class="fetch-option-group">
+                        <span class="fetch-option-title">Structure</span>
+                        <div class="upload-toggle-item">
+                            <label class="switch">
+                                <input type="checkbox" id="biounitCheckbox" checked>
+                                <span class="slider-toggle"></span>
+                            </label>
+                            <label for="biounitCheckbox" class="upload-toggle-label">Load Biounit</label>
+                        </div>
+                        <div class="upload-toggle-item">
+                            <label class="switch">
+                                <input type="checkbox" id="loadLigandsCheckbox" checked>
+                                <span class="slider-toggle"></span>
+                            </label>
+                            <label for="loadLigandsCheckbox" class="upload-toggle-label">Load Ligands</label>
+                        </div>
+                        <div class="upload-toggle-item">
+                            <label class="switch">
+                                <input type="checkbox" id="filterAdditivesCheckbox" checked>
+                                <span class="slider-toggle"></span>
+                            </label>
+                            <label for="filterAdditivesCheckbox" class="upload-toggle-label"
+                                title="Leave out buffers, cryoprotectants and counter-ions - what the crystal was grown in rather than what the molecule is">Filter Additives</label>
+                        </div>
+                    </div>
+
+                    <!-- ...AND WHAT COMES WITH IT. Neither is the structure:
+                         they are other files fetched alongside it, and they
+                         open panels of their own. -->
+                    <div class="fetch-option-group">
+                        <span class="fetch-option-title">Alongside</span>
+                        <div class="upload-toggle-item">
+                            <label class="switch">
+                                <input type="checkbox" id="loadPAECheckbox" checked>
+                                <span class="slider-toggle"></span>
+                            </label>
+                            <label for="loadPAECheckbox" class="upload-toggle-label">Load PAE</label>
+                        </div>
+                        <div class="upload-toggle-item">
+                            <label class="switch">
+                                <input type="checkbox" id="loadMSACheckbox">
+                                <span class="slider-toggle"></span>
+                            </label>
+                            <label for="loadMSACheckbox" class="upload-toggle-label">Load MSA</label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Status message below the panel -->
             <div id="status-message" style="margin-top: 12px;"></div>
         </div>
 

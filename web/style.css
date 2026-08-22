@@ -982,15 +982,92 @@
     color: #9ca3af;
 }
 
-#fetch-input-container {
+/* THE FETCH PANEL. Lines, not columns: the ID box and its buttons, the
+   examples, and the options when they are asked for. A two-column table put
+   the options beside the input and sized the whole panel by the part nobody
+   changes, which left the examples in half a column where four of them wrapped
+   onto two rows. */
+.fetch-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.fetch-row {
     display: flex;
     gap: 8px;
     align-items: center;
 }
 
+/* NOWRAP, which is the whole point of giving this row the full width: the
+   examples are a set and they read as one when they are on one line. */
+.fetch-examples {
+    flex-wrap: nowrap;
+    gap: 6px;
+}
+
+.fetch-row-label {
+    font-size: 14px;
+    font-weight: 500;
+    color: #374151;
+    margin-right: 2px;
+}
+
+/* The ID box takes what is left. min-width: 0 because a flex item will not
+   shrink below its content otherwise, and a long placeholder would then push
+   the buttons off the end. */
 #fetch-input-container input {
-    flex-grow: 1;
+    flex: 1 1 auto;
+    min-width: 0;
     height: 42px;
+}
+
+/* ...AND THE OPTIONS, IN GROUPS. Eight switches in one flowing row is a list
+   to read rather than a thing to scan: they answer three separate questions,
+   and which one a switch belongs to is not obvious from its name. One column
+   per question, so the two you are not asking can be skipped at a glance. */
+.fetch-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 28px;
+    padding: 10px 12px;
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+}
+
+.fetch-option-group {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+/* A RULE BETWEEN THE GROUPS, not around them: a box each would make three
+   panels out of one. Drawn on the left of every group but the first, so it
+   disappears with the group and cannot end up dangling. */
+.fetch-option-group + .fetch-option-group {
+    border-left: 1px solid #e5e7eb;
+    padding-left: 28px;
+    margin-left: -14px;
+}
+
+.fetch-option-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #9ca3af;
+    margin-bottom: 1px;
+}
+
+/* [hidden] is a UA rule and display:flex outranks it - the same trap the clip
+   and style panels document. */
+.fetch-options[hidden] { display: none !important; }
+
+/* the caret turns when the panel is open, so the button says which way it goes */
+#fetchOptionsButton[aria-expanded="true"] #fetchOptionsCaret {
+    display: inline-block;
+    transform: rotate(180deg);
 }
 
 /* ============================================================================
