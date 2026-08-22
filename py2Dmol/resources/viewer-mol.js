@@ -6678,6 +6678,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.cachedSegmentIndicesObjectName = this.currentObjectName;
             }
 
+            // WHICH POSITIONS ARE LONE ATOMS - bonded to nothing, so drawn as a
+            // ball of their element's van der Waals radius rather than as a
+            // segment of anything. The click target and the selection band are
+            // sized from that (see projectPosition and radiusAt), so this has
+            // to be true of whatever list we ended up with: taken from
+            // segmentIndices rather than from the loop that builds them,
+            // because the CACHED branch above skips that loop entirely and a
+            // set left over from the previous structure sizes the wrong things.
+            this._loneAtoms = new Set();
+            for (const sg of this.segmentIndices) {
+                if (sg && sg.idx1 === sg.idx2) this._loneAtoms.add(sg.idx1);
+            }
+
             // Ensure static adjacency list and arrays exist
             // This must run regardless of whether we used cache or generated segments
             const numSegments = this.segmentIndices.length;
@@ -6928,6 +6941,48 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 O: { r: 255, g: 76, b: 76 },      // red
                 S: { r: 229, g: 198, b: 64 },     // gold
                 SE: { r: 240, g: 161, b: 54 },    // a warmer gold
+                // THE REST IS PYMOL'S TABLE, read off layer1/Color.cpp and
+                // converted from its 0..1 floats - so a reader who knows PyMOL
+                // already knows these colours. The four above turn out to be
+                // PyMOL's too (nitrogen 0.2/0.2/1, oxygen 1/0.3/0.3, sulfur
+                // 0.9/0.775/0.25); only selenium differs, and that one is kept
+                // as it is - PyMOL's is a flat orange, this is warmer and reads
+                // beside the gold sulfur it usually accompanies.
+                //
+                // The metals are the reason this table grew. A lone ion takes
+                // its colour from here (idx1 === idx2, so both `halves` agree
+                // and _segmentElementColor returns it) - and with no entry it
+                // fell back to the position's own colour, so a zinc came out
+                // whatever the ligand palette handed it: orange in one chain,
+                // green in the next, which says nothing about what it is.
+                H: { r: 230, g: 230, b: 230 },   // 0.9 grey, not white
+                P: { r: 255, g: 128, b: 0 },      // orange
+                F: { r: 179, g: 255, b: 255 },   // pale cyan, PyMOL's
+                CL: { r: 31, g: 240, b: 31 },     // green
+                BR: { r: 166, g: 41, b: 41 },
+                I: { r: 148, g: 0, b: 148 },
+                // group 1 and 2: violet and green, the CPK convention
+                NA: { r: 171, g: 92, b: 242 },
+                K: { r: 143, g: 64, b: 212 },
+                MG: { r: 138, g: 255, b: 0 },
+                CA: { r: 61, g: 255, b: 0 },
+                // ...and the transition metals, which is what a structure
+                // usually has one of
+                MN: { r: 156, g: 122, b: 199 },
+                FE: { r: 224, g: 102, b: 51 },    // rust
+                CO: { r: 240, g: 144, b: 160 },
+                NI: { r: 80, g: 208, b: 80 },
+                CU: { r: 200, g: 128, b: 51 },    // copper
+                ZN: { r: 125, g: 128, b: 176 },   // silver, slightly blue
+                MO: { r: 84, g: 181, b: 181 },
+                CD: { r: 255, g: 217, b: 143 },
+                PT: { r: 208, g: 208, b: 224 },
+                AU: { r: 255, g: 209, b: 35 },    // gold, and actually gold
+                HG: { r: 184, g: 184, b: 208 },
+                // CARBON IS DELIBERATELY ABSENT and must stay absent: a null
+                // sends the atom to its residue's own colour, so a coloured
+                // side chain stays coloured with only its heteroatoms standing
+                // out. Adding C here would repaint every ligand mid-grey.
             };
         }
 
@@ -7961,7 +8016,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // So one fraction, everywhere: the band is measured off half the
             // picking radius, which puts it around the ribbon rather than over
             // it and takes the default view from 24.9 px to 12.5.
-            const radiusAt = (i) => (sr[i] || 2) * SELECTION_HALO_RADIUS_FRAC;
+            // ...and the halving is about the PICKING radius being bigger than
+            // the drawn one. For a lone atom it is not: screenRadius is the
+            // ball's own radius there, exactly what is on screen, so halving it
+            // put the band through the middle of the metal it was marking.
+            const loneSel = this._loneAtoms;
+            const radiusAt = (i) => (sr[i] || 2)
+                * ((loneSel && loneSel.has(i)) ? 1 : SELECTION_HALO_RADIUS_FRAC);
             const bandFor = (r) => {
                 const rad = r || 2;
                 return 2 * (rad + Math.min(SELECTION_HALO_MAX_PX * pxScale,
@@ -9969,6 +10030,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     widthMultiplier = (this.typeWidthMultipliers && this.typeWidthMultipliers[type]) || 0.5;
                 }
                 let atomLineWidth = baseLineWidthPixels * widthMultiplier;
+                // ...EXCEPT A LONE ATOM, which is not a segment of anything: it
+                // is drawn as a ball of its element's van der Waals radius, and
+                // a click target or a selection band built from the Line Width
+                // control instead marks a circle that is not the one on screen.
+                // A zinc is 1.39 A and a potassium 2.75; the old number was the
+                // same for both, and did not follow the zoom the ball does.
+                const lone = this._loneAtoms;
+                if (lone && lone.has(idx) && this.elementAt) {
+                    const api = typeof window !== 'undefined' && window.py2dmolCartoon;
+                    const el = this.elementAt(idx);
+                    if (el && api && api.loneAtomRadiusA) {
+                        atomLineWidth = 2 * api.loneAtomRadiusA(el) * scale;
+                    }
+                }
 
                 if (isPerspective(this.viewerState)) {
                     const z = this.viewerState.focalLength - vec.z;

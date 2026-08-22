@@ -474,6 +474,41 @@ function facesOf(prims, prm) {
                     nl: p.nl,
                     tan: [p.q[k][0] - p.q[0][0], p.q[k][1] - p.q[0][1], p.q[k][2] - p.q[0][2]] });
             }
+        } else if (p.kind === 'dot' && p.pA && p.rA > 0) {
+            // A LONE ATOM - a metal ion, most often - IS A BALL, and the GPU
+            // had no way to draw one: `dot` fell through to the skip list, so
+            // every ion was simply absent from the GPU frame while the 2D pass
+            // drew it. Measured on 1EHZ, {dot: 9} skipped - six magnesiums and
+            // three manganeses, gone; on the 1TF6 zinc fingers, all six zincs.
+            //
+            // ONE QUAD, TURNED TO FACE THE EYE IN THE VERTEX SHADER, with the
+            // circle and its two tones solved in the fragment. A real sphere of
+            // facets was tried first and is the wrong drawing: this renderer
+            // draws a lone atom as a flat disc with concentric bands (see
+            // fillRound), and a lit, smoothly-shaded ball put a piece of a
+            // different picture into the frame. It also cost ~50 faces an atom
+            // against this one, which is 240 of them on a capsid.
+            //
+            // The quad is emitted as a SQUARE of the ball's diameter about the
+            // centre, in projected space like every other prim, so it
+            // unprojects to a square in model space and the mesh's own
+            // machinery - bounds, depth range, visibility - all still work on
+            // it. The shader keeps only its centre and half-diagonal.
+            const R = p.r;                       // pixels, at the capture depth
+            const cx = p.pA[0], cy = p.pA[1], cz = p.pA[2];
+            faces.push({ res: residueOf(p),
+                q: [[cx - R, cy - R, cz], [cx + R, cy - R, cz],
+                    [cx + R, cy + R, cz], [cx - R, cy + R, cz]],
+                c: p.c || { r: 200, g: 140, b: 60 }, top: 1, kAvg: 0, iMul: 1,
+                // the shader shades it as a ball, so the mesh must not shade it
+                // as a quad: unlit passes the base colour through untouched
+                unlit: 1, disc: 1,
+                // ...and the square's own four edges are not an outline. The
+                // disc's rim is drawn by the fragment shader, which is the only
+                // thing that knows where the circle actually is.
+                noInk: 1,
+                pal: p.ci !== undefined ? p.ci * 3 : (palComplete = false, -1),
+                colMode: 0, tan: [1, 0, 0] });
         } else if (p.kind === 'line' && p.pts && p.pts.length > 1) {
             // A FLAT STROKE - a contact, or a bond with no box. It is not a
             // surface and never was: the renderer draws it as a bright line of
@@ -574,7 +609,16 @@ uniform vec2 uSize; uniform vec2 uZRange;
 out vec3 vCol;
 out float vCull;      // the shared fragment shader reads it; nothing to cull here
 out float vZv;        // view z, for the clip slab in the fragment
+// DECLARED BECAUSE THE FRAGMENT SHADER IS SHARED, not because this pass has
+// discs. A varying the fragment reads and no vertex shader writes does not
+// warn, it fails the LINK - and since both programs are built in one try
+// block, the whole GPU path falls back to the 2D one with a single line in the
+// console. Every disc lives in the VS3D pass; here they are always off.
+out vec2 vDisc;
+out float vIsDisc;
 void main() {
+  vDisc = vec2(0.0);
+  vIsDisc = 0.0;
   vec2 ndc = vec2(aPos.x / uSize.x * 2.0 - 1.0, 1.0 - aPos.y / uSize.y * 2.0);
   // z grows toward the eye, so NEAR must become SMALL depth for gl.LESS
   float t = (aZ - uZRange.x) / max(1e-6, uZRange.y - uZRange.x);
@@ -621,6 +665,9 @@ in vec4 aFlags1;        // side, cap, sheet, residue
 in vec4 aFlags2;        // palette slot, colour mode, -, -
 out float vCull;
 out float vZv;        // view z, for the clip slab in the fragment
+// where in a lone atom's disc this corner is, and whether it is one
+out vec2 vDisc;
+out float vIsDisc;
 in vec3 aDots;          // captured oB, oLb, oT - only true at the capture view
 in vec3 aFlatN;         // the FACE's own OUTWARD normal, constant over it
 in vec3 aFlatShade;     // ...and the normal a FLAT face shades from
@@ -714,11 +761,13 @@ vec3 shadeCol(vec3 rgb, float near, float extra, float lum) {
 void main() {
   float aK = aFlags0.x, aTop = aFlags0.y, aIMul = aFlags0.z, aStick = aFlags0.w;
   float aSide = aFlags1.x, aCap = aFlags1.y, aRes = aFlags1.w;
-  // aFlags2.z packs three flags: 1 = double-sided, 2 = unlit, 4 = base plate.
+  // aFlags2.z packs four flags: 1 = double-sided, 2 = unlit, 4 = base plate,
+  // 8 = a lone atom's disc.
   // All per-face booleans, bit-packed into the one spare slot.
   float aPal = aFlags2.x, aColMode = aFlags2.y;
   float aTwo = mod(aFlags2.z, 2.0) > 0.5 ? 1.0 : 0.0;
   float aPlate = mod(floor(aFlags2.z / 4.0), 2.0) > 0.5 ? 1.0 : 0.0;
+  float aDisc = mod(floor(aFlags2.z / 8.0), 2.0) > 0.5 ? 1.0 : 0.0;
   // BIT 2, not ">= 2". This read the whole field as a magnitude, which was
   // right while it held only bits 1 and 2 (z was 0..3, so z >= 2 meant bit 2).
   // Adding the plate bit made z = 4 for every base plate and the test then
@@ -738,6 +787,24 @@ void main() {
   vec3 aNormal = (corner == 0 || corner == 1) ? aNA : aNB;
   vec3 aTangent = (corner == 0 || corner == 1) ? aTA : aTB;
   vec3 v = uRot * (aModel + uShift);
+  // A LONE ATOM'S DISC FACES THE EYE, ALWAYS. The mesh is resident, so a flat
+  // circle baked at the capture view would foreshorten to an ellipse and then
+  // to a line as the model turned. Its four corners are placed here instead,
+  // square to the screen about the centre the mesh carries - which is why the
+  // quad is stored as a square: its half-diagonal IS the radius, in model
+  // units, so the disc follows zoom and perspective like everything else.
+  vDisc = vec2(0.0);
+  vIsDisc = 0.0;
+  if (aDisc > 0.5) {
+    vec3 ctrD = (aC0 + aC1 + aC2 + aC3) * 0.25;
+    float rD = length(aC0 - ctrD) * 0.70710678;
+    vec2 loc = corner == 0 ? vec2(-1.0, -1.0)
+        : (corner == 1 ? vec2(1.0, -1.0)
+        : (corner == 2 ? vec2(1.0, 1.0) : vec2(-1.0, 1.0)));
+    v = uRot * (ctrD + uShift) + vec3(loc * rD, 0.0);
+    vDisc = loc;
+    vIsDisc = 1.0;
+  }
   vZv = v.z;
   // THE RENDERER'S OWN PROJECTION. pe = fl / (fl - z), applied to x and y and
   // not to z - which is what leaves z invertible on the way back in.
@@ -1776,6 +1843,7 @@ void main() {
 const FS = `#version 300 es
 precision highp float;
 in vec3 vCol; in float vCull; in float vZv; out vec4 fragColor;
+in vec2 vDisc; in float vIsDisc;
 // THE OCCLUSION, BORROWED WHOLE FROM THE TUBE. uZOnly makes this pass the depth
 // prepass the shadow is computed from - the same fragment writing its view
 // depth in Angstrom instead of a colour - and uAOTex is the answer coming back.
@@ -1783,6 +1851,11 @@ in vec3 vCol; in float vCull; in float vZv; out vec4 fragColor;
 // buried each pixel is, so the cartoon needs no shader of its own, only its own
 // constants (see drawResident).
 uniform float uZOnly, uUseAO;
+// THE OUTLINE CONTROL, in device pixels, for the one thing this pass outlines
+// itself: a lone atom's disc (the ink pass cannot - the circle is not in the
+// mesh, only the square around it). Zero means the drawing has no outlines,
+// and the ring must go with them.
+uniform float uDiscInk;
 // how much of the colour the shadow may take where it is fully buried
 uniform float uAOAmt;
 uniform vec2 uSizeF;
@@ -1794,8 +1867,45 @@ void main() {
   // it turns away, decided now rather than when the mesh was captured
   if (vCull > 0.5) discard;
   if (clipped(vZv)) discard;
+  // A LONE ATOM: THE QUAD IS A SQUARE AND THE ATOM IS A CIRCLE.
+  //
+  // Solved here rather than tessellated, and shaded the way the 2D pass shades
+  // one - concentric bands stepping toward a centre offset along the light,
+  // which is the flat read of a highlight sitting off-centre on a ball. Two
+  // steps: this is a drawing, and a smooth gradient reads as a different one.
+  // Cut BEFORE the depth prepass returns, or the shadow pass sees the square.
+  float discTone = 1.0;
+  if (vIsDisc > 0.5) {
+    float r = length(vDisc);
+    if (r > 1.0) discard;
+    // the light, as the 2D pass sees it on the page: view-space x and y, with
+    // y up because that is the direction this quad's corners were placed in
+    vec2 ls = normalize(vec2(-0.45, 0.6));
+    float d = length(vDisc - ls * 0.42);
+    discTone = d < 0.62 ? 1.0 : 0.82;
+    // ...and its RIM, which the 2D pass strokes as ink. Nothing else can draw
+    // it: the square's own edges are vetoed in the mesh, because they are not
+    // where the circle is. THIN AND ONLY HALF DARK - the 2D stroke is one
+    // outline width on a ball a dozen pixels across, and a heavy ring read as
+    // a drawn-on target rather than as the edge of a small round thing.
+    // ...A FIXED NUMBER OF PIXELS WIDE, not a fraction of the radius. An
+    // outline is a pen, and a pen does not get fatter because the thing it
+    // draws is nearer: the 2D pass strokes this ring at the outline width
+    // whatever the zoom. As a fraction it looked right at the size an ion
+    // is on a whole-structure view and turned into a thick dark band as
+    // soon as anyone zoomed in on the metal - which is the whole reason to
+    // zoom in on one.
+    //
+    // fwidth gives how much of the disc one pixel spans, so 1 - k*px is the
+    // radius k pixels in from the edge. Clamped because a disc smaller than
+    // the pen is all pen otherwise, and one filling the screen would get a
+    // hairline that aliases away.
+    float px = max(fwidth(vDisc.x), fwidth(vDisc.y));
+    float pen = clamp(uDiscInk * px, 0.0, 0.3);
+    if (pen > 0.004 && r > 1.0 - pen) discTone = 0.55;
+  }
   if (uZOnly > 0.5) { fragColor = vec4(vZv, 0.0, 0.0, 1.0); return; }
-  vec3 col = vCol;
+  vec3 col = vCol * discTone;
   if (uUseAO > 0.5) {
     // THE SHADOW TERM ONLY. The tube applies two: it whitens by how EXPOSED a
     // pixel is and then darkens by how much lies in front of it, because that
@@ -3047,7 +3157,8 @@ function makeResident(faces, scale, prm, lines) {
         // flags2: palette slot, colour mode, double-sided, coincident at the FAR station
         data[o++] = f.pal === undefined ? -1 : f.pal;
         data[o++] = f.colMode || 0;
-        data[o++] = (f.two ? 1 : 0) + (f.unlit ? 2 : 0) + (f.plate ? 4 : 0);
+        data[o++] = (f.two ? 1 : 0) + (f.unlit ? 2 : 0) + (f.plate ? 4 : 0)
+            + (f.disc ? 8 : 0);
         data[o++] = f.sheetB ? 1 : 0;
         for (const p of f.q) {
             const z = p[2];
@@ -3601,6 +3712,18 @@ function drawResident(cv, prm, prmAO) {
     gl.uniform1f(gl.getUniformLocation(prog3, 'uFL'), focalLength());
     gl.uniform1f(gl.getUniformLocation(prog3, 'uShowRibbon'), showRibbon ? 1 : 0);
     gl.uniform1f(gl.getUniformLocation(prog3, 'uShowSticks'), showSticks ? 1 : 0);
+    // ...and the same outline width the ink pass uses, so a disc's own rim
+    // follows the Outline control like every other line in the picture -
+    // including all the way to zero, where the drawing has no outlines at all.
+    // GATED ON sp.ink, not on the width: inkWidth has a floor (INK_W_MIN) so
+    // that a thin outline stays visible, which means it never reaches zero -
+    // turning outlines OFF is the `ink` flag, and a disc that kept its ring
+    // would be the only outlined thing left in the picture.
+    // P0, NOT sp: `const sp = P0` is thirty lines below this, and a const read
+    // before its declaration is a TDZ throw rather than undefined - it took the
+    // whole GPU path down to the 2D fallback with one line in the console.
+    gl.uniform1f(gl.getUniformLocation(prog3, 'uDiscInk'),
+        P0.ink ? P0.inkWidth * pixelRatio : 0);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, visTex);
     gl.uniform1i(gl.getUniformLocation(prog3, 'uVis'), 0);

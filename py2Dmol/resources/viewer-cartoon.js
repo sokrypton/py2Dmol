@@ -638,6 +638,45 @@
     // 2.5 on the same scale the control uses, so the section no longer depends
     // on it at all.
     const LIGAND_WIDTH = 2.5;
+    // A LONE ATOM IS A BALL, AND ITS SIZE IS THE ELEMENT'S. A metal ion is a
+    // position with no bonds at all, so it misses every width the sticks use
+    // and came out at the 'L' baseline like everything else: 0.6 A of radius,
+    // the same for a zinc as for a chloride, and thinner than the bonds around
+    // it. Nothing else in a structure is drawn to a size that says WHAT it is,
+    // because nothing else is a bare atom - a ribbon stands for a residue.
+    //
+    // van der Waals radii, Bondi (1964) where he gives one and Alvarez (2013)
+    // for the transition metals he does not. NOT ionic radii: an ion in a
+    // structure is drawn at the size it occupies, which is the vdW sphere, and
+    // Zn(2+) at 0.74 A would be smaller than the sticks again.
+    const VDW_A = {
+        H: 1.20, C: 1.70, N: 1.55, O: 1.52, F: 1.47, NA: 2.27, MG: 1.73,
+        AL: 1.84, SI: 2.10, P: 1.80, S: 1.80, CL: 1.75, K: 2.75, CA: 2.31,
+        MN: 2.05, FE: 2.04, CO: 2.00, NI: 1.63, CU: 1.40, ZN: 1.39, SE: 1.90,
+        BR: 1.85, SR: 2.49, MO: 2.17, AG: 1.72, CD: 1.58, I: 1.98, W: 2.18,
+        PT: 1.75, AU: 1.66, HG: 1.55, PB: 2.02,
+    };
+    // Carbon's, for an atom whose element the file did not say.
+    const VDW_DEFAULT = 1.70;
+    // AT THE FULL RADIUS, not a fraction of it. A lone atom is the one thing in
+    // this drawing that IS an atom - everything else stands for a residue - so
+    // it is drawn the size an atom is. Zinc's vdW radius is 1.39 A against
+    // carbon's 1.70: SMALLER than a carbon, which is not what people expect of
+    // a metal, but it is what makes the sizes mean something. What made an ion
+    // look wrong before was not the element, it was 0.6 A for all of them.
+    const ION_VDW_FRAC = 1.0;
+    /**
+     * How big a lone atom of this element is drawn, in Angstrom.
+     *
+     * EXPORTED, because two files need the same number: this one draws the
+     * ball, and viewer-mol.js sizes the click target and the selection band
+     * from it. A second copy of the table there would drift.
+     */
+    function loneAtomRadiusA(el) {
+        const k = (el || '').toUpperCase();
+        return (VDW_A[k] || VDW_DEFAULT) * ION_VDW_FRAC;
+    }
+
     // ...and its own THICKNESS, for the same reason. 0.5 A total against the
     // 0.5 A width the line above works out to, so the section is square. The
     // control still takes it over the moment the user moves it (0 included,
@@ -6996,8 +7035,24 @@
             const segSel = !!(selInk
                 && (selInk.has(seg.idx1) || selInk.has(seg.idx2)));
             if (seg.idx1 === seg.idx2) {
+                // A LONE ATOM IS SIZED BY ITS ELEMENT, not by the Line Width
+                // control - the same rule the ligand sticks follow, and for the
+                // same reason: this is a small thing sitting in a big one and
+                // it should not grow with the backbone. Only a position that
+                // knows its element gets this; a lone C-alpha (a one-residue
+                // chain) is not an atom and keeps the segment width.
+                const el = renderer.elementAt ? renderer.elementAt(seg.idx1) : '';
+                const isAtom = !!el || seg.type === 'L';
+                const rA = isAtom ? loneAtomRadiusA(el) : null;
+                // pe is the perspective factor already in wpx; scale converts
+                // Angstrom to pixels, exactly as baseLineWidthPixels does.
+                const rpx = rA !== null ? rA * scale * A[3] : wpx / 2;
                 prims.push({ kind: 'dot', x1: A[0], y1: A[1], z: A[2],
-                    r: wpx / 2, c: col, pA: A, sel: segSel, gs0: seg.idx1 });
+                    // BOTH RADII. The GPU port builds a real sphere from this
+                    // and needs the Angstrom one; their ratio is also the only
+                    // way it can recover pixels-per-Angstrom at this depth.
+                    r: rpx, rA: rA !== null ? rA : rpx / Math.max(1e-6, scale * A[3]),
+                    c: col, ci: segCi, pA: A, sel: segSel, gs0: seg.idx1 });
             } else {
                 bondList.push({
                     a: seg.idx1, b: seg.idx2, A, B, w: wpx, wA: wAng, c: col,
@@ -12317,7 +12372,7 @@
     // benchmarks report against them.
     window.py2dmolCartoon = { render, makeSec, smoothSec, extendSec, SS_PARAMS: SS,
         predictBackbone, predictBaseFrames, assignSecondary, assignSecondaryOpen,
-        smoothNucleicTrace,
+        smoothNucleicTrace, loneAtomRadiusA,
         ringsOf, buildSheetFrames, localFrame,
         NUCLEIC_STEP_MIN, NUCLEIC_STEP_MAX,
         // THE PAPER, and the three numbers that place it. The WebGL2 port

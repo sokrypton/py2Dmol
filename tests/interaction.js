@@ -1896,6 +1896,130 @@ t('the nucleic trace is smoothed, and everything nucleic reads the same trace', 
     }
 });
 
+t('a metal has a colour and a size of its own', () => {
+    // A LONE ION USED TO TAKE WHATEVER THE LIGAND PALETTE HANDED IT - a zinc
+    // came out orange in one chain and green in the next - and was drawn at
+    // 0.6 A whatever it was, the 'L' segment baseline, thinner than the bonds
+    // around it. Both are element facts and both now come from a table.
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = mol.indexOf('static get ELEMENT_COLORS()');
+    if (at < 0) throw new Error('no element colour table');
+    const tbl = mol.slice(at, mol.indexOf('\n        }', at));
+    // PyMOL's own values (layer1/Color.cpp, floats x 255), so the drawing
+    // agrees with the viewer everyone reads structures in
+    for (const [el, rgb] of [['ZN', [125, 128, 176]], ['FE', [224, 102, 51]],
+        ['MG', [138, 255, 0]], ['CA', [61, 255, 0]], ['NA', [171, 92, 242]],
+        ['MN', [156, 122, 199]], ['CU', [200, 128, 51]]]) {
+        const m = new RegExp(el + ':\\s*\\{\\s*r:\\s*(\\d+),\\s*g:\\s*(\\d+),\\s*b:\\s*(\\d+)').exec(tbl);
+        if (!m) throw new Error(`${el} has no colour, so it falls back to whatever`
+            + ' colour its position had - which says nothing about what it is');
+        const got = [+m[1], +m[2], +m[3]];
+        if (got.join() !== rgb.join()) {
+            throw new Error(`${el} is ${got} and PyMOL's is ${rgb}`);
+        }
+    }
+    // CARBON MUST STAY OUT: a null sends the atom to its residue's colour, so a
+    // coloured side chain keeps its colour with only heteroatoms standing out.
+    if (/\n\s*C:\s*\{/.test(tbl)) {
+        throw new Error('carbon has an element colour, so every ligand is now grey');
+    }
+    // ...and the size, shared with viewer-mol.js so the click target and the
+    // selection band are the circle that is actually drawn
+    const sandbox = {
+        window: { addEventListener() {}, dispatchEvent() {} },
+        document: { createElement: () => ({ getContext: () => null }) },
+        console, performance: { now: () => Date.now() }, Event: function () {},
+    };
+    sandbox.window.window = sandbox.window;
+    require('vm').createContext(sandbox);
+    require('vm').runInContext(
+        fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8'),
+        sandbox, { filename: 'cartoon' });
+    const rad = sandbox.window.py2dmolCartoon.loneAtomRadiusA;
+    if (!rad) throw new Error('loneAtomRadiusA is not exported, so viewer-mol.js'
+        + ' cannot size a click target from the same number that drew the ball');
+    // van der Waals, so ZINC IS SMALLER THAN CARBON (1.39 against 1.70). It
+    // reads as wrong and it is right; anyone "fixing" it should fail here.
+    if (!(rad('ZN') < rad('C'))) throw new Error('these are not vdW radii');
+    if (!(rad('K') > rad('NA') && rad('NA') > rad('ZN'))) {
+        throw new Error('the element order is wrong: K > Na > Zn by vdW radius');
+    }
+    if (rad('XX') !== rad('C')) throw new Error('an unknown element should take carbon\'s');
+    if (!mol.includes('loneAtomRadiusA')) {
+        throw new Error('viewer-mol.js sizes lone atoms from something else again');
+    }
+});
+
+t('a lone atom reaches the GPU, as a disc', () => {
+    // METALS WENT MISSING IN GPU MODE. A lone atom - an ion, most often - is a
+    // zero-length segment, drawn by the 2D pass as a shaded circle. The GPU
+    // translator had no branch for it, so it fell through to the skip list and
+    // every ion in the structure was absent from the frame: measured on 1EHZ,
+    // {dot: 9}, six magnesiums and three manganeses; on 1TF6, all six zincs.
+    const sandbox = {
+        window: { addEventListener() {}, dispatchEvent() {} },
+        document: { createElement: () => ({ getContext: () => null }) },
+        console, performance: { now: () => Date.now() }, Event: function () {},
+    };
+    sandbox.window.window = sandbox.window;
+    require('vm').createContext(sandbox);
+    require('vm').runInContext(
+        fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8'),
+        sandbox, { filename: 'gpu' });
+    const G = sandbox.window.py2dmolCartoonGPU;
+    if (!G || !G.facesOf) throw new Error('the GPU module did not load');
+    const R = 12;
+    const out = G.facesOf([{ kind: 'dot', pA: [100, 120, 5, 1], x1: 100, y1: 120,
+        z: 5, r: R, rA: 1.39, c: { r: 1, g: 2, b: 3 }, ci: 4, gs0: 7 }], undefined);
+    if (out.skipped) throw new Error('the GPU still skips a lone atom');
+    if (out.faces.length !== 1) {
+        throw new Error(`a lone atom should be ONE quad, got ${out.faces.length}`
+            + ' - a tessellated ball is the wrong drawing and ~50x the faces');
+    }
+    const f = out.faces[0];
+    // the shader billboards it and solves the circle, so it must be told to do
+    // both: shade it as a ball (unlit = do not shade it as a quad), and keep
+    // the square's own edges out of the outline
+    for (const k of ['disc', 'unlit', 'noInk']) {
+        if (!f[k]) throw new Error(`the disc face is missing ${k}`);
+    }
+    // THE SQUARE CARRIES THE RADIUS AS ITS HALF-DIAGONAL, which is the only
+    // thing the vertex shader reads off it. Getting this wrong scales every
+    // ion in the picture and nothing says so.
+    const ctr = [0, 1, 2].map((j) => f.q.reduce((a, q) => a + q[j], 0) / 4);
+    const half = Math.hypot(f.q[0][0] - ctr[0], f.q[0][1] - ctr[1]) * Math.SQRT1_2;
+    if (Math.abs(half - R) > 1e-6) {
+        throw new Error(`the disc quad's half-diagonal is ${half}, not the radius ${R}`);
+    }
+});
+
+t('every varying the shared fragment shader reads is written by BOTH vertex shaders', () => {
+    // ONE FRAGMENT SHADER, TWO PROGRAMS. FS is linked against the flat VS and
+    // against VS3D, and a varying it reads that one of them does not write is
+    // not a warning - it fails the LINK. Both programs are built inside one try
+    // block, so the whole GPU path then falls back to the 2D one with a single
+    // console line, and the picture still looks almost right: it took a run
+    // where GPU and 2D came back pixel-identical to notice.
+    const src = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const lit = (name) => {
+        const at = src.indexOf('const ' + name + ' = `');
+        if (at < 0) throw new Error('no shader called ' + name);
+        const from = src.indexOf('`', at) + 1;
+        return src.slice(from, src.indexOf('`;', from));
+    };
+    const fsSrc = lit('FS'); const vs = lit('VS'); const vs3d = lit('VS3D');
+    const want = [...fsSrc.matchAll(/\bin\s+(float|vec2|vec3|vec4)\s+(v\w+)/g)];
+    if (want.length < 3) throw new Error('found no varyings to check - regex stale');
+    for (const [, type, name] of want) {
+        for (const [tag, body] of [['VS', vs], ['VS3D', vs3d]]) {
+            if (!new RegExp('\\bout\\s+' + type + '\\s+' + name + '\\b').test(body)) {
+                throw new Error(`FS reads ${type} ${name} and ${tag} never declares it`
+                    + ' - the program will not link and the GPU path dies silently');
+            }
+        }
+    }
+});
+
 t('a cut duplex is smoothed exactly as the uncut one was', () => {
     // THE ENDS. Build an ideal B-DNA C4' helix, smooth it, then CUT it in the
     // middle and smooth the piece: every surviving residue must move where it
