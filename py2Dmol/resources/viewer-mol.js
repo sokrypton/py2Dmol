@@ -11576,25 +11576,25 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const sources = [];
             if (hasFrames) {
                 sources.push({ id: 'F', label: 'F', spin: false, timed: false,
-                    title: 'Play the frames once' });
+                    title: 'frames once' });
             }
             if (hasFrames && spin) {
                 sources.push({ id: 'FR', label: 'FR', spin: true, timed: false,
-                    title: 'Play the frames once, with the rotation fitted into them' });
+                    title: 'frames once, turning' });
                 sources.push({ id: 'RF', label: 'RF', spin: true, timed: true,
-                    title: 'Turn for the time you set, with the frames fitted into it' });
+                    title: 'timed turn, frames fitted in' });
             }
             if (this.drawMode) {
                 sources.push({ id: 'D', label: 'D', spin: false, timed: true,
-                    title: 'Record the drawing building up' });
+                    title: 'the drawing' });
             }
             if (this.drawMode && spin) {
                 sources.push({ id: 'DR', label: 'DR', spin: true, timed: true,
-                    title: 'Record the drawing building up while the view turns' });
+                    title: 'the drawing, turning' });
             }
             if (spin) {
                 sources.push({ id: 'R', label: 'R', spin: true, timed: true,
-                    title: 'Turn on the spot' });
+                    title: 'a turn' });
             }
             // A running animation is paused while the panel is up, so what is
             // saved is the frame that was on screen when it was opened.
@@ -11799,7 +11799,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const fmtSel = menu('saveFormatSelect', svgOk
                 ? [{ value: 'png', label: 'PNG' }, { value: 'svg', label: 'SVG' }]
                 : [{ value: 'png', label: 'PNG' }],
-            (svgOk && opts.format !== 'svgz') ? opts.format : 'png', 'Image file format');
+            (svgOk && opts.format !== 'svgz') ? opts.format : 'png', 'Image format');
             // EVERY CONTROL SAYS WHAT IT IS. A bare menu reading "PNG" is
             // only obvious while you already know what the row does, and a
             // captioned pair is also the same SHAPE as every other pair, which
@@ -11814,15 +11814,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 { value: 96, label: '96' }, { value: 150, label: '150' },
                 { value: 200, label: '200' }, { value: 300, label: '300' },
                 { value: 600, label: '600' },
-            ], opts.dpi, 'Resolution of the saved image. 96 dpi is screen size.');
+            ], opts.dpi, 'Image resolution (96 = screen)');
             dpiBox = pair('DPI', 'saveDpiInput', dpiSel);
             imgRow.appendChild(dpiBox);
             // A WORD, NOT A GLYPH. The camera and the card-index emoji were
             // small, low-contrast and rendered differently on every platform -
             // and being the only pictures in a panel of words, they read as
             // decoration rather than as the buttons that do the thing.
-            const okBtn = button('Save', sources.length
-                ? 'Save the frame on screen as an image' : 'Save an image');
+            const okBtn = button('Save', 'Save an image');
             imgRow.action.appendChild(okBtn);
             // EVERY FRAME AS FILES IS A VIDEO FORMAT, not a button here - see
             // videoFormats. It writes the same frames the recorders drive, so
@@ -11863,13 +11862,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const vRow = row('Vid');
                 videoRow = vRow;
                 vFmt = menu('saveVideoFormat', formats.map((f) => (
-                    { value: f.id, label: f.label })), opts.container,
-                'Video file format' + (formats.some((f) => f.id === 'gif')
-                    ? '' : ' (GIF needs the standalone page)'));
+                    { value: f.id, label: f.label })), opts.container, 'Video format');
                 vFmtBox = pair('Type', 'saveVideoFormat', vFmt);
                 vRow.appendChild(vFmtBox);
                 const [secL, sec] = num('saveSecondsInput', 'Sec', opts.seconds, 1, 60,
-                    'How long the recording runs, in seconds');
+                    'Length in seconds');
                 vRow.appendChild(secL); secIn = sec;
                 const [fpsL, fps] = num('saveFpsInput', 'FPS', opts.fps, 5, 60,
                     'Frames per second');
@@ -11879,21 +11876,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // - so Sec and FPS give way to one number. On the trajectory
                 // source even that is decided for you: one PNG per frame.
                 const [frL, fr] = num('saveFrameCount', 'Count', opts.frames || 36,
-                    2, 600, 'How many images to write, over one full turn');
+                    2, 600, 'How many images');
                 vRow.appendChild(frL); framesIn = fr;
                 // HOW MANY TURNS. One is the usual answer, but a trajectory
                 // fitted into a single revolution can be too slow to read - two
                 // or three turns over the same frames give the eye a second
                 // look at every angle.
                 const [rotL, rot] = num('saveRotations', 'Rot', opts.rotations || 1,
-                    1, 10, 'How many full turns the recording makes');
+                    1, 10, 'Full turns');
                 vRow.appendChild(rotL); rotIn = rot;
                 const [mbL, mb] = num('saveMbpsInput', 'Mbps', opts.mbps, 1, 80,
-                    'Bitrate: how many megabits a second of video is ALLOWED - '
-                    + 'a ceiling, not a target. Flat colour and clean edges '
-                    + 'compress well, so the encoder usually spends about half '
-                    + 'of it; the headroom is for an upload that will be '
-                    + 're-encoded on arrival.');
+                    'Bitrate ceiling');
                 vRow.appendChild(mbL); mbpsIn = mb;
                 // GIF'S OWN CONTROLS, and only where GIF can be written at
                 // all: on the notebook page there is no encoder, so these are
@@ -11914,9 +11907,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     { value: 128, label: '128' },
                     { value: 64, label: '64' },
                     { value: 32, label: '32' },
-                ], opts.colors || 256,
-                'How many colours the GIF palette holds. A cartoon has few, so '
-                + '64 is usually indistinguishable and about half the size.');
+                ], opts.colors || 256, 'GIF palette size');
                 colorsBox = pair('Color', 'saveGifColors', colorsSel);
                 vRow.appendChild(colorsBox);
                 }
@@ -11925,9 +11916,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // on its own is a multiplier of nothing stated.
                     sizeSel = menu('saveVideoSize', sizes.map((z) => (
                         { value: z.scale, label: z.label })), opts.scale,
-                    'Recording size, as a multiple of the viewer. Frames are '
-                    + 're-rendered at this size, not scaled up from the screen '
-                    + '- the line below says what it comes to in pixels.');
+                    'Recording size');
                     sizeBox = pair('Size', 'saveVideoSize', sizeSel);
                     vRow.appendChild(sizeBox);
                 }
@@ -12095,7 +12084,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     === (srcSel ? srcSel.value : sources[0].id)) || sources[0];
                 const syncRec = () => {
                     const src = pick();
-                    recBtn.title = 'Record: ' + src.label;
+                    recBtn.title = 'Record ' + (src.title || src.label);
                 };
                 if (srcSel) {
                     srcSel.addEventListener('change', syncRec);

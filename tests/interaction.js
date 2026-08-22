@@ -3430,8 +3430,16 @@ t('the capture panel calls its seconds field Sec, and says so once', () => {
     if (!/num\('saveSecondsInput', 'Sec'/.test(body)) {
         throw new Error('the seconds field is not labelled Sec');
     }
-    if (!/How long the recording runs, in seconds/.test(body)) {
+    if (!/'Length in seconds'/.test(body)) {
         throw new Error('nothing says what the seconds are');
+    }
+    // ...AND NO TOOLTIP IS A PARAGRAPH. A hover caption is read in the second
+    // before the pointer moves on; the reasoning behind a default belongs in
+    // the source, where it is, not in a box over the control.
+    for (const m of body.matchAll(/(?:title|tip)\s*[:=]\s*'([^']+)'/g)) {
+        if (m[1].length > 34) {
+            throw new Error('a tooltip is a sentence again: "' + m[1] + '"');
+        }
     }
     // ONE set of video settings, not one per output. Two rows each carrying
     // their own frame rate is how the same number came to be two controls.
