@@ -11579,12 +11579,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     + 'Flat colour and clean edges compress well, so 5 is '
                     + 'visually clean here.');
                 vRow.appendChild(mbL); vRow.appendChild(mb); mbpsIn = mb;
-                // GIF'S OWN CONTROL, on the same row and shown only for GIF.
+                // GIF'S OWN CONTROLS, and only where GIF can be written at
+                // all: on the notebook page there is no encoder, so these are
+                // not hidden controls, they are absent ones.
                 // A GIF is a palette, not a bitrate: the size of the file is
                 // decided by how many colours it is allowed and how many
                 // pixels, so those are the two things to offer - and Mbps,
                 // which means nothing here, goes away rather than sitting
                 // greyed out pretending to be part of the format.
+                const gifOk = formats.some((f) => f.id === 'gif');
+                if (gifOk) {
                 colorsSel = menu('saveGifColors', [
                     { value: 256, label: '256 col' },
                     { value: 128, label: '128 col' },
@@ -11606,6 +11610,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 'Paper draws the background; Clear leaves it transparent, which '
                 + 'a GIF does with one palette entry - so the edge is a hard cut.');
                 vRow.appendChild(bgSel);
+                }
                 if (sizes.length) {
                     sizeSel = menu('saveVideoSize', sizes.map((z) => (
                         { value: z.scale, label: z.label })), opts.scale,
@@ -11624,8 +11629,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // format does not move the rest of the row about.
                     mbL.style.display = gif ? 'none' : '';
                     mbpsIn.style.display = gif ? 'none' : '';
-                    colorsSel.style.display = gif ? '' : 'none';
-                    bgSel.style.display = gif ? '' : 'none';
+                    if (colorsSel) colorsSel.style.display = gif ? '' : 'none';
+                    if (bgSel) bgSel.style.display = gif ? '' : 'none';
                     // A GIF'S LIMITS ARE APPLIED TO THE CONTROLS, not just to
                     // the recording. The sink clamps either way, but a panel
                     // reading 30 fps and 1194x1194 over a file that came out
