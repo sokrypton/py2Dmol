@@ -3733,7 +3733,16 @@ t('the save panel can still record a trajectory', () => {
     }
     // with nothing recordable the row SAYS so rather than offering a dead button
     if (!/Turn on Rotate or Draw, or load frames/.test(body)) {
-        throw new Error('an empty Record row says nothing');
+        throw new Error('an empty video row says nothing');
+    }
+    // ...and the buttons live ON the video row, not on one of their own: a row
+    // called Record under a row called Video is a second name for one subject,
+    // and a line break nobody asked for.
+    if (/row\('Record'\)/.test(body)) {
+        throw new Error('the record buttons are back on a row of their own');
+    }
+    if (!/const recRow = videoRow/.test(body)) {
+        throw new Error('the record buttons do not join the Video row');
     }
 });
 

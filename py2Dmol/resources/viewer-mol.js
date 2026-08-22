@@ -10643,9 +10643,29 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         _describeCapture() {
             if (!this._savePanel || this._captureBusy) return;
             const o = this.captureOpts();
+            const lines = [];
+            // THE IMAGE, in the same box as everything else. Its pixel size
+            // used to sit inline on its own row, which is a second place for
+            // the kind of thing this box exists to hold - and the row is a
+            // format, a dpi and two buttons already.
+            const dispW = this.displayWidth
+                || parseInt(this.canvas && this.canvas.style.width) || 0;
+            const dispH = this.displayHeight
+                || parseInt(this.canvas && this.canvas.style.height) || 0;
+            if (o.format === 'png') {
+                const k = o.dpi / 96;
+                lines.push(`PNG ${Math.round(dispW * k)}x${Math.round(dispH * k)}`
+                    + ` \u00b7 ${o.dpi} dpi`);
+            } else {
+                // A VECTOR HAS NEITHER. No pixels to count and no dpi to count
+                // them at - it is resolution-independent, which is the reason
+                // to pick it - so saying "598x598 at 96 dpi" described a
+                // property the file does not have.
+                lines.push(`${o.format === 'svgz' ? 'SVG.gz' : 'SVG'} \u00b7 vector`);
+            }
             const fmt = this.videoFormatOf(o.container);
             if (!fmt || !this._savePanel.querySelector('#saveVideoFormat')) {
-                this._captureStatus('');
+                this._captureStatus(lines.join('\n'));
                 return;
             }
             const sizes = this.videoSizes();
@@ -10659,13 +10679,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 w = 2 * Math.round(w * f / 2); h = 2 * Math.round(h * f / 2);
             }
             const bits = [`${fmt.label} ${w}x${h}`, `${o.seconds}s at ${fps} fps`];
+            lines.push('');
             if (gif) {
                 bits.push(`${o.colors} colours`);
                 if (o.transparent) bits.push('transparent');
             } else {
                 bits.push(`${o.mbps} Mbps`);
             }
-            this._captureStatus(bits.join(' \u00b7 '));
+            lines[lines.length - 1] = bits.join(' \u00b7 ');
+            this._captureStatus(lines.join('\n'));
         }
 
         /** A job is running: nothing else may start until it is done. */
@@ -11502,11 +11524,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // ---- IMAGE -------------------------------------------------
             const imgRow = row('Image');
+            // PNG AND SVG. The gzipped SVG went from the menu: it is the same
+            // file through a compressor, every tool that opens an .svgz opens
+            // an .svg, and it was a third of the width of the widest control on
+            // the row for a choice nobody has to make. saveImage still writes
+            // one if it is asked for by name.
             const fmtSel = menu('saveFormatSelect', svgOk
-                ? [{ value: 'png', label: 'PNG' }, { value: 'svg', label: 'SVG' },
-                    { value: 'svgz', label: 'SVG.gz' }]
+                ? [{ value: 'png', label: 'PNG' }, { value: 'svg', label: 'SVG' }]
                 : [{ value: 'png', label: 'PNG' }],
-            svgOk ? opts.format : 'png', 'Image file format');
+            (svgOk && opts.format !== 'svgz') ? opts.format : 'png', 'Image file format');
             imgRow.appendChild(fmtSel);
             // DPI AS A LIST, not a spinner. The useful values are a short list
             // - screen, a figure, a plate - and typing 250 into a spinner is a
@@ -11521,9 +11547,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 { value: 600, label: '600 dpi' },
             ], opts.dpi, 'Resolution of the saved image. 96 dpi is screen size.');
             imgRow.appendChild(dpiSel);
-            const imgSize = el('span', CAP, '');
-            imgRow.appendChild(imgSize);
-            const okBtn = el('button', BTN, '\u{1F4F7}');
+            // A WORD, NOT A GLYPH. The camera and the card-index emoji were
+            // small, low-contrast and rendered differently on every platform -
+            // and being the only pictures in a panel of words, they read as
+            // decoration rather than as the buttons that do the thing.
+            const okBtn = el('button', BTN, 'Save');
             okBtn.type = 'button';
             okBtn.title = sources.length ? 'Save the frame on screen as an image'
                 : 'Save an image';
@@ -11537,25 +11565,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const canZip = obj && obj.frames && obj.frames.length > 1
                 && typeof JSZip !== 'undefined';
             if (canZip) {
-                zipBtn = el('button', BTN, '\u{1F5C2}');
+                zipBtn = el('button', BTN, 'Zip');
                 zipBtn.type = 'button';
                 zipBtn.title = `Save all ${obj.frames.length} frames as PNGs in a zip`;
                 imgRow.appendChild(zipBtn);
             }
 
-            // WHAT THE FILE WILL BE, before it is written. The panel used to
-            // say nothing at all about size and the question "what resolution
-            // is this" had no answer anywhere in the UI.
-            const dispW = this.displayWidth
-                || parseInt(this.canvas && this.canvas.style.width) || 0;
-            const dispH = this.displayHeight
-                || parseInt(this.canvas && this.canvas.style.height) || 0;
             const syncImg = () => {
-                const vector = fmtSel.value !== 'png';
-                dpiSel.style.display = vector ? 'none' : '';
-                const k = Number(dpiSel.value) / 96;
-                imgSize.textContent = vector ? 'vector'
-                    : `${Math.round(dispW * k)}x${Math.round(dispH * k)}`;
+                dpiSel.style.display = fmtSel.value === 'png' ? '' : 'none';
                 this._describeCapture();
             };
             fmtSel.addEventListener('change', syncImg);
@@ -11563,10 +11580,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             syncImg();
 
             // ---- VIDEO -------------------------------------------------
+            // A LINE BETWEEN THE TWO. They are different outputs with different
+            // buttons, and stacked without a break the panel read as one list
+            // of controls where the Image row's dpi looked like it might apply
+            // to the recording underneath it.
+            const rule = () => {
+                const hr = el('div', 'height:1px; background:#e5e7eb; margin:1px 0;');
+                p.appendChild(hr);
+            };
             let vFmt = null; let secIn = null; let fpsIn = null;
             let mbpsIn = null; let sizeSel = null; let colorsSel = null; let bgSel = null;
+            let videoRow = null;
             if (sources.length && formats.length) {
+                rule();
                 const vRow = row('Video');
+                videoRow = vRow;
                 vFmt = menu('saveVideoFormat', formats.map((f) => (
                     { value: f.id, label: f.label })), opts.container,
                 'Video file format' + (formats.some((f) => f.id === 'gif')
@@ -11616,10 +11644,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 vRow.appendChild(bgSel);
                 }
                 if (sizes.length) {
+                    // ...WITH ITS NAME IN FRONT OF IT, like Sec and FPS. "1x"
+                    // on its own is a multiplier of nothing stated.
+                    const sizeLab = el('label', CAP, 'Size');
+                    sizeLab.setAttribute('for', 'saveVideoSize');
+                    vRow.appendChild(sizeLab);
                     sizeSel = menu('saveVideoSize', sizes.map((z) => (
                         { value: z.scale, label: z.label })), opts.scale,
-                    'Recording size in pixels. Frames are re-rendered at this '
-                    + 'size, not scaled up from the screen.');
+                    'Recording size, as a multiple of the viewer. Frames are '
+                    + 're-rendered at this size, not scaled up from the screen '
+                    + '- the line below says what it comes to in pixels.');
                     vRow.appendChild(sizeSel);
                 }
                 const vNote = el('span', CAP, '');
@@ -11693,12 +11727,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
             commit();
 
-            const recRow = row('Record');
-            if (!sources.length) {
+            // NO SECOND NAME FOR THE SAME THING. This row used to be called
+            // Record, under a row called Video, which read as two subjects;
+            // it is the same one - the settings above, the button that uses
+            // them here - so the block is named once and this row lines its
+            // buttons up under them. With nothing recordable it is the only
+            // video row there is, and then it does say Video.
+            // THE RECORD BUTTONS GO ON THE VIDEO ROW, at the end of the
+            // controls they use. They had a row of their own called Record,
+            // which is a second name for one subject and, in a panel of
+            // wrapping rows, a line break nobody asked for. The row wraps on
+            // its own when it has to, and the button follows the settings
+            // instead of sitting under them.
+            const recRow = videoRow || (() => { rule(); return row('Video'); })();
+            if (!formats.length) {
+                recRow.appendChild(el('span', CAP, 'No video format available'));
+            } else if (!sources.length) {
                 recRow.appendChild(el('span', CAP,
                     'Turn on Rotate or Draw, or load frames'));
-            } else if (!formats.length) {
-                recRow.appendChild(el('span', CAP, 'No video format available'));
             } else {
                 for (const src of sources) {
                     const b = el('button', BTN + ' color:#ef4444;', '');
@@ -11762,7 +11808,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // whatever the loader said last, and does not exist at all in the
             // embedded viewer.
             const info = el('div', 'font-size:11px; color:#6b7280; line-height:1.35;'
-                + ' overflow-wrap:anywhere; min-width:0;');
+                + ' overflow-wrap:anywhere; min-width:0; white-space:pre-line;');
             info.dataset.info = '1';
             p.appendChild(info);
 
