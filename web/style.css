@@ -1183,43 +1183,80 @@ h1 {
     margin: 0;
 }
 
-/* THE PAGE-LEVEL BUTTONS, SMALLER AND QUIETER. Save, Clear All and GPU sit at
+/* THE PAGE-LEVEL BUTTONS: OUTLINED, NOT FILLED. Save, Clear All and GPU sit at
    the top of the page for the whole session, while Fetch and Upload are used
-   once and then not again - so at the same size and saturation the standing
-   three took the eye first, and the first thing to do on this page is load
-   something. Small height, and the colour held back until the pointer is on
-   them: still red for Clear All and blue for Save, still recognisable at a
-   glance, but no longer shouting over the panel below. */
+   once and then not again - so as three filled blocks in strong colours the
+   standing ones took the eye first, and the first thing to do on this page is
+   load something.
+   Fading them was the first attempt and it was the wrong instrument: a faded
+   red is a red that looks broken. Outlined instead - white ground, coloured
+   letters, coloured border - which reads as a lighter WEIGHT rather than a
+   weaker version of the same thing, and keeps every one of them legible.
+   The colour still says which is which: blue Save, red Clear All.
+   ONE RULE FOR ALL THREE. The GPU control is a label wrapping a checkbox and
+   the other two are buttons, so their skins are different elements - they are
+   listed together here so the height, padding, type and border cannot drift
+   apart, which is exactly what happened when each carried its own. */
+/* the LABEL as well as the span it wraps: the label carries its own height,
+   and left at the full one it sat 4 px above the two buttons beside it */
+.page-actions .btn-toggle-global {
+    height: var(--btn-height-small);
+}
+
 .page-actions .btn,
-.page-actions .btn-toggle-global,
 .page-actions .btn-toggle-global>span {
     height: var(--btn-height-small);
     padding: 0 var(--btn-padding-x-small);
     font-size: 12px;
+    font-weight: 600;
     gap: 6px;
-}
-
-.page-actions .btn,
-.page-actions .btn-toggle-global>span {
+    border-radius: var(--btn-radius);
+    border: 1px solid currentColor;
+    background: #fff;
+    background-image: none;
     box-shadow: none;
-    opacity: 0.72;
+    box-sizing: border-box;
+    transition: background 0.2s, color 0.2s;
 }
 
-.page-actions .btn:hover,
-.page-actions .btn-toggle-global:hover>span {
-    opacity: 1;
-    box-shadow: var(--shadow-sm);
+.page-actions #saveStateButton { color: var(--color-primary); }
+.page-actions #clearAllButton { color: var(--color-danger); }
+.page-actions .btn-toggle-global>span { color: var(--color-gray-500); }
+
+/* HOVER FILLS THE OUTLINE, rather than changing the colour: the button you are
+   about to press is the one that is solid. */
+.page-actions #saveStateButton:hover:not(:disabled) {
+    background: var(--color-primary);
+    background-image: none;
+    color: #fff;
 }
 
-/* ...and the GPU switch keeps its green when it is ON, because that one is a
-   STATE rather than an action: which way it stands is worth reading without
-   hovering. Held at the same weight as its neighbours otherwise. */
+.page-actions #clearAllButton:hover:not(:disabled) {
+    background: var(--color-danger);
+    background-image: none;
+    color: #fff;
+}
+
+/* ...AND THE GPU SWITCH IS A STATE, not an action, so it fills when it is ON.
+   Which way it stands has to be readable without hovering - that is the whole
+   job of the control - and green-on-white is the same green the toggles in the
+   Style panel use for on. */
 .page-actions .btn-toggle-global input:checked+span {
-    opacity: 0.85;
+    color: var(--color-success);
+    background: rgba(16, 185, 129, 0.10);
+    background-image: none;
 }
 
-.text-gray-500 {
-    color: #6b7280;
+.page-actions .btn-toggle-global:hover>span,
+.page-actions .btn-toggle-global input:checked+span:hover {
+    background: var(--color-gray-100);
+    background-image: none;
+    box-shadow: none;
+    transform: none;
+}
+
+.page-actions .btn-toggle-global input:checked+span:hover {
+    background: rgba(16, 185, 129, 0.18);
 }
 
 /* ============================================================================

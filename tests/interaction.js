@@ -2248,12 +2248,34 @@ t('the header is the title alone, and the page buttons keep quiet', () => {
         throw new Error('the page-level buttons are no longer marked as such');
     }
     const act = css.slice(css.indexOf('.page-actions .btn,'));
-    if (!/--btn-height-small/.test(act.slice(0, 400))) {
+    const size = act.slice(0, 600);
+    if (!/--btn-height-small/.test(size)) {
         throw new Error('the page buttons are full height again');
     }
-    if (!/opacity:\s*0\.7/.test(act.slice(0, 800))) {
-        throw new Error('the page buttons are at full strength again, competing'
-            + ' with Fetch and Upload for the eye');
+    // OUTLINED, NOT FADED. Fading was the first attempt and it was the wrong
+    // instrument: a faded red is a red that looks broken. White ground,
+    // coloured letters, coloured border - a lighter weight rather than a
+    // weaker version of the same thing.
+    if (!/border:\s*1px solid currentColor/.test(size)
+        || !/background:\s*#fff/.test(size)) {
+        throw new Error('the page buttons are filled again rather than outlined');
+    }
+    if (/opacity:\s*0\.\d/.test(act.slice(0, 900))) {
+        throw new Error('the page buttons are faded again - a faded red reads'
+            + ' as a broken button, not as a quiet one');
+    }
+    // ONE RULE FOR ALL THREE, because their skins are different elements: two
+    // buttons and a label wrapping a checkbox. Listed apart, they drift - the
+    // label kept its own height and sat 4 px above its neighbours.
+    if (!/\.page-actions \.btn-toggle-global \{[^}]*--btn-height-small/.test(css)) {
+        throw new Error('the GPU label is not held to the same height as the'
+            + ' two buttons beside it, so it will not sit on their line');
+    }
+    for (const id of ['#saveStateButton', '#clearAllButton']) {
+        if (!new RegExp('\\.page-actions ' + id + ' \\{ color:').test(css)) {
+            throw new Error(id + ' has no colour of its own, so the outline'
+                + ' stops saying which button it is');
+        }
     }
     // ...and the load button says what it does. "Files" named the things
     // rather than the action, beside a Fetch that names an action.
