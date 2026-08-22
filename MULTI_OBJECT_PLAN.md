@@ -1,76 +1,81 @@
 # Showing more than one object at a time
 
-The goal: an **Object button** that opens the dropdown into a list, PyMOL's
-object panel or Photoshop's layers — each row an object, each with its own
-visibility, several of them on screen together for comparison or alignment.
-**No shadow between objects**, which is not a limitation to apologise for: it
-is what makes the whole thing tractable, because each object can then be drawn
-by the existing single-object pipeline and composited.
+The goal: an **Object button** that opens the dropdown into a list — PyMOL's
+object panel, or Photoshop's layers. Each row an object, each with its own
+visibility, several on screen together for comparison or alignment.
 
-## What already moved
+## The overlay already does this
 
-Per-object state is the precondition, and most of it is done:
+The first draft of this plan proposed compositing: draw each object with the
+single-object pipeline, one pass each, no shadow between them. That was the
+wrong model, and the codebase already contains the right one.
+
+**Overlay mode merges every frame of a trajectory into ONE coordinate array**
+(`_mergeFrameRange`) and remembers where each position came from in
+`overlayState.frameIdMap`. That map is then handed to the cartoon as a
+**bonding group** — viewer-cartoon.js: *"a residue may only bond within its own
+frame"* — so nothing joins across sources, and `assignSecondary` gets
+`groups: ovMap` for the same reason.
+
+Several objects at once is the same shape with a different source. Merge the
+shown objects' current frames, carry a `sourceIdMap` where the overlay carries
+`frameIdMap`, and the existing pipeline draws the lot in one pass.
+
+That answers the shadow question too. With one merged array the occlusion and
+the depth sort see everything, so objects DO shade each other, for free and
+correctly — no special case, no second depth field. The cartoon casts no
+shadows anyway; it is the tube style where this shows, and there it is what
+you want.
+
+## What is already per object
+
+Mostly done, much of it this week:
 
 | State | Where it lives |
 |---|---|
 | rotation, zoom, ortho, centre, extent, frame | `obj.viewerState` |
-| clip slab and fade | `obj.viewerState` (travels on switch) |
-| **style and styleChosen** | `obj.viewerState` |
+| clip slab and fade | `obj.viewerState` |
+| style and styleChosen | `obj.viewerState` |
 | selection, visibility mask | `obj.visibilityState` |
 | side chains, bases, elements, contacts | `obj.*` sets |
-| colour scheme | per object already |
-
-Width is per STYLE rather than per object (`_widthByStyle`), which is right:
-it is the same drawing question whatever is being drawn.
-
-## What still assumes one object
-
-1. **The renderer's arrays are the current object's.** `this.coords`,
-   `segmentIndices`, `rotatedCoords`, `screenX/Y`, `colors`, the shadow and
-   segment caches - all singular, all rebuilt by `_loadFrameData` when the
-   object changes. Measured: 23-40 ms for 4UG0, ~1 ms for 6MRR.
-2. **One cache slot.** `cachedSegmentIndices` is keyed by
-   `cachedSegmentIndicesObjectName`, so two objects drawn alternately thrash
-   it - the reason a naive draw-each-in-turn loop would be slow rather than
-   wrong.
-3. **`_renderToContext` clears the canvas** and then draws the current object,
-   so it cannot be called twice for one frame.
-4. **The GPU paths hold one resident structure**: the cartoon mesh under one
-   `signatureOf`, the tube under one `tubeSig`. Two objects means two meshes or
-   a rebuild per object per frame, and a rebuild is 18 ms of a 26 ms frame on a
-   capsid.
-5. **Picking and the halo** index by position alone. With several objects on
-   screen a hit is (object, position).
 
 ## The slices
 
-**1. A seam in the render path.** Lift the canvas clear out of
-`_renderToContext` into `render`, and give the renderer a `shownObjects` set
-that is `{currentObjectName}` for now. No behaviour change - this is the line
-everything else hangs off. *(done)*
+**1. `drawnObjects()`** — one place that answers "which objects does this frame
+draw", reading a `shownObjects` set and falling back to the current object.
+Names whose objects have been deleted are skipped. *(done)*
 
-**2. Per-object draw state.** The arrays and caches in (1) and (2) become a
-record per object, swapped by reference rather than rebuilt. This is the real
-work and the only slice that is hard: everything reading `this.coords` has to
-read the active record instead. Until it exists, drawing N objects costs N
-frame loads per frame.
+**2. `_mergeObjects(names)`**, alongside `_mergeFrameRange` and built the same
+way: concatenate coords, plddts, chains, types, names, atoms, elements,
+residue numbers and bonds (offset per source), and return a `sourceIdMap`.
+Feed it to `assignSecondary` as the bonding group exactly as the overlay's map
+is fed. Rebuilt when the shown set changes, not per frame.
 
-**3. The list UI.** Object becomes a button; the dropdown becomes rows with an
-eye per row and the active object highlighted. Ships only once 2 is in - a
-visibility control that does not change the picture is worse than no control.
+**3. Colour per object.** The overlay picks ONE auto colour for the whole merge.
+Several objects want one scheme each, so the colour pass needs the source map
+where it currently has a single mode.
 
-**4. The GPU paths.** Either a resident mesh per object (memory) or fall back
-to the 2D path while more than one object is shown (simple, and honest: the
-GPU exists for one huge structure, and comparison work is usually small ones).
-Decide with a measurement, not in advance.
+**4. The list UI.** Object becomes a button; the dropdown becomes rows with an
+eye per row and the active object highlighted. Ships with 2 and 3, not before:
+a visibility control that does not change the picture is worse than none.
 
-**5. Picking, selection and the halo** become (object, position). The panels
-already act on "the active object", so most of this is plumbing an object name
-through `pickResidueAt` and friends.
+**5. Selection and picking.** One merged index space, so picking works
+unchanged - what it needs is the source map to report WHICH object was hit, and
+the per-object selections expanded into merged indices. The overlay already
+does that expansion for frames (see the `frameOffsets` block).
 
-## What does not change
+**6. The GPU paths.** One resident mesh, keyed by one signature. A merged array
+is a single structure as far as they are concerned, so it should just work -
+verify, and expect a rebuild whenever the shown set changes.
 
-Shadows and occlusion stay **within** an object. Cross-object shading would
-need one merged depth field, which is the merged-scene design this plan
-deliberately avoids - and it is also not wanted: two structures compared
-side by side should not darken each other.
+## The trade-off to decide
+
+**A merged array is drawn by ONE style.** Tube and cartoon cannot both be on
+screen under this model. That is the price of the merge, and it buys shadowing,
+picking, depth sorting and the GPU paths unchanged.
+
+Per-object style would mean going back to compositing passes, which costs all
+four of those. Since the per-object style added this week is about what a
+structure opens AS - a ribosome as tube, a peptide as cartoon - and not about
+comparing two structures drawn differently, the merge looks like the better
+trade. Worth confirming before slice 2 is built.

@@ -9717,25 +9717,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         // Core rendering logic - can render to any context (canvas, SVG, etc.)
         /**
-         * PAINT THE GROUND. Lifted out of _renderToContext so that one frame
-         * can hold more than one object: a pass that clears cannot be run
-         * twice. See MULTI_OBJECT_PLAN.md - this is the seam the rest of that
-         * work hangs off, and on a single object it is the same two calls in
-         * the same order as before.
-         */
-        _clearCanvas(ctx) {
-            ctx.save();
-            ctx.setTransform(1, 0, 0, 1, 0, 0);
-            if (this.isTransparent) {
-                ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-            } else {
-                ctx.fillStyle = this.backgroundColor || '#ffffff';
-                ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-            }
-            ctx.restore();
-        }
-
-        /**
          * WHICH OBJECTS THIS FRAME DRAWS, in the order they are drawn.
          *
          * One, today - and the callers ask through here rather than reading
@@ -9759,10 +9740,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return this.currentObjectName ? [this.currentObjectName] : [];
         }
 
-        _renderToContext(ctx, displayWidth, displayHeight, opts) {
-            // ...unless the caller is compositing several objects and has
-            // already painted the ground for this frame.
-            if (!(opts && opts.skipClear)) this._clearCanvas(ctx);
+        _renderToContext(ctx, displayWidth, displayHeight) {
+            // Clear the full canvas in device pixels, independent of current transform
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            if (this.isTransparent) {
+                ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+            } else {
+                ctx.fillStyle = this.backgroundColor || '#ffffff';
+                ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+            }
+            ctx.restore();
 
             // Check segment length
             if (this.coords.length === 0 || this.segmentIndices.length === 0 || !this.currentObjectName) {

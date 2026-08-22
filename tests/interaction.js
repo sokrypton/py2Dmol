@@ -5208,19 +5208,16 @@ t('the style toggles are grouped together, three to a row', () => {
 // Safe in both because it is only ever a REQUEST: the control removes itself
 // when WebGL2 is absent, the renderer falls back to the 2D path for anything
 // the GPU declines, and PNG/SVG export goes through 2D whatever it says.
-t('the render path has a seam for a second object', () => {
-    // GROUNDWORK, not a feature: an Object list that shows several structures
-    // at once needs a render pass that can run twice in one frame, and a pass
-    // that clears the canvas cannot. See MULTI_OBJECT_PLAN.md.
+t('the drawn objects are asked for in one place', () => {
+    // GROUNDWORK for an Object list, not a feature. Several structures on
+    // screen at once will be ONE MERGED coordinate array - the overlay already
+    // does exactly that for the frames of a trajectory, down to handing the
+    // per-source map to the cartoon as a bonding group so nothing joins across
+    // sources. See MULTI_OBJECT_PLAN.md.
+    //
+    // What this pins is the question being asked in one place, so the day it
+    // answers with several names, the callers need no changing.
     const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
-    if (!/_clearCanvas\(ctx\) \{/.test(mol)) {
-        throw new Error('the clear is still welded into the drawing pass');
-    }
-    if (!/if \(!\(opts && opts\.skipClear\)\) this\._clearCanvas\(ctx\);/.test(mol)) {
-        throw new Error('a second object cannot be drawn without wiping the first');
-    }
-    // ...and the question "which objects" is asked in one place, so the day it
-    // answers with several, every caller already does the right thing.
     const at = mol.indexOf('drawnObjects() {');
     if (at < 0) throw new Error('nothing owns the list of drawn objects');
     const body = mol.slice(at, mol.indexOf('\n        }', at));
