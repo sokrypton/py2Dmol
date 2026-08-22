@@ -7806,31 +7806,40 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // THE BAND FOLLOWS WHAT IS ACTUALLY CONNECTED.
             //
             // A backbone is a linear chain, so consecutive residues of the same
-            // chain join up. A SIDE CHAIN is not: it is a tree - a leucine
-            // branches at CG - and its atoms are appended positions whose index
-            // order says nothing about which are bonded. Joining those by index
-            // would draw a bond from CD1 to CD2 that does not exist, and would
-            // run a band from the last atom of one residue's side chain to the
-            // first of the next straight through empty space. So side-chain
-            // atoms are joined along their BONDS instead - the same
-            // connectivity the sticks themselves are drawn from.
+            // chain join up. AN ATOM IS NOT: a side chain is a tree - a leucine
+            // branches at CG - and a ligand is whatever the chemistry says,
+            // with its atoms sitting in the array in the order the file listed
+            // them. Index order says nothing about which of those are bonded.
+            // Joining them by index draws a bond from CD1 to CD2 that does not
+            // exist, runs a band from the last atom of one side chain to the
+            // first of the next straight through empty space, and - reported
+            // on 3PTB - joins a calcium ion to the first carbon of a
+            // benzamidine that is 20 A away, because they are neighbours in the
+            // array. So every atom position is joined along its BONDS instead,
+            // the same connectivity the sticks themselves are drawn from.
+            //
+            // Type 'L' is the test rather than the side-chain map: an appended
+            // side-chain atom and a ligand atom of the file's own are both
+            // atoms, and only one of the two is in that map.
             const edges = [];
             const touched = new Set();
             const addEdge = (a, b) => {
                 edges.push(a, b);
                 touched.add(a); touched.add(b);
             };
+            const types = this.positionTypes || [];
+            const isAtom = (i) => types[i] === 'L' || !!(sc && sc.has(i));
             for (let k = 1; k < idx.length; k++) {
                 const a = idx[k - 1]; const b = idx[k];
                 if (b !== a + 1) continue;                     // a gap
-                if (sc && (sc.has(a) || sc.has(b))) continue;   // bonds decide these
+                if (isAtom(a) || isAtom(b)) continue;          // bonds decide these
                 if (chains && chains[a] !== chains[b]) continue;
                 addEdge(a, b);
             }
-            if (sc && sc.size && this.bonds) {
+            if (this.bonds) {
                 for (const [a, b] of this.bonds) {
                     if (!drawn(a) || !drawn(b)) continue;
-                    if (!sc.has(a) && !sc.has(b)) continue;
+                    if (!isAtom(a) && !isAtom(b)) continue;
                     addEdge(a, b);
                 }
             }

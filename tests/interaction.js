@@ -504,7 +504,10 @@ const panelBody = (() => {
         return appSrc.slice(i, kk + 1);
     };
     return appSrc.slice(a, k + 1) + '\n' + lift('syncSelectionToggles')
-        + '\n' + lift('describeSelectionRanges');
+        + '\n' + lift('describeSelectionRanges')
+        // ...and the two the toggles read: which of them is a ligand row, and
+        // how much of it is drawn
+        + '\n' + lift('ligandRowPositions') + '\n' + lift('visibleState');
 })();
 // The mode select, as much of one as the panel touches: a value, a disabled
 // flag, and one option it hides where the selection has no nucleotides.
@@ -519,7 +522,7 @@ function modeSelectNode() {
     };
 }
 function panelRun(selection, sidechained = new Set(), hasContact = false, types = null,
-    shown = null, ligEls = new Set()) {
+    shown = null, ligEls = new Set(), visible = null) {
     const nodes = {
         selectionTools: { classList: { toggle(c, on) { this._on = on; } } },
         selectionPanel: { hidden: null },
@@ -543,6 +546,7 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
         contactWidthSlider: { hidden: null, value: null },
         // the row carries a name and a swatch as well as its controls, and
         // both change when the only thing left on it is a ligand's elements
+        mainchainRow: { hidden: null },
         sidechainRow: (() => {
             const label = { textContent: 'Side chains' };
             const swatch = { hidden: null };
@@ -571,7 +575,9 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
             hasSseFor: (p2) => (types ? p2.some((i) => types[i] === 'P') : true),
             sidechainOwners: () => sidechained,
             positionTypes: types || [],
-            visiblePositions: null,
+            // null = everything is drawn, which is what the Show switch on a
+            // ligand row reads
+            visiblePositions: visible,
             currentObjectName: 'obj',
             // `shown` is what the OBJECT has switched on - obj.sidechains -
             // while `sidechained` is what the structure HAS. The panel reads
@@ -1202,6 +1208,40 @@ t('side chains are joined along their BONDS, not by index order', () => {
     if (got.join(',') !== want.join(',')) {
         throw new Error('joined ' + JSON.stringify(got) + ', the bonds are '
             + JSON.stringify(want) + ' - index order is not connectivity');
+    }
+});
+
+t('a ligand is banded along its bonds, not along the array', () => {
+    // REPORTED ON 3PTB: a selected ligand showed bands between atoms that are
+    // not bonded. A ligand atom is a position of the file's own, listed in the
+    // order the file listed it, so index 223 is a calcium ion and 224 the first
+    // carbon of a benzamidine 20 A away - neighbours in the array and joined by
+    // nothing at all. Type 'L' is what says "this is an atom": these are not in
+    // the side-chain map, which is what the rule used to test.
+    const v = haloViewer([2, 3, 4, 5], 8);
+    v.positionTypes = ['P', 'P', 'L', 'L', 'L', 'L', 'P', 'P'];
+    v.sidechainMap = null;                            // no side chains anywhere
+    v.bonds = [[3, 4], [4, 5]];                       // 2 is the lone ion
+    const ctx = haloCtx();
+    v._paintSelectionHalo(ctx);
+    const got = haloEdges(ctx, v).filter(([a, b]) => a !== b && b >= 0)
+        .map(([a, b]) => (a < b ? a + '-' + b : b + '-' + a)).sort();
+    if (got.join(',') !== ['3-4', '4-5'].join(',')) {
+        throw new Error('joined ' + JSON.stringify(got) + ', the bonds are '
+            + '["3-4","4-5"] - consecutive ligand atoms are not connected');
+    }
+    // ...and the backbone either side of them still joins by index, which is
+    // what a backbone IS
+    const w = haloViewer([0, 1, 6, 7], 8);
+    w.positionTypes = ['P', 'P', 'L', 'L', 'L', 'L', 'P', 'P'];
+    w.sidechainMap = null; w.bonds = [];
+    const ctx2 = haloCtx();
+    w._paintSelectionHalo(ctx2);
+    const back = haloEdges(ctx2, w).filter(([a, b]) => a !== b && b >= 0)
+        .map(([a, b]) => (a < b ? a + '-' + b : b + '-' + a)).sort();
+    if (back.join(',') !== ['0-1', '6-7'].join(',')) {
+        throw new Error('the backbone stopped joining consecutive residues: '
+            + JSON.stringify(back));
     }
 });
 
@@ -2450,32 +2490,48 @@ t('the panel hides the side-chain row when the selection has none', () => {
 });
 
 
-t('a ligand selection gets the Elements switch and nothing else', () => {
-    // A LIGAND HAS NO SIDE CHAIN, so the row it borrows must stop calling
-    // itself one: it reaches the panel only because its atoms carry elements.
+t('a ligand row is Colour, Show, and Elements while it is shown', () => {
+    // THE SAME SHAPE AS THE SIDE-CHAIN ROW, because it is the same question:
+    // colour the thing, draw the thing, colour its atoms by element once it is
+    // drawn. What differs is what each control reaches - see ligandRowPositions.
     const types = { 4: 'L', 5: 'L' };
     const lig = panelRun([4, 5], new Set(), false, types, null, new Set([4, 5]));
     if (lig.sidechainRow.hidden !== false) {
-        throw new Error('the row is hidden for a ligand, so its element colours'
-            + ' cannot be reached at all');
-    }
-    if (lig.elementsShowToggle.label.hidden !== false) {
-        throw new Error('Elements is hidden for a ligand - the side-chain mode'
-            + ' reads None there and always will');
-    }
-    if (lig.sidechainShowToggle.label.hidden !== true) {
-        throw new Error('the Show switch is on a ligand row, where there is no'
-            + ' side chain for it to draw');
-    }
-    if (lig.sidechainModeSelect.hidden !== true) {
-        throw new Error('the None/Plate/Full menu is on a ligand row');
+        throw new Error('the row is hidden for a ligand, so its colour, its Show'
+            + ' and its elements cannot be reached at all');
     }
     if (lig.sidechainRow.label.textContent !== 'Ligand') {
         throw new Error('the row still calls itself Side chains over a ligand');
     }
-    if (lig.sidechainRow.swatch.hidden !== true) {
-        throw new Error('the side-chain colour swatch is offered for a ligand,'
-            + ' which it colours through an owning residue it has not got');
+    if (lig.sidechainRow.swatch.hidden !== false) {
+        throw new Error('the ligand row has no colour swatch');
+    }
+    if (lig.sidechainShowToggle.label.hidden !== false) {
+        throw new Error('the ligand row has no Show switch');
+    }
+    if (lig.sidechainShowToggle.checked !== true) {
+        throw new Error('a ligand nobody has hidden reads as not shown');
+    }
+    if (lig.sidechainModeSelect.hidden !== true) {
+        throw new Error('the None/Plate/Full menu is on a ligand row - a ligand'
+            + ' has no plate, so there is no third state to pick');
+    }
+    if (lig.elementsShowToggle.label.hidden !== false) {
+        throw new Error('Elements is hidden for a ligand that is drawn');
+    }
+    // MAIN CHAIN IS NOT A LIGAND'S ROW: its Show switches a backbone that is
+    // not there, and its swatch sets the very colour the row above now sets.
+    if (lig.mainchainRow.hidden !== true) {
+        throw new Error('the Main chain row is offered for a ligand');
+    }
+    // ...and with the ligand hidden there is nothing to colour by element
+    const off = panelRun([4, 5], new Set(), false, types, null, new Set([4, 5]),
+        new Set());
+    if (off.sidechainShowToggle.checked !== false) {
+        throw new Error('a hidden ligand still reads as shown');
+    }
+    if (off.elementsShowToggle.label.hidden !== true) {
+        throw new Error('Elements is offered for a ligand that is not drawn');
     }
     // ...and a protein selection is untouched by any of that
     const prot = panelRun([4, 5], new Set([4, 5]), false, { 4: 'P', 5: 'P' },
@@ -2483,11 +2539,22 @@ t('a ligand selection gets the Elements switch and nothing else', () => {
     if (prot.sidechainRow.label.textContent !== 'Side chains') {
         throw new Error('a protein row was renamed');
     }
-    if (prot.sidechainRow.swatch.hidden !== false) {
-        throw new Error('a protein row lost its colour swatch');
+    if (prot.mainchainRow.hidden !== false) {
+        throw new Error('a protein lost its Main chain row');
     }
     if (prot.sidechainShowToggle.label.hidden !== false) {
         throw new Error('a protein lost its Show switch');
+    }
+    // A MIXED SELECTION IS A SIDE-CHAIN ROW. One ligand atom joining a dozen
+    // residues must not take the side-chain controls away from the residues
+    // that have them.
+    const mixed = panelRun([4, 5], new Set([4]), false, { 4: 'P', 5: 'L' },
+        new Set([4]), new Set([5]));
+    if (mixed.sidechainRow.label.textContent !== 'Side chains') {
+        throw new Error('a selection with one ligand atom in it was renamed');
+    }
+    if (mixed.mainchainRow.hidden !== false) {
+        throw new Error('a mixed selection lost its Main chain row');
     }
 });
 
@@ -3500,6 +3567,27 @@ t('the style toggles are grouped together, three to a row', () => {
 // Safe in both because it is only ever a REQUEST: the control removes itself
 // when WebGL2 is absent, the renderer falls back to the 2D path for anything
 // the GPU declines, and PNG/SVG export goes through 2D whatever it says.
+t('ligands are loaded by default, in the page and in the Python viewer', () => {
+    // A LIGAND IS USUALLY WHY THE STRUCTURE IS OPEN. Left off, the viewer says
+    // nothing about it and the file reads as not having one - and the two
+    // controls have to agree, or the switch shows a state the loader is not in.
+    const html = fs.readFileSync('index.html', 'utf8');
+    const m = html.match(/<input[^>]*id="loadLigandsCheckbox"[^>]*>/);
+    if (!m) throw new Error('the Load Ligands checkbox is gone from index.html');
+    if (!/\bchecked\b/.test(m[0])) {
+        throw new Error('the Load Ligands switch no longer starts on');
+    }
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    if (!/loadLigands:\s*true/.test(app)) {
+        throw new Error('the config still starts with ligands off, so the switch'
+            + ' shows on and the loader drops them');
+    }
+    const py = fs.readFileSync('py2Dmol/viewer.py', 'utf8');
+    if (!/load_ligands=True/.test(py)) {
+        throw new Error('the Python loader no longer defaults to loading ligands');
+    }
+});
+
 t('the GPU is on by default, on the page and in the Python viewer', () => {
     const html = fs.readFileSync('index.html', 'utf8');
     const m = html.match(/<input[^>]*id="useGpuCheckbox"[^>]*>/);

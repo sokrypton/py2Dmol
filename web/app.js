@@ -341,7 +341,10 @@ function initializeViewerConfig() {
         // Web app specific settings (not part of Python config)
         ui: {
             biounit: true,
-            loadLigands: false
+            // ON BY DEFAULT, like the biological unit beside it. A ligand is
+            // usually the reason the structure is being looked at, and leaving
+            // it out silently reads as the file not having one.
+            loadLigands: true
         },
         viewer_id: "standalone-viewer-1"
     };
@@ -947,6 +950,47 @@ function setupEventListeners() {
     // of it does, or some does - and "some" is neither, so it reads
     // indeterminate rather than picking a side. Clicking an indeterminate box
     // checks it, so the mixture resolves by turning everything on.
+    // IS THIS ROW ABOUT A LIGAND? A ligand atom is a position of the file's
+    // own: it owns no side chain and has no base plate, so a selection made
+    // only of them reaches the side-chain row for one reason - its elements -
+    // and every control on that row then means the LIGAND rather than a side
+    // chain nothing in the selection has. One definition, read by the panel and
+    // by the handlers behind it, so the row and its controls cannot disagree
+    // about which of the two it is.
+    //
+    // A MIXED selection is a side-chain row. Renaming the row the moment one
+    // ligand atom joined a dozen residues would take the side-chain controls
+    // away from the residues that do have them.
+    function ligandRowPositions(positions) {
+        const renderer = viewerApi?.renderer;
+        if (!renderer || !positions || !positions.length) return null;
+        const t = renderer.positionTypes || [];
+        const owners = renderer.sidechainOwners ? renderer.sidechainOwners() : null;
+        const map = renderer.sidechainMap;
+        const lig = [];
+        for (const i of positions) {
+            if (owners && owners.has(i)) return null;      // a residue with a side chain
+            if (t[i] === 'D' || t[i] === 'R') return null; // a nucleotide has a plate
+            // ...and an APPENDED side-chain atom is type 'L' too, but it
+            // belongs to a residue and is switched with it
+            if (t[i] === 'L' && !(map && map.has(i))) lig.push(i);
+        }
+        return lig.length ? lig : null;
+    }
+
+    // ALL, NONE OR SOME of these positions drawn, read off the visibility mask
+    // - null there means everything is visible, which is the state a structure
+    // nobody has hidden anything in is in.
+    function visibleState(positions) {
+        const renderer = viewerApi?.renderer;
+        const vis = renderer && renderer.visiblePositions;
+        if (!vis) return true;
+        let on = 0;
+        for (const i of positions) if (vis.has(i)) on++;
+        if (!on) return false;
+        return on === positions.length ? true : null;
+    }
+
     function syncSelectionToggles(picked, none) {
         const renderer = viewerApi?.renderer;
         const obj = renderer?.objectsData?.[renderer.currentObjectName];
@@ -1025,17 +1069,21 @@ function setupEventListeners() {
         // absolutely positioned at zero opacity, with the label carrying the
         // word - so hiding it left "Show" on the row beside the menu that had
         // replaced it. The select IS its own visible element and hides itself.
-        // ...and neither is on the row when the selection has no side chain to
-        // draw at all, which is what a LIGAND selection is: it reaches this row
-        // only for its elements, and a Show switch there would be a control for
-        // side chains that the selection does not have.
+        // ...and on a LIGAND row the switch stays, meaning the ligand itself:
+        // drawn or not drawn, which is the same two states a protein side chain
+        // has. The menu never appears there - a ligand has no plate.
+        const ligPos = ligandRowPositions(live);
+        const ligShown = ligPos ? visibleState(ligPos) : false;
         const scNothing = !scAble.length && !hasNuc;
         if (scTog) {
             const wrapTog = scTog.closest ? scTog.closest('label') : null;
-            (wrapTog || scTog).hidden = hasNuc || scNothing;
+            (wrapTog || scTog).hidden = hasNuc || (scNothing && !ligPos);
         }
         if (scSel) scSel.hidden = !hasNuc;
-        if (scTog) set('sidechainShowToggle', tally(scAble, scSet, false));
+        if (scTog) {
+            set('sidechainShowToggle', ligPos ? ligShown
+                : tally(scAble, scSet, false));
+        }
         if (scSel) {
             scSel.value = mode;
             const plateOpt = scSel.querySelector('option[value="plate"]');
@@ -1050,29 +1098,47 @@ function setupEventListeners() {
         // toggle sat there in both, doing nothing a user could see. Hidden by
         // its LABEL, which is what carries the text: hiding the checkbox alone
         // leaves "Elements" on the row with no control.
-        // A LIGAND IS ALWAYS ITS ATOMS - there is no plate and nothing to
-        // switch on first - so its elements are offered whatever the side-chain
-        // mode reads, which for a ligand is None because it owns no side chain.
+        // A LIGAND'S ELEMENTS FOLLOW ITS OWN SHOW, for the same reason a side
+        // chain's follow Full: there is nothing to colour while nothing is
+        // drawn. Hidden while the ligand is off, and while the selection is
+        // half on, where the switch has no one answer to show.
         const elTog = document.getElementById('elementsShowToggle');
         if (elTog) {
             const wrap = elTog.closest ? elTog.closest('label') : null;
-            (wrap || elTog).hidden = mode !== 'full' && !ligEl;
+            (wrap || elTog).hidden = ligPos
+                ? (ligShown !== true || !ligEl) : mode !== 'full';
         }
-        // WHAT THE ROW IS CALLED, when the only thing left on it is Elements.
-        // "Side chains" over a ligand's element switch names something the
-        // selection has not got; the swatch beside it colours side chains
-        // through their owning residue, which a ligand atom is not.
+        // WHAT THE ROW IS CALLED. "Side chains" over a ligand's own controls
+        // names something the selection has not got - and the swatch means the
+        // ligand's colour there, which is why it stays: see the picker's own
+        // dispatch on ligandRowPositions.
         const scRowEl = document.getElementById('sidechainRow');
         if (scRowEl) {
-            const ligOnly = scNothing && ligEl;
             const lbl = scRowEl.querySelector('.selection-panel-label');
-            if (lbl) lbl.textContent = ligOnly ? 'Ligand' : 'Side chains';
+            if (lbl) lbl.textContent = ligPos ? 'Ligand' : 'Side chains';
             const swatch = scRowEl.querySelector('.selection-color-wrap');
-            if (swatch) swatch.hidden = ligOnly;
+            if (swatch) swatch.hidden = false;
+            // ...and what the two controls SAY they do, since what they do
+            // changed with the row. A tooltip promising side chains over a
+            // ligand is the same wrong label as the row's own name was.
+            const tip = (el, text) => { if (el) el.title = text; };
+            tip(document.getElementById('scColorButton'), ligPos
+                ? 'Colour the selected ligand'
+                : 'Colour the selected side chains');
+            tip(scTog && scTog.closest ? scTog.closest('label') : null, ligPos
+                ? 'Draw the selected ligand'
+                : 'Draw side chains for the selected residues');
         }
 
-        // MAIN CHAIN IS THE BACKBONE. The set names what is HIDDEN, so a
-        // position in it is a toggle that is off.
+        // MAIN CHAIN IS THE BACKBONE, which a ligand has not got: its Show
+        // switches a backbone that is not drawn there either way, and its
+        // swatch is the same colour the Ligand row's own swatch sets. So the
+        // whole row goes for a ligand rather than sitting there as a duplicate
+        // and a no-op.
+        const mcRow = document.getElementById('mainchainRow');
+        if (mcRow) mcRow.hidden = !!ligPos;
+        // The set names what is HIDDEN, so a position in it is a toggle that
+        // is off.
         const hidBB = renderer.backboneHiddenSet ? renderer.backboneHiddenSet() : null;
         set('mainchainShowToggle', !hidBB ? true
             : (live.every((i) => !hidBB.has(i)) ? true
@@ -1485,10 +1551,21 @@ function setupEventListeners() {
         });
         wireColorPicker({
             btnId: 'scColorButton', menuId: 'scColorMenu', swatchId: 'scColorSwatch',
-            apply: setSelectionSidechainColor,
+            // ON A LIGAND ROW THIS IS THE LIGAND'S COLOUR. A side-chain colour
+            // is stored against the OWNING residue, and a ligand atom has none
+            // - so the side-chain path silently does nothing there, which is
+            // what a swatch on that row would have looked like. The ordinary
+            // per-position colour is the one that means anything for a ligand.
+            apply: (positions, hex) => {
+                const lig = ligandRowPositions(positions);
+                if (lig) setSelectionColor(lig, hex);
+                else setSelectionSidechainColor(positions, hex);
+            },
             // an unset side chain follows its residue, so that is what it shows
             current: (positions) => {
                 const renderer = viewerApi?.renderer;
+                const lig = ligandRowPositions(positions);
+                if (lig) return mainChainColorOf(lig);
                 const obj = renderer?.objectsData?.[renderer.currentObjectName];
                 const own = obj && obj.sidechainColor && obj.sidechainColor[positions[0]];
                 return own || mainChainColorOf(positions);
@@ -1577,8 +1654,14 @@ function setupEventListeners() {
                 selectNearby(INTERACTION_CUTOFF_A, true);
             });
         }
-        // the protein form of the same control: two states, one switch
-        onToggle('sidechainShowToggle', (p2, v) => setSelectionSidechainMode(p2, v ? 'full' : 'none'));
+        // the protein form of the same control: two states, one switch - and on
+        // a ligand row the same switch draws the ligand itself, which is the
+        // visibility mask rather than a side chain nothing there owns
+        onToggle('sidechainShowToggle', (p2, v) => {
+            const lig = ligandRowPositions(p2);
+            if (lig) { setSelectionVisible(lig, v, false); return; }
+            setSelectionSidechainMode(p2, v ? 'full' : 'none');
+        });
         // the side-chain MODE is a select, not a toggle, but it reads the
         // selection the same way every control on this panel does
         const scMode = document.getElementById('sidechainModeSelect');
