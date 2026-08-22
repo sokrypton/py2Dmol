@@ -2097,51 +2097,55 @@ t('a metal has a colour and a size of its own', () => {
     }
 });
 
-t('one segment owns the ball at a joint, and takes it by depth', () => {
-    // TWO TUBES MEETING AT AN ATOM each fill their own hemisphere over it. Both
-    // surfaces are there, so the depth buffer chose between them per pixel -
-    // right geometrically, wrong on the page: two hemispheres of one radius
-    // intersect along a curve, and between differently-coloured segments that
-    // curve is a hard diagonal. On a three-atom chain it reads as the two bonds
-    // crossing in the middle. The 2D pass paints in order, so one cap covers
-    // the other outright and the boundary is an arc.
+t('one segment owns the ball at a joint, and both paint it', () => {
+    // TWO TUBES MEETING AT AN ATOM overlap in a lens, and a depth buffer picks
+    // between their surfaces per pixel. The surfaces cross right there, so the
+    // pick flips inside the lens and the seam between two differently coloured
+    // segments is a hard diagonal - on a three-atom chain, two bonds that
+    // appear to cross in the middle.
+    //
+    // ARBITRATING IT BY DEPTH DOES NOT WORK, and this test exists because it
+    // was tried twice. Cutting the unowned side out exposed the joint cap's
+    // rim, which is hidden precisely BY both fills being there (see uCapZ);
+    // pushing the unowned side back needs to know which end's ball a fragment
+    // is in, and a segment pointing at the camera projects both of its ends
+    // into the same disc, so the diagonal came back at those angles.
+    //
+    // Nothing needs to win: both segments paint the ball in the OWNER's
+    // colour, decided on the CPU, so the depth buffer's choice stops being
+    // visible. The geometry is untouched.
     const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
     const at = gpu.indexOf('const FSTUBE');
     const fsrc = gpu.slice(at, gpu.indexOf('`;', at));
-    // the ball is given up by DEPTH. Discarding it was tried and is worse: the
-    // joint cap's rim sits at the joint's own axis so that BOTH fills bulge in
-    // front of it and hide it, so taking one away exposes the rim - a dotted
-    // arc at every bend in the chain.
-    const ball = /vCapA < 0\.5 && distance\(vPx, vA\) < vRfill/;
-    if (!ball.test(fsrc)) throw new Error('nothing decides the ball at a joint');
-    const give = /zSurf -= ([0-9.]+) \* vRfill/.exec(fsrc);
-    if (!give) {
-        throw new Error('the unowned ball is not given up by depth - if it is'
-            + ' discarded instead, the joint cap rim it was hiding is exposed');
+    if (!/col = vJColA/.test(fsrc) || !/col = vJColB/.test(fsrc)) {
+        throw new Error('the ball at a joint no longer takes the owner colour');
     }
-    // ...by more than the two surfaces can differ by inside the ball, which is
-    // one radius; less and the boundary is a curve again rather than the arc
-    if (!(parseFloat(give[1]) >= 1)) {
-        throw new Error(`the ball is given up by only ${give[1]} radii - the two`
-            + ' surfaces differ by up to one, so the owner does not win all of it');
+    // THE FILL MUST NOT TOUCH DEPTH. Every depth trick tried here broke
+    // something else; the whole point of the colour is that it does not.
+    const fill = fsrc.slice(fsrc.indexOf('bool skirt ='));
+    const zTweak = /zSurf\s*[-+]=/.exec(fill);
+    if (zTweak) {
+        throw new Error('the joint is being settled by depth again (' + zTweak[0]
+            + ') - that is what exposed the cap rim and failed end-on');
     }
-    // ...AND EVERY JOINT HAS AN OWNER, whatever the outline is doing. The
-    // fragment reads "unowned" off the cap code, so if the claim itself were
-    // gated on the caps flag, neither side would own the joint and both would
-    // give the ball up - which is the tie this exists to break.
-    if (!/claim\[i1\] === k \+ 1/.test(gpu) || !/claim\[i2\] === k \+ 1/.test(gpu)) {
-        throw new Error('the emit no longer reads the joint claim');
+    // ...and the colour is carried per instance, one per end
+    if (!/in vec2 aJCol/.test(gpu) || !/bind\('aJCol', 2, 52\)/.test(gpu)) {
+        throw new Error('the ball colour is not on the instance any more');
     }
+    // ...patched to the OWNER's after every segment's colour is known: the
+    // owner may be a segment the emit has not reached, and its colour is not
+    // its palette entry - the occlusion tint is per segment.
+    if (!/data\[at \+ 13\] = colOf\[ownA\]/.test(gpu)
+        || !/data\[at \+ 14\] = colOf\[ownB\]/.test(gpu)) {
+        throw new Error('the two segments at a joint are not given one colour');
+    }
+    // ...AND THE OWNER IS THE OUTGOING SEGMENT. The 2D pass paints along the
+    // chain and the later segment's cap covers the earlier one, so the ball
+    // that shows belongs to the segment STARTING there.
     if (/jointCaps && claim\[/.test(gpu)) {
         throw new Error('the claim is gated on jointCaps, so with caps off no'
-            + ' segment owns a joint and both give up the ball');
+            + ' segment owns a joint');
     }
-    // ...AND IT IS THE OUTGOING SEGMENT THAT OWNS IT. The 2D pass paints along
-    // the chain and the later segment's cap covers the earlier one, so the
-    // ball that shows at a joint is the one belonging to the segment STARTING
-    // there. Claimed on idx1 first for that reason; claiming on first-come
-    // gives it to the incoming segment and draws the same picture with the two
-    // colours swapped, which is what did not match the 2D.
     const first = gpu.indexOf('if (touch[sg2.idx1] > 1 && claim[sg2.idx1] === 0)');
     const second = gpu.indexOf('if (touch[sg2.idx2] > 1 && claim[sg2.idx2] === 0)');
     if (first < 0 || second < 0 || !(first < second)) {

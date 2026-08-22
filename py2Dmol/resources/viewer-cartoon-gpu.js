@@ -1316,6 +1316,9 @@ in float aRad;          // its radius in ANGSTROM, so it follows zoom like the r
 in vec3 aTCol;          // colour, already shaded, 0..255
 // 1 = this end is a free end of the chain, 0 = the next segment continues it
 in float aCapA, aCapB;
+// WHAT COLOUR THE BALL AT EACH END IS, packed as r*65536 + g*256 + b. At a
+// joint both segments carry the SAME one - the owner's - see buildTube.
+in vec2 aJCol;
 // 1 = annotation (a contact): the 2D pass excludes these from shading
 in float aNoAO;
 uniform mat3 uRot;
@@ -1335,6 +1338,7 @@ out float vRpx;         // the radius actually DRAWN, in device pixels
 out float vRfill;
 out float vZA, vZB;     // view-space depth at each end
 out vec3 vTCol;
+out vec3 vJColA, vJColB;
 out float vCapA, vCapB;
 out float vNoAO;
 void main() {
@@ -1346,6 +1350,10 @@ void main() {
   vB = vec2(uSize.x * 0.5 + b.x * uScale * peB, uSize.y * 0.5 - b.y * uScale * peB);
   vZA = a.z; vZB = b.z;
   vCapA = aCapA; vCapB = aCapB; vNoAO = aNoAO;
+  vJColA = vec3(floor(aJCol.x / 65536.0),
+      floor(mod(aJCol.x / 256.0, 256.0)), floor(mod(aJCol.x, 256.0))) / 255.0;
+  vJColB = vec3(floor(aJCol.y / 65536.0),
+      floor(mod(aJCol.y / 256.0, 256.0)), floor(mod(aJCol.y, 256.0))) / 255.0;
   // ONE TONE PER SEGMENT, and that is the point. The style is flat segments
   // with a dark rim, not lit tubes: the shading has to be constant across a
   // capsule or it stops reading as a flat mark. So the depth cue is computed
@@ -1548,6 +1556,7 @@ in float vRpx;
 in float vRfill;
 in float vZA, vZB;
 in vec3 vTCol;
+in vec3 vJColA, vJColB;
 in float vCapA, vCapB;
 in float vNoAO;
 uniform vec2 uZRange;
@@ -1730,33 +1739,6 @@ void main() {
     // across the joint, which is the artefact this whole thing has to avoid.
     float sz = (capKind > 1.5) ? uCapZ : uSkirtZ;
     zSurf = zAxis + sz * vRfill / max(1e-6, uScale * pe);
-  } else {
-    // THE BALL AT A JOINT BELONGS TO ONE SEGMENT, and the other gives it up by
-    // DEPTH rather than by discarding it.
-    //
-    // Both segments meeting at an atom fill their own hemisphere over it, so
-    // both surfaces are there and the depth buffer chose between them per
-    // pixel. That is geometrically right and draws the wrong picture: two
-    // hemispheres of one radius intersect along a curve, and where the two
-    // segments are different colours that curve is a hard diagonal across the
-    // joint - on a three-atom chain, two bonds that appear to cross in the
-    // middle. The 2D pass has no such seam because it paints in order: the
-    // nearer segment's cap covers the other outright, so the boundary is that
-    // cap's own arc.
-    //
-    // DISCARDING the unowned hemisphere was tried and is worse. The joint cap's
-    // rim sits at the joint's own axis precisely so that BOTH fills bulge in
-    // front of it and hide it (see uCapZ above) - take one of them away and the
-    // rim is exposed, which drew a dotted arc at every bend in the chain.
-    //
-    // So the geometry stays and only the contest changes: one radius further
-    // back is more than the two surfaces can ever differ by inside the ball, so
-    // the owner wins all of it and the boundary is its arc. The rim is 2 radii
-    // behind that, so it stays hidden.
-    if ((vCapA < 0.5 && distance(vPx, vA) < vRfill)
-        || (vCapB < 0.5 && distance(vPx, vB) < vRfill)) {
-      zSurf -= 1.1 * vRfill / max(1e-6, uScale * pe);
-    }
   }
   float t01 = (zSurf - uZRange.x) / max(1e-6, uZRange.y - uZRange.x);
   // NDC z is 1 - 2*t01, the same mapping the other programs put in gl_Position,
@@ -1789,7 +1771,35 @@ void main() {
   // surface's view z so the occlusion pass can read a real depth field instead
   // of guessing one from segment centres.
   if (uZOnly > 0.5) { fragColor = vec4(zSurf, 0.0, 0.0, 1.0); return; }
+  // THE BALL AT A JOINT IS ONE COLOUR, AND IT IS DECIDED ON THE CPU.
+  //
+  // Two segments meeting at an atom overlap in a lens, and a depth buffer
+  // picks between their surfaces per pixel. Their surfaces cross right there,
+  // so the pick flips inside the lens and the seam between two differently
+  // coloured segments is a hard diagonal - two bonds that appear to cross in
+  // the middle. Arbitrating that by depth was tried twice, by cutting the
+  // unowned side out (which exposed the joint cap's rim, since that rim is
+  // hidden precisely BY both fills being there) and by pushing it back (which
+  // needs to know which end's ball a fragment is in, and a segment pointing at
+  // the camera projects both its ends into the same disc).
+  //
+  // Nothing needs to win. Both segments paint the ball in the OWNER's colour,
+  // so whichever surface the depth buffer picks, the colour is the same and
+  // there is no seam to place. The geometry is untouched - every fill, every
+  // rim, every depth is exactly what it was - and the boundary is the ball's
+  // own circle, which is the arc the 2D pass draws.
   vec3 col = vTCol;
+  if (!skirt) {
+    // a free end (cap 1) keeps its own colour; a joint - owned (2, 3) or not
+    // (0) - takes the ball's. Which end is decided by the half of the segment
+    // this fragment sits on, which stays meaningful when the two ends land on
+    // top of each other on screen.
+    if (tRaw < 0.5) {
+      if ((vCapA < 0.5 || vCapA > 1.5) && distance(vPx, vA) < vRfill) col = vJColA;
+    } else if ((vCapB < 0.5 || vCapB > 1.5) && distance(vPx, vB) < vRfill) {
+      col = vJColB;
+    }
+  }
   // EXACTLY THE 2D PASS'S TWO TERMS, applied to a per-pixel occlusion instead
   // of a per-segment one: whiten by how exposed the pixel is, then darken by
   // how much lies in front of it. Same constants, same order - see the
@@ -4718,7 +4728,7 @@ function tubeKeyOf(renderer, S) {
     ].join('|');
 }
 
-const TUBE_FLOATS = 13;
+const TUBE_FLOATS = 15;      // ...the last two are the ends' ball colours
 function buildTube(renderer, S) {
     if (!gl) return false;
     const co = renderer.coords || [];
@@ -4784,6 +4794,11 @@ function buildTube(renderer, S) {
         if (!sg2 || sg2.idx1 === undefined || sg2.type === 'C') continue;
         if (touch[sg2.idx2] > 1 && claim[sg2.idx2] === 0) claim[sg2.idx2] = k + 1;
     }
+    // EACH SEGMENT'S FINAL COLOUR AND WHERE ITS INSTANCE LANDED, so a joint can
+    // be given one colour after the fact. Both are per k, and the emit skips
+    // some segments, so the slot is not the loop index.
+    const colOf = new Float64Array(cnt);
+    const slotOf = new Int32Array(cnt).fill(-1);
     // REUSED. At 30,000 segments this is a 1.5 MB allocation, and it was being
     // made every frame to hold bytes that had not changed.
     const need = cnt * TUBE_FLOATS;
@@ -4859,6 +4874,17 @@ function buildTube(renderer, S) {
         data[o++] = cA;
         data[o++] = cB;
         data[o++] = isC ? 1 : 0;                        // annotation: no shading
+        // THE BALL COLOUR AT EACH END, its own for now. A joint's two segments
+        // are patched to share the owner's below, once every segment's colour
+        // has been worked out - the owner may be a segment this loop has not
+        // reached yet, and its colour is not simply its palette entry: the
+        // occlusion tint above is per segment.
+        const packed = (Math.round(r * 255) * 65536) + (Math.round(g * 255) * 256)
+            + Math.round(b * 255);
+        colOf[k] = packed;
+        slotOf[k] = count;
+        data[o++] = packed;
+        data[o++] = packed;
         count++;
         const dax = a.x - cx; const day = a.y - cy; const daz = a.z - cz;
         const da = dax * dax + day * day + daz * daz;
@@ -4866,6 +4892,21 @@ function buildTube(renderer, S) {
         const dbx = c2.x - cx; const dby = c2.y - cy; const dbz = c2.z - cz;
         const db = dbx * dbx + dby * dby + dbz * dbz;
         if (db > rad) rad = db;
+    }
+    // ...AND NOW GIVE EACH JOINT ONE COLOUR. Both segments meeting at an atom
+    // paint the ball there in the owner's colour, so the depth buffer's choice
+    // between their two surfaces stops being visible: there is no colour
+    // boundary inside the lens for it to place. See the fragment shader.
+    for (let k = 0; k < cnt; k++) {
+        const slot = slotOf[k];
+        if (slot < 0) continue;
+        const sg2 = S.segments[order[k]];
+        if (!sg2 || sg2.type === 'C') continue;
+        const at = slot * TUBE_FLOATS;
+        const ownA = claim[sg2.idx1] - 1;
+        const ownB = claim[sg2.idx2] - 1;
+        if (ownA >= 0 && slotOf[ownA] >= 0) data[at + 13] = colOf[ownA];
+        if (ownB >= 0 && slotOf[ownB] >= 0) data[at + 14] = colOf[ownB];
     }
     rad = Math.sqrt(rad) + 2;    // room for the capsule's own bulge
     tubeRange = [-rad, rad];
@@ -4946,6 +4987,7 @@ function drawTube(cv, renderer, prm) {
     };
     bind('aP0', 3, 0); bind('aP1', 3, 12); bind('aRad', 1, 24); bind('aTCol', 3, 28);
     bind('aCapA', 1, 40); bind('aCapB', 1, 44); bind('aNoAO', 1, 48);
+    bind('aJCol', 2, 52);
     const R = currentRot();
     const u = (nm, v) => gl.uniform1f(gl.getUniformLocation(progTube, nm), v);
     gl.uniformMatrix3fv(gl.getUniformLocation(progTube, 'uRot'), false,
