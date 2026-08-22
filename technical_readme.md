@@ -1125,7 +1125,7 @@ Drawn in two passes:
 - `rainbow` - N→C terminus gradient
 - `entropy` - MSA entropy (if available)
 - `deepmind` - DeepMind pLDDT coloring
-- `ss` - by secondary structure, using a named palette (`ss_palette`: pymol | jmol | jr1 | jr2)
+- `ss` - by secondary structure, using a named palette (`ss_palette`: pymol | jmol)
 
 **Color Resolution**: `resolveColorHierarchy()` in `viewer-mol.js` walks object →
 chain → position and returns either a resolved MODE or a literal colour, in that
@@ -1651,7 +1651,7 @@ DEFAULT_CONFIG = {
     "color": {
         "mode": "auto",
         "colorblind": False
-        # "ss_palette" is added when set: pymol | jmol | jr1 | jr2
+        # "ss_palette" is added when set: pymol | jmol
     },
     "pae": {
         "enabled": False,

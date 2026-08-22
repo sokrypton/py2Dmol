@@ -389,10 +389,8 @@ class view:
             color (str): Color mode - "auto", "chain", "rainbow", "plddt", "deepmind", "entropy", "ss" (secondary structure). Default "auto".
             colorblind (bool): Use colorblind-friendly palette. Default False.
             ss_palette (str): Named palette for the "ss" colour mode -
-                "pymol" (red/yellow/green, the default), "jmol"
-                (magenta/yellow/white), "jr1" (Jane Richardson blue/green
-                convention) or "jr2" (her 1981 hand-coloured drawings: tan
-                helices, green strands). The SSE dropdown in the Style panel
+                "pymol" (red/yellow/green, the default) or "jmol"
+                (magenta/yellow/white). The SSE dropdown in the Style panel
                 while colouring by SSE.
             base_plates (bool): Draw DNA/RNA base plates (the rungs of a
                 duplex). None (default) leaves the renderer's default (on).
@@ -573,9 +571,9 @@ class view:
         outline_tint = float(outline_tint)
         if not 0.0 <= outline_tint <= 1.0:
             raise ValueError("outline_tint must be between 0.0 (black) and 1.0 (element color).")
-        if ss_palette is not None and ss_palette not in ("pymol", "jmol", "jr1", "jr2"):
+        if ss_palette is not None and ss_palette not in ("pymol", "jmol"):
             raise ValueError(
-                f'Invalid ss_palette "{ss_palette}" - expected "pymol", "jmol", "jr1" or "jr2".')
+                f'Invalid ss_palette "{ss_palette}" - expected "pymol" or "jmol".')
         if base_plates is not None:
             base_plates = bool(base_plates)
         if bg not in ("white", "black"):

@@ -11580,10 +11580,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // via data-needs-ss.
     const ssPaletteBox = containerElement.querySelector('#ssPaletteButtons');
     if (ssPaletteBox) {
-        const PAL_NAMES = {
-            pymol: 'PyMOL', jmol: 'Jmol',
-            jr1: 'JR1', jr2: 'JR2',   // Jane Richardson palettes, numbered
-        };
+        const PAL_NAMES = { pymol: 'PyMOL', jmol: 'Jmol' };
         const fillRow = (el, key, pal, caret) => {
             el.textContent = '';
             for (const cls of ['C', 'H', 'E', 'N', 'L']) {
@@ -11714,6 +11711,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     if (styleSelect) {
         styleSelect.value = uiStyleOf(renderer.style);
         styleSelect.addEventListener('change', (e) => {
+            // PICKED BY HAND, and remembered as such: the loader chooses tube
+            // over cartoon for a large structure, and it must not go on
+            // choosing for someone who has said what they want.
+            renderer.styleChosen = true;
             // Cartoon's default preset is Richardson, so picking Cartoon lands
             // there; the Preset dropdown reaches Ribbon (plain cartoon) and 3D.
             renderer.setStyle(e.target.value);

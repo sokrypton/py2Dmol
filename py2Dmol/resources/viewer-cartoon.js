@@ -2566,12 +2566,13 @@
     // the effect flattens - measured, an 18% lift moved the inner face only
     // ~1.8 luminance and tripling it bought ~1.2 more. A tint raises every
     // channel toward 255 instead, so it keeps working on saturated colours.
-    // 0.68 is set to match the contrast jr2 gets from its explicit two-tone,
-    // so every palette reads with the same inner/outer separation. Measured
-    // inner-minus-outer median luminance on an ideal helix: jr2 58.4 (its own
-    // hue, unaffected by this constant), pymol 57.3, jmol 52.2, jr1 61.4.
-    // It has to be this large because the tint competes with an already-light
-    // outer face - at 0.40 the others reached only ~30-37, well short of jr2.
+    // 0.68 was set against a palette that carried an explicit two-tone helix
+    // of its own (one of the Richardson pair, both since removed), so that
+    // every palette would read with the same inner/outer separation. Measured
+    // inner-minus-outer median luminance on an ideal helix at this value: 58.4
+    // for that palette's own two-tone, 57.3 pymol, 52.2 jmol. It has to be
+    // this large because the tint competes with an already-light outer face -
+    // at 0.40 the others reached only ~30-37, well short of it.
     // Helices only: strand concavity sits AT zero about half the time, so
     // tinting there would pick a side from sign noise and flicker on rotation.
     const RICH_INNER_TINT = 0.68;
@@ -10577,18 +10578,16 @@
                     // was not. On 1TIM the two rules disagree on 55% of helix
                     // pieces, which is what made the pale face land inside on
                     // some helices and outside on others.
-                    // NOTE for anyone adding a `back` colour for another class:
-                    // a helix curves hard enough for this call to be decisive
+                    // NOTE for anyone giving a palette an explicit inner
+                    // colour per SS class - which one of them used to have: a
+                    // helix curves hard enough for this call to be decisive
                     // (|kAvg| median 0.87, nothing below 0.02), but flat strands
-                    // sit AT zero half the time - a back colour on E would pick
-                    // a side from sign noise and flicker under rotation.
+                    // sit AT zero half the time, so an inner colour on E would
+                    // pick a side from sign noise and flicker under rotation.
                     const inward = (isTop ? kAvg : -kAvg) > 0;
                     let fc = g.c;
                     if (inward) {
-                        const hue = (ssColor && ssPal.back) ? ssPal.back[g.ss] : null;
-                        if (hue) {
-                            fc = hue;
-                        } else if (rich && g.ss === 'H' && !g.co) {
+                        if (rich && g.ss === 'H' && !g.co) {
                             // no explicit two-tone in this palette: synthesise
                             // one by tinting toward white. NOT applied when the
                             // colour was set by hand (g.co): the tint is a heavy
@@ -12029,10 +12028,9 @@
     });
 
     // ---- 'ss' COLOR MODE ---------------------------------------------------
-    // Colour by secondary structure, in the convention the Richardson drawings
-    // use: strands green, helices blue, loops a paler blue-grey. Registered as
-    // a normal custom colour mode, so it works with any style - it is only
-    // grouped here because this file owns the SS assignment.
+    // Colour by secondary structure. Registered as a normal custom colour mode,
+    // so it works with any style - it is only grouped here because this file
+    // owns the SS assignment.
     //
     // Reuses renderer._cartoonSec when the cartoon path has already built it.
     // Colours are resolved BEFORE the draw stage, so on the very first paint of
@@ -12040,10 +12038,6 @@
     // depend on a second render to self-correct, it computes the assignment
     // itself using the same run-splitting rule (consecutive backbone protein
     // positions, minimum 5 residues) and caches it the same way.
-    // Sampled to sit where the drawings do: a saturated but LIGHT royal blue
-    // for helices and a spring green for strands. The first pass was noticeably
-    // darker - shade() dims everything by depth on top of these, so the base
-    // colours have to start lighter than the intended on-screen result.
     // Named palettes for the 'ss' mode, selected by renderer.ssPalette (the
     // SSE dropdown in the Style panel, or ss_palette from Python). H/E/C are
     // the protein classes; N is the nucleic backbone (base plates inherit the
@@ -12069,40 +12063,6 @@
             C: { r: 235, g: 235, b: 230 },
             N: { r: 150, g: 190, b: 235 },
             L: { r: 150, g: 150, b: 150 },
-        },
-        // Jane Richardson palettes (numbered; more of her schemes may join).
-        // jr1: the blue/green convention - royal-blue helices, spring-green
-        // strands; nucleic in warm amber so a protein-DNA complex separates
-        // at a glance.
-        jr1: {
-            H: { r: 92, g: 112, b: 222 },
-            E: { r: 96, g: 244, b: 166 },
-            C: { r: 122, g: 142, b: 224 },
-            N: { r: 235, g: 178, b: 100 },
-            L: { r: 150, g: 150, b: 150 },
-        },
-        // jr2: her 1981 hand-coloured drawings (Anatomy and Taxonomy of
-        // Protein Structures): green strand arrows and TWO-TONE brown helix
-        // spirals - the outside of the ribbon dark umber, the inside a warm
-        // tan, so the spiral reads as a twisted band rather than a flat
-        // corkscrew. Loops are the same dark brown as the helix outside.
-        // Values sampled from a photograph of one of the paintings: the
-        // saturated warm pixels are sharply bimodal, ~(106,85,63) for the
-        // outer faces against ~(203,171,109) for the inner, with almost
-        // nothing between. Base pigments here sit brighter than those
-        // samples because the renderer's own tone/luminance terms multiply
-        // down from the base. Nucleic in a dusty slate that stays outside
-        // the protein's warm range.
-        jr2: {
-            H: { r: 124, g: 96, b: 62 },
-            E: { r: 102, g: 196, b: 137 },
-            C: { r: 134, g: 106, b: 74 },
-            N: { r: 130, g: 148, b: 186 },
-            L: { r: 168, g: 120, b: 82 },
-            // ribbon undersides, by SS class (see paintFace)
-            back: {
-                H: { r: 216, g: 184, b: 124 },
-            },
         },
     };
     const ssPaletteOf = (renderer) =>

@@ -3814,6 +3814,53 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
 // it. setStyle refuses that switch, but nothing refuses a structure loaded into
 // a viewer already in cartoon, which before the default changed could not
 // happen. Same test setStyle uses, same escape hatch (renderer.cartoonForce).
+// TUBE IS THE DEFAULT PAST A THOUSAND RESIDUES.
+//
+// Not the same rule as dropToTubeIfCartoonWontFit below, which is about a
+// cartoon that cannot be BUILT - tens of thousands of positions and a heap
+// that will not hold them. This one is about what is worth looking at: past
+// about a thousand residues the ribbon is a tangle at any zoom that fits it on
+// screen, it costs several times a tube to draw, and the first thing to do
+// with it is turn it down. Starting there and letting the user reach for the
+// cartoon is the better of the two wrong-by-default choices.
+//
+// ONLY WHILE NOBODY HAS CHOSEN. Picking a style in the Style panel sets
+// renderer.styleChosen, and a restored session sets it too - a saved view says
+// what it wants. Without that, loading a second structure would undo a choice
+// made after the first.
+const BIG_STRUCTURE_RESIDUES = 1000;
+
+function tubeByDefaultIfBig(r, objectName) {
+    if (!r || r.styleChosen || r.style !== 'cartoon' || r.cartoonForce) return;
+    if (!r.setStyle) return;
+    // COUNTED OFF THE FRAME, not off the renderer. This runs while the object
+    // is being switched to, and renderer.positionTypes is still the PREVIOUS
+    // object's at that point - empty on the first load, so the rule read every
+    // structure as nothing and never fired. Measured on 1AOI: 0 types against
+    // the frame's 1,097.
+    const obj = r.objectsData && r.objectsData[objectName];
+    const frame = obj && obj.frames && obj.frames[0];
+    if (!frame) return;
+    // RESIDUES, not positions: a position is a residue for protein and nucleic
+    // acid, but a ligand contributes one per atom and side chains append more,
+    // so counting coordinates would put a 300-residue structure with a big
+    // ligand over the line. A frame with no types at all is all backbone.
+    const t = frame.position_types;
+    let n = 0;
+    if (t && t.length) {
+        for (let i = 0; i < t.length; i++) {
+            if (t[i] === 'P' || t[i] === 'D' || t[i] === 'R') n++;
+        }
+    } else {
+        n = (frame.coords && frame.coords.length) || 0;
+    }
+    if (n <= BIG_STRUCTURE_RESIDUES) return;
+    r.setStyle('tube');
+    styleFallbackNote = `${n.toLocaleString()} residues - showing tube;`
+        + ' pick Cartoon in Style for the ribbon.';
+    setStatus('');
+}
+
 function dropToTubeIfCartoonWontFit(r) {
     if (!r || r.style !== 'cartoon' || r.cartoonForce) return;
     if (!r._cartoonWouldFit || !r.setStyle) return;
@@ -3940,6 +3987,7 @@ function applyPendingObjects() {
         // Show the last new object
         const show = newNames[newNames.length - 1];
         if (r?._switchToObject) r._switchToObject(show);
+        tubeByDefaultIfBig(r, show);
         dropToTubeIfCartoonWontFit(r);
         // a new object is a new depth range, and loading one does not go
         // through the object dropdown's change event
@@ -7690,6 +7738,7 @@ async function loadViewerState(stateData) {
             // applies that style's preset, which would otherwise overwrite the
             // values restored below.
             if (typeof vs.style === 'string' && vs.style !== renderer.style) {
+                renderer.styleChosen = true;   // a saved view says what it wants
                 renderer.setStyle(vs.style);   // no-ops on an unknown/unloaded style
                 // setStyle syncs the dropdown itself. Assigning renderer.style
                 // here used to leave the select BLANK, because 'richardson' was

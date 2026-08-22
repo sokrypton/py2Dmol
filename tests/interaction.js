@@ -3707,6 +3707,104 @@ t('the style toggles are grouped together, three to a row', () => {
 // Safe in both because it is only ever a REQUEST: the control removes itself
 // when WebGL2 is absent, the renderer falls back to the 2D path for anything
 // the GPU declines, and PNG/SVG export goes through 2D whatever it says.
+t('a large structure opens as tube, and a chosen style is left alone', () => {
+    // NOT the memory rule below it: this is about what is worth looking at.
+    // Past about a thousand residues the ribbon is a tangle at any zoom that
+    // fits it on screen, and the first thing to do with it is turn it down.
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    const at = app.indexOf('function tubeByDefaultIfBig(');
+    if (at < 0) throw new Error('the size rule is gone from web/app.js');
+    let d = 0; let k = app.indexOf('{', at);
+    const start = k;
+    for (; k < app.length; k++) {
+        if (app[k] === '{') d++; else if (app[k] === '}' && !--d) break;
+    }
+    const body = app.slice(start, k + 1);
+    // eslint-disable-next-line no-new-func
+    const fn = new Function('r', 'objectName', 'BIG_STRUCTURE_RESIDUES', 'setStatus',
+        'styleFallbackNote',
+        body.slice(1, -1).replace(/styleFallbackNote = /g, 'void ') + '; return r;');
+    // ...off the FRAME, which is where the count has to come from: the
+    // renderer's own arrays are still the previous object's while this runs
+    const viewer = (n, extra) => Object.assign({
+        style: 'cartoon',
+        objectsData: { o: { frames: [{ coords: new Array(n),
+            position_types: Array.from({ length: n }, () => 'P') }] } },
+        setStyle(v) { this.style = v; },
+    }, extra || {});
+    const big = viewer(1001);
+    fn(big, 'o', 1000, () => {});
+    if (big.style !== 'tube') throw new Error('1001 residues still opened on cartoon');
+    const small = viewer(1000);
+    fn(small, 'o', 1000, () => {});
+    if (small.style !== 'cartoon') {
+        throw new Error('1000 residues was pushed to tube - the rule is PAST a thousand');
+    }
+    // ...and a style someone picked is theirs: loading a second structure must
+    // not undo it
+    const chosen = viewer(5000, { styleChosen: true });
+    fn(chosen, 'o', 1000, () => {});
+    if (chosen.style !== 'cartoon') {
+        throw new Error('a hand-picked cartoon was overridden by the size rule');
+    }
+    // A LIGAND IS NOT A RESIDUE. Counting coordinates would put a small
+    // structure with a big ligand, or one showing its side chains, over the
+    // line - both append positions of type 'L'.
+    const ligandy = viewer(400);
+    const lt = ligandy.objectsData.o.frames[0].position_types;
+    for (let i = 0; i < 2000; i++) lt.push('L');
+    ligandy.objectsData.o.frames[0].coords = new Array(lt.length);
+    fn(ligandy, 'o', 1000, () => {});
+    if (ligandy.style !== 'cartoon') {
+        throw new Error('ligand atoms were counted as residues');
+    }
+    // THE FRAME, NOT THE RENDERER: reading renderer.positionTypes is what made
+    // this fire for nothing, since it still holds the previous object's while
+    // the switch is happening.
+    const stale = viewer(1001);
+    stale.positionTypes = [];
+    fn(stale, 'o', 1000, () => {});
+    if (stale.style !== 'tube') {
+        throw new Error('the count came off the renderer, which is empty here -'
+            + ' the rule then never fires on a first load');
+    }
+    // the two places that mark a style as chosen: the dropdown and a saved view
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    if (!/renderer\.styleChosen = true;/.test(mol)) {
+        throw new Error('picking a style in the Style panel no longer records it,'
+            + ' so the next load would choose again over the top of it');
+    }
+    if (!/renderer\.styleChosen = true;\s*\/\/ a saved view/.test(app)) {
+        throw new Error('a restored session does not count as a chosen style');
+    }
+});
+
+t('the JR palettes are gone, everywhere they were named', () => {
+    // Purged rather than hidden: a palette left in the table but out of the
+    // menu is still reachable from Python and from a saved session, and then
+    // the two surfaces disagree about what exists.
+    for (const f of ['py2Dmol/resources/viewer-cartoon.js',
+        'py2Dmol/resources/viewer-mol.js', 'py2Dmol/viewer.py',
+        'web/app.js', 'index.html', 'README.md']) {
+        const src = fs.readFileSync(f, 'utf8');
+        const hit = /\bjr[12]\b|\bJR[12]\b/.exec(src);
+        if (hit) throw new Error(f + ' still names ' + hit[0]);
+    }
+    // ...and the palette table is down to the two that are left
+    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    const at = cart.indexOf('const SS_PALETTES = {');
+    const table = cart.slice(at, cart.indexOf('\n    };', at));
+    const keys = (table.match(/^        (\w+): \{/gm) || []).map((m) => m.trim());
+    if (keys.join(' ') !== 'pymol: { jmol: {') {
+        throw new Error('the palette table holds ' + JSON.stringify(keys));
+    }
+    // the inner-colour branch only that palette fed goes with it
+    if (/ssPal\.back/.test(cart)) {
+        throw new Error('the per-class back colour is still read, and nothing'
+            + ' supplies one any more');
+    }
+});
+
 t('ligands are loaded by default, in the page and in the Python viewer', () => {
     // A LIGAND IS USUALLY WHY THE STRUCTURE IS OPEN. Left off, the viewer says
     // nothing about it and the file reads as not having one - and the two

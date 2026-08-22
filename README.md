@@ -103,8 +103,7 @@ All are `view()` arguments and all have a slider in the panel:
 | `outline` | width in pixels; fractional values are real, and it thins to a hairline before `0` turns it off |
 
 `color='ss'` colours by secondary structure, with the palette set by `ss_palette`
-or the SSE dropdown: `pymol` (default), `jmol`, or Richardson's own `jr1` and
-`jr2`. It works with any style.
+or the SSE dropdown: `pymol` (default) or `jmol`. It works with any style.
 
 **SVG and PNG export** reproduce all of this, grain and gradients included.
 
@@ -338,6 +337,6 @@ Control output cell behavior with the `persistence` parameter:
 **Color modes**: `auto`, `rainbow`, `plddt`, `chain`, `ss`, `entropy`, `deepmind`  
 **Styles**: `tube` (default), `cartoon`  
 **Cartoon presets**: `richardson` (default), `ribbon`, `3d`  
-**SSE palettes**: `pymol` (default), `jmol`, `jr1`, `jr2`  
+**SSE palettes**: `pymol` (default), `jmol`  
 **Outline modes**: `none`, `partial`, `full` (default)  
 **Formats**: PDB (.pdb), mmCIF (.cif); multi-model files load as frames.
