@@ -11481,27 +11481,35 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
-         * THE CAPTURE PANEL: three lines, and each one is a sentence.
+         * THE CAPTURE PANEL: two blocks and a line that says what they will
+         * make. A grid of name, settings, button:
          *
-         *   Image  [PNG] [200 dpi]  2000x2000   [camera]
-         *   Video  [WebM] [6 s] [30 fps] [5 Mbps] [1000x1000]
-         *   Record [Turn] [Draw] [Frames]
+         *   Img  Type[PNG] DPI[200]                          [Save]
+         *   ------------------------------------------------------
+         *   Vid  Type[WebM] Rec[FR]                           [ ● ]
+         *        Sec[6] FPS[30] Rot[1] Mbps[12] Size[1]
+         *   ------------------------------------------------------
+         *   PNG 1246x1246 - 200 dpi
+         *   WebM 598x598 - 20 frames - 2s at 10 fps - 1 turn - 12 Mbps
          *
-         * WHAT CHANGED AND WHY. It used to be one row per OUTPUT, each row
-         * ending in its own button and each carrying its own copy of the
-         * settings - so the frame rate for a turn and the frame rate for a
-         * drawing were different controls holding the same number, the
-         * trajectory row had no settings at all (30 fps and 20 Mbps, decided in
-         * the recorder and shown nowhere), and nothing anywhere said what
-         * resolution any of it came out at. Settings on one line, sources on
-         * the next: the video row is what the file will be, the record row is
-         * what goes in it.
+         * WHAT CHANGED AND WHY. It used to be one row per OUTPUT, each ending
+         * in its own button and each carrying its own copy of the settings - so
+         * the frame rate for a turn and the frame rate for a drawing were
+         * different controls holding the same number, the trajectory row had no
+         * settings at all (30 fps and 20 Mbps, decided in the recorder and
+         * shown nowhere), and nothing anywhere said what resolution any of it
+         * came out at.
          *
          * WHAT IS OFFERED IS WHAT CAN BE MADE. Formats are asked of the browser
          * and of the page (videoFormats), sizes of the canvas (videoSizes), and
-         * a source appears only when there is something to record: a turn needs
-         * Rotate on, a drawing needs Draw on, Frames needs a trajectory. With
-         * none of them the row says so rather than offering a dead button.
+         * a source appears only where there is something to record: a turn
+         * needs Rotate, a drawing needs Draw, frames need a trajectory. With
+         * none of them there is no video row at all.
+         *
+         * WHICH CONTROLS SHOW follows from one question - who decides how long
+         * the recording is (see the sources) - and from the format. See
+         * syncVideo; the info line describes the answer rather than repeating
+         * the boxes.
          */
         _toggleSaveImagePanel(anchorEl) {
             // OPEN MEANS BUILT, FRESH. The panel used to be built once and then
