@@ -3695,6 +3695,19 @@ t('one capture model: defaults, formats and sizes', () => {
     v._captureOpts = { dpi: 600 };
     if (v.captureOpts().dpi !== 600) throw new Error('a written option was lost');
     if (v.captureOpts().fps !== d.fps) throw new Error('the untouched defaults were dropped');
+    // ...AND A CONTROL THAT IS NOT ON THE ROW LEAVES ITS SETTING ALONE. The
+    // fallbacks in readVideo used to be literals, so opening the panel with
+    // nothing recordable - no video row at all - wrote them over the settings:
+    // the bitrate came back 5 where the default is 12, because 5 was the
+    // number written in that function.
+    const panel = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const rv = panel.slice(panel.indexOf('const readVideo = () => {'),
+        panel.indexOf('const closePanel') > 0 ? panel.indexOf('const closePanel')
+            : panel.indexOf('const recRow'));
+    if (/\|\| \d+ :/.test(rv) || /: \d+,/.test(rv)) {
+        throw new Error('readVideo has literal fallbacks again, so an absent'
+            + ' control overwrites a setting');
+    }
 
     // FORMATS ARE ASKED, NEVER ASSUMED. A format that cannot be written must
     // not be in the menu: a recording that fails afterwards has cost the take.
@@ -4058,15 +4071,20 @@ t('the save panel can still record a trajectory', () => {
         throw new Error('the rotation recorder cannot play a trajectory');
     }
     // with nothing recordable the row SAYS so rather than offering a dead button
-    // ...and it says it in ONE LINE: the settings area is a grid of ~90px
-    // cells, so a sentence dropped into it took a cell and wrapped inside it,
-    // three words to a line.
-    if (!/Needs Rotate, Draw or frames/.test(body)) {
-        throw new Error('an empty video row says nothing');
+    // NO ROW WHERE THERE IS NOTHING TO RECORD. A Vid row whose only content
+    // is "you cannot" spends a rule, a name and a sentence on an absence; the
+    // panel is rebuilt when Rotate or Draw goes on or a trajectory arrives, so
+    // the row appears the moment it can do something.
+    if (!/const recRow = videoRow \|\| \(!formats\.length/.test(body)) {
+        throw new Error('a video row is still built with nothing to record');
     }
-    if (!/note\.style\.gridColumn = '1 \/ -1'/.test(body)) {
-        throw new Error('the empty-row line does not span the row, so it wraps'
-            + ' inside one cell');
+    if (/Needs Rotate, Draw or frames/.test(body)) {
+        throw new Error('the empty-row sentence is back');
+    }
+    // ...except where the BROWSER has no recorder, which no amount of clicking
+    // will fix and is worth saying
+    if (!/No video recorder in this browser/.test(body)) {
+        throw new Error('a browser with no recorder is not told so');
     }
     // ...and the buttons live ON the video row, not on one of their own: a row
     // called Record under a row called Video is a second name for one subject,

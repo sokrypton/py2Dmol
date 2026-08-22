@@ -11997,18 +11997,29 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 });
                 this._describeCapture();
             };
-            const readVideo = () => ({
-                seconds: secIn ? Number(secIn.value) || 6 : 6,
-                fps: fpsIn ? Number(fpsIn.value) || 30 : 30,
-                mbps: mbpsIn ? Number(mbpsIn.value) || 5 : 5,
-                container: vFmt ? vFmt.value : 'webm',
-                scale: sizeSel ? Number(sizeSel.value) || 1 : 1,
-                colors: colorsSel ? Number(colorsSel.value) || 256 : 256,
+            // WHAT THE CONTROLS SAY, AND WHAT WAS ALREADY SET FOR THE REST.
+            //
+            // A control that is not on the row has no value to read, and the
+            // fallbacks used to be written out here as numbers - which meant a
+            // panel opened with nothing recordable (no video row at all) wrote
+            // those numbers over the settings: the bitrate came back 5 where
+            // the default is 12, because 5 was the literal in this function.
+            // Read from the stored options instead, so an absent control
+            // leaves its setting alone.
+            const readVideo = () => {
+                const was = this.captureOpts();
+                return {
+                seconds: secIn ? Number(secIn.value) || was.seconds : was.seconds,
+                fps: fpsIn ? Number(fpsIn.value) || was.fps : was.fps,
+                mbps: mbpsIn ? Number(mbpsIn.value) || was.mbps : was.mbps,
+                container: vFmt ? vFmt.value : was.container,
+                scale: sizeSel ? Number(sizeSel.value) || was.scale : was.scale,
+                colors: colorsSel ? Number(colorsSel.value) || was.colors : was.colors,
                 // the Images format renders at the Image row's resolution, and
                 // is counted rather than timed
-                dpi: Number(dpiSel.value) || 200,
-                frames: framesIn ? Number(framesIn.value) || 36 : 36,
-                rotations: rotIn ? Number(rotIn.value) || 1 : 1,
+                dpi: Number(dpiSel.value) || was.dpi,
+                frames: framesIn ? Number(framesIn.value) || was.frames : was.frames,
+                rotations: rotIn ? Number(rotIn.value) || was.rotations : was.rotations,
                 // WHICH OF THE FOUR, so the description can work out who sets
                 // the length. It used to be written only when record was
                 // pressed, so until then the line described the last thing
@@ -12019,8 +12030,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // chosen: open the panel with Rotate off and the only source is
                 // F, so switching Rotate on afterwards kept F instead of
                 // landing on FR, which is what having both on means.
-                source: srcSel ? srcSel.value : (this.captureOpts().source || ''),
-            });
+                source: srcSel ? srcSel.value : (was.source || ''),
+                };
+            };
             // WRITTEN BACK ON EVERY CHANGE, not read at the moment a button is
             // pressed. The panel is rebuilt whenever the canvas is resized (see
             // _updateCanvasDimensions), and a value that lived only in the DOM
@@ -12044,21 +12056,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // wrapping rows, a line break nobody asked for. The row wraps on
             // its own when it has to, and the button follows the settings
             // instead of sitting under them.
-            const recRow = videoRow || (() => { rule(); return row('Vid'); })();
-            if (!formats.length) {
-                recRow.appendChild(el('span', CAP, 'No video format available'));
-            } else if (!sources.length) {
-                // ONE LINE. The settings area is a grid of ~90px cells, so a
-                // sentence dropped into it took a cell and wrapped inside it,
-                // three words to a line. This spans the whole row and says the
-                // same thing in half the words.
-                // Spanning, but not nowrap: 204px of text fits the standalone
-                // page's row on one line and cannot fit the embedded viewer's
-                // 144px one, where forcing it would push it out of the panel
-                // rather than onto a second line.
-                const note = el('span', CAP, 'Needs Rotate, Draw or frames');
-                note.style.gridColumn = '1 / -1';
-                recRow.appendChild(note);
+            // NO ROW WHERE THERE IS NOTHING TO RECORD. A Vid row whose only
+            // content is "you cannot" is a rule, a name and a sentence spent
+            // on an absence - and the panel is rebuilt whenever Rotate or Draw
+            // is switched on or a trajectory arrives, so the row appears the
+            // moment it can do something. The exception is a browser with no
+            // recorder at all: video is missing there for a reason worth
+            // saying, since nothing the user does will bring it back.
+            const recRow = videoRow || (!formats.length
+                ? (() => { rule(); return row('Vid'); })() : null);
+            if (!recRow) {
+                // nothing to record - the row is not there at all
+            } else if (!formats.length) {
+                recRow.appendChild(el('span', CAP, 'No video recorder in this browser'));
             } else {
                 // ONE BUTTON, AND A MENU WHERE THERE IS A CHOICE. A row of
                 // buttons reading "Rotate", "Frames", "Draw+Rotate" is a row of
