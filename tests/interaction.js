@@ -787,9 +787,19 @@ t('a proline closes its ring through the backbone nitrogen', () => {
         throw new Error('the materialised atom does not carry the flag');
     }
     const cart2 = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
-    if (!/if \(!e \|\| !e\.bb\) return v;/.test(cart2)
-        || !/const f = ribbonSurfaceToward\(e\.owner, v\);/.test(cart2)) {
+    // THE WHOLE RING MOVES, as one. Lifting the buried atom alone bends the
+    // pentagon - that vertex on the face, the other three where they were.
+    if (!/const bbAtomOf = new Map\(\);/.test(cart2)
+        || !/const shiftOf = \(owner\) =>/.test(cart2)) {
         throw new Error('the drawing does not lift the ring onto the ribbon surface');
+    }
+    const lift = cart2.slice(cart2.indexOf('const shiftOf = (owner) =>'),
+        cart2.indexOf('v1 = lift(seg.idx1, v1);'));
+    if (!/const e = scMap\.get\(idx\);\s*\n\s*if \(!e\) return v;/.test(lift)) {
+        throw new Error('only the flagged atom is being moved, so the ring bends');
+    }
+    if (!/if \(Math\.abs\(d\) < slab\.hT\)/.test(lift)) {
+        throw new Error('an atom already outside the slab is being pulled in');
     }
     // ...and ONLY the drawing moves it: the search and the colour read the atom
     // where it was measured

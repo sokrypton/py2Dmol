@@ -6381,6 +6381,19 @@
             };
         };
 
+        // WHICH RESIDUES HAVE A KEPT BACKBONE ATOM, and where the ring they
+        // close has to move to clear the slab. One pass over the map rather
+        // than a scan per bond, and the shift is worked out once per residue -
+        // both arms of the ring and every bond inside it must take the SAME
+        // one, or the ring comes apart.
+        const bbAtomOf = new Map();
+        const bbShift = new Map();
+        if (scMap && scMap.size) {
+            for (const [idx, e] of scMap) {
+                if (e && e.bb && !bbAtomOf.has(e.owner)) bbAtomOf.set(e.owner, idx);
+            }
+        }
+
         // THE STICK SECTION'S THICKNESS, resolved here because two passes need
         // it: the box builder far below, and the side-chain cut in the loop
         // that follows, which has to know how far its corners will travel
@@ -6463,19 +6476,50 @@
             // a solid. Its N sits 1.46 A from the CA - inside the ribbon at any
             // normal width - so the arm that closes the ring ran into the slab
             // and vanished, and the pentagon read as a loop diving through the
-            // tube. Lifted to the surface along the same exit the CA-CB bond
-            // takes, the ring wraps onto the face and meets it there.
+            // tube.
             //
-            // Only what is DRAWN moves. The atom keeps its measured position
+            // THE WHOLE RING MOVES, as one. Lifting the buried atom alone bends
+            // the pentagon: that vertex ends up on the face while the other
+            // three stay where they were, and a ring with one corner pulled in
+            // is a worse drawing than one sitting a third of an Angstrom out.
+            // The shift is what it takes to bring the buried atom to the nearer
+            // FACE of the slab, along that face's normal, and every atom of the
+            // residue takes it - so the ring keeps its shape and rests on the
+            // ribbon instead of cutting through it. The two bonds back to the
+            // CA stretch by the same amount and stay anchored, and the existing
+            // cut at the surface takes care of where they meet it.
+            //
+            // Only what is DRAWN moves. The atoms keep their measured positions
             // for everything else - element colour, picking, the distance
             // search - which is the same split a base plate makes when it runs
             // from its ribbon's face rather than from the trace inside it.
             if (scMap && scMap.size) {
+                const shiftOf = (owner) => {
+                    if (bbShift.has(owner)) return bbShift.get(owner);
+                    let out = null;
+                    const idx = bbAtomOf.get(owner);
+                    const slab = idx === undefined ? null : ribbonSlabAt(owner);
+                    if (slab) {
+                        const p = at(idx) || rotated[idx];
+                        const dx0 = p.x - slab.o.x, dy0 = p.y - slab.o.y,
+                            dz0 = p.z - slab.o.z;
+                        const d = dx0 * slab.n[0] + dy0 * slab.n[1] + dz0 * slab.n[2];
+                        // outside already: nothing to lift, and pulling it IN
+                        // would be the bug this exists to avoid
+                        if (Math.abs(d) < slab.hT) {
+                            const need = (d < 0 ? -slab.hT : slab.hT) - d;
+                            out = [slab.n[0] * need, slab.n[1] * need, slab.n[2] * need];
+                        }
+                    }
+                    bbShift.set(owner, out);
+                    return out;
+                };
                 const lift = (idx, v) => {
                     const e = scMap.get(idx);
-                    if (!e || !e.bb) return v;
-                    const f = ribbonSurfaceToward(e.owner, v);
-                    return f ? { x: f.x, y: f.y, z: f.z } : v;
+                    if (!e) return v;
+                    const sft = shiftOf(e.owner);
+                    return sft
+                        ? { x: v.x + sft[0], y: v.y + sft[1], z: v.z + sft[2] } : v;
                 };
                 v1 = lift(seg.idx1, v1);
                 v2 = lift(seg.idx2, v2);
