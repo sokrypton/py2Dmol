@@ -741,6 +741,42 @@ t('a protein gets a Show toggle, a nucleotide gets the three-way', () => {
     }
 });
 
+t('a proline closes its ring through the backbone nitrogen', () => {
+    // Proline's side chain is a RING, and the atom that closes it is a
+    // backbone N. Dropped with the rest of the backbone it draws as a
+    // three-atom arm hanging off the CA, which is not what a proline looks
+    // like anywhere else - measured on 1UBQ before the fix: CB, CG, CD and
+    // nothing joining CD back.
+    const utils = fs.readFileSync('web/utils.js', 'utf8');
+    const pro = utils.slice(utils.indexOf('    PRO: ['), utils.indexOf('    HYP: ['));
+    for (const need of ["\\['CD', 'N'\\]", "\\['N', 'CA'\\]"]) {
+        if (!new RegExp(need).test(pro)) {
+            throw new Error('the proline ring is open: ' + need + ' is missing');
+        }
+    }
+    // ...which needs the N to still be there, in two places. The table drops
+    // every backbone atom but the anchor:
+    if (!/const SIDECHAIN_KEEP_BACKBONE = \{ PRO: 'N'/.test(utils)) {
+        throw new Error('nothing tells the table to keep proline\'s N');
+    }
+    if (!/nm0 !== anchorName && nm0 !== keepBB && backboneOf\.has/.test(utils)) {
+        throw new Error('the group filter ignores the exception');
+    }
+    // ...and the CIF parser never builds a standard residue's N at all:
+    if (!/SIDECHAIN_KEEP_BACKBONE\[out\[idxResName\]\] !== out\[idxAtomName\]/.test(utils)) {
+        throw new Error('the parser still drops proline\'s N, so the table has '
+            + 'nothing to keep');
+    }
+    // the ring is five atoms round: CA-CB-CG-CD-N-CA, so the table carries
+    // three bonds between its own rows and two to the owning position
+    const bonds = (pro.match(/\['/g) || []).length;
+    if (bonds !== 5) throw new Error('proline has ' + bonds + ' bonds, expected 5');
+    // and hydroxyproline is the same ring with an OH on its CG
+    if (!/HYP: \[\['CA', 'CB'\]/.test(utils) || !/\['CG', 'OD1'\]/.test(utils)) {
+        throw new Error('hydroxyproline did not come with it');
+    }
+});
+
 t('a nucleotide picks None, Plate or Full from one control', () => {
     // The plate had a row of its own, called "Side chain", next to the row
     // called "Side chains" that draws the real atoms - two controls for one

@@ -907,8 +907,13 @@ function* parseCIFSteps(text) {
     // backbone is; the classifier asks whether an unknown residue is one.
     const dropAfter = (idxAtomName >= 0 && idxResName >= 0)
         ? Math.max(idxAtomName, idxResName) + 1 : -1;
+    //   - ...EXCEPT PROLINE'S N, which its side chain closes a ring through.
+    //     Dropped with the rest, a proline draws as a three-atom arm hanging
+    //     off the CA rather than as the pyrrolidine it is. One atom per
+    //     proline, and prolines are about a twentieth of a structure.
     const dropTest = (out) => DROPPABLE_BACKBONE.has(out[idxAtomName])
-        && STANDARD_AMINO_ACIDS.has(out[idxResName]);
+        && STANDARD_AMINO_ACIDS.has(out[idxResName])
+        && SIDECHAIN_KEEP_BACKBONE[out[idxResName]] !== out[idxAtomName];
     const wantMask = new Uint8Array(maxWanted + 1);
     for (const w of wantIdx) if (w >= 0) wantMask[w] = 1;
     // reused across rows; a column is only read when it is < nCols, and every
@@ -1442,7 +1447,16 @@ const PROTEIN_SIDECHAIN_BONDS = {
     MSE: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'SE'], ['SE', 'CE']],
     PHE: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD1'], ['CG', 'CD2'],
         ['CD1', 'CE1'], ['CD2', 'CE2'], ['CE1', 'CZ'], ['CE2', 'CZ']],
-    PRO: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD']],
+    // PROLINE IS A RING, and the atom that closes it is a BACKBONE nitrogen.
+    // Dropped with the rest of the backbone the side chain draws as an open
+    // three-atom arm hanging off the CA, which is not what a proline looks
+    // like anywhere else. N is kept for this residue only (see
+    // SIDECHAIN_KEEP_BACKBONE) and the two bonds that make the pyrrolidine -
+    // CD-N and N-CA - come with it. N-CA touches the anchor, so it is recorded
+    // as a bond to the OWNING POSITION rather than between two table rows.
+    PRO: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD'], ['CD', 'N'], ['N', 'CA']],
+    HYP: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD'], ['CD', 'N'], ['N', 'CA'],
+        ['CG', 'OD1']],
     SER: [['CA', 'CB'], ['CB', 'OG']],
     THR: [['CA', 'CB'], ['CB', 'OG1'], ['CB', 'CG2']],
     TRP: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD1'], ['CG', 'CD2'],
@@ -1501,6 +1515,11 @@ const NUCLEIC_SIDECHAIN_BONDS = (() => {
 })();
 // THY's methyl is C7 in the modern dictionary and C5M in older files.
 const NUCLEIC_ATOM_ALIASES = { C5M: 'C7' };
+
+// WHICH BACKBONE ATOMS A RESIDUE KEEPS. Only proline and its hydroxylated
+// form, and only their N: the side chain closes a ring through it, and without
+// it the ring is an arm.
+const SIDECHAIN_KEEP_BACKBONE = { PRO: 'N', HYP: 'N' };
 
 const SIDECHAIN_ATOM_ALIASES = {
     ILE: { CD: 'CD1' },
@@ -1709,7 +1728,8 @@ function buildSidechainTable(coords, entries) {
             const a = atoms[ai];
             if (isHydrogen(a)) continue;
             const nm0 = primed(a.atomName);
-            if (nm0 !== anchorName && backboneOf.has(a.atomName)) continue;
+            const keepBB = SIDECHAIN_KEEP_BACKBONE[e.residue.resName];
+            if (nm0 !== anchorName && nm0 !== keepBB && backboneOf.has(a.atomName)) continue;
             // first-wins by name, over a handful of entries - a linear scan
             // beats hashing at this size, and there is nothing to allocate
             let dup = false;
