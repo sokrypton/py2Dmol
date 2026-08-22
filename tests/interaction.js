@@ -3623,7 +3623,11 @@ t('one capture model: defaults, formats and sizes', () => {
     const v = new Cls();
     const d = Cls.CAPTURE_DEFAULTS;
     if (d.dpi !== 200) throw new Error('the image default is ' + d.dpi + ' dpi, not 200');
-    if (d.mbps !== 5) throw new Error('the video default is ' + d.mbps + ' Mbps, not 5');
+    // A CEILING, NOT A TARGET: measured, the encoder spends about half of what
+    // it is allowed on flat cartoon colour (asked 5, spent 2.6; asked 20, spent
+    // 9.8), so headroom is nearly free and thin bitrates only show at 2x and 3x
+    // where 5 Mbps is 0.12 bits a pixel.
+    if (d.mbps !== 12) throw new Error('the video default is ' + d.mbps + ' Mbps, not 12');
     // the panel writes back into ONE object, and everything reads it through
     // captureOpts - the old pair of them defaulted 300 dpi in two places
     v._captureOpts = { dpi: 600 };

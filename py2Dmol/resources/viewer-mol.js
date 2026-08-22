@@ -10355,15 +10355,30 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * megabytes. 300 is the right number for a full-page plate and was the
          * wrong one to reach for every time.
          *
-         * mbps 5: what the three recorders each hard-coded was 20 for VP9 and
-         * 15 for VP8, chosen as "very high quality, very low compression" - and
-         * a 6-second turn came out 15 MB. A cartoon is flat colour and clean
-         * edges, which is exactly what a codec is good at; 5 Mbps is visually
-         * clean here and about a quarter of the size.
+         * mbps 12: A BITRATE IS A CEILING, NOT A TARGET, which is the whole
+         * reason to be generous with it. Measured on one turn at 1196x1196,
+         * 15 fps, asking for N and seeing what the encoder actually spent:
+         *
+         *      asked   spent   file    SSIM against a 40 Mbps take
+         *        2     1.07    261 kB   0.9797
+         *        5     2.59    632 kB   0.9894
+         *       10     5.04    1.2 MB   0.9967
+         *       20     9.8     2.4 MB   0.9993
+         *       40     14.7    3.6 MB   -
+         *
+         * So on flat cartoon colour the encoder stops well short of the
+         * allowance and a high ceiling costs nothing; it only spends the bytes
+         * where the picture genuinely needs them. 5 was chosen against the 20
+         * the three recorders each hard-coded, and it is fine at the size a
+         * viewer opens at - but it is thin for an upload master at 2x or 3x,
+         * where 5 Mbps over 1196x1196 at 30 fps is 0.12 bits a pixel. Anything
+         * bound for a platform is re-encoded on arrival (TikTok, Instagram and
+         * YouTube all do), and that second encode is only as good as what it
+         * is given, which is the argument for the headroom.
          */
         static get CAPTURE_DEFAULTS() {
             return { format: 'png', dpi: 200,
-                seconds: 6, fps: 30, mbps: 5, container: 'webm', scale: 1 };
+                seconds: 6, fps: 30, mbps: 12, container: 'webm', scale: 1 };
         }
 
         /** The panel's state, defaults filled in, so every reader agrees. */
@@ -11621,9 +11636,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     2, 600, 'How many images to write, over one full turn');
                 vRow.appendChild(frL); vRow.appendChild(fr); framesIn = fr;
                 const [mbL, mb] = num('saveMbpsInput', 'Mbps', opts.mbps, 1, 80,
-                    'Bitrate: how many megabits a second of video is allowed. '
-                    + 'Flat colour and clean edges compress well, so 5 is '
-                    + 'visually clean here.');
+                    'Bitrate: how many megabits a second of video is ALLOWED - '
+                    + 'a ceiling, not a target. Flat colour and clean edges '
+                    + 'compress well, so the encoder usually spends about half '
+                    + 'of it; the headroom is for an upload that will be '
+                    + 're-encoded on arrival.');
                 vRow.appendChild(mbL); vRow.appendChild(mb); mbpsIn = mb;
                 // GIF'S OWN CONTROLS, and only where GIF can be written at
                 // all: on the notebook page there is no encoder, so these are
