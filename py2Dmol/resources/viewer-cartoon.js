@@ -6459,6 +6459,27 @@
             // atoms, lone dots), so those are unaffected.
             let v1 = at(seg.idx1) || rotated[seg.idx1];
             let v2 = at(seg.idx2) || rotated[seg.idx2];
+            // PROLINE'S RING CLOSES ON A BACKBONE ATOM, and the backbone here is
+            // a solid. Its N sits 1.46 A from the CA - inside the ribbon at any
+            // normal width - so the arm that closes the ring ran into the slab
+            // and vanished, and the pentagon read as a loop diving through the
+            // tube. Lifted to the surface along the same exit the CA-CB bond
+            // takes, the ring wraps onto the face and meets it there.
+            //
+            // Only what is DRAWN moves. The atom keeps its measured position
+            // for everything else - element colour, picking, the distance
+            // search - which is the same split a base plate makes when it runs
+            // from its ribbon's face rather than from the trace inside it.
+            if (scMap && scMap.size) {
+                const lift = (idx, v) => {
+                    const e = scMap.get(idx);
+                    if (!e || !e.bb) return v;
+                    const f = ribbonSurfaceToward(e.owner, v);
+                    return f ? { x: f.x, y: f.y, z: f.z } : v;
+                };
+                v1 = lift(seg.idx1, v1);
+                v2 = lift(seg.idx2, v2);
+            }
             const scRollN = [null, null];
             const scRollP = [null, null];
             const scRollFlush = [false, false];

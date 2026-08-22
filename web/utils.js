@@ -1648,6 +1648,11 @@ function buildSidechainTable(coords, entries) {
 
     const pos = []; const frameOf = []; const coef = [];
     const names = []; const elements = []; const bonds = [];
+    // WHICH ROWS ARE BACKBONE ATOMS KEPT ON PURPOSE - proline's ring-closing N,
+    // and nothing else today. The drawing needs to know: that atom is inside
+    // the ribbon, which draws the backbone as a solid, so the arm that closes
+    // the ring has to meet the SURFACE rather than disappear into it.
+    const onBackbone = [];
     // table rows bonded to their residue's own backbone position, not to
     // another row - the CA end of the side chain
     const toBackbone = [];
@@ -1868,6 +1873,8 @@ function buildSidechainTable(coords, entries) {
             coef.push(dx * fr[6] + dy * fr[7] + dz * fr[8]);
             names.push(a.atomName);
             elements.push(a.element || '');
+            onBackbone.push(primed(a.atomName) === SIDECHAIN_KEEP_BACKBONE[e.residue.resName]
+                ? 1 : 0);
         }
         for (let k = 0; k + 1 < link.length; k += 2) {
             const p1 = link[k]; const p2 = link[k + 1];
@@ -1892,6 +1899,7 @@ function buildSidechainTable(coords, entries) {
         toBackbone: new Int32Array(toBackbone),
         names,
         elements,
+        onBackbone: new Uint8Array(onBackbone),
     };
 }
 
@@ -1929,6 +1937,9 @@ function trimSidechainTable(sc) {
         coef,
         bonds: Array.from(sc.bonds),
         toBackbone: Array.from(sc.toBackbone || []),
+        // dropped here once and proline's ring went back to diving into the
+        // ribbon: this IS the table the renderer reads
+        onBackbone: Array.from(sc.onBackbone || []),
     };
 }
 
@@ -1949,6 +1960,7 @@ function reviveSidechainTable(raw) {
         // dropped to save the bytes - see trimSidechainTable
         names: raw.names || [],
         elements: raw.elements || [],
+        onBackbone: new Uint8Array(raw.onBackbone || []),
     };
 }
 

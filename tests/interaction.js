@@ -767,6 +767,37 @@ t('a proline closes its ring through the backbone nitrogen', () => {
         throw new Error('the parser still drops proline\'s N, so the table has '
             + 'nothing to keep');
     }
+    // ...AND THE RING MEETS THE RIBBON'S FACE. The N sits 1.46 A from the CA,
+    // inside a ribbon of any normal width, so the arm that closes the ring ran
+    // into the slab and vanished: the pentagon read as a loop diving through
+    // the tube. The drawing lifts that ONE atom to the surface, along the same
+    // exit the CA-CB bond takes.
+    if (!/onBackbone/.test(utils)) throw new Error('the table does not mark the kept atom');
+    const revive = utils.slice(utils.indexOf('function reviveSidechainTable'),
+        utils.indexOf('function isRealNucleicAcid'));
+    const trim = utils.slice(utils.indexOf('function trimSidechainTable'),
+        utils.indexOf('function reviveSidechainTable'));
+    for (const [where, src] of [['the trim', trim], ['the revive', revive]]) {
+        if (!/onBackbone/.test(src)) {
+            throw new Error(where + ' drops the flag, and the renderer reads that table');
+        }
+    }
+    const mol2 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    if (!/bb: \(sc\.onBackbone && sc\.onBackbone\[k\]\) \? 1 : 0/.test(mol2)) {
+        throw new Error('the materialised atom does not carry the flag');
+    }
+    const cart2 = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    if (!/if \(!e \|\| !e\.bb\) return v;/.test(cart2)
+        || !/const f = ribbonSurfaceToward\(e\.owner, v\);/.test(cart2)) {
+        throw new Error('the drawing does not lift the ring onto the ribbon surface');
+    }
+    // ...and ONLY the drawing moves it: the search and the colour read the atom
+    // where it was measured
+    if (/\.bb\b/.test(mol2.slice(mol2.indexOf('_atomsOfResidues(want) {'),
+        mol2.indexOf('framingPositions(set) {')))) {
+        throw new Error('the distance search is using the lifted position');
+    }
+
     // the ring is five atoms round: CA-CB-CG-CD-N-CA, so the table carries
     // three bonds between its own rows and two to the owning position
     const bonds = (pro.match(/\['/g) || []).length;

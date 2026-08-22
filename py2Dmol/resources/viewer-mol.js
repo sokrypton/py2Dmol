@@ -5797,7 +5797,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // has it, but by the time a segment is coloured the table row
                 // is long gone and only the position index remains.
                 map.set(idx, { anchor, cx, cy, cz, owner,
-                    el: (sc.elements && sc.elements[k]) || '' });
+                    el: (sc.elements && sc.elements[k]) || '',
+                    // a backbone atom kept on purpose - proline's ring-closing
+                    // N. The drawing lifts it onto the ribbon's surface; every
+                    // other consumer uses the atom where it was measured.
+                    bb: (sc.onBackbone && sc.onBackbone[k]) ? 1 : 0 });
                 idxOf.set(k, idx);
             }
             if (!idxOf.size) return data;
