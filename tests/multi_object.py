@@ -94,6 +94,19 @@ window.addEventListener('load', () => {
         cols[R.sources[s]] = [c.r, c.g, c.b].join(',');
       }
       R.colors = cols;
+      R.autos = r.multiState ? r.multiState.sourceAutoColors : null;
+      // NO COLOUR SHARED ACROSS THE JOIN. Both structures have a chain A, and
+      // under the chain scheme that came out the same colour for both - two
+      // molecules reading as one. Sampled from the drawing, per source.
+      const bySource = [new Set(), new Set()];
+      for (let i = 0; i < r.coords.length; i++) {
+        const src = g[i];
+        if (src !== 0 && src !== 1) continue;
+        const c = r.getAtomColor(i, r._getEffectiveColorMode(i));
+        bySource[src].add([c.r, c.g, c.b].join(','));
+      }
+      R.perSource = bySource.map((x) => Array.from(x));
+      R.sharedColors = R.perSource[0].filter((c) => R.perSource[1].includes(c));
       R.modes = {global: r.colorMode, effective: r._getEffectiveColorMode(),
         perObject: r.objectsData[r.currentObjectName].colorMode,
         resolvedAuto: r.resolvedAutoColor};
@@ -123,6 +136,33 @@ window.addEventListener('load', () => {
       r.render('unhidden');
       await new Promise((s) => setTimeout(s, 200));
       R.restoredInk = ink(r);
+
+      // THE LIST UI, driven as a user drives it: press Object, then the eye
+      // on the row that is not showing.
+      r.setShownObjects([names[0]]);
+      r.render('one again');
+      await new Promise((s) => setTimeout(s, 150));
+      const btn = document.getElementById('objectListButton');
+      btn.click();
+      const rows = Array.from(document.querySelectorAll('.object-list-row'));
+      R.rows = rows.map((x) => x.querySelector('.object-list-name').textContent);
+      const cur = rows.findIndex((x) => x.classList.contains('is-current'));
+      R.currentRow = cur;
+      R.currentMarked = cur >= 0 && R.rows[cur] === r.currentObjectName;
+      R.hiddenRows = rows.filter((x) => x.classList.contains('is-hidden')).length;
+      rows[1].querySelector('.object-list-eye').click();
+      await new Promise((s) => setTimeout(s, 250));
+      R.afterEyeInk = ink(r);
+      R.afterEyeMulti = !!(r.multiState && r.multiState.enabled);
+      // the last visible object cannot be hidden - the eye would look broken
+      const rows2 = Array.from(document.querySelectorAll('.object-list-row'));
+      rows2[0].querySelector('.object-list-eye').click();
+      rows2[1].querySelector('.object-list-eye').click();
+      await new Promise((s) => setTimeout(s, 200));
+      R.lastOneLeft = r.drawnObjects().length;
+      r.setShownObjects(names);
+      r.render('both again');
+      await new Promise((s) => setTimeout(s, 200));
 
       // ...and the GPU path, in the SAME page load
       r.useGPU = true;
@@ -220,12 +260,21 @@ def main():
           f"  (merge {'on' if R['multi'] else 'OFF'}, offsets {R['offsets']})")
     print(f"  map covers {R['mapLen']} of {R['bothN']} positions")
     print(f"  {R['segments']} segments, {R['crossing']} of them across the join")
-    print(f"  auto colour resolved to {R['autoColor']}: {R['colors']}")
+    print(f"  auto per object: {R.get('autos')}; first position of each:"
+          f" {R['colors']}")
+    print(f"  colours per object: {[len(x) for x in R.get('perSource', [])]},"
+          f" shared: {R.get('sharedColors')}")
     print(f"  modes: {R.get('modes')}")
     print(f"  painted: {R.get('painted')}")
     print(f"  hiding 40 of the second object: {R['hiddenInk']} ink,"
           f" back to {R['restoredInk']}; first object touched:"
           f" {R['hiddenOnFirst']}, second object's lowest index {R['hiddenLocal']}")
+    print(f"  list: rows {R.get('rows')}, current row {R.get('currentRow')},"
+          f" marked row is the current object: {R.get('currentMarked')},"
+          f" hidden rows {R.get('hiddenRows')};"
+          f" after the eye {R.get('afterEyeInk')} ink"
+          f" (merge {R.get('afterEyeMulti')}),"
+          f" hiding everything leaves {R.get('lastOneLeft')}")
     print(f"  gpu:   {R['gpuInk']:8d} ink (path taken: {R['gpuTook']})"
           + (f"  DECLINED: {R['gpuError']}" if R.get("gpuError") else ""))
 
@@ -250,6 +299,20 @@ def main():
         bad.append("hiding 40 residues did not remove any ink")
     if abs(R["restoredInk"] - R["bothInk"]) > 0.02 * R["bothInk"]:
         bad.append("unhiding did not restore the picture")
+    if R.get("rows") != R["objects"]:
+        bad.append("the list does not name every object")
+    if not R.get("currentMarked"):
+        bad.append("the marked row is not the current object")
+    if R.get("hiddenRows") != 1:
+        bad.append("the list does not mark the object that is not drawn")
+    if not R.get("afterEyeMulti"):
+        bad.append("the eye did not switch the merge on")
+    if R.get("afterEyeInk", 0) <= R["oneInk"]:
+        bad.append("the eye added no ink")
+    if R.get("lastOneLeft") != 1:
+        bad.append("the last visible object could be hidden")
+    if R.get("sharedColors"):
+        bad.append(f"two objects share colours {R['sharedColors']}")
     if R["gpuInk"] <= 0:
         bad.append("the GPU path drew nothing")
     if abs(R["gpuInk"] - R["bothInk"]) > 0.15 * R["bothInk"]:

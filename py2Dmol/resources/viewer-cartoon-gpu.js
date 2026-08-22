@@ -4341,7 +4341,10 @@ function invalidate() {
 // them (viewer-mol.js: the scale block, and _computeViewCentre). Orient writes
 // both; a pan writes the centre. The fallbacks are the renderer's own.
 function framingOf(renderer) {
-    const o = renderer.objectsData && renderer.objectsData[renderer.currentObjectName];
+    // the extent of what is DRAWN - see drawnStats: with several objects
+    // merged, the current object's is a fraction of the picture
+    const o = (renderer.drawnStats && renderer.drawnStats())
+        || (renderer.objectsData && renderer.objectsData[renderer.currentObjectName]);
     const extent = renderer.viewerState.extent
         || ((o && o.maxExtent > 0) ? o.maxExtent : 30.0);
     let c = renderer.viewerState.center;

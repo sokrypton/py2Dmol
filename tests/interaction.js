@@ -72,7 +72,7 @@ for (const name of ['selectionBandFor']) {
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups',];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','_autoColorFor','chainColorKeyAt','chainColorKeyFor','selectionForObject','_maskForObject','_editOneObject','objectSwatch',];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -3646,7 +3646,8 @@ function contactApi(objectsData) {
         chains: ['A', 'A', 'A', 'B', 'B'],
         residueNumbers: [10, 11, 12, 20, 21],
         _invalidateSegmentCache() { this._inv = true; },
-        _loadFrameData() { this._loaded = (this._loaded || 0) + 1; },
+        // the panel reloads through reloadDrawn now, which keeps a merge up
+        reloadDrawn() { this._loaded = (this._loaded || 0) + 1; },
         currentFrame: 0,
         render() { this._rendered = (this._rendered || 0) + 1; },
     };
@@ -4216,7 +4217,10 @@ t('detect cyclic is off by default in the web app, and on in Python', () => {
     const a = appSrc.indexOf("detectCyclicEl.addEventListener('change'");
     if (a < 0) throw new Error('the Detect Cyclic toggle is never wired up');
     const handler = appSrc.slice(a, appSrc.indexOf('\n    }', a));
-    if (!/_loadFrameData/.test(handler)) {
+    // ...through reloadDrawn, which reloads the frame OR rebuilds the merge -
+    // reloading the frame while several objects are on screen throws the rest
+    // of them off it.
+    if (!/reloadDrawn/.test(handler)) {
         throw new Error('the Detect Cyclic handler repaints without reloading'
             + ' the frame, and segments - the closing bond among them - are'
             + ' built in setCoords, not in render');
@@ -6487,8 +6491,18 @@ function shownViewer() {
         sourceOffsets: null, autoColor: null };
     v.shownObjects = new Set();
     v.loaded = [];
-    v._loadDataIntoRenderer = function (d) { this.loaded.push(d); };
-    v._loadFrameData = function (f) { this.loaded.push({ single: f }); };
+    // ...and the coordinate array with it, because everything that translates
+    // an index checks its length against the source map
+    v._loadDataIntoRenderer = function (d) {
+        this.loaded.push(d);
+        this.coords = new Array(d.coords.length).fill(0);
+    };
+    v._loadFrameData = function (f) {
+        this.loaded.push({ single: f });
+        const o = this.objectsData[this.currentObjectName];
+        const fr = o && o.frames && o.frames[Math.max(0, f | 0)];
+        this.coords = new Array((fr && fr.coords.length) || 0).fill(0);
+    };
     v._invalidateSegmentCache = function () { this.segCleared = true; };
     v._invalidateShadowCache = function () { this.shadowCleared = true; };
     v._exitOverlayMode = function () { this.exitedOverlay = true;
@@ -6616,6 +6630,7 @@ t('a merged view gives each object a colour of its own', () => {
             () => ({ r: 0, g: 0, b: 0 }));
     const v = new C3();
     v.coords = new Array(4).fill(0);
+    v.chainColorKeyAt = (i) => 'A';
     v.objectsData = {}; v.currentObjectName = 'A';
     v.overlayState = { enabled: false, frameIdMap: null };
     v.multiState = { enabled: true, sourceIdMap: [0, 0, 1, 1] };
@@ -6762,6 +6777,170 @@ t('a merged bond list is never written back onto an object', () => {
     const before = body.slice(0, body.indexOf(m[0]));
     if (!/multiState && this\.multiState\.enabled/.test(before)) {
         throw new Error('a merged bond list can still be written onto an object');
+    }
+});
+
+// EACH OBJECT KEEPS ITS OWN COLOUR SCHEME.
+//
+// A flat colour per object reads well for two copies of one protein and badly
+// for everything else: a dimer beside a monomer should look like a dimer and a
+// monomer, which is what each looks like on its own. So 'auto' is resolved per
+// SOURCE, from that source's own chains and its own PAE.
+t('a merge resolves auto colour per object, from that object\'s own data', () => {
+    const v = mergeViewer();
+    // A has one chain, B has two
+    v.objectsData.B.frames[1].chains = ['B', 'C'];
+    const m = v._mergeObjects(['A', 'B']);
+    eq(m.sourceAutoColors.join(','), 'rainbow,chain',
+        'a monomer rainbows, a two-chain object colours by chain');
+    // ...and a predicted model by confidence, whichever object it is
+    v.objectsData.B.frames[1].pae = [[0, 1], [1, 0]];
+    eq(v._mergeObjects(['A', 'B']).sourceAutoColors.join(','), 'rainbow,plddt',
+        'PAE wins for the object that has it');
+});
+
+t('a position resolves auto to its own object\'s answer', () => {
+    const v = new Cls();
+    v.coords = new Array(5).fill(0);
+    v.overlayState = { enabled: false, frameIdMap: null };
+    v.multiState = { enabled: true, sourceIdMap: [0, 0, 0, 1, 1],
+        sourceNames: ['A', 'B'], sourceOffsets: [0, 3],
+        sourceAutoColors: ['rainbow', 'chain'] };
+    v.resolvedAutoColor = 'object';
+    eq(v._autoColorFor(0), 'rainbow', "the first object's answer");
+    eq(v._autoColorFor(4), 'chain', "the second object's answer");
+    // without a position there is no per-object answer to give
+    eq(v._autoColorFor(undefined), 'object', 'the merge as a whole');
+});
+
+// ...and the chain scheme has to stay legible across the join. Chain ids are
+// unique inside a file and nowhere else: both structures have a chain A.
+t('the same chain id in two objects is not the same colour', () => {
+    const v = new Cls();
+    v.coords = new Array(4).fill(0);
+    v.chains = ['A', 'A', 'A', 'A'];
+    v.overlayState = { enabled: false, frameIdMap: null };
+    v.multiState = { enabled: true, sourceIdMap: [0, 0, 1, 1],
+        sourceNames: ['A', 'B'], sourceOffsets: [0, 2] };
+    v._chainColorKeys = v.chains.map((c, i) => v.multiState.sourceIdMap[i] + '|' + c);
+    if (v.chainColorKeyAt(0) === v.chainColorKeyAt(3)) {
+        throw new Error('both objects\' chain A share a colour key');
+    }
+    eq(v.chainColorKeyFor('A', 'B'), '1|A', 'and a chain can be keyed by name');
+    // with nothing merged the key IS the chain id, so nothing changes today
+    v.multiState.enabled = false;
+    v._chainColorKeys = null;
+    eq(v.chainColorKeyAt(0), 'A', 'a lone object keys by chain alone');
+    eq(v.chainColorKeyFor('A', 'B'), 'A', 'and so does the lookup');
+});
+
+// STRUCTURAL EDITS RUN ON ONE OBJECT. Copy, Cut and Delete rewrite an object's
+// frames and renumber everything keyed to them, all of it written against that
+// object's own array - so the merge is put down for the duration.
+t('an edit sees its object alone, with the selection in that object\'s numbering', () => {
+    const v = shownViewer();
+    v.setShownObjects(['A', 'B']);
+    // a selection spanning both objects: A's residue 1, B's residue 1
+    v.residueSelection = new Set([1, 4]);
+    v.visibilityModel = { positions: new Set([0, 1, 2, 3, 4]), chains: new Set() };
+    v.currentObjectName = 'B';
+    let sawMerge = null;
+    let sawSel = null;
+    const out = v._editOneObject(() => {
+        sawMerge = v.multiState.enabled;
+        sawSel = Array.from(v.residueSelection).join(',');
+        return 'done';
+    });
+    eq(out, 'done', 'the edit ran');
+    eq(sawMerge, false, 'with the merge down');
+    eq(sawSel, '1', "and only B's own residue, in B's numbering");
+    eq(v.multiState.enabled, true, 'and the merge is picked back up');
+    eq(v.multiState.sourceNames.join(','), 'A,B', 'with the same objects');
+});
+
+t('an object made by an edit ends up on screen', () => {
+    const v = shownViewer();
+    v.setShownObjects(['A', 'B']);
+    v.residueSelection = new Set([0]);
+    v.visibilityModel = { positions: new Set(), chains: new Set() };
+    v._editOneObject(() => {
+        // what Copy does: makes an object and switches to it
+        v.objectsData.C = { frames: [{ coords: [[0, 0, 0]], chains: ['A'] }] };
+        v.currentObjectName = 'C';
+    });
+    // a copy that lands off screen looks like a copy that never happened
+    eq(v.drawnObjects().join(','), 'A,B,C', 'the new object is drawn too');
+});
+
+t('the selection of one object is not the selection of another', () => {
+    const v = shownViewer();
+    v.setShownObjects(['A', 'B']);
+    v.residueSelection = new Set([0, 1, 3]);
+    eq(Array.from(v.selectionForObject('A')).join(','), '0,1', "A's share");
+    eq(Array.from(v.selectionForObject('B')).join(','), '0', "B's share, renumbered");
+    v.residueSelection = new Set([0]);
+    eq(v.selectionForObject('B'), null, 'nothing of B was selected');
+});
+
+// THE PANEL RELOADS WHAT IS DRAWN, NEVER "THE FRAME".
+//
+// Side chains, bases, contacts and the cyclic toggle all change the coordinate
+// array rather than its colours, so each reloads after writing. Reloading the
+// FRAME rebuilds the current object alone - which with several objects merged
+// throws the rest of them off the screen, and reads as the toggle deleting
+// them.
+t('nothing in the app reloads a single frame behind the merge\'s back', () => {
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    const hits = app.split('\n')
+        .map((l, k) => [k + 1, l])
+        .filter(([, l]) => /_loadFrameData\s*\(/.test(l) && !/reloadDrawn/.test(l));
+    if (hits.length) {
+        throw new Error('app.js calls _loadFrameData directly at line(s) '
+            + hits.map(([k]) => k).join(', ')
+            + ' - use reloadDrawn, which keeps a multi-object view together');
+    }
+    // ...and reloadDrawn actually knows about the merge
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = mol.indexOf('        reloadDrawn(');
+    if (at < 0) throw new Error('reloadDrawn is gone');
+    const body = mol.slice(at, mol.indexOf('\n        }', at));
+    if (!/multiState[\s\S]*_applyShownObjects/.test(body)) {
+        throw new Error('reloadDrawn no longer rebuilds the merge');
+    }
+});
+
+// ...AND THE OVERLAY IS NOT AN OBJECT MERGE. It puts every frame of ONE object
+// in the array, so chain A is the same chain A in all of them; keyed per source
+// the same chain would come out a different colour in every frame, which is not
+// what the overlay has ever looked like.
+t('the overlay does not get one chain colour per frame', () => {
+    const src5 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = src5.indexOf('this._chainColorKeys = grp');
+    if (at < 0) throw new Error('the chain colour keys are gone');
+    const before = src5.slice(at - 500, at);
+    if (!/multiState[\s\S]*enabled/.test(before)) {
+        throw new Error('the chain colour key is built for any merge, so the'
+            + ' overlay would colour one chain differently in every frame');
+    }
+});
+
+// THE OVERLAY BUTTON SAYS WHETHER OVERLAY IS ON, whoever turned it off.
+// Showing several objects puts the overlay down on its way in, and the button
+// used to be styled only by the toggle that could no longer be the only way
+// the state moved - leaving it lit over a view that was not overlaid, so the
+// next press would turn overlay ON while reading as off.
+t('the overlay button follows the state, not just the button', () => {
+    const src6 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    if (!/_syncOverlayButton\(\) \{/.test(src6)) {
+        throw new Error('the overlay button styling is not shared');
+    }
+    for (const fn of ['_enterOverlayMode', '_exitOverlayMode']) {
+        const at = src6.indexOf('        ' + fn + '(');
+        if (at < 0) throw new Error(fn + ' is gone');
+        const body = src6.slice(at, src6.indexOf('\n        }\n', at));
+        if (!/_syncOverlayButton\(\)/.test(body)) {
+            throw new Error(fn + ' changes the overlay state without telling the button');
+        }
     }
 });
 

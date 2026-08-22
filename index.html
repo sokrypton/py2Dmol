@@ -601,14 +601,29 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                 </div>
                             </div>
 
-                            <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                <label for="objectSelect" class="font-medium text-gray-700"
-                                    style="font-size: 12px;">Object:</label>
+                            <!-- OBJECT: A BUTTON, AND BEHIND IT A LIST.
+                                 The dropdown picks which object is CURRENT -
+                                 what the panels and the edits act on. Pressing
+                                 Object opens it out into a list instead, a row
+                                 per object with an eye, which is a different
+                                 question: which objects are DRAWN. Both are
+                                 wanted, and PyMOL's object panel and
+                                 Photoshop's layers both answer them this way. -->
+                            <div class="toggle-item object-row">
+                                <button id="objectListButton" type="button"
+                                    class="object-list-btn" aria-expanded="false"
+                                    aria-controls="objectList"
+                                    title="Show or hide objects">Object</button>
                                 <select id="objectSelect"
                                     style="flex: 1; height: 28px; font-size: 12px; padding: 0 8px;">
                                     <!-- Initially empty -->
                                 </select>
                             </div>
+                            <!-- Rows are built in app.js from the objects that
+                                 exist; the select above stays in the DOM either
+                                 way, because it is what everything else drives
+                                 the current object through. -->
+                            <div id="objectList" class="object-list" hidden></div>
 
                         </div>
 

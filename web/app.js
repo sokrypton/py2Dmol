@@ -424,9 +424,8 @@ function initializeViewerConfig() {
             if (!renderer || !renderer.currentObjectName) return;
             if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
             renderer.cachedSegmentIndices = null;
-            if (renderer._loadFrameData) {
-                renderer._loadFrameData(renderer.currentFrame >= 0 ? renderer.currentFrame : 0);
-            }
+            // ...of whatever is DRAWN, which may be several objects
+            if (renderer.reloadDrawn) renderer.reloadDrawn();
             renderer.render('detect cyclic');
         });
     }
@@ -645,6 +644,7 @@ function setupEventListeners() {
     // We don't need a duplicate listener here
 
     if (objectSelect) objectSelect.addEventListener('change', handleObjectChange);
+    attachObjectList();
 
     // Attach sequence controls
     const sequenceView = document.getElementById('sequenceView');
@@ -758,24 +758,35 @@ function setupEventListeners() {
     // understood by resolveColorHierarchy without any new code path.
     function setSelectionColor(positions, color) {
         const renderer = viewerApi?.renderer;
-        const obj = renderer?.objectsData?.[renderer.currentObjectName];
-        if (!obj) return;
-        let value = {};
-        if (obj.color && obj.color.type === 'advanced' && obj.color.value) {
-            value = obj.color.value;
-        } else if (obj.color && obj.color.type === 'mode') {
-            // preserve an object-wide mode as the base the overrides sit on
-            value = { object: obj.color.value };
-        } else if (obj.color && obj.color.type === 'literal') {
-            value = { object: obj.color.value };
+        if (!renderer) return;
+        // EACH OBJECT'S OWN MAP, IN ITS OWN NUMBERING. A selection can reach
+        // two objects when several are on screen, and the colour is stored
+        // against the object - so writing merged indices into the current one
+        // would colour its residues instead of the ones that were picked.
+        const groups = renderer.writeGroups
+            ? renderer.writeGroups(positions)
+            : [{ object: renderer.objectsData?.[renderer.currentObjectName],
+                positions: Array.from(positions) }];
+        for (const g of groups) {
+            const obj = g.object;
+            if (!obj) continue;
+            let value = {};
+            if (obj.color && obj.color.type === 'advanced' && obj.color.value) {
+                value = obj.color.value;
+            } else if (obj.color && obj.color.type === 'mode') {
+                // preserve an object-wide mode as the base the overrides sit on
+                value = { object: obj.color.value };
+            } else if (obj.color && obj.color.type === 'literal') {
+                value = { object: obj.color.value };
+            }
+            if (!value.position) value.position = {};
+            for (const i of g.positions) {
+                if (color === null) delete value.position[i];
+                else value.position[i] = color;
+            }
+            if (Object.keys(value.position).length === 0) delete value.position;
+            obj.color = Object.keys(value).length ? { type: 'advanced', value } : null;
         }
-        if (!value.position) value.position = {};
-        for (const i of positions) {
-            if (color === null) delete value.position[i];
-            else value.position[i] = color;
-        }
-        if (Object.keys(value.position).length === 0) delete value.position;
-        obj.color = Object.keys(value).length ? { type: 'advanced', value } : null;
         renderer.colorsNeedUpdate = true;
         renderer.plddtColorsNeedUpdate = true;
         document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
@@ -797,14 +808,20 @@ function setupEventListeners() {
     // come along, which is what you would expect of a part of the same residue.
     function setSelectionSidechainColor(positions, color) {
         const renderer = viewerApi?.renderer;
-        const obj = renderer?.objectsData?.[renderer.currentObjectName];
-        if (!obj) return;
-        const map = obj.sidechainColor ? { ...obj.sidechainColor } : {};
-        for (const i of positions) {
-            if (color === null) delete map[i];
-            else map[i] = color;
+        if (!renderer) return;
+        // ...per owning object and in its numbering, like the residue colours
+        for (const g of (renderer.writeGroups ? renderer.writeGroups(positions)
+            : [{ object: renderer.objectsData?.[renderer.currentObjectName],
+                positions: Array.from(positions) }])) {
+            const obj = g.object;
+            if (!obj) continue;
+            const map = obj.sidechainColor ? { ...obj.sidechainColor } : {};
+            for (const i of g.positions) {
+                if (color === null) delete map[i];
+                else map[i] = color;
+            }
+            obj.sidechainColor = Object.keys(map).length ? map : null;
         }
-        obj.sidechainColor = Object.keys(map).length ? map : null;
         renderer.colorsNeedUpdate = true;
         renderer.plddtColorsNeedUpdate = true;
         document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
@@ -817,18 +834,25 @@ function setupEventListeners() {
     // edit invalidates cleanly.
     function setSelectionSse(positions, letter) {
         const renderer = viewerApi?.renderer;
-        const obj = renderer?.objectsData?.[renderer.currentObjectName];
-        if (!obj) return;
+        if (!renderer) return;
         // Stored on the OBJECT as `sse`, exactly where set_color puts `color`
         // and where Python's set_sse writes. It used to live on the renderer,
         // which meant it was not object-scoped: its position indices would be
-        // reinterpreted against whatever object became current.
-        const ov = obj.sse ? { ...obj.sse } : {};
-        for (const i of positions) {
-            if (letter === null) delete ov[i];
-            else ov[i] = letter;
+        // reinterpreted against whatever object became current. Written per
+        // owning object for the same reason, now that a selection can reach
+        // more than one of them at a time.
+        for (const g of (renderer.writeGroups ? renderer.writeGroups(positions)
+            : [{ object: renderer.objectsData?.[renderer.currentObjectName],
+                positions: Array.from(positions) }])) {
+            const obj = g.object;
+            if (!obj) continue;
+            const ov = obj.sse ? { ...obj.sse } : {};
+            for (const i of g.positions) {
+                if (letter === null) delete ov[i];
+                else ov[i] = letter;
+            }
+            obj.sse = Object.keys(ov).length ? ov : null;
         }
-        obj.sse = Object.keys(ov).length ? ov : null;
         // the ribbon profile is built from sec, so the cached geometry has to go
         if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
         renderer.colorsNeedUpdate = true;
@@ -896,9 +920,7 @@ function setupEventListeners() {
         // nothing at all: the contact is stored correctly, resolves correctly,
         // and never appears. Same trap the side-chain toggle hit.
         if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
-        if (renderer._loadFrameData) {
-            renderer._loadFrameData(renderer.currentFrame >= 0 ? renderer.currentFrame : 0);
-        }
+        if (renderer.reloadDrawn) renderer.reloadDrawn();
         renderer.render('selection contact');
         if (window.updateSelectionToolsState) window.updateSelectionToolsState();
     };
@@ -964,25 +986,34 @@ function setupEventListeners() {
     // residues; a structure with no side-chain data simply draws nothing.
     function setSelectionSidechains(positions, on) {
         const renderer = viewerApi?.renderer;
-        const obj = renderer?.objectsData?.[renderer.currentObjectName];
-        if (!obj) return;
+        if (!renderer) return;
         if (on && !renderer.sidechains) {
             setStatus('No side-chain atoms in this structure (a backbone-only model has none).');
             return;
         }
-        const cur = obj.sidechains instanceof Set ? new Set(obj.sidechains) : new Set();
         let changed = false;
-        for (const i of positions) {
-            if (on ? !cur.has(i) : cur.has(i)) changed = true;
-            if (on) cur.add(i); else cur.delete(i);
+        // per owning object, in its own numbering - see writeGroups
+        for (const g of (renderer.writeGroups ? renderer.writeGroups(positions)
+            : [{ object: renderer.objectsData?.[renderer.currentObjectName],
+                positions: Array.from(positions) }])) {
+            const obj = g.object;
+            if (!obj) continue;
+            const cur = obj.sidechains instanceof Set ? new Set(obj.sidechains) : new Set();
+            let mine = false;
+            for (const i of g.positions) {
+                if (on ? !cur.has(i) : cur.has(i)) mine = true;
+                if (on) cur.add(i); else cur.delete(i);
+            }
+            if (!mine) continue;
+            changed = true;
+            obj.sidechains = cur.size ? cur : null;
         }
         if (!changed) return;               // nothing to redraw for
-        obj.sidechains = cur.size ? cur : null;
         // The atoms become real positions, so this is a RELOAD, not a repaint:
         // _materialiseSidechains runs inside the frame load and nothing shorter
         // than that rebuilds the coordinate array it appends to.
         if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
-        renderer._loadFrameData(renderer.currentFrame >= 0 ? renderer.currentFrame : 0);
+        renderer.reloadDrawn();
         renderer.render('selection sidechains');
     }
 
@@ -2060,6 +2091,146 @@ function updateObjectNavigationButtons() {
     }
 }
 
+
+// ============================================================================
+// THE OBJECT LIST
+// ============================================================================
+// Two questions, and the control answers both. The dropdown picks which object
+// is CURRENT - what Copy, Delete, the side-chain toggles and the sequence strip
+// act on. Pressing Object opens the same row out into a LIST, one row per
+// object with an eye, which says which objects are DRAWN. PyMOL's object panel
+// and Photoshop's layers both put the two side by side, and both are wanted:
+// you compare two structures on screen while editing one of them.
+//
+// The select stays in the DOM either way - hidden, but present - because it is
+// what every other path drives the current object through, including the
+// renderer's own change listener and the prev/next object buttons.
+
+function objectListEls() {
+    return {
+        btn: document.getElementById('objectListButton'),
+        list: document.getElementById('objectList'),
+        select: document.getElementById('objectSelect'),
+    };
+}
+
+/** Which objects are drawn right now, as a Set the rows can be built from. */
+function shownObjectSet(renderer) {
+    return new Set(renderer.drawnObjects ? renderer.drawnObjects() : []);
+}
+
+function renderObjectList() {
+    const { btn, list, select } = objectListEls();
+    const renderer = viewerApi?.renderer;
+    if (!list || !btn || !select || !renderer) return;
+    if (list.hidden) return;
+
+    const names = Object.keys(renderer.objectsData || {});
+    const shown = shownObjectSet(renderer);
+    list.innerHTML = '';
+
+    for (const name of names) {
+        const row = document.createElement('div');
+        row.className = 'object-list-row';
+        if (name === renderer.currentObjectName) row.classList.add('is-current');
+        if (!shown.has(name)) row.classList.add('is-hidden');
+
+        const eye = document.createElement('button');
+        eye.type = 'button';
+        eye.className = 'object-list-eye';
+        eye.title = shown.has(name) ? 'Hide this object' : 'Show this object';
+        eye.setAttribute('aria-label', eye.title);
+        eye.innerHTML = shown.has(name)
+            ? '<i class="fa-regular fa-eye"></i>'
+            : '<i class="fa-regular fa-eye-slash"></i>';
+        eye.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleObjectShown(name);
+        });
+
+        // The colours this object is actually drawn in - one square if it is
+        // one colour, a gradient if it is a rainbow or several chains. A single
+        // flat square would be a picture of a colour the object does not have.
+        const swatch = document.createElement('span');
+        swatch.className = 'object-list-swatch';
+        const cols = (renderer.objectSwatch ? renderer.objectSwatch(name) : []) || [];
+        if (cols.length === 1) swatch.style.background = cols[0];
+        else if (cols.length > 1) {
+            swatch.style.background = `linear-gradient(135deg, ${cols.join(', ')})`;
+        } else swatch.style.visibility = 'hidden';
+
+        const label = document.createElement('span');
+        label.className = 'object-list-name';
+        label.textContent = name;
+
+        // The NAME makes it current; the eye shows and hides. Two targets in
+        // one row, which is why the eye stops the click from reaching here.
+        row.addEventListener('click', () => {
+            if (renderer.currentObjectName === name) return;
+            select.value = name;
+            select.dispatchEvent(new Event('change'));
+            renderObjectList();
+        });
+
+        row.appendChild(eye);
+        row.appendChild(swatch);
+        row.appendChild(label);
+        list.appendChild(row);
+    }
+}
+
+/**
+ * Show or hide one object.
+ *
+ * THE SET STARTS EMPTY AND MEANS "just the current one" - see drawnObjects() -
+ * so the first tick has to write down what is already on screen before adding
+ * to it, or showing a second object would look like replacing the first.
+ *
+ * The last visible object cannot be hidden: an empty set falls back to the
+ * current object, so the eye would appear not to work at all.
+ */
+function toggleObjectShown(name) {
+    const renderer = viewerApi?.renderer;
+    if (!renderer || !renderer.setShownObjects) return;
+    const shown = shownObjectSet(renderer);
+    if (shown.has(name)) {
+        if (shown.size <= 1) return;
+        shown.delete(name);
+    } else {
+        shown.add(name);
+    }
+    renderer.setShownObjects(Array.from(shown));
+    renderObjectList();
+}
+
+function toggleObjectListOpen() {
+    const { btn, list, select } = objectListEls();
+    if (!btn || !list || !select) return;
+    const open = list.hidden;
+    list.hidden = !open;
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    // The dropdown and the list are the same control in two shapes, so only
+    // one of them is on screen at a time.
+    select.style.display = open ? 'none' : '';
+    if (open) renderObjectList();
+}
+
+function attachObjectList() {
+    const { btn, select } = objectListEls();
+    if (!btn || !select) return;
+    btn.addEventListener('click', toggleObjectListOpen);
+    // REBUILT WHENEVER THE OBJECTS CHANGE. Objects are added, renamed and
+    // removed from a dozen places - a load, a Copy, a Cut, a session restore -
+    // and every one of them goes through the select's options. Watching those
+    // is one hook instead of a dozen, and it cannot be forgotten by the next
+    // path that adds an object.
+    if (typeof MutationObserver === 'function') {
+        new MutationObserver(() => renderObjectList())
+            .observe(select, { childList: true });
+    }
+    select.addEventListener('change', () => renderObjectList());
+}
+
 function handleObjectChange() {
     // a different object is a different set of frames, and frame 0 of the new
     // one may be the same INDEX as the old - so no frame-change event fires
@@ -2348,13 +2519,20 @@ function describeSelectionRanges(picked) {
     // the "ranges" would be position indices under a made-up chain, which reads
     // like data and is not.
     if (!r.chains || !r.residueNumbers) return '';
+    // WHICH OBJECT, when more than one is on screen. Both structures have a
+    // chain A, so "A 1-30, A 40-52" would read as one chain in two pieces
+    // rather than as two different molecules. Only when it is ambiguous: with
+    // one object drawn the name adds nothing but noise.
+    const merged = !!(r.multiState && r.multiState.enabled);
     const byChain = new Map();
     for (const i of picked) {
         const chain = (r.chains && r.chains[i]) || '?';
+        const owner = merged && r.ownerOf ? r.ownerOf(i) : null;
+        const key = owner ? (owner.name + '/' + chain) : chain;
         const num = (r.residueNumbers && r.residueNumbers[i] != null)
             ? Number(r.residueNumbers[i]) : i;
-        if (!byChain.has(chain)) byChain.set(chain, []);
-        byChain.get(chain).push(num);
+        if (!byChain.has(key)) byChain.set(key, []);
+        byChain.get(key).push(num);
     }
     const parts = [];
     for (const [chain, nums] of byChain) {
@@ -2403,9 +2581,12 @@ function applyBestViewRotation(animate = true) {
     const frame = object.frames[currentFrame];
     if (!frame || !frame.coords || frame.coords.length === 0) return;
 
-    // Ensure frame data is loaded into renderer if not already
+    // Ensure frame data is loaded into renderer if not already.
+    // Through reloadDrawn: with several objects merged, lastRenderedFrame does
+    // not track the merge, so loading "the frame" here would throw every other
+    // object off the screen on the way to orienting on them.
     if (renderer.coords.length === 0 || renderer.lastRenderedFrame !== currentFrame) {
-        renderer._loadFrameData(currentFrame, true); // Load without render
+        renderer.reloadDrawn(true); // Load without render
     }
 
     // WHAT TO ORIENT ON:
@@ -4793,8 +4974,7 @@ function initializeMSAIndex() {
                         obj.msa.defaultChain = firstChain;
 
                         // Update renderer for selected chain key
-                        const currentFrameIndex = viewerApi.renderer.currentFrame || 0;
-                        viewerApi.renderer._loadFrameData(currentFrameIndex, false);
+                        viewerApi.renderer.reloadDrawn();
                     }
                 }
             }
@@ -6099,8 +6279,12 @@ function applySelectionToMSA() {
     // was visible. Now that selecting and showing are separate acts, sourcing
     // from visibility meant the MSA dimmed to whatever happened to be on screen
     // and ignored the selection entirely.
-    const sel = renderer.residueSelection;
-    const selectedPositions = (sel && sel.size > 0) ? new Set(sel) : new Set();
+    // ...and in THIS OBJECT'S numbering: the MSA maps its columns onto the
+    // object's own frame, while the selection is against whatever is loaded,
+    // which with several objects merged is not the same array.
+    const own = renderer.selectionForObject
+        ? renderer.selectionForObject(objectName) : renderer.residueSelection;
+    const selectedPositions = (own && own.size > 0) ? new Set(own) : new Set();
 
     // Nothing selected means nothing to point at, so no dimming - NOT "dim
     // everything", which is what an empty explicit visibility selection used to
@@ -7399,6 +7583,12 @@ function saveViewerState() {
 
         const viewerState = {
             current_object_name: renderer.currentObjectName,
+            // WHICH OBJECTS WERE ON SCREEN. Empty means "just the current
+            // one" - see drawnObjects() - so a session saved with one object
+            // showing restores exactly as it does today, and one saved with
+            // three comes back with three.
+            shown_objects: (renderer.shownObjects && renderer.shownObjects.size)
+                ? Array.from(renderer.shownObjects) : null,
             current_frame: renderer.viewerState.currentFrame,  // From viewerState, not global
             rotation_matrix: renderer.viewerState.rotation,
             zoom: renderer.viewerState.zoom,
@@ -8171,6 +8361,18 @@ async function loadViewerState(stateData) {
                             renderer.setFrame(targetFrame);
                         } else {
                             renderer.setFrame(0);
+                        }
+
+                        // ...AND THE OBJECTS THAT WERE ON SCREEN WITH IT.
+                        // After setFrame, because the merge is built from the
+                        // frame each object is parked on and the current one's
+                        // is only settled here. Names whose objects did not
+                        // come back are dropped by setShownObjects.
+                        const shownSaved = stateData.viewer_state
+                            && stateData.viewer_state.shown_objects;
+                        if (Array.isArray(shownSaved) && shownSaved.length > 1
+                            && renderer.setShownObjects) {
+                            renderer.setShownObjects(shownSaved);
                         }
 
                         // Explicitly ensure PAE data is set if available

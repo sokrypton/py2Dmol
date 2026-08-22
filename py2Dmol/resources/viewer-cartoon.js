@@ -2986,7 +2986,10 @@
         const positionTypes = renderer.positionTypes;
 
         // --- projection: identical to the ribbon path so zoom/ortho match ---
-        const maxExtent = (object && object.maxExtent > 0) ? object.maxExtent : 30.0;
+        // ...including the extent of what is DRAWN rather than of the current
+        // object, which with several merged is a fraction of the picture.
+        const framed = (renderer.drawnStats && renderer.drawnStats()) || object;
+        const maxExtent = (framed && framed.maxExtent > 0) ? framed.maxExtent : 30.0;
         const effectiveExtent = vs.extent || maxExtent;
         const padding = 0.9;
         const scale = Math.min(
@@ -3677,11 +3680,17 @@
         // the per-interval override lookup below so structures without manual
         // colouring pay nothing for the feature.
         const hasColorOverrides = (() => {
-            const o = renderer.objectsData && renderer.currentObjectName
-                ? renderer.objectsData[renderer.currentObjectName] : null;
-            const c = o && o.color;
-            return !!(c && c.type === 'advanced' && c.value
-                && (c.value.position || c.value.chain));
+            // ANY drawn object's - the fast path below is skipped for the whole
+            // picture, and a second object's per-position colours are just as
+            // real as the current one's.
+            const names = renderer.drawnObjects ? renderer.drawnObjects()
+                : [renderer.currentObjectName];
+            for (const nm of names) {
+                const c = (renderer.objectsData && renderer.objectsData[nm] || {}).color;
+                if (c && c.type === 'advanced' && c.value
+                    && (c.value.position || c.value.chain)) return true;
+            }
+            return false;
         })();
         const legacyLoop = renderer._loopStyle;
         const loopSquare = legacyLoop === 'square';
@@ -12446,6 +12455,21 @@
     // set on. Python's set_sse and the GUI's SSE control write the same field.
     const sseOf = (renderer) => {
         if (!renderer) return null;
+        // MERGED INDICES, like everything else the drawing reads. Each object
+        // stores the override in its own numbering, so a second object's
+        // forced helix would land on the first object's residues.
+        const ms = renderer.multiState;
+        if (ms && ms.enabled && ms.sourceNames && renderer.sourceOffsetOf) {
+            const out = {};
+            let any = false;
+            for (const nm of ms.sourceNames) {
+                const own = (renderer.objectsData[nm] || {}).sse;
+                if (!own) continue;
+                const off = renderer.sourceOffsetOf(nm);
+                for (const k of Object.keys(own)) { out[Number(k) + off] = own[k]; any = true; }
+            }
+            return any ? out : null;
+        }
         const o = renderer.objectsData && renderer.currentObjectName
             ? renderer.objectsData[renderer.currentObjectName] : null;
         return (o && o.sse) || null;

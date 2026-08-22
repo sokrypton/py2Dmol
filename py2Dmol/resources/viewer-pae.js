@@ -406,10 +406,16 @@
             if (!hasPositionSelection && !hasChainSelection) return selectedPositions;
             let allowedChains = hasChainSelection ? visibilityModel.chains : new Set(renderer.chains);
             const n = this.n;
+            // A PAE row is a residue of the object this matrix belongs to; the
+            // mask and the chain array are the viewer's, and with several
+            // objects merged this object starts partway into them.
+            const off = renderer.sourceOffsetOf
+                ? renderer.sourceOffsetOf(renderer.currentObjectName) : 0;
             for (let r = 0; r < n; r++) {
-                if (r >= renderer.chains.length) continue;
-                const chain = renderer.chains[r];
-                if (allowedChains.has(chain) && (!hasPositionSelection || visibilityModel.positions.has(r))) {
+                if (r + off >= renderer.chains.length) continue;
+                const chain = renderer.chains[r + off];
+                if (allowedChains.has(chain)
+                    && (!hasPositionSelection || visibilityModel.positions.has(r + off))) {
                     selectedPositions.add(r);
                 }
             }

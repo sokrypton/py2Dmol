@@ -95,16 +95,17 @@ browser probe (`tests/multi_object.py`) turned up, in order:
 - The selection is dropped when the merge changes; it was a set of indices
   against the array that just went away.
 
-**5 BEFORE 4.** The order in this list is not the order to build in. Slice 5 is
-what stops the per-object sets being read at the wrong offsets, and until it is
-done a visibility control would ship bases, elements, forced SSE and contacts
-landing on the wrong residues of every object but the first. A control that
-does the wrong thing is worse than one that does nothing.
+**4. The list UI.** *(done, after 5)* Object is a button; pressing it opens the
+dropdown out into a row per object with an eye, a swatch and the current object
+marked. The dropdown stays - hidden while the list is open - because it is what
+every other path drives the current object through.
 
-**4. The list UI.** Object becomes a button; the dropdown becomes rows with an
-eye per row and the active object highlighted. Ships after 5: a visibility
-control that does not change the picture is worse than none, and one that
-changes the wrong thing is worse still.
+**ONE OBJECT IS THE MAIN ONE.** The row's NAME makes an object current; its eye
+says whether it is drawn. Everything else - the sequence strip, the panels, the
+edits, the PAE map, the MSA - follows the current object, and the others are
+extra geometry on screen. That keeps every panel answering one question about
+one structure, and it is why the strip's cells now carry MERGED indices while
+its rows are built from the object's own frame.
 
 **5. Selection and picking, and every other per-object set.** One merged index
 space, so picking works unchanged - what it needs is the source map to report
@@ -130,7 +131,9 @@ cached by the identity of the sets behind it) and `localRangeOf(name)`.
 | colours (object/frame/chain/position) | `resolveColorHierarchy` | via `ownerOf` |
 | `obj.sidechainColor` | per-residue side-chain colour | via `ownerOf` |
 | entropy | `entropyForDrawn()` | per object, concatenated |
-| `residueSelection` | dropped when the merge changes | TO DO |
+| `obj.color` position/chain maps | via `writeGroups` on the way in, `ownerOf` on the way out |
+| `obj.sidechainColor` | via `writeGroups` |
+| `residueSelection` | dropped when the merge changes; `selectionForObject` for an edit |
 
 **The two polarities both had to survive.** `null` means NONE for side chains
 and a hidden backbone, and ALL for base plates and element colours - so an
@@ -163,3 +166,33 @@ Per-object style would mean going back to compositing passes, which costs all
 four of those. Since the per-object style added this week is about what a
 structure opens AS - a ribosome as tube, a peptide as cartoon - and not about
 comparing two structures drawn differently, the merge is the better trade.
+
+## What else the merge touched
+
+Found by walking the paths a user actually clicks, not by reading the merge:
+
+- **Copy, Cut and Delete** rewrite one object's frames and renumber everything
+  keyed to them. Rather than teach each the merge, `_editOneObject` puts the
+  merge DOWN for the edit and picks it up after, with the selection and mask
+  translated down with it - and the object a Copy just made added to the shown
+  set, because a copy that lands off screen looks like a copy that failed.
+- **The sequence strip** builds its rows from the current object's frame but
+  now hands out merged indices, so its colours, its selection and its clicks
+  land on the right residues. Its ligand groups are offset once, where they are
+  read.
+- **The PAE map** is one object's matrix: its rows are that object's residues,
+  and both directions of the mapping carry the offset.
+- **Chain colours** are keyed by SOURCE and chain. Two structures both have a
+  chain A, and under the chain scheme they came out the same colour - two
+  molecules reading as one. NOT for the overlay, where chain A is the same
+  chain in every frame.
+- **Auto colour is per object**: a monomer rainbows, a complex colours by
+  chain, a predicted model by confidence - what each looks like on its own.
+  The flat `object` mode is still there as an explicit choice.
+- **`reloadDrawn()`** replaces every `_loadFrameData` call in the app. Reloading
+  the frame after a side-chain or contact edit rebuilt the current object alone
+  and threw the other objects off the screen.
+- **Overlay and the object merge are exclusive both ways**, and the overlay
+  button is styled from the state rather than from the toggle, so it cannot sit
+  lit over a view that is not overlaid.
+- **setCoords does not persist a merged bond list** onto the current object.

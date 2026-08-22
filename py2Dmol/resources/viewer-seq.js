@@ -523,7 +523,8 @@
                 // shows that instead of the chain palette entry - otherwise
                 // recolouring a chain left its label advertising a colour the
                 // structure no longer uses.
-                let chainColor = renderer?.getChainColorForChainId?.(chainId)
+                let chainColor = renderer?.getChainColorForChainId?.(chainId,
+                    renderer.currentObjectName)
                     || { r: 128, g: 128, b: 128 };
                 if (renderer?.getColorOverride && frameChains) {
                     let uniform = null;
@@ -718,12 +719,16 @@
                 const obj = renderer.objectsData[renderer.currentObjectName];
                 const chains = obj?.frames?.[0]?.chains;
                 if (chains) {
+                    // the selection is in the renderer's indices, the frame in
+                    // the object's - see seqOffset where the cells are built
+                    const off = renderer.sourceOffsetOf
+                        ? renderer.sourceOffsetOf(renderer.currentObjectName) : 0;
                     const total = new Map();
                     const picked = new Map();
                     for (let i = 0; i < chains.length; i++) {
                         const c = chains[i];
                         total.set(c, (total.get(c) || 0) + 1);
-                        if (target.has(i)) picked.set(c, (picked.get(c) || 0) + 1);
+                        if (target.has(i + off)) picked.set(c, (picked.get(c) || 0) + 1);
                     }
                     const boxes = layout.chainLabelPositions.filter((cp) => {
                         const t = total.get(cp.chainId) || 0;
@@ -851,6 +856,16 @@
         // Check if position names are available - if not, we can't group ligands with names
         const hasPositionNames = positionNames && positionNames.length === n;
 
+        // THE STRIP BELONGS TO ONE OBJECT, but its indices have to be the
+        // RENDERER'S. Several objects can be merged into one coordinate array,
+        // and every object after the first sits at an offset there - so a cell
+        // built with the object's own index would colour itself from another
+        // object's residue, and clicking it would select one. The frame arrays
+        // below are read with the object's own `i`; what leaves this loop is
+        // the merged index.
+        const seqOffset = renderer.sourceOffsetOf
+            ? renderer.sourceOffsetOf(objectName) : 0;
+
         // Create one entry per position (one position = one position, no collapsing)
         // Default to chain 'A', position name 'UNK', sequential position index, and type 'P' (protein)
         const positionEntries = [];
@@ -859,7 +874,7 @@
                 chain: (chains && chains.length > i && chains[i]) ? chains[i] : 'A',
                 resName: (positionNames && positionNames.length > i && positionNames[i]) ? positionNames[i] : 'UNK',
                 resSeq: (residueNumbers && residueNumbers.length > i && residueNumbers[i] != null) ? residueNumbers[i] : (i + 1),
-                positionIndex: i, // Direct position index
+                positionIndex: i + seqOffset, // renderer index, not the object's own
                 positionType: (position_types && position_types.length > i && position_types[i]) ? position_types[i] : 'P' // Default to protein
             });
         }
@@ -1079,7 +1094,17 @@
         if (sequenceViewMode) {
             // Get ligand groups from renderer (computed using shared utility)
             const currentObject = renderer?.objectsData?.[renderer.currentObjectName];
-            const ligandGroups = currentObject?.ligandGroups || new Map();
+            // IN THE SAME INDEX SPACE THE ENTRIES SPEAK. The object stores its
+            // ligand groups in its own numbering; the cells above carry merged
+            // indices, and these lists are compared against them AND handed on
+            // as the selection a ligand token makes. Offset once, here, rather
+            // than at each of the four comparisons below.
+            const ligOffset = renderer?.sourceOffsetOf
+                ? renderer.sourceOffsetOf(renderer.currentObjectName) : 0;
+            const ownGroups = currentObject?.ligandGroups || new Map();
+            const ligandGroups = ligOffset
+                ? new Map(Array.from(ownGroups, ([k, v]) => [k, v.map((i) => i + ligOffset)]))
+                : ownGroups;
 
             // Reverse map: position index -> ligand group key.
             //
@@ -1561,13 +1586,17 @@
         };
 
         // Every position belonging to a chain, for click-a-chain-label.
+        // In the renderer's indices, like every other position this file hands
+        // out: the frame is the object's, the selection is the viewer's.
         const positionsOfChain = (chainId) => {
             const obj = renderer.objectsData[renderer.currentObjectName];
             const frame = obj?.frames?.[0];
+            const off = renderer.sourceOffsetOf
+                ? renderer.sourceOffsetOf(renderer.currentObjectName) : 0;
             const out = new Set();
             if (frame?.chains) {
                 for (let i = 0; i < frame.chains.length; i++) {
-                    if (frame.chains[i] === chainId) out.add(i);
+                    if (frame.chains[i] === chainId) out.add(i + off);
                 }
             }
             return out;
@@ -1772,8 +1801,12 @@
             if (rd && rd.chain) return rd.chain;
             const obj = renderer.objectsData[renderer.currentObjectName];
             const frame = obj?.frames?.[0];
+            const off = renderer.sourceOffsetOf
+                ? renderer.sourceOffsetOf(renderer.currentObjectName) : 0;
             const first = item.positionIndices && item.positionIndices[0];
-            return (frame?.chains && first !== undefined) ? frame.chains[first] : null;
+            // positionIndices are the renderer's; frame.chains is the object's
+            return (frame?.chains && first !== undefined)
+                ? frame.chains[first - off] : null;
         };
 
         const selectWholeChain = (item, additive) => {

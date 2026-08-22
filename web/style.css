@@ -1760,3 +1760,97 @@ table.layout-table td {
     box-shadow: var(--shadow-md);
     transform: translateY(-1px);
 }
+
+/* THE OBJECT LIST - PyMOL's object panel, Photoshop's layers.
+   The button opens the dropdown out into a row per object; the eye on each row
+   says whether that object is DRAWN, which is a different question from which
+   one is CURRENT (the row's name). Both are needed: edits act on the current
+   object, and several can be on screen at once for a comparison. */
+.object-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.object-list-btn {
+    height: var(--btn-height-small);
+    padding: 0 10px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-gray-500);
+    background: #fff;
+    border: 1px solid currentColor;
+    border-radius: var(--btn-radius);
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+}
+
+.object-list-btn:hover { background: var(--color-gray-100); }
+
+/* OPEN IS A STATE, so it fills - the same way the GPU switch reads on. */
+.object-list-btn[aria-expanded="true"] {
+    color: var(--color-primary);
+    background: rgba(59, 130, 246, 0.10);
+}
+
+.object-list {
+    margin-top: 4px;
+    border: 1px solid #e5e7eb;
+    border-radius: var(--btn-radius);
+    overflow: hidden;
+}
+
+.object-list[hidden] { display: none; }
+
+.object-list-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 6px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.object-list-row + .object-list-row { border-top: 1px solid #f3f4f6; }
+.object-list-row:hover { background: var(--color-gray-100); }
+
+/* THE CURRENT OBJECT IS MARKED, not just selected-looking: with several drawn
+   at once there is nothing else on screen to say which one Copy, Delete and the
+   side-chain toggles are about to act on. */
+.object-list-row.is-current {
+    background: rgba(59, 130, 246, 0.08);
+    font-weight: 600;
+}
+
+.object-list-eye {
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--color-gray-500);
+    cursor: pointer;
+    font-size: 12px;
+}
+
+/* A HIDDEN OBJECT KEEPS ITS ROW but loses its ink, so the list reads as a set
+   of switches rather than as a list that things vanish from. */
+.object-list-row.is-hidden .object-list-name { opacity: 0.45; }
+.object-list-eye:hover { color: var(--color-primary); }
+
+.object-list-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* The swatch is the colour that object is actually drawn in when the view is
+   coloured by object - see the 'object' mode in viewer-mol.js. */
+.object-list-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    flex: 0 0 10px;
+    border: 1px solid rgba(0, 0, 0, 0.15);
+}

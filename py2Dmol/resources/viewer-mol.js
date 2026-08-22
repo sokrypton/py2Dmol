@@ -1257,6 +1257,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 sourceNames: null,           // the objects merged, in drawing order
                 sourceOffsets: null,         // where each of them starts
                 sourceFrames: null,          // the frame each was taken from
+                sourceAutoColors: null,      // what 'auto' means for each of them
                 stats: null,                 // centre and extent of the lot - see drawnStats
                 autoColor: null
             };
@@ -1659,18 +1660,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         }
                     }
                 } else {
-                    // Normal mode
+                    // Normal mode. A PAE matrix belongs to ONE object - the
+                    // current one, which is whose matrix the panel shows - so
+                    // its rows are that object's residues and land at its
+                    // offset in a merged array.
+                    const paeOff = this.sourceOffsetOf
+                        ? this.sourceOffsetOf(this.currentObjectName) : 0;
+                    const last = n - 1 - paeOff;
                     for (const box of this.visibilityModel.paeBoxes) {
-                        const i0 = Math.max(0, Math.min(n - 1, Math.min(box.i_start, box.i_end)));
-                        const i1 = Math.max(0, Math.min(n - 1, Math.max(box.i_start, box.i_end)));
-                        const j0 = Math.max(0, Math.min(n - 1, Math.min(box.j_start, box.j_end)));
-                        const j1 = Math.max(0, Math.min(n - 1, Math.max(box.j_start, box.j_end)));
-                        // PAE positions map directly to position indices (one position per entry in frame data)
+                        const i0 = Math.max(0, Math.min(last, Math.min(box.i_start, box.i_end)));
+                        const i1 = Math.max(0, Math.min(last, Math.max(box.i_start, box.i_end)));
+                        const j0 = Math.max(0, Math.min(last, Math.min(box.j_start, box.j_end)));
+                        const j1 = Math.max(0, Math.min(last, Math.max(box.j_start, box.j_end)));
                         for (let r = i0; r <= i1; r++) {
-                            if (r < n) paePositions.add(r);
+                            if (r + paeOff < n) paePositions.add(r + paeOff);
                         }
                         for (let r = j0; r <= j1; r++) {
-                            if (r < n) paePositions.add(r);
+                            if (r + paeOff < n) paePositions.add(r + paeOff);
                         }
                     }
                 }
@@ -4243,7 +4249,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          *
          * Destructive in the session only: nothing is written to disk.
          */
-        deleteSelection() {
+        _deleteSelection() {
             const name = this.currentObjectName;
             const object = name ? this.objectsData[name] : null;
             if (!object || !object.frames || !object.frames.length) return false;
@@ -4545,7 +4551,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return out;
         }
 
-        extractSelection() {
+        _extractSelection() {
             // Check if we have a current object and frame
             if (!this.currentObjectName) {
                 console.warn("No object loaded. Cannot extract selection.");
@@ -4737,7 +4743,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * @returns {object|null} {name, removed} or null if there was nothing
          *          to cut
          */
-        cutSelection() {
+        _cutSelection() {
             const src = this.currentObjectName;
             const sel = (this.residueSelection && this.residueSelection.size)
                 ? new Set(this.residueSelection) : null;
@@ -4745,13 +4751,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 console.warn('Nothing selected - nothing to cut.');
                 return null;
             }
-            const made = this.extractSelection();
+            const made = this._extractSelection();
             if (!made) return null;
             // ...back to where they came from, with the selection that named
             // them, and out
             this._switchToObject(src);
             this.setResidueSelection(sel);
-            const removed = this.deleteSelection() ? sel.size : 0;
+            const removed = this._deleteSelection() ? sel.size : 0;
             this._showObject(made);
             return { name: made, removed };
         }
@@ -4816,6 +4822,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (!skipRender) {
                     this.render('setFrame-overlay');
                 }
+            } else if (this.multiState.enabled) {
+                // SEVERAL OBJECTS: the merge is rebuilt, not replaced by one
+                // frame. This object stepping a frame changes its share of the
+                // array and nothing else's, and loading the frame on its own
+                // would drop every other object off the screen - which is what
+                // switching the current object does, since that is a switch
+                // followed by setFrame(0).
+                this._applyShownObjects(skipRender);
             } else {
                 // Normal mode: load individual frame data
                 this._loadFrameData(frameIndex, true); // Load without render
@@ -5137,6 +5151,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     this.objectSelect.parentElement;
                 if (objectSelectParent) {
                     objectSelectParent.style.display = (objectCount <= 1) ? 'none' : 'flex';
+                    // ...and the list that opens out of it, which is part of
+                    // the same control and would otherwise be left hanging
+                    // under a hidden row when the last object goes.
+                    const list = objectSelectParent.parentElement
+                        && objectSelectParent.parentElement.querySelector('#objectList');
+                    if (list && objectCount <= 1) {
+                        list.hidden = true;
+                        const btn = objectSelectParent.querySelector('#objectListButton');
+                        if (btn) btn.setAttribute('aria-expanded', 'false');
+                    }
                 }
 
                 // Also handle container visibility (for backward compatibility)
@@ -5492,6 +5516,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // ...and which frame each was taken from, so the colour hierarchy
             // can ask a source's OWN frame for a frame-level colour
             const sourceFrames = [];
+            const sourceAutoColors = [];
             const sideRows = [];
             let firstPae;
 
@@ -5539,6 +5564,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
                 sideRows.push({ table: frame.sidechains || null, offset });
                 if (firstPae === undefined) firstPae = frame.pae || null;
+                // EACH OBJECT RESOLVES ITS OWN AUTO COLOUR, from its own
+                // chains and its own PAE - a monomer rainbows, a complex
+                // colours by chain, a predicted model by confidence, exactly
+                // as each would on its own. One answer for the whole merge
+                // made a dimer beside a monomer look like neither.
+                const ownChains = new Set(fChains);
+                sourceAutoColors.push(
+                    (frame.pae && frame.pae.length) ? 'plddt'
+                        : (ownChains.size > 1 ? 'chain' : 'rainbow'));
             }
 
             if (!coords.length) return null;
@@ -5570,6 +5604,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 sourceNames,
                 sourceOffsets,
                 sourceFrames,
+                sourceAutoColors,
                 autoColor
             };
         }
@@ -5622,6 +5657,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
+         * THE OVERLAY BUTTON SAYS WHETHER OVERLAY IS ON.
+         *
+         * It used to be styled inside the toggle, which was the only thing that
+         * could change the state - until showing several objects started
+         * putting the overlay down on its way in. The button then stayed lit
+         * over a view that was not overlaid, which is worse than no indicator:
+         * pressing it again would have turned overlay ON and read as off.
+         */
+        _syncOverlayButton() {
+            if (!this.overlayButton) return;
+            const on = !!(this.overlayState && this.overlayState.enabled);
+            this.overlayButton.classList.toggle('btn-primary', on);
+            this.overlayButton.classList.toggle('btn-secondary', !on);
+        }
+
+        /**
          * Atomically enter overlay mode for the current object.
          * Merges all frames and loads the merged data.
          * This is the SINGLE PATH to enter overlay mode.
@@ -5629,6 +5680,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         _enterOverlayMode(object, skipRender = false) {
             if (!object || object.frames.length === 0) {
                 return false;
+            }
+
+            // THE TWO MERGES ARE EXCLUSIVE - the object merge puts one frame of
+            // several objects in the array, this one puts every frame of one.
+            // Entering here with the other still on left a coordinate array
+            // described by two maps at once: sourceGroups would answer with the
+            // frames while every per-object set was still read at merge
+            // offsets. The objects are put down first, and the shown set is
+            // left alone so leaving overlay can pick them back up.
+            if (this.multiState && this.multiState.enabled) {
+                const keep = Array.from(this.shownObjects);
+                this.setShownObjects([this.currentObjectName], true);
+                this._overlaySuspendedShow = keep;
             }
 
             // Merge all frames
@@ -5642,6 +5706,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.overlayState.frameIdMap = merged.frameIdMap;
             this.overlayState.autoColor = merged.autoColor;
             this.lastOperationMode = 'overlay-enter';
+            this._syncOverlayButton();
 
             // Disable speed button in overlay mode (no animation)
             if (this.speedButton) {
@@ -5679,6 +5744,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.overlayState.frameIdMap = null;
             this.overlayState.autoColor = null;
             this.lastOperationMode = 'overlay-exit';
+            this._syncOverlayButton();
 
             // Re-enable speed button when exiting overlay mode
             if (this.speedButton) {
@@ -5689,6 +5755,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Invalidate segment cache (critical after exiting overlay)
             this._invalidateSegmentCache();
+
+            // ...and pick the objects back up, if entering overlay put them
+            // down. Not when the object merge itself is what asked to leave -
+            // it is about to load its own array, and re-merging here would have
+            // the two calling each other.
+            const resume = this._overlaySuspendedShow;
+            this._overlaySuspendedShow = null;
+            if (resume && resume.length > 1 && !this._leavingOverlayForMerge) {
+                this.overlayState.enabled = false;
+                this.setShownObjects(resume.filter((n) => this.objectsData[n]), skipRender);
+                return true;
+            }
 
             // Load the target single frame (NOT merged)
             this._loadFrameData(targetFrame, skipRender);
@@ -5718,17 +5796,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this._exitOverlayMode(object, targetFrame, false);
             }
 
-            // Update overlay button styling - checkbox style
-            if (this.overlayButton) {
-                if (this.overlayState.enabled) {
-                    this.overlayButton.classList.remove('btn-secondary');
-                    this.overlayButton.classList.add('btn-primary');
-                } else {
-                    this.overlayButton.classList.remove('btn-primary');
-                    this.overlayButton.classList.add('btn-secondary');
-                }
-            }
-
+            this._syncOverlayButton();
             this.updateUIControls();
         }
 
@@ -6119,6 +6187,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Reset data
             this.objectsData = {};
             this.currentObjectName = null;
+            // ...and what was on screen with it. A shown set naming objects
+            // that no longer exist would have the next load open into a merge
+            // of one, and the merge state itself would outlive its array.
+            this.shownObjects = new Set();
+            this.multiState.enabled = false;
+            this.multiState.sourceIdMap = null;
+            this.multiState.sourceNames = null;
+            this.multiState.sourceOffsets = null;
+            this.multiState.sourceFrames = null;
+            this.multiState.stats = null;
+            this._sourceGroupsCache = null;
+            this._mergedSetCache = null;
+            this._mergedLigCache = null;
 
             // Reset object dropdown
             if (this.objectSelect) {
@@ -6624,11 +6705,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // In overlay mode, use merged auto color based on all frames
             const uniqueChains = new Set(this.chains);
             if (this.multiState && this.multiState.enabled) {
-                // SEVERAL OBJECTS COLOUR BY OBJECT. Anything else and the two
-                // structures you put side by side to compare come out the same
-                // colours as each other - by chain, both start at chain A; by
-                // rainbow, both run blue to red. One colour each is the whole
-                // point of the comparison, and it is what PyMOL does too.
+                // EACH OBJECT KEEPS ITS OWN SCHEME. A monomer rainbows, a
+                // complex colours by chain, a predicted model by confidence -
+                // the same answer each would get on its own, resolved per
+                // source in _mergeObjects and read back through
+                // _autoColorFor. What is left here is the fallback for
+                // anything that asks without a position, and for it the merge
+                // as a whole answers by object.
                 this.resolvedAutoColor = 'object';
             } else if (this.overlayState.enabled && this.overlayState.autoColor) {
                 this.resolvedAutoColor = this.overlayState.autoColor;
@@ -6653,9 +6736,30 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.chainIndexMap = new Map();
             // Track which chains contain only ligands (no P/D/R atoms)
             this.ligandOnlyChains = new Set();
+            // ...keyed by SOURCE AND CHAIN when several objects are merged, so
+            // two structures that both have a chain A do not share its colour.
+            // Null otherwise, and then the key is the plain id - see
+            // chainColorKeyAt.
+            {
+                // ONLY FOR AN OBJECT MERGE, never for the overlay. Overlay puts
+                // every frame of ONE object in the array, and its chain A is
+                // the same chain A in every frame - keyed per source it would
+                // come out a different colour in each, which is not what the
+                // overlay has ever looked like. The two merges are exclusive,
+                // so asking sourceGroups here would answer with the frames.
+                const ms = this.multiState;
+                const grp = (ms && ms.enabled) ? this.sourceGroups() : null;
+                this._chainColorKeys = grp
+                    ? this.chains.map((c, i) => grp[i] + '|' + (c || 'A')) : null;
+            }
             if (this.chains.length > 0) {
-                // Use a sorted list of unique chain IDs to ensure a consistent order
-                const sortedUniqueChains = [...uniqueChains].sort();
+                // Unique keys in a consistent order: sorted for one object, and
+                // source by source for a merge, so an object's chains stay
+                // together in the palette instead of interleaving with the
+                // other object's.
+                const sortedUniqueChains = this._chainColorKeys
+                    ? [...new Set(this._chainColorKeys)]
+                    : [...uniqueChains].sort();
                 for (const chainId of sortedUniqueChains) {
                     if (chainId && !this.chainIndexMap.has(chainId)) {
                         this.chainIndexMap.set(chainId, this.chainIndexMap.size);
@@ -6678,7 +6782,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 for (let i = 0; i < n; i++) {
                     const type = this.positionTypes[i];
                     if (type === 'P' || type === 'D' || type === 'R') {
-                        polymerChains.add(this.chains[i]);
+                        polymerChains.add(this.chainColorKeyAt(i));
                     }
                 }
                 for (const chainId of sortedUniqueChains) {
@@ -6700,7 +6804,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             for (let i = 0; i < n; i++) {
                 const type = this.positionTypes[i];
-                const chainId = this.chains[i] || 'A';
+                const chainId = this.chainColorKeyAt(i);
                 const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
 
                 // Chain A of the second source is not a continuation of
@@ -6736,7 +6840,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.sourceRainbowScales = {};
                 for (let i = 0; i < this.positionTypes.length; i++) {
                     const type = this.positionTypes[i];
-                    const chainId = this.chains[i] || 'A';
+                    const chainId = this.chainColorKeyAt(i);
                     const src = rainbowGroups[i];
                     const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
 
@@ -6760,7 +6864,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.chainRainbowScales = {};
                 for (let i = 0; i < this.positionTypes.length; i++) {
                     const type = this.positionTypes[i];
-                    const chainId = this.chains[i] || 'A';
+                    const chainId = this.chainColorKeyAt(i);
                     const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
 
                     if (type === 'P' || type === 'D' || type === 'R' || (type === 'L' && isLigandOnlyChain)) {
@@ -7393,7 +7497,26 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
         }
 
-        _getEffectiveColorMode() {
+        /**
+         * WHAT 'auto' MEANS FOR ONE POSITION.
+         *
+         * With several objects merged it is not one answer: each resolved its
+         * own from its own chains and its own PAE when the merge was built, so
+         * a monomer beside a dimer rainbows while the dimer colours by chain -
+         * which is what each of them looks like on its own, and what was asked
+         * for. Without a position to go on, the merge answers by object.
+         */
+        _autoColorFor(i) {
+            const ms = this.multiState;
+            if (i !== undefined && ms && ms.enabled && ms.sourceAutoColors) {
+                const g = this.sourceGroups();
+                const s = g ? g[i] : -1;
+                if (s >= 0 && ms.sourceAutoColors[s]) return ms.sourceAutoColors[s];
+            }
+            return this.resolvedAutoColor || 'rainbow';
+        }
+
+        _getEffectiveColorMode(atIndex) {
             const validModes = getAllValidColorModes();
 
             // Check for object-level color mode first
@@ -7402,8 +7525,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (objectColorMode && validModes.includes(objectColorMode)) {
                     // If object color mode is 'auto', resolve to calculated mode
                     if (objectColorMode === 'auto') {
-                        const resolved = this.resolvedAutoColor || 'rainbow';
-                        return resolved;
+                        return this._autoColorFor(atIndex);
                     }
                     return objectColorMode;
                 }
@@ -7417,8 +7539,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // If 'auto', resolve to the calculated mode
             if (this.colorMode === 'auto') {
-                const resolved = this.resolvedAutoColor || 'rainbow';
-                return resolved;
+                return this._autoColorFor(atIndex);
             }
 
             return this.colorMode;
@@ -7960,8 +8081,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     if (e && out.has(e.owner)) out.add(idx);
                 }
             }
-            const obj = this.objectsData && this.objectsData[this.currentObjectName];
-            const groups = obj && obj.ligandGroups;
+            const groups = this.mergedLigandGroups();
             if (groups && groups.size && typeof expandLigandSelection === 'function') {
                 for (const i of expandLigandSelection(out, groups)) out.add(i);
             }
@@ -8735,8 +8855,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (resolvedMode && resolvedMode !== 'auto' && resolvedMode !== this.colorMode) {
                 effectiveColorMode = resolvedMode;
             } else if (!effectiveColorMode || effectiveColorMode === 'auto' || resolvedMode === 'auto') {
-                // Resolve 'auto' to actual mode (chain/rainbow/plddt)
-                effectiveColorMode = this._getEffectiveColorMode();
+                // Resolve 'auto' to actual mode - and to THIS POSITION'S, which
+                // in a merged view is its own object's answer
+                effectiveColorMode = this._getEffectiveColorMode(atomIndex);
             }
 
             // If we have a resolved literal color, use it immediately (highest priority)
@@ -8789,7 +8910,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const at = (typeof src === 'number' && src >= 0) ? src : 0;
                 color = hexToRgb(colorArray[at % colorArray.length]);
             } else if (effectiveColorMode === 'chain') {
-                const chainId = this.chains[atomIndex] || 'A';
+                // by SOURCE and chain: both objects have a chain A
+                const chainId = this.chainColorKeyAt(atomIndex);
                 if (isLigand && !this.ligandOnlyChains.has(chainId)) {
                     // Ligands in chains with P/D/R positions are grey
                     color = DEFAULT_GREY;
@@ -8825,7 +8947,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     color = DEFAULT_GREY;
                 } else {
                     // Regular positions get rainbow color
-                    const chainId = this.chains[atomIndex] || 'A';
+                    const chainId = this.chainColorKeyAt(atomIndex);
 
                     // In overlay mode, use per-frame scales; otherwise use global scales
                     let scale = null;
@@ -8854,11 +8976,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         // Get chain color for a given chain ID (for UI elements like sequence viewer)
-        getChainColorForChainId(chainId) {
+        getChainColorForChainId(chainId, objectName) {
             if (!this.chainIndexMap || !chainId) {
                 return DEFAULT_GREY; // Default lightened gray
             }
-            const chainIndex = this.chainIndexMap.get(chainId) || 0;
+            // The strip belongs to ONE object - the current one unless told
+            // otherwise - so a bare chain id is that object's chain id, and in
+            // a merged view it has to be keyed with the object to find the
+            // colour that chain is actually drawn in.
+            const key = this.chainColorKeyFor(chainId, objectName);
+            const chainIndex = (this.chainIndexMap.has(key)
+                ? this.chainIndexMap.get(key)
+                : this.chainIndexMap.get(chainId)) || 0;
             const colorArray = this.colorblindMode ? chainColorsColorblind : chainColors;
             const hex = colorArray[chainIndex % colorArray.length];
             return hexToRgb(hex);
@@ -10058,6 +10187,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 ms.sourceNames = null;
                 ms.sourceOffsets = null;
                 ms.sourceFrames = null;
+                ms.sourceAutoColors = null;
                 ms.autoColor = null;
                 ms.stats = null;
                 this._sourceGroupsCache = null;
@@ -10083,7 +10213,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // sourceGroups() answer cannot describe it.
             if (this.overlayState.enabled) {
                 const cur = this.objectsData[this.currentObjectName];
-                if (cur) this._exitOverlayMode(cur, this.currentFrame, true);
+                this._leavingOverlayForMerge = true;
+                try {
+                    if (cur) this._exitOverlayMode(cur, this.currentFrame, true);
+                } finally {
+                    this._leavingOverlayForMerge = false;
+                }
             }
 
             const merged = this._mergeObjects(names);
@@ -10094,6 +10229,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             ms.sourceNames = merged.sourceNames;
             ms.sourceOffsets = merged.sourceOffsets;
             ms.sourceFrames = merged.sourceFrames;
+            ms.sourceAutoColors = merged.sourceAutoColors;
             ms.autoColor = merged.autoColor;
             ms.stats = this._mergedStats(merged.coords);
             if (ms.stats) {
@@ -10217,6 +10353,168 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }, skipRender);
         }
 
+
+
+        // COPY, CUT AND DELETE ALWAYS RUN ON ONE OBJECT - see _editOneObject.
+        // Wrapped rather than taught the merge: each of them renumbers half a
+        // dozen things keyed by position index, and every one of those was
+        // written against a single object's array.
+        extractSelection() { return this._editOneObject(() => this._extractSelection()); }
+
+        deleteSelection() { return this._editOneObject(() => this._deleteSelection()); }
+
+        cutSelection() { return this._editOneObject(() => this._cutSelection()); }
+
+        /**
+         * RELOAD WHAT IS DRAWN, whichever that is.
+         *
+         * Side chains, bases and elements all change the coordinate array
+         * rather than just its colours, so the panel reloads the frame after
+         * writing one. Reloading the FRAME while several objects are merged
+         * throws the other objects off the screen; the merge has its own way
+         * back in, and this is the one call the UI needs to know about.
+         */
+        reloadDrawn(skipRender = false) {
+            if (this.multiState && this.multiState.enabled) {
+                this._applyShownObjects(skipRender);
+                return;
+            }
+            this._loadFrameData(this.currentFrame >= 0 ? this.currentFrame : 0, skipRender);
+        }
+
+        /**
+         * The selection, restricted to one object and in ITS numbering.
+         *
+         * `residueSelection` is a set of merged indices; an edit rewrites one
+         * object's frames and knows nothing about the merge.
+         */
+        selectionForObject(name) {
+            const sel = this.residueSelection;
+            if (!sel || !sel.size) return null;
+            const ms = this.multiState;
+            if (!ms || !ms.enabled) return new Set(sel);
+            const out = new Set();
+            for (const i of sel) {
+                const o = this.ownerOf(i);
+                if (o && o.name === name) out.add(o.local);
+            }
+            return out.size ? out : null;
+        }
+
+        /** The visibility mask, likewise: one object's share, in its numbering. */
+        _maskForObject(name) {
+            const set = this.visibilityModel && this.visibilityModel.positions;
+            if (!set || !set.size) return null;
+            const ms = this.multiState;
+            if (!ms || !ms.enabled) return new Set(set);
+            const out = new Set();
+            for (const i of set) {
+                const o = this.ownerOf(i);
+                if (o && o.name === name) out.add(o.local);
+            }
+            return out;
+        }
+
+        /**
+         * RUN A STRUCTURAL EDIT ON THE CURRENT OBJECT ALONE.
+         *
+         * Copy, Cut and Delete rewrite an object's frames and renumber
+         * everything keyed to them - the mask, the side chains, the contacts,
+         * the MSA columns. All of that is written against the object's own
+         * array, and all of it would be handed merged indices instead, so
+         * Delete would remove somebody else's residues or none at all.
+         *
+         * Rather than teach each of those the merge, the merge is put down for
+         * the duration and picked up again after: the edit then runs on exactly
+         * the array it was written for. The selection and the mask are
+         * translated down with it, and the shown set is restored at the end -
+         * including the object a Copy just made, which is the one thing the
+         * user will be looking for.
+         */
+        _editOneObject(fn) {
+            const ms = this.multiState;
+            if (!ms || !ms.enabled) return fn();
+            const shown = Array.from(this.shownObjects);
+            const editing = this.currentObjectName;
+            const sel = this.selectionForObject(editing);
+            const mask = this._maskForObject(editing);
+
+            this.setShownObjects([editing], true);
+            this.residueSelection = (sel && sel.size) ? sel : null;
+            if (this.visibilityModel) {
+                this.visibilityModel.positions = mask || new Set();
+            }
+
+            let out = null;
+            try {
+                out = fn();
+            } finally {
+                // ...and back, minus anything the edit removed, plus whatever
+                // it made: a Copy that lands off screen looks like a Copy that
+                // did not happen.
+                const back = shown.filter((n) => this.objectsData[n]);
+                if (this.currentObjectName && !back.includes(this.currentObjectName)) {
+                    back.push(this.currentObjectName);
+                }
+                if (back.length > 1) this.setShownObjects(back);
+            }
+            return out;
+        }
+
+        /**
+         * WHAT COUNTS AS ONE CHAIN, FOR COLOUR.
+         *
+         * Chain ids are only unique inside a file: put two structures on screen
+         * and both have a chain A, which under the chain scheme comes out the
+         * same colour for both - so a dimer beside a dimer reads as one
+         * four-chain thing. The colour key carries the source with the id, so
+         * every (object, chain) gets its own palette slot in the order the
+         * objects were merged, which is what a single file with that many
+         * chains would have got.
+         *
+         * The SELECTION still keys on the plain id: `this.chains` is what the
+         * panel, the sequence strip and the visibility mask speak, and those
+         * belong to the current object.
+         */
+        chainColorKeyAt(i) {
+            if (!this._chainColorKeys) return this.chains[i] || 'A';
+            return this._chainColorKeys[i];
+        }
+
+        /** The same key, for a chain of a named object rather than a position. */
+        chainColorKeyFor(chainId, objectName) {
+            const ms = this.multiState;
+            if (!ms || !ms.enabled || !ms.sourceNames) return chainId;
+            const s = ms.sourceNames.indexOf(objectName || this.currentObjectName);
+            return (s < 0) ? chainId : (s + '|' + chainId);
+        }
+
+        /**
+         * THE COLOURS AN OBJECT IS ACTUALLY DRAWN IN, for the swatch in the
+         * object list - up to three, sampled across it.
+         *
+         * Not a palette entry: an object keeps its own scheme, so it can be one
+         * colour, one per chain, or a rainbow, and a single square would be a
+         * illustration of a colour rather than the colour. Three samples read
+         * correctly for all of them - flat stays flat, a rainbow reads as a
+         * gradient, a two-chain object shows both.
+         *
+         * Empty when the object is not drawn: it has no colour on screen.
+         */
+        objectSwatch(name) {
+            const { off, end } = this.localRangeOf(name);
+            const stop = Math.min(end, this._positionCount());
+            if (this.drawnObjects().indexOf(name) < 0 || !(stop > off)) return [];
+            const at = [off, Math.floor((off + stop - 1) / 2), stop - 1];
+            const out = [];
+            for (const i of at) {
+                const c = this.getAtomColor(i, this._getEffectiveColorMode(i));
+                if (!c) continue;
+                const hex = `rgb(${c.r}, ${c.g}, ${c.b})`;
+                if (out[out.length - 1] !== hex) out.push(hex);
+            }
+            return out;
+        }
 
         /**
          * How many positions the loaded array holds. Both arrays describe it,
