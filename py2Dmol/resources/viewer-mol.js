@@ -11028,16 +11028,25 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // answers it without another glance.
             const NAME = 'font-size:12px; font-weight:600; color:#374151;'
                 + ' flex:0 0 auto; width:46px;';
-            const cell = (id, label, min, max, stepv) =>
-                `<label for="${id}" style="${CAP}">${label}</label>`
+            const cell = (id, label, min, max, stepv, tip) =>
+                `<label for="${id}" style="${CAP}"${tip ? ` title="${tip}"` : ''}>${label}</label>`
                 + `<input id="${id}" type="number" min="${min}" max="${max}"`
-                + ` step="${stepv}" style="${NUM}">`;
+                + ` step="${stepv}" style="${NUM}"${tip ? ` title="${tip}"` : ''}>`;
             let html = '';
             if (video) {
+                // SEC, NOT TURN. The row is already called Turn - it names
+                // the output - and calling the field the same thing said
+                // nothing about what the number is. It is seconds: the
+                // recording is exactly one revolution, 2*PI over seconds x fps
+                // frames, so this is how long that turn takes. The draw row
+                // already called it Sec, and one name for one unit is what the
+                // two rows should have had all along.
                 html += `<div style="${ROW}">`
                     + `<span style="${NAME}">${this.drawMode ? 'Draw' : 'Turn'}</span>`
-                    + cell('saveSecondsInput', this.drawMode ? 'Sec' : 'Turn', 1, 60, 1)
-                    + cell('saveFpsInput', 'FPS', 5, 60, 1)
+                    + cell('saveSecondsInput', 'Sec', 1, 60, 1, this.drawMode
+                        ? 'How long the drawing takes, in seconds'
+                        : 'How long one full turn takes, in seconds')
+                    + cell('saveFpsInput', 'FPS', 5, 60, 1, 'Frames per second')
                     + '<span style="flex:1 1 auto;"></span>'
                     + `<button data-rec style="${BTN} color:#ef4444;"`
                     + ' title="Record to a video file"><span>&#9679;</span></button></div>';

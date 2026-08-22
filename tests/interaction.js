@@ -3406,6 +3406,37 @@ t('a side chain colour reaches its CA-CB bond', () => {
 // The name is "Capture", not "Save": the toolbar's other Save writes the
 // session file, and two buttons reading Save a few centimetres apart is a coin
 // toss over which one keeps your work.
+// THE NUMBER IS SECONDS, so the field has to say seconds. The row is already
+// called Turn - it names what gets made - and the field beside it said Turn
+// again, which reads as a count of turns and is not one: the recording is
+// exactly one revolution, and this is how long that revolution takes.
+t('the capture panel calls its seconds field Sec, in both video modes', () => {
+    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = src.indexOf("cell('saveSecondsInput'");
+    if (at < 0) throw new Error('the seconds field is gone from the capture panel');
+    const line = src.slice(at, src.indexOf('\n', src.indexOf('saveFpsInput', at)));
+    if (/'Turn'/.test(line)) {
+        throw new Error('the seconds field is labelled Turn again, beside a row'
+            + ' already called Turn: ' + line.trim());
+    }
+    if (!/cell\('saveSecondsInput', 'Sec'/.test(line)) {
+        throw new Error('the seconds field is not labelled Sec: ' + line.trim());
+    }
+    // ...and it says what the seconds are OF, which the label alone cannot
+    if (!/one full turn takes, in seconds/.test(line)) {
+        throw new Error('nothing says the seconds are one revolution');
+    }
+    // the row name still names the output, and still tells the two apart
+    if (!/\$\{this\.drawMode \? 'Draw' : 'Turn'\}/.test(src)) {
+        throw new Error('the row no longer says whether it makes a turn or a drawing');
+    }
+    // one full revolution is what makes "seconds per turn" the truth here
+    if (!/const step = \(2 \* Math\.PI\) \/ N;/.test(src)) {
+        throw new Error('the recording is no longer exactly one turn, so the'
+            + ' label and the tooltip now describe something else');
+    }
+});
+
 t('the Capture button does not change identity with the animation state', () => {
     const btn = {
         title: '',
