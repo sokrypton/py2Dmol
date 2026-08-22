@@ -82,6 +82,27 @@ renderer produced them: a software rasteriser has the opposite vertex/fragment
 balance and its timings do not transfer. See the tube section of
 `GPU3D_NOTES.md` for the current baseline.
 
+`tests/multi_object.py` drives **several objects on screen at once** through a
+real browser - the merge, the list UI, and everything a merged view can get
+wrong:
+
+    python3 tests/multi_object.py 1BBH.cif 1HVR.cif
+    python3 tests/multi_object.py 1BBH.cif 1EHZ.cif --png /tmp/multi.png
+
+It loads two structures, shows one, then both, and checks that the source map
+covers every position, that **no segment joins two objects** (a bond across the
+gap between two structures looks like a long bond, not like a bug), that the
+picture gained ink, that no colour is shared across the join, that hiding
+residues of the second object leaves the first untouched and stores the set in
+the second object's OWN numbering, that Orient leaves nothing off canvas, that
+a pick where the second object is drawn reports the second object, that Auto
+clip cuts without emptying, and that the GPU picture is the CPU picture - in
+BOTH styles, and all inside ONE page load, because the paper grain is reseeded
+per load. Then it presses the Object button and clicks the eye, like a user.
+
+Exit status is the test result; the printout is the evidence. Run it for any
+change to the merge, to per-object state, or to the sequence strip's indices.
+
 `copy_selection.js` covers what **Copy** carries onto the new object. A frame
 is extracted position by position and has its own coverage; this is the
 per-object display state beside it — which positions show a side chain or a
