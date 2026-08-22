@@ -736,6 +736,27 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     <option value="auto">Auto</option>
                                 </select>
                             </div>
+                            <!-- NEIGHBOURS, ATOM TO ATOM, and it belongs HERE rather
+                                 than beside Select all: those three make or clear a
+                                 selection with nothing to set, while this one acts ON
+                                 the selection like every row of this panel - and what
+                                 you do with the answer is turn on the side chains two
+                                 rows up. The distance is measured between ATOMS, side
+                                 chains included whether or not they are drawn; a shell
+                                 between trace points is a list of residues whose CAs
+                                 are close, which is not what "within 5 A" means. The
+                                 seed stays selected, as PyMOL's byres does. -->
+                            <div class="selection-panel-row" id="nearbyRow">
+                                <span class="selection-panel-label">Within</span>
+                                <input type="number" id="selectNearbyA" value="5" min="1" max="20" step="0.5"
+                                    class="btn btn-grey btn-small"
+                                    aria-label="Distance in Angstrom"
+                                    title="Distance in Angstrom"
+                                    style="width: 56px; text-align: right;">
+                                <span style="font-size: 11px; color: #6b7280;">&#8491;</span>
+                                <button id="selectNearby" class="btn btn-grey btn-small"
+                                    title="Add every residue with an atom this close to the selection">Select</button>
+                            </div>
                             <!-- CONTACTS need exactly two residues, so this row
                                  appears only then - a contact is a line between
                                  a pair and there is nothing to draw for one
@@ -822,21 +843,6 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                             title="Clear the selection">Unselect</button>
                         <button id="invertSelection" class="btn btn-grey btn-small"
                             title="Select everything that is not selected now">Invert</button>
-                        <!-- NEIGHBOURS, ATOM TO ATOM. The distance is measured
-                             between ATOMS, side chains included whether or not
-                             they are drawn - a shell measured between trace
-                             points is a list of residues whose CAs are close,
-                             which is not what anyone means by "within 5 A". The
-                             seed stays selected, as PyMOL's byres does. -->
-                        <span class="selection-near">
-                            <button id="selectNearby" class="btn btn-grey btn-small"
-                                title="Add every residue with an atom this close to the selection">Within</button>
-                            <input type="number" id="selectNearbyA" value="5" min="1" max="20" step="0.5"
-                                aria-label="Distance in Angstrom"
-                                title="Distance in Angstrom"
-                                style="width: 52px; height: 28px; font-size: 12px; padding: 0 4px;">
-                            <span style="font-size: 11px; color: #6b7280;">&#8491;</span>
-                        </span>
                     </span>
                 </div>
             </div>

@@ -1283,10 +1283,22 @@ t('Within finds neighbours atom to atom, and keeps the seed', () => {
         throw new Error('the grid is rebuilt on every call - 40 ms of a 48 ms '
             + 'search on 3J3Q');
     }
-    // and there is a button, with a distance beside it
+    // and there is a button, with a distance beside it, ON THE SELECTION PANEL:
+    // Select all / Unselect / Invert make or clear a selection and take no
+    // setting, while this one acts on the selection like every row of the
+    // panel - and what you do with the answer is two rows up.
     const html = fs.readFileSync('index.html', 'utf8');
     if (html.indexOf('id="selectNearby"') < 0 || html.indexOf('id="selectNearbyA"') < 0) {
         throw new Error('no Within control');
+    }
+    const panelAt = html.indexOf('id="selectionPanel"');
+    const toolsAt = html.indexOf('id="selectionGlobalTools"');
+    const nearAt = html.indexOf('id="nearbyRow"');
+    if (nearAt < 0 || nearAt < panelAt || (toolsAt > 0 && nearAt > toolsAt)) {
+        throw new Error('the Within row is not in the selection panel');
+    }
+    if (html.slice(toolsAt, toolsAt + 900).includes('id="selectNearby"')) {
+        throw new Error('Within is still beside Select all');
     }
     const app = fs.readFileSync('web/app.js', 'utf8');
     if (!/renderer\.residuesWithin\(seed, cutoff\)/.test(app)) {
