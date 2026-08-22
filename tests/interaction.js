@@ -3480,8 +3480,10 @@ t('the Capture button does not change identity with the animation state', () => 
 // grows a nested block, which is how one of these first reported a feature
 // missing while it was there.
 function capturePanelBody() {
-    const at = src.indexOf('        _toggleSaveImagePanel(anchorEl) {');
-    if (at < 0) throw new Error('_toggleSaveImagePanel is gone');
+    // the BUILDER, which is where the controls are; _toggleSaveImagePanel is
+    // now just open-or-close around it
+    const at = src.indexOf('        _buildSavePanel(anchorEl) {');
+    if (at < 0) throw new Error('_buildSavePanel is gone');
     let d = 0; let k = src.indexOf('{', at);
     const start = k;
     for (; k < src.length; k++) {
@@ -3584,6 +3586,66 @@ t('the GIF encoder writes a GIF, and only the web app has one', () => {
     if (images < 2) throw new Error('only ' + images + ' frames were written');
     if (!bytes.includes(Buffer.from('NETSCAPE2.0'))) {
         throw new Error('no loop block - the GIF plays once and stops');
+    }
+});
+
+t('the capture panel says everything in one line, inside itself', () => {
+    const body = capturePanelBody();
+    const src2 = src;
+    // ONE BOX. The panel used to talk through the page's status line - from a
+    // panel that had closed itself when the job started, so the feedback for an
+    // action appeared somewhere the user was no longer looking, under whatever
+    // the loader said last. The embedded viewer has no status line at all.
+    if (!/dataset\.info = '1'/.test(body)) {
+        throw new Error('the panel has no info line');
+    }
+    if (!/_captureStatus\(/.test(body)) throw new Error('the panel never writes to it');
+    // ...and no capture path may go around it
+    const stray = [];
+    for (const m of src2.matchAll(/setStatus\(`?([A-Za-z][^`',]{0,40})/g)) {
+        if (/export|Recording|Encoding|Zipping|Rendering frame|Saved|video data/i.test(m[1])) {
+            stray.push(m[1]);
+        }
+    }
+    if (stray.length) {
+        throw new Error('capture feedback still goes to the page status line: '
+            + JSON.stringify(stray));
+    }
+    // THE PANEL STAYS UP while it records, or the line it writes to is gone
+    if (/closePanel\(\)/.test(body)) {
+        throw new Error('a record button still closes the panel');
+    }
+    if (!/this\._captureBusy = true;/.test(body)) {
+        throw new Error('nothing marks the panel busy, so a second job can start'
+            + ' on top of the first');
+    }
+    if (!/_syncCaptureButtons\(\)/.test(body)) {
+        throw new Error('the buttons are not disabled while a job runs');
+    }
+    // ...and the description follows the settings
+    if (!/_describeCapture\(\)/.test(body)) {
+        throw new Error('nothing describes what the settings will produce');
+    }
+});
+
+t('the capture panel follows the window size', () => {
+    // EVERY PIXEL FIGURE IN IT IS DERIVED FROM THE CANVAS - the image size, the
+    // recording sizes, the whole Video menu - and all of them were computed
+    // when the panel was built, so dragging the window wider left the panel
+    // promising the old numbers.
+    const at = src.indexOf('        _updateCanvasDimensions() {');
+    const body = src.slice(at, src.indexOf('\n        }', at));
+    if (!/_rebuildSavePanel\(\)/.test(body)) {
+        throw new Error('a resize does not refresh the capture panel');
+    }
+    if (!/!this\._captureBusy/.test(body)) {
+        throw new Error('the panel would be rebuilt out from under a running job');
+    }
+    // the rebuild is safe only because the values live on the renderer
+    const panel = capturePanelBody();
+    if (!/const commit = \(\)/.test(panel) || !/addEventListener\('change', commit\)/.test(panel)) {
+        throw new Error('the controls do not write back on change, so a rebuild'
+            + ' would lose what was typed');
     }
 });
 

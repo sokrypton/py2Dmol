@@ -5511,13 +5511,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         // Finish recording and download file
         finishRecording(blob, ext, sink) {
+            this._captureBusy = false;
             if (blob) {
                 const frames = (this.recordingEndFrame || 0) + 1;
                 this._deliverVideo(blob, ext, 'Frames',
                     `${frames} frames`
                     + (sink ? `, ${sink.width}x${sink.height}${sink.note}` : ''));
-            } else if (typeof setStatus === 'function') {
-                setStatus('No video data recorded', true);
+            } else {
+                this._captureStatus('No video data recorded', true);
             }
 
             // Clean up all recording state
@@ -8770,6 +8771,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         _updateCanvasDimensions() {
             this.displayWidth = parseInt(this.canvas.style.width) || this.canvas.width;
             this.displayHeight = parseInt(this.canvas.style.height) || this.canvas.height;
+            // EVERY NUMBER IN THE CAPTURE PANEL IS DERIVED FROM THIS. The image
+            // size, the recording sizes, the whole Video menu - all computed
+            // when the panel was built, and all wrong the moment the window is
+            // dragged wider. Rebuilt rather than patched: the panel is a dozen
+            // elements, its state lives in _captureOpts, and there is no
+            // half-edited field to lose.
+            if (this._savePanel && this._saveAnchor && !this._captureBusy) {
+                this._rebuildSavePanel();
+            }
         }
 
         // RENDER (Core drawing logic)
@@ -10526,9 +10536,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         // Encoding a few hundred megapixels blocks the tab, so
                         // the status line is set BEFORE it starts rather than
                         // after, or the only sign of life is a frozen page.
-                        if (typeof setStatus === 'function') {
-                            setStatus(`Encoding ${shots.length} GIF frames...`);
-                        }
+                        this._captureStatus(`Encoding ${shots.length} GIF frames...`);
                         setTimeout(() => {
                             const blob = window.py2dmolGif(shots, { width: w, height: h,
                                 colors: Math.max(8, Math.min(256, Number(o.colors) || 256)),
@@ -10584,18 +10592,89 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             };
         }
 
+        /**
+         * WHAT THESE SETTINGS WILL PRODUCE, in the panel's own words, before
+         * anything is written. The Image row shows its pixel size beside the
+         * dpi; this says the same for a recording, where the size depends on
+         * the format as well as the menu (a GIF is capped, and clamped to 20
+         * fps) and nothing else in the row would show it.
+         */
+        _describeCapture() {
+            if (!this._savePanel || this._captureBusy) return;
+            const o = this.captureOpts();
+            const fmt = this.videoFormatOf(o.container);
+            if (!fmt || !this._savePanel.querySelector('#saveVideoFormat')) {
+                this._captureStatus('');
+                return;
+            }
+            const sizes = this.videoSizes();
+            const z = sizes.find((q) => q.scale === Number(o.scale)) || sizes[0];
+            const gif = fmt.id === 'gif';
+            const LIM = this.constructor.GIF_LIMITS;
+            const fps = Math.min(o.fps, gif ? LIM.maxFps : 60);
+            let w = z ? z.w : 0; let h = z ? z.h : 0;
+            if (gif && Math.max(w, h) > LIM.maxPx) {
+                const f = LIM.maxPx / Math.max(w, h);
+                w = 2 * Math.round(w * f / 2); h = 2 * Math.round(h * f / 2);
+            }
+            const bits = [`${fmt.label} ${w}x${h}`, `${o.seconds}s at ${fps} fps`];
+            if (gif) {
+                bits.push(`${o.colors} colours`);
+                if (o.transparent) bits.push('transparent');
+            } else {
+                bits.push(`${o.mbps} Mbps`);
+            }
+            this._captureStatus(bits.join(' \u00b7 '));
+        }
+
+        /** A job is running: nothing else may start until it is done. */
+        _syncCaptureButtons() {
+            if (!this._savePanel) return;
+            const busy = !!this._captureBusy;
+            for (const b of this._savePanel.querySelectorAll('button')) {
+                b.disabled = busy;
+                b.style.opacity = busy ? '0.45' : '';
+            }
+        }
+
+        /**
+         * EVERYTHING THE CAPTURE PANEL HAS TO SAY, in one line inside it.
+         *
+         * It used to talk through the page's status line: "Recording
+         * rotation... 40%", then "Turn exported to ...", from a panel that had
+         * closed itself when the recording started - so the feedback for an
+         * action appeared somewhere else, under whatever the loader said last,
+         * and on the embedded viewer there is no status line at all. One box,
+         * at the foot of the panel that started the job.
+         *
+         * The page's status line is still written when there is no panel open
+         * (the shift-click shortcut, a Python-driven save), because then it is
+         * the only place there is.
+         */
+        _captureStatus(text, isError) {
+            this._captureNote = text ? { text, error: !!isError } : null;
+            const box = this._savePanel
+                && this._savePanel.querySelector('[data-info]');
+            if (box) {
+                box.textContent = text || '';
+                box.style.color = isError ? '#b91c1c' : '#6b7280';
+                return;
+            }
+            if (typeof setStatus === 'function') setStatus(text, !!isError);
+        }
+
         /** One place that turns a finished recording into a file on disk. */
         _deliverVideo(blob, ext, what, detail) {
+            this._captureBusy = false;
             if (!blob) {
-                if (typeof setStatus === 'function') setStatus('No video data recorded', true);
+                this._captureStatus('No video data recorded', true);
                 return;
             }
             const filename = this._generateFilename(this.currentObjectName, ext);
             this._triggerDownload(blob, filename);
-            if (typeof setStatus === 'function') {
-                const mb = (blob.size / 1048576).toFixed(1);
-                setStatus(`${what} exported to ${filename} (${detail}, ${mb} MB)`);
-            }
+            const mb = (blob.size / 1048576).toFixed(1);
+            this._captureStatus(`Saved ${what.toLowerCase()}: ${detail}, ${mb} MB`);
+            if (this._savePanel) this._syncCaptureButtons();
         }
 
         /**
@@ -10620,9 +10699,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         saveFrameImages(opts) {
             const o = opts || {};
             if (typeof JSZip === 'undefined') {
-                if (typeof setStatus === 'function') {
-                    setStatus('Saving frames as a zip needs the standalone page.', true);
-                }
+                this._captureStatus('Saving frames as a zip needs the standalone page.', true);
                 return;
             }
             const object = this.currentObjectName
@@ -10650,26 +10727,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const done = () => {
                 this.isTransparent = wasTransparent;
                 this.setFrame(at0 >= 0 && at0 < frames ? at0 : 0);
+                this._captureBusy = false;
+                if (this._savePanel) this._syncCaptureButtons();
             };
             const one = (i) => {
                 if (i >= frames) {
-                    if (typeof setStatus === 'function') {
-                        setStatus(`Zipping ${frames} frames...`);
-                    }
+                    this._captureStatus(`Zipping ${frames} frames...`);
                     zip.generateAsync({ type: 'blob' }).then((blob) => {
                         done();
                         const filename = this._generateFilename(name, 'zip');
                         this._triggerDownload(blob, filename);
-                        if (typeof setStatus === 'function') {
-                            setStatus(`${frames} frames exported to ${filename} `
-                                + `(${w}x${h}, ${Math.round(k * 96)} dpi, `
-                                + `${(blob.size / 1048576).toFixed(1)} MB)`);
-                        }
+                        this._captureStatus(`Saved ${frames} frames: ${w}x${h}, `
+                            + `${Math.round(k * 96)} dpi, `
+                            + `${(blob.size / 1048576).toFixed(1)} MB`);
                     }).catch((e) => {
                         done();
-                        if (typeof setStatus === 'function') {
-                            setStatus('Could not write the zip: ' + e.message, true);
-                        }
+                        this._captureStatus('Could not write the zip: ' + e.message, true);
                     });
                     return;
                 }
@@ -10683,8 +10756,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     if (blob) {
                         zip.file(`${name}_${String(i + 1).padStart(pad, '0')}.png`, blob);
                     }
-                    if (typeof setStatus === 'function' && (i % 5 === 0 || i === frames - 1)) {
-                        setStatus(`Rendering frame ${i + 1} of ${frames}...`);
+                    if (i % 5 === 0 || i === frames - 1) {
+                        this._captureStatus(`Rendering frame ${i + 1} of ${frames}...`);
                     }
                     // ...and give the page a turn, so the progress line is
                     // something the user can actually see move
@@ -10750,15 +10823,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     const objectName = this.currentObjectName;
                     out.toBlob((blob) => {
                         if (!blob) {
-                            if (typeof setStatus === 'function') setStatus('PNG export failed', true);
+                            this._captureStatus('PNG export failed', true);
                             return;
                         }
                         const filename = this._generateFilename(objectName, 'png');
                         this._triggerDownload(blob, filename);
-                        if (typeof setStatus === 'function') {
-                            setStatus(`PNG exported to ${filename} `
-                                + `(${out.width}x${out.height}, ${Math.round(k * 96)} dpi)`);
-                        }
+                        this._captureStatus(`Saved PNG: ${out.width}x${out.height}, `
+                            + `${Math.round(k * 96)} dpi, `
+                            + `${(blob.size / 1048576).toFixed(1)} MB`);
                     }, 'image/png');
                     restore();
                     return;
@@ -10781,9 +10853,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         const filename = this._generateFilename(objectName, 'svgz');
                         this._triggerDownload(
                             new Blob([gz], { type: 'image/svg+xml' }), filename);
-                        if (typeof setStatus === 'function') {
-                            setStatus(`SVGZ exported to ${filename}`);
-                        }
+                        this._captureStatus(`Saved ${filename}`);
                     }).catch(() => this._downloadSvg(svgString, objectName));
                     restore();
                     return;
@@ -10794,9 +10864,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             } catch (e) {
                 restore();
                 console.error('Failed to export image:', e);
-                const msg = `Error exporting image: ${e.message}`;
-                if (typeof setStatus === 'function') setStatus(msg, true);
-                else alert(msg);
+                this._captureStatus(`Error exporting image: ${e.message}`, true);
             }
         }
 
@@ -11033,8 +11101,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             if (typeof MediaRecorder === 'undefined' || !this.canvas
                 || !this.canvas.captureStream) {
-                const msg = 'Video recording is not supported in this browser.';
-                if (typeof setStatus === 'function') setStatus(msg, true); else alert(msg);
+                this._captureStatus('Video recording is not supported in this browser.', true);
                 return;
             }
             if (this.isRecording || this._rotationRecording || this._drawRecording) return;
@@ -11058,8 +11125,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const sink = this._makeVideoSink(o);
             if (!sink) {
                 this._endDrawingVideo(null);
-                const msg = 'Failed to start recording.';
-                if (typeof setStatus === 'function') setStatus(msg, true); else alert(msg);
+                this._captureStatus('Failed to start recording.', true);
                 return;
             }
             const fps = sink.fps;                 // clamped for GIF - see the turn
@@ -11088,8 +11154,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
                 this.render('saveDrawingVideo');
                 sink.frame();
-                if (typeof setStatus === 'function' && i % fps === 0) {
-                    setStatus(`Recording drawing... ${Math.round((100 * i) / (N + TAIL))}%`);
+                if (i % fps === 0) {
+                    this._captureStatus(
+                        `Recording drawing... ${Math.round((100 * i) / (N + TAIL))}%`);
                 }
                 i++;
                 this._drawTimer = setTimeout(tick, 1000 / fps);
@@ -11098,6 +11165,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         _endDrawingVideo(stream) {
+            // whatever happened, the panel is free again
+            this._captureBusy = false;
+            if (this._savePanel) this._syncCaptureButtons();
             if (this._drawTimer) { clearTimeout(this._drawTimer); this._drawTimer = null; }
             this._drawRecording = false;
             // Leave the finished painting up, exactly as a live run does.
@@ -11120,8 +11190,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const seconds = Math.max(1, Math.min(60, Number(o.seconds) || 6));
 
             if (typeof MediaRecorder === 'undefined' || !this.canvas || !this.canvas.captureStream) {
-                const msg = 'Video recording is not supported in this browser.';
-                if (typeof setStatus === 'function') setStatus(msg, true); else alert(msg);
+                this._captureStatus('Video recording is not supported in this browser.', true);
                 return;
             }
             if (this.isRecording || this._rotationRecording) return;
@@ -11140,8 +11209,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const sink = this._makeVideoSink(o);
             if (!sink) {
                 this._endRotationVideo(R0, wasAuto, null);
-                const msg = 'Failed to start recording.';
-                if (typeof setStatus === 'function') setStatus(msg, true); else alert(msg);
+                this._captureStatus('Failed to start recording.', true);
                 return;
             }
             // FRAMES FROM THE SINK'S fps, NOT THE PANEL'S. A GIF is clamped to
@@ -11165,8 +11233,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.viewerState.rotation = multiplyMatrices(rotationMatrixY(i * step), R0);
                 this.render();
                 sink.frame();
-                if (typeof setStatus === 'function' && i % sink.fps === 0) {
-                    setStatus(`Recording rotation... ${Math.round((100 * i) / N)}%`);
+                if (i % sink.fps === 0) {
+                    this._captureStatus(`Recording turn... ${Math.round((100 * i) / N)}%`);
                 }
                 i++;
                 // setTimeout rather than requestAnimationFrame: the pacing has to
@@ -11178,6 +11246,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         _endRotationVideo(R0, wasAuto, stream) {
+            // whatever happened, the panel is free again
+            this._captureBusy = false;
+            if (this._savePanel) this._syncCaptureButtons();
             if (this._rotationTimer) { clearTimeout(this._rotationTimer); this._rotationTimer = null; }
             this._rotationRecording = false;
             if (stream) { try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* gone */ } }
@@ -11255,15 +11326,36 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // sources can be recorded, how big the canvas is, whether the
             // object has frames - was whatever was true the first time it was
             // opened. Loading a trajectory with the panel already made left it
-            // with no Frames button until the mode happened to change and throw
+            // with no Frames button until the mode happened to change and threw
             // it away. It is a dozen elements; building it is free.
             if (this._savePanel) {
-                const wasOpen = this._savePanel.style.display !== 'none';
                 this._savePanel.remove();
                 this._savePanel = null;
                 if (anchorEl) anchorEl.setAttribute('aria-expanded', 'false');
-                if (wasOpen) { this._resumeFromSavePanel(); return; }
+                this._resumeFromSavePanel();
+                return;
             }
+            this._saveAnchor = anchorEl || this._saveAnchor;
+            this._buildSavePanel(this._saveAnchor);
+        }
+
+        /** Same panel, same options, current numbers - see _updateCanvasDimensions. */
+        _rebuildSavePanel() {
+            if (!this._savePanel) return;
+            // A RESULT SURVIVES THE REBUILD, A DESCRIPTION DOES NOT. "Saved
+            // turn: ... 0.1 MB" is news and has to stay; "WebM 598x598" is a
+            // description of settings against a canvas that has just changed
+            // size, and restoring it would put the old numbers back over the
+            // new ones the rebuild exists to produce.
+            const note = this._captureNote;
+            const keep = note && !/^(WebM|MP4|GIF|PNG|SVG)\b.*\u00b7/.test(note.text);
+            this._savePanel.remove();
+            this._savePanel = null;
+            this._buildSavePanel(this._saveAnchor);
+            if (keep) this._captureStatus(note.text, note.error);
+        }
+
+        _buildSavePanel(anchorEl) {
             const obj = this.currentObjectName
                 ? this.objectsData[this.currentObjectName] : null;
             const sources = [];
@@ -11415,6 +11507,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const k = Number(dpiSel.value) / 96;
                 imgSize.textContent = vector ? 'vector'
                     : `${Math.round(dispW * k)}x${Math.round(dispH * k)}`;
+                this._describeCapture();
             };
             fmtSel.addEventListener('change', syncImg);
             dpiSel.addEventListener('change', syncImg);
@@ -11520,6 +11613,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             // ---- RECORD ------------------------------------------------
+            const commit = () => {
+                this._captureOpts = Object.assign(this.captureOpts(), readVideo(), {
+                    format: fmtSel.value, dpi: Number(dpiSel.value) || 200,
+                });
+                this._describeCapture();
+            };
             const readVideo = () => ({
                 seconds: secIn ? Number(secIn.value) || 6 : 6,
                 fps: fpsIn ? Number(fpsIn.value) || 30 : 30,
@@ -11529,13 +11628,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 colors: colorsSel ? Number(colorsSel.value) || 256 : 256,
                 transparent: !!(bgSel && bgSel.value === 'clear'),
             });
-            const closePanel = () => {
-                p.style.display = 'none';
-                if (anchorEl) anchorEl.setAttribute('aria-expanded', 'false');
-                // The recorders drive their own frames, so the pause the panel
-                // put on is lifted without resuming anything.
-                this._uiPaused = false;
-            };
+            // WRITTEN BACK ON EVERY CHANGE, not read at the moment a button is
+            // pressed. The panel is rebuilt whenever the canvas is resized (see
+            // _updateCanvasDimensions), and a value that lived only in the DOM
+            // would be lost with it - so it lives in _captureOpts and the DOM
+            // is filled from there.
+            for (const c of [fmtSel, dpiSel, vFmt, secIn, fpsIn, mbpsIn, sizeSel,
+                colorsSel, bgSel]) {
+                if (c) c.addEventListener('change', commit);
+            }
+            commit();
+
             const recRow = row('Record');
             if (!sources.length) {
                 recRow.appendChild(el('span', CAP,
@@ -11555,9 +11658,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                             : 'Record one full turn');
                     b.addEventListener('click', (ev) => {
                         ev.preventDefault();
+                        if (this._captureBusy) return;
                         const vo = readVideo();
                         this._captureOpts = Object.assign(this.captureOpts(), vo);
-                        closePanel();
+                        // THE PANEL STAYS UP while it records. It used to close
+                        // itself, which put the progress and the result
+                        // somewhere the user was no longer looking - and left
+                        // no way to see that anything was happening at all.
+                        // The recorders drive their own frames, so the pause
+                        // the panel put on is lifted without resuming anything.
+                        this._uiPaused = false;
+                        this._captureBusy = true;
+                        this._syncCaptureButtons();
+                        this._captureStatus('Recording...');
                         // Recording a drawing RESTARTS it from blank paper, so
                         // pressing record part way through a run still gives a
                         // whole one. A turn has no beginning, so it does not.
@@ -11572,9 +11685,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (zipBtn) {
                 zipBtn.addEventListener('click', (e) => {
                     e.preventDefault();
+                    if (this._captureBusy) return;
                     const io = { dpi: Number(dpiSel.value) || 200 };
                     this._captureOpts = Object.assign(this.captureOpts(), io);
-                    closePanel();
+                    this._captureBusy = true;
+                    this._syncCaptureButtons();
                     this.saveFrameImages(io);
                 });
             }
@@ -11583,13 +11698,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 e.preventDefault();
                 const io = { format: fmtSel.value, dpi: Number(dpiSel.value) || 200 };
                 this._captureOpts = Object.assign(this.captureOpts(), io);
-                p.style.display = 'none';
-                if (anchorEl) anchorEl.setAttribute('aria-expanded', 'false');
                 this.saveImage(io);
-                // Saving a frame is not a reason to lose the run: whatever the
-                // panel paused picks up again once the file is on its way.
-                this._resumeFromSavePanel();
             });
+
+            // ...AND ONE LINE THAT SAYS WHAT IS HAPPENING. Everything the
+            // capture path has to say goes here - what these settings will
+            // produce, how far a recording has got, what was written - instead
+            // of into the page's status line, which is somewhere else, under
+            // whatever the loader said last, and does not exist at all in the
+            // embedded viewer.
+            const info = el('div', 'font-size:11px; color:#6b7280; line-height:1.35;'
+                + ' overflow-wrap:anywhere; min-width:0;');
+            info.dataset.info = '1';
+            p.appendChild(info);
 
             const anchorRow = (anchorEl && (anchorEl.closest('.toolbar-row')
                 || anchorEl.parentElement))
@@ -11600,6 +11721,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 anchorEl.setAttribute('aria-controls', 'savePanel');
                 anchorEl.setAttribute('aria-expanded', 'true');
             }
+            // ...and only now, with the panel installed, can it be written to
+            this._syncCaptureButtons();
+            this._describeCapture();
         }
 
 
@@ -11618,9 +11742,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const filename = this._generateFilename(objectName, 'svg');
             const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
             this._triggerDownload(blob, filename);
-            if (typeof setStatus === 'function') {
-                setStatus(`SVG exported to ${filename}`);
-            }
+            this._captureStatus(`Saved ${filename}`);
         }
 
         // Helper to trigger browser download
