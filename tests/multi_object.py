@@ -284,6 +284,50 @@ window.addEventListener('load', () => {
       r.render('all again');
       await new Promise((s) => setTimeout(s, 200));
 
+      // AN OBJECT'S COLOURS DO NOT MOVE WHEN ITS NEIGHBOUR IS SWITCHED OFF.
+      // Keyed by which source it happened to be, an object was source 0 alone
+      // and source 1 beside another - different palette slots, so the same
+      // molecule came out two colours depending on what else was on screen,
+      // in the 3D view and in the sequence strip with it.
+      const colOf = (nm) => {
+        const off = r.sourceOffsetOf(nm);
+        const local = (r.multiState && r.multiState.enabled) ? off : 0;
+        const out = [];
+        for (let k = 0; k < 5; k++) {
+          const c = r.getAtomColor(local + k, r._getEffectiveColorMode(local + k));
+          out.push([c.r, c.g, c.b].join(','));
+        }
+        return out.join(' ');
+      };
+      const stripOf = (nm) => {
+        const obj = r.objectsData[nm];
+        const chs = [...new Set((obj.frames[0].chains || []))].sort();
+        return chs.map((c) => {
+          const k = r.getChainColorForChainId(c, nm);
+          return c + ':' + [k.r, k.g, k.b].join(',');
+        }).join(' ');
+      };
+      r.setShownObjects(names);
+      r.render('both for colours');
+      await new Promise((s) => setTimeout(s, 250));
+      R.colBoth = colOf(names[0]);
+      R.stripBoth = stripOf(names[0]);
+      R.colBothSecond = colOf(names[1]);
+      R.stripBothSecond = stripOf(names[1]);
+
+      r.setShownObjects([names[0]]);
+      r.render('first alone');
+      await new Promise((s) => setTimeout(s, 250));
+      R.colAlone = colOf(names[0]);
+      R.stripAlone = stripOf(names[0]);
+      // ...and the HIDDEN object's strip colours, which the strip still asks
+      // for because the picker can be pointing at it
+      R.stripSecondHidden = stripOf(names[1]);
+
+      r.setShownObjects(names);
+      r.render('both again');
+      await new Promise((s) => setTimeout(s, 250));
+
       // THE PICKER, which is what says whose sequence the strip is showing.
       // It lives in the sequence header, outside the viewer container - the
       // renderer has to find it there or there is no way to switch objects.
@@ -300,7 +344,12 @@ window.addEventListener('load', () => {
       R.afterPickCurrent = r.currentObjectName;
       R.afterPickDrawn = r.drawnObjects();
 
-      // ...and the GPU path, in the SAME page load
+      // ...and the GPU path, in the SAME page load, against the CPU picture as
+      // it stands NOW. Comparing with the ink from the top of the run was
+      // fragile: Orient has moved the camera since, so the two are pictures of
+      // different views and the tolerance was absorbing that rather than
+      // measuring the GPU.
+      R.cpuBeforeGpu = ink(r);
       r.useGPU = true;
       r.render('gpu');
       await new Promise((s) => setTimeout(s, 400));
@@ -415,6 +464,11 @@ def main():
     print(f"  eyes from empty: {R.get('oneBackDrawn')} ({R.get('oneBackInk')} ink)"
           f" -> {R.get('afterJoinDrawn')} ({R.get('afterJoinInk')} ink,"
           f" merge {R.get('afterJoinMulti')})")
+    print(f"  colours of {R['objects'][0]}: {R.get('colAlone')} alone,"
+          f" {R.get('colBoth')} beside another")
+    print(f"  strip of {R['objects'][0]}: {R.get('stripAlone')}")
+    print(f"  strip of {R['objects'][1]}: {R.get('stripBothSecond')} shown,"
+          f" {R.get('stripSecondHidden')} hidden")
     print(f"  picker: {R.get('pickerOptions')} showing {R.get('pickerValue')!r};"
           f" picking the other -> editing {R.get('afterPickCurrent')},"
           f" drawn {R.get('afterPickDrawn')}")
@@ -501,6 +555,18 @@ def main():
         bad.append("two objects on screen drew nothing")
     if R.get("btnSome") != "All":
         bad.append(f"the button reads {R.get('btnSome')!r} with both on screen")
+    if R.get("colBoth") != R.get("colAlone"):
+        bad.append(f"the first object is drawn {R.get('colBoth')} beside another"
+                   f" and {R.get('colAlone')} on its own")
+    if R.get("stripBoth") != R.get("stripAlone"):
+        bad.append(f"its strip reads {R.get('stripBoth')} beside another"
+                   f" and {R.get('stripAlone')} on its own")
+    if R.get("stripBothSecond") != R.get("stripSecondHidden"):
+        bad.append(f"the second object's strip reads {R.get('stripBothSecond')}"
+                   f" on screen and {R.get('stripSecondHidden')} hidden")
+    if R.get("stripBoth") == R.get("stripBothSecond"):
+        bad.append("both objects' strips are the same colours - chain A of one"
+                   " is chain A of the other again")
     if not R.get("pickerVisible"):
         bad.append("the object picker is not visible beside the sequence")
     if R.get("pickerOptions") != R["objects"]:
@@ -522,8 +588,9 @@ def main():
         bad.append("the GPU tube picture is not the CPU one")
     if R["gpuInk"] <= 0:
         bad.append("the GPU path drew nothing")
-    if abs(R["gpuInk"] - R["bothInk"]) > 0.15 * R["bothInk"]:
-        bad.append("the GPU picture is not the CPU one")
+    if abs(R["gpuInk"] - R.get("cpuBeforeGpu", 1)) > 0.05 * R.get("cpuBeforeGpu", 1):
+        bad.append(f"the GPU picture ({R['gpuInk']} ink) is not the CPU one"
+                   f" ({R.get('cpuBeforeGpu')})")
     for m in bad:
         print("FAIL:", m)
     sys.exit(1 if bad else 0)

@@ -6804,30 +6804,32 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Null otherwise, and then the key is the plain id - see
             // chainColorKeyAt.
             {
-                // ONLY FOR AN OBJECT MERGE, never for the overlay. Overlay puts
-                // every frame of ONE object in the array, and its chain A is
-                // the same chain A in every frame - keyed per source it would
-                // come out a different colour in each, which is not what the
-                // overlay has ever looked like. The two merges are exclusive,
-                // so asking sourceGroups here would answer with the frames.
+                // KEYED BY OBJECT NAME once more than one object is loaded, so
+                // an object's colours do not move when another is switched on
+                // or off. Never for the overlay: it puts every frame of ONE
+                // object in the array, and chain A is the same chain A in all
+                // of them - keyed per frame it would come out a different
+                // colour in each, which the overlay has never looked like.
                 const ms = this.multiState;
+                const loaded = Object.keys(this.objectsData || {});
                 const grp = (ms && ms.enabled) ? this.sourceGroups() : null;
-                this._chainColorKeys = grp
-                    ? this.chains.map((c, i) => grp[i] + '|' + (c || 'A')) : null;
+                const nameOf = (i) => {
+                    if (grp && ms.sourceNames) {
+                        const s = grp[i];
+                        if (s >= 0 && s < ms.sourceNames.length) return ms.sourceNames[s];
+                    }
+                    return this.currentObjectName;
+                };
+                this._chainColorKeys = (loaded.length > 1)
+                    ? this.chains.map((c, i) => nameOf(i) + '|' + (c || 'A'))
+                    : null;
             }
             if (this.chains.length > 0) {
-                // Unique keys in a consistent order: sorted for one object, and
-                // source by source for a merge, so an object's chains stay
-                // together in the palette instead of interleaving with the
-                // other object's.
-                const sortedUniqueChains = this._chainColorKeys
-                    ? [...new Set(this._chainColorKeys)]
-                    : [...uniqueChains].sort();
-                for (const chainId of sortedUniqueChains) {
-                    if (chainId && !this.chainIndexMap.has(chainId)) {
-                        this.chainIndexMap.set(chainId, this.chainIndexMap.size);
-                    }
-                }
+                // Every chain of every LOADED object, in load order - see
+                // _buildChainIndexMap. Not just the drawn ones, or an object's
+                // colours would move as its neighbours came and went.
+                this._buildChainIndexMap();
+                const sortedUniqueChains = [...this.chainIndexMap.keys()];
 
                 // WHICH CHAINS ARE LIGAND-ONLY: one pass over the positions,
                 // not one pass PER CHAIN.
@@ -8964,13 +8966,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     color = DEFAULT_GREY;
                 }
             } else if (effectiveColorMode === 'object') {
-                // One colour per source, from the chain palette. A ligand is
-                // grey everywhere else; here it belongs to an object like
-                // everything else does, and greying it would hide which.
-                const g = this.sourceGroups();
-                const src = g ? g[atomIndex] : 0;
+                // One colour per object, from the chain palette, chosen by LOAD
+                // ORDER - not by position in the merge, which changes whenever
+                // something is switched on or off and would repaint the objects
+                // that stayed. A ligand is grey everywhere else; here it
+                // belongs to an object like everything else does, and greying
+                // it would hide which.
+                const owner = this.ownerOf(atomIndex);
+                const loaded = Object.keys(this.objectsData || {});
+                const at = Math.max(0, loaded.indexOf(
+                    owner ? owner.name : this.currentObjectName));
                 const colorArray = this.colorblindMode ? chainColorsColorblind : chainColors;
-                const at = (typeof src === 'number' && src >= 0) ? src : 0;
                 color = hexToRgb(colorArray[at % colorArray.length]);
             } else if (effectiveColorMode === 'chain') {
                 // by SOURCE and chain: both objects have a chain A
@@ -10642,15 +10648,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          *
          * Chain ids are only unique inside a file: put two structures on screen
          * and both have a chain A, which under the chain scheme comes out the
-         * same colour for both - so a dimer beside a dimer reads as one
-         * four-chain thing. The colour key carries the source with the id, so
-         * every (object, chain) gets its own palette slot in the order the
-         * objects were merged, which is what a single file with that many
-         * chains would have got.
+         * same colour for both - a dimer beside a dimer reading as one
+         * four-chain thing. So the key carries the OBJECT with the id.
          *
-         * The SELECTION still keys on the plain id: `this.chains` is what the
-         * panel, the sequence strip and the visibility mask speak, and those
-         * belong to the current object.
+         * BY NAME, NOT BY POSITION IN THE MERGE. Keyed by which source it
+         * happened to be, an object's colours changed every time something else
+         * was switched on or off - it is source 0 alone and source 1 beside
+         * another, and those are different palette slots. Reported as a clash
+         * in both viewers, and it was: the same molecule, two colours, decided
+         * by what else was on screen.
+         *
+         * Plain chain ids while only ONE object is loaded, which is every
+         * single-structure session and leaves those colours exactly as they
+         * have always been.
+         *
+         * The SELECTION still keys on the plain id everywhere: `this.chains` is
+         * what the panel, the sequence strip and the visibility mask speak.
          */
         chainColorKeyAt(i) {
             if (!this._chainColorKeys) return this.chains[i] || 'A';
@@ -10659,10 +10672,47 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         /** The same key, for a chain of a named object rather than a position. */
         chainColorKeyFor(chainId, objectName) {
-            const ms = this.multiState;
-            if (!ms || !ms.enabled || !ms.sourceNames) return chainId;
-            const s = ms.sourceNames.indexOf(objectName || this.currentObjectName);
-            return (s < 0) ? chainId : (s + '|' + chainId);
+            const names = Object.keys(this.objectsData || {});
+            if (names.length < 2) return chainId;
+            const name = objectName || this.currentObjectName;
+            return name ? (name + '|' + chainId) : chainId;
+        }
+
+        /**
+         * A PALETTE SLOT FOR EVERY CHAIN OF EVERY LOADED OBJECT, in load order,
+         * whether or not it is on screen.
+         *
+         * Built over what is LOADED rather than what is drawn, for two reasons:
+         * an object's colours must not move when its neighbour is switched off,
+         * and the sequence strip asks for the colours of the object it is
+         * showing, which may be hidden.
+         *
+         * One object gets 0..n-1 and the next carries on from there, which is
+         * what a single file with all those chains would have got.
+         */
+        _buildChainIndexMap() {
+            const all = this.objectsData || {};
+            const names = Object.keys(all);
+            const many = names.length > 1;
+            const map = new Map();
+            let slot = 0;
+            const add = (key) => {
+                if (key && !map.has(key)) map.set(key, slot++);
+            };
+            for (const name of names) {
+                const fr = all[name] && all[name].frames && all[name].frames[0];
+                const chs = (fr && fr.chains) || [];
+                for (const c of [...new Set(chs)].sort()) {
+                    add(many ? (name + '|' + c) : c);
+                }
+            }
+            // ...and anything the LOADED array has that frame 0 did not - a
+            // later frame with an extra chain, a side chain appended under a
+            // chain of its own. Appended rather than renumbered, so nothing
+            // above moves.
+            const n = this.chains ? this.chains.length : 0;
+            for (let i = 0; i < n; i++) add(this.chainColorKeyAt(i));
+            this.chainIndexMap = map;
         }
 
         /**

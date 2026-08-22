@@ -72,7 +72,7 @@ for (const name of ['selectionBandFor']) {
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','_autoColorFor','chainColorKeyAt','chainColorKeyFor','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_editOneObject','addObject',];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','_autoColorFor','chainColorKeyAt','chainColorKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_editOneObject','addObject',];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -6676,6 +6676,7 @@ t('a merged view gives each object a colour of its own', () => {
     const C3 = new Function('resolveColorHierarchy', 'chainColors',
         'chainColorsColorblind', 'DEFAULT_GREY', 'getPlddtColor', 'getPlddtAFColor',
         'return class {' + grab3('getAtomColor') + grab3('sourceGroups')
+        + grab3('ownerOf') + grab3('sourceGroups')
         + ' _getEffectiveColorMode(){ return "object"; }'
         + ' _sidechainColorOf(){ return null; }'
         + ' _colorPositionFor(i){ return i; }'
@@ -6687,9 +6688,11 @@ t('a merged view gives each object a colour of its own', () => {
     const v = new C3();
     v.coords = new Array(4).fill(0);
     v.chainColorKeyAt = (i) => 'A';
-    v.objectsData = {}; v.currentObjectName = 'A';
+    v.objectsData = { A: {}, B: {} };
+    v.currentObjectName = 'A';
     v.overlayState = { enabled: false, frameIdMap: null };
-    v.multiState = { enabled: true, sourceIdMap: [0, 0, 1, 1] };
+    v.multiState = { enabled: true, sourceIdMap: [0, 0, 1, 1],
+        sourceNames: ['A', 'B'], sourceOffsets: [0, 2] };
     v.positionTypes = ['P', 'P', 'P', 'P'];
     v.chains = ['A', 'A', 'A', 'A'];
     v.plddts = [50, 50, 50, 50];
@@ -6875,19 +6878,52 @@ t('the same chain id in two objects is not the same colour', () => {
     const v = new Cls();
     v.coords = new Array(4).fill(0);
     v.chains = ['A', 'A', 'A', 'A'];
+    v.objectsData = { one: {}, two: {} };
+    v.currentObjectName = 'one';
     v.overlayState = { enabled: false, frameIdMap: null };
     v.multiState = { enabled: true, sourceIdMap: [0, 0, 1, 1],
-        sourceNames: ['A', 'B'], sourceOffsets: [0, 2] };
-    v._chainColorKeys = v.chains.map((c, i) => v.multiState.sourceIdMap[i] + '|' + c);
+        sourceNames: ['one', 'two'], sourceOffsets: [0, 2] };
+    v._chainColorKeys = ['one|A', 'one|A', 'two|A', 'two|A'];
     if (v.chainColorKeyAt(0) === v.chainColorKeyAt(3)) {
         throw new Error('both objects\' chain A share a colour key');
     }
-    eq(v.chainColorKeyFor('A', 'B'), '1|A', 'and a chain can be keyed by name');
-    // with nothing merged the key IS the chain id, so nothing changes today
-    v.multiState.enabled = false;
+    // BY NAME, not by position in the merge: an object is source 0 alone and
+    // source 1 beside another, and keying on that moved its colours every time
+    // something else was switched on or off.
+    eq(v.chainColorKeyFor('A', 'two'), 'two|A', 'keyed by the object it belongs to');
+    eq(v.chainColorKeyFor('A', 'two'), v.chainColorKeyAt(2),
+        'and the same key a position gives');
+    // with only one object loaded the key IS the chain id, so every
+    // single-structure session keeps the colours it has always had
+    v.objectsData = { one: {} };
     v._chainColorKeys = null;
     eq(v.chainColorKeyAt(0), 'A', 'a lone object keys by chain alone');
-    eq(v.chainColorKeyFor('A', 'B'), 'A', 'and so does the lookup');
+    eq(v.chainColorKeyFor('A', 'one'), 'A', 'and so does the lookup');
+});
+
+// ...AND THE SLOTS COVER EVERY LOADED OBJECT, drawn or not: an object's
+// colours must not move when its neighbour is switched off, and the sequence
+// strip asks for the colours of the object it is showing, which may be hidden.
+t('a chain keeps its colour when other objects come and go', () => {
+    const v = new Cls();
+    v.objectsData = {
+        one: { frames: [{ chains: ['A', 'A', 'B'] }] },
+        two: { frames: [{ chains: ['A'] }] },
+    };
+    v.currentObjectName = 'one';
+    v.chains = [];
+    v._chainColorKeys = null;
+    v._buildChainIndexMap();
+    const before = new Map(v.chainIndexMap);
+    eq(before.get('one|A'), 0, "the first object's chains come first");
+    eq(before.get('one|B'), 1, 'in order');
+    eq(before.get('two|A'), 2, "and the next object carries on where it left off");
+    // ...whatever is on screen
+    v.multiState = { enabled: true, sourceNames: ['two'], sourceOffsets: [0],
+        sourceIdMap: [0] };
+    v._buildChainIndexMap();
+    eq(v.chainIndexMap.get('two|A'), 2,
+        'the second object kept its slot with the first one hidden');
 });
 
 // STRUCTURAL EDITS RUN ON ONE OBJECT. Copy, Cut and Delete rewrite an object's
@@ -6971,10 +7007,13 @@ t('nothing in the app reloads a single frame behind the merge\'s back', () => {
 // what the overlay has ever looked like.
 t('the overlay does not get one chain colour per frame', () => {
     const src5 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
-    const at = src5.indexOf('this._chainColorKeys = grp');
+    const at = src5.indexOf('this._chainColorKeys = (loaded.length > 1)');
     if (at < 0) throw new Error('the chain colour keys are gone');
-    const before = src5.slice(at - 500, at);
-    if (!/multiState[\s\S]*enabled/.test(before)) {
+    const around = src5.slice(at - 700, at + 200);
+    // the name comes from the MERGE's sources, and the overlay is not one of
+    // them - its frames all belong to the same object, and keying per frame
+    // would colour one chain differently in every frame
+    if (!/ms && ms\.enabled\) \? this\.sourceGroups\(\) : null/.test(around)) {
         throw new Error('the chain colour key is built for any merge, so the'
             + ' overlay would colour one chain differently in every frame');
     }
