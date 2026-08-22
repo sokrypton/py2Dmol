@@ -4058,8 +4058,15 @@ t('the save panel can still record a trajectory', () => {
         throw new Error('the rotation recorder cannot play a trajectory');
     }
     // with nothing recordable the row SAYS so rather than offering a dead button
-    if (!/Turn on Rotate or Draw, or load frames/.test(body)) {
+    // ...and it says it in ONE LINE: the settings area is a grid of ~90px
+    // cells, so a sentence dropped into it took a cell and wrapped inside it,
+    // three words to a line.
+    if (!/Needs Rotate, Draw or frames/.test(body)) {
         throw new Error('an empty video row says nothing');
+    }
+    if (!/note\.style\.gridColumn = '1 \/ -1'/.test(body)) {
+        throw new Error('the empty-row line does not span the row, so it wraps'
+            + ' inside one cell');
     }
     // ...and the buttons live ON the video row, not on one of their own: a row
     // called Record under a row called Video is a second name for one subject,

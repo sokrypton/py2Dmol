@@ -12048,8 +12048,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (!formats.length) {
                 recRow.appendChild(el('span', CAP, 'No video format available'));
             } else if (!sources.length) {
-                recRow.appendChild(el('span', CAP,
-                    'Turn on Rotate or Draw, or load frames'));
+                // ONE LINE. The settings area is a grid of ~90px cells, so a
+                // sentence dropped into it took a cell and wrapped inside it,
+                // three words to a line. This spans the whole row and says the
+                // same thing in half the words.
+                // Spanning, but not nowrap: 204px of text fits the standalone
+                // page's row on one line and cannot fit the embedded viewer's
+                // 144px one, where forcing it would push it out of the panel
+                // rather than onto a second line.
+                const note = el('span', CAP, 'Needs Rotate, Draw or frames');
+                note.style.gridColumn = '1 / -1';
+                recRow.appendChild(note);
             } else {
                 // ONE BUTTON, AND A MENU WHERE THERE IS A CHOICE. A row of
                 // buttons reading "Rotate", "Frames", "Draw+Rotate" is a row of
