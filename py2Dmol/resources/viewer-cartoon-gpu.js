@@ -4028,6 +4028,10 @@ function signatureOf(r, w, h, colors) {
         // whatever is in it. By identity, like the plates: setElementsFor
         // assigns a new Set every time.
         o && o.elements ? 'e' + idOf(o.elements) + ':' + o.elements.size : 'eall',
+        // THE NUCLEIC TRACE SMOOTHING IS GEOMETRY: it moves the rails, the
+        // plates and the rungs together (see smoothNucleicTrace), so switching
+        // it rebuilds rather than repaints.
+        r.naSmooth === false ? 'naraw' : 'nasmooth',
         // A HIDDEN BACKBONE IS GEOMETRY THAT IS NOT THERE. The 2D pass drops
         // those prims while it builds, and the capture takes what it builds -
         // so this only has to make the capture happen again. By identity:

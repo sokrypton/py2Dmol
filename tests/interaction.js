@@ -1844,6 +1844,58 @@ t('a clip cuts the ink with the fills, and double-click still takes the chain', 
     }
 });
 
+t('the nucleic trace is smoothed, and everything nucleic reads the same trace', () => {
+    // A C4' TRACE IS NOT A CURVE. The atom sits one bond out from the base and
+    // the sugar pucker swings it about the glycosidic axis, so everything the
+    // drawing infers from the local screw inherits the wobble. Measured on
+    // 1BNA, the angle between consecutive predicted base normals - about 12
+    // degrees on real stacked bases:
+    //
+    //     raw C4'             46.2 +/- 55.2   (the spread IS the wave)
+    //     smoothed (this)     12.0 +/-  5.5
+    //     a C1' trace         28.4 +/- 16.7
+    //     a P trace           worst of the three off an ideal helix
+    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    if (!/function smoothNucleicTrace\(/.test(cart)) {
+        throw new Error('the nucleic trace is drawn raw again');
+    }
+    // TAUBIN, NOT A PLAIN AVERAGE: averaging shrinks a curve - two Laplacian
+    // passes pulled a duplex in 6% and moved every point 1.18 A, which cost a
+    // tenth of the ribbon's ink and rounded off a tRNA's turns.
+    const steps = cart.match(/const NA_SMOOTH_STEPS = \[([^\]]+)\]/);
+    if (!steps) throw new Error('no smoothing schedule');
+    const seq = steps[1].split(',').map((x) => Number(x.trim()));
+    if (!(seq.length >= 2 && seq.some((x) => x > 0) && seq.some((x) => x < 0))) {
+        throw new Error('the schedule is not a shrink-then-unshrink pair: ' + steps[1]);
+    }
+    if (Math.abs(seq.reduce((a, b) => a + b, 0)) > 0.2) {
+        throw new Error('the passes do not cancel, so the trace shrinks');
+    }
+    // ONE ARRAY FOR EVERYTHING NUCLEIC, or the plates are left behind by their
+    // own rail - which is why the strand-flattening pass is protein-only.
+    for (const use of ['const baseFramesRot = hasNA \\? predictBaseFrames\\(\\s*\\n\\s*\\(i\\) => naPos\\[i\\]',
+        'let basePos = naPos;', 'const atRaw = \\(i\\) => naPos\\[i\\];',
+        'const u = naPos\\[k\\], v = naPos\\[q\\];']) {
+        if (!new RegExp(use).test(cart)) {
+            throw new Error('something nucleic still reads the raw trace: ' + use);
+        }
+    }
+    // ...and the base ATOMS ride along, or the sugar detaches from the ribbon
+    // by the distance the trace moved
+    if (!/out\[idx\] = \{ x: p\.x \+ \(d\.x - r\.x\)/.test(cart)) {
+        throw new Error('appended base atoms do not follow their trace');
+    }
+    // ...and it is switchable, for the next person comparing
+    if (!/renderer\.naSmooth !== false/.test(cart)) {
+        throw new Error('there is no way to turn the smoothing off');
+    }
+    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    if (!/naSmooth === false \? 'naraw' : 'nasmooth'/.test(gpu)) {
+        throw new Error('the GPU mesh signature ignores the smoothing, so'
+            + ' switching it would repaint a mesh built the other way');
+    }
+});
+
 t('hiding a base rebuilds the GPU mesh, because a plate is geometry', () => {
     // A base plate is built from the ribbon frame, not from a position, so
     // hiding one moves NOTHING else the signature was watching - not the

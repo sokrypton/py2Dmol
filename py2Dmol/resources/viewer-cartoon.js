@@ -938,6 +938,97 @@
      * @param isPur (i) -> is this a purine (sets the centroid distance)
      * @param isDna (i) -> DNA rather than RNA (selects the table plane)
      */
+    // ---- NUCLEIC TRACE SMOOTHING ------------------------------------------
+    //
+    // A C4' trace is not a smooth curve. The atom sits one bond out from the
+    // base and the sugar pucker swings it about the glycosidic axis, so
+    // consecutive C4' positions alternate in and out - and everything the
+    // drawing infers from the LOCAL SCREW of that trace inherits the wobble.
+    // Measured on 1BNA and 355D, the angle between consecutive predicted base
+    // normals (~12 degrees on real stacked bases):
+    //
+    //     raw C4'              46.2 deg +/- 55.2      (the spread is the wave)
+    //     smoothed, 0.5 x2     11.5 deg +/-  3.4
+    //     C1' trace instead    28.4 deg +/- 16.7
+    //
+    // So the fix is not a different atom - a C1' trace is steadier here but
+    // takes 9.3 A steps in folded RNA, and a P trace is the worst of the three
+    // (2.0-2.7 A off an ideal helix against C4's 1.4-2.0) - it is to stop
+    // reading a jagged path as if it were a curve.
+    //
+    // ONE ARRAY FOR EVERYTHING NUCLEIC. The smoothed positions feed the ribbon
+    // path, the base frames, the rungs and the appended base atoms alike. The
+    // sheet-flattening pass below is protein-only precisely because it moves
+    // the trace and nothing else - plates read the rotated array directly and
+    // would be left behind - so this moves them together instead.
+    // TAUBIN, NOT A PLAIN AVERAGE. Averaging a curve shrinks it: two Laplacian
+    // passes pull a duplex in by 5-6% and move every point 1.18 A, which showed
+    // up as the ribbon losing a tenth of its ink and the sharp turns of a tRNA
+    // rounding off. Taubin alternates a positive pass with a slightly larger
+    // negative one, which removes the high-frequency wobble and puts the scale
+    // back. Measured on 1BNA, base-normal turn per step and what it cost:
+    //
+    //     raw                46.2 deg +/- 55.2   spread 100%   moved 0.00 A
+    //     laplacian 0.5 x2   11.5 deg +/-  3.4   spread  94%   moved 1.18 A
+    //     taubin  x2 (this)  12.0 deg +/-  5.5   spread 100%   moved 0.30 A
+    //
+    // 0.6/-0.62 was tried and is unstable - it blew one rail of 1BNA back out
+    // to 41 +/- 61 - so the pair is left at the textbook ratio.
+    const NA_SMOOTH_STEPS = [0.5, -0.53, 0.5, -0.53];
+
+    /**
+     * @param {Array} rotated - view-rotated positions, one per position
+     * @param {number} n
+     * @param {Array<string>} types - position types; 'D' and 'R' are smoothed
+     * @param {Array<Array<number>>} runs - [lo, hi] backbone runs
+     * @param {Map|null} scMap - side-chain map, so appended base atoms follow
+     * @returns {Array} the same array when there is nothing to smooth
+     */
+    function smoothNucleicTrace(rotated, n, types, runs, scMap) {
+        if (!types) return rotated;
+        let any = false;
+        for (let i = 0; i < n; i++) {
+            if (types[i] === 'D' || types[i] === 'R') { any = true; break; }
+        }
+        if (!any) return rotated;
+        const out = new Array(n);
+        for (let i = 0; i < n; i++) out[i] = rotated[i];
+        const nuc = (i) => i >= 0 && i < n && (types[i] === 'D' || types[i] === 'R');
+        for (const lam of NA_SMOOTH_STEPS) {
+            const src = out.slice();
+            for (const [lo, hi] of runs) {
+                // ENDS PINNED, like the strand pass: the ribbon still meets
+                // whatever it joins exactly where it did, and a terminal base
+                // does not walk away from its own phosphate.
+                for (let i = lo + 1; i < hi; i++) {
+                    if (!nuc(i) || !nuc(i - 1) || !nuc(i + 1)) continue;
+                    const a = src[i - 1]; const b = src[i]; const c = src[i + 1];
+                    out[i] = {
+                        x: b.x + lam * ((a.x + c.x) / 2 - b.x),
+                        y: b.y + lam * ((a.y + c.y) / 2 - b.y),
+                        z: b.z + lam * ((a.z + c.z) / 2 - b.z),
+                    };
+                }
+            }
+        }
+        // ...AND THE ATOMS RIDE ALONG. A base drawn as real atoms is appended
+        // positions hanging off its trace atom; leaving them behind would
+        // detach the sugar from the ribbon by the distance the trace moved,
+        // about 1 A. Each one takes its owner's displacement.
+        if (scMap && scMap.size) {
+            for (const [idx, e] of scMap) {
+                if (!e || idx >= n) continue;
+                const o = e.owner;
+                if (!nuc(o) || out[o] === rotated[o]) continue;
+                const d = out[o]; const r = rotated[o]; const p = rotated[idx];
+                if (!p) continue;
+                out[idx] = { x: p.x + (d.x - r.x), y: p.y + (d.y - r.y),
+                    z: p.z + (d.z - r.z) };
+            }
+        }
+        return out;
+    }
+
     function predictBaseFrames(at, n, want, isPur, isDna, out) {
         const bf = out || new Float64Array(n * 6);
         // The window needs i-1 .. i+2, so the two residues at each end of a
@@ -3540,8 +3631,15 @@
         for (let i = 0; i < n; i++) {
             if (isNucleotide(i)) { hasNA = true; break; }
         }
+        // THE SMOOTHED TRACE IS WHAT EVERYTHING NUCLEIC READS - see
+        // smoothNucleicTrace. Identical to `rotated` for a structure with no
+        // nucleotides, and when the switch is off.
+        const naSmoothOn = hasNA && renderer.naSmooth !== false;
+        const naPos = naSmoothOn
+            ? smoothNucleicTrace(rotated, n, positionTypes, runs, renderer.sidechainMap)
+            : rotated;
         const baseFramesRot = hasNA ? predictBaseFrames(
-            (i) => rotated[i], n, isNucleotide, isPurine, isDna) : null;
+            (i) => naPos[i], n, isNucleotide, isPurine, isDna) : null;
 
         // --- base pairing (nucleic only), cached like sec: both depend on the
         // unrotated coords, so neither changes as the view moves ---
@@ -4018,7 +4116,9 @@
         const sheetProject = Math.max(0, Math.min(1,
             renderer.cartoonSheetProject !== undefined
                 ? renderer.cartoonSheetProject : SHEET_PROJECT));
-        let basePos = rotated;
+        // ...and the ribbon path starts from the same array, so the rails and
+        // the plates are drawn through one set of positions.
+        let basePos = naPos;
         if (sheet && sheetProject > 0.001) {
             basePos = new Array(n);
             const fr3 = [0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -4210,8 +4310,10 @@
         if (renderer._posProbe === null) renderer._posProbe = posArr;
         const at = (i) => posArr[i];
         // UNFLATTENED positions. The ribbon's face direction must come from
-        // these, never from the flattened ones - see sideOf.
-        const atRaw = (i) => rotated[i];
+        // these, never from the flattened ones - see sideOf. Nucleic smoothing
+        // is not flattening: it is the trace this drawing is OF, so it belongs
+        // in here too (naPos is `rotated` itself for anything not nucleic).
+        const atRaw = (i) => naPos[i];
 
         // Side vector for the ribbon face: curvature direction crossed with the
         // tangent, so the ribbon twists the way the backbone does.
@@ -4438,7 +4540,9 @@
                             if (k < 0 || k >= n) continue;
                             const q = pairOf[k];
                             if (q < 0 || q >= n) continue;
-                            const u = rotated[k], v = rotated[q];
+                            // the axis of the SMOOTHED duplex, since that is
+                            // the one being drawn
+                            const u = naPos[k], v = naPos[q];
                             pts.push([(u.x + v.x) / 2, (u.y + v.y) / 2, (u.z + v.z) / 2]);
                         }
                         if (pts.length < 2) return null;
@@ -4480,8 +4584,11 @@
                         const j = pairOf[i];
                         const ax = j >= 0 && j < n ? naAxisAt(i) : null;
                         if (ax) {
-                            // hybrid: radial from C4' to the axis line
-                            const q = rotated[j], pI = rotated[i];
+                            // hybrid: radial from the trace to the axis line,
+                            // read off the SMOOTHED trace like everything else
+                            // nucleic - a rung pointing at where the rail used
+                            // to be is the wobble seen end-on
+                            const q = naPos[j], pI = naPos[i];
                             let rx = (pI.x + q.x) / 2 - pI.x;
                             let ry = (pI.y + q.y) / 2 - pI.y;
                             let rz = (pI.z + q.z) / 2 - pI.z;
@@ -4506,7 +4613,7 @@
                         }
                         const a = wrapIdx(i - 1), b = wrapIdx(i + 1);
                         if (a === b) return null;
-                        const pA = rotated[a], pB = rotated[i], pC = rotated[b];
+                        const pA = naPos[a], pB = naPos[i], pC = naPos[b];
                         let cx = pA.x - 2 * pB.x + pC.x;
                         let cy = pA.y - 2 * pB.y + pC.y;
                         let cz = pA.z - 2 * pB.z + pC.z;
