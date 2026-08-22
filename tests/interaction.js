@@ -72,7 +72,7 @@ for (const name of ['selectionBandFor']) {
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','_autoColorFor','chainColorKeyAt','chainColorKeyFor','selectionForObject','_maskForObject','_editOneObject','addObject',];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','_autoColorFor','chainColorKeyAt','chainColorKeyFor','selectionForObject','_maskForObject','_saveVisibilityToObjects','_editOneObject','addObject',];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -6527,7 +6527,18 @@ function shownViewer() {
     v.clearResidueSelection = function () {
         this.selectionCleared = true; this.residueSelection = null;
     };
-    v.setVisibility = function (patch) { this.mask = patch; };
+    // the real setVisibility applies the patch and then files it under the
+    // object(s) it describes - the second half is what the rebuild reads back
+    v.setVisibility = function (patch) {
+        this.mask = patch;
+        this.visibilityModel = {
+            positions: new Set(patch.positions || []),
+            chains: new Set(patch.chains || []),
+            paeBoxes: [],
+            visibilityMode: patch.visibilityMode || 'default'
+        };
+        this._saveVisibilityToObjects();
+    };
     v.overlayState = { enabled: false, frameIdMap: null };
     v.viewerState = { zoom: 1, center: null, extent: null };
     // TWO OBJECTS ARE LOADED, so both are on screen and merged - that is the
@@ -6996,7 +7007,8 @@ t('rebuilding the merge keeps what was hidden and what was selected', () => {
     v.currentFrame = 1;
     // hide the last position and select another, both in merged indices
     v.visibilityModel = { positions: new Set([0, 1, 2, 3]), chains: new Set(),
-        visibilityMode: 'explicit' };
+        paeBoxes: [], visibilityMode: 'explicit' };
+    v._saveVisibilityToObjects();
     v.residueSelection = new Set([4]);
     v.setVisibility = function (patch) { this.mask = patch; };
 
@@ -7024,7 +7036,9 @@ t('a hidden residue of the second object is not read as the first object\'s', ()
     v.currentObjectName = 'B';
     v.currentFrame = 1;
     // B is positions 3 and 4; hide 4, so the live mask is {0,1,2,3}
-    v.visibilityModel = { positions: new Set([0, 1, 2, 3]), chains: new Set() };
+    v.visibilityModel = { positions: new Set([0, 1, 2, 3]), chains: new Set(),
+        paeBoxes: [], visibilityMode: 'explicit' };
+    v._saveVisibilityToObjects();
     v._applyShownObjects();
     // Read as B's OWN numbering, the live mask {0,1,2,3} says B's residues 0
     // and 1 are both visible - so the position the user hid comes back.
@@ -7125,7 +7139,8 @@ t('Hide all survives a rebuild - an empty mask is an answer', () => {
     v.currentFrame = 1;
     // what Hide all leaves: a mask that names nothing, in explicit mode
     v.visibilityModel = { positions: new Set(), chains: new Set(),
-        visibilityMode: 'explicit' };
+        paeBoxes: [], visibilityMode: 'explicit' };
+    v._saveVisibilityToObjects();
     v._applyShownObjects();
     eq(v.mask.positions.size, 0,
         'everything came back on screen - an empty mask was read as "nobody has'
@@ -7164,10 +7179,45 @@ t('switching the edited object leaves a merged picture alone', () => {
     // ...and the mask is not FILED under one object either: it covers
     // everything drawn, so saving it whole would write another object's hidden
     // residues into this one's record
-    if (!/_maskForObject\(this\.currentObjectName\)/.test(body)) {
+    if (/visibilityState = \{[\s\S]{0,200}new Set\(this\.visibilityModel\.positions\)/.test(body)) {
         throw new Error('the whole merged mask is saved onto the object being'
             + ' switched away from');
     }
+    if (!/_saveVisibilityToObjects\(\)/.test(body)) {
+        throw new Error('the switch no longer files the mask per object');
+    }
+});
+
+// THE MASK IS FILED UNDER THE OBJECT IT DESCRIBES, and with several merged it
+// describes all of them. Saved whole under whichever object happens to be
+// current, it writes another object's hidden residues into this one's record -
+// and on a plain load of two structures the SECOND one came up invisible with
+// its eye showing open, because the first object's mask had been filed under
+// it and read back as its own.
+t('each object is filed with its own share of the mask', () => {
+    const v = shownViewer();
+    v.currentObjectName = 'B';
+    v.currentFrame = 1;
+    // everything visible except B's second position
+    v.visibilityModel = { positions: new Set([0, 1, 2, 3]), chains: new Set(),
+        paeBoxes: [], visibilityMode: 'explicit' };
+    v._saveVisibilityToObjects();
+    eq(Array.from(v.objectsData.A.visibilityState.positions).join(','), '0,1,2',
+        "A's three positions, in A's numbering");
+    eq(Array.from(v.objectsData.B.visibilityState.positions).join(','), '0',
+        "B's first only, in B's numbering - not the merged 3");
+});
+
+t('an object nobody has touched is drawn whole, an emptied one is not', () => {
+    const v = shownViewer();
+    // A: no record at all. B: a record that names nothing, explicitly.
+    delete v.objectsData.A.visibilityState;
+    v.objectsData.B.visibilityState = { positions: new Set(), chains: new Set(),
+        paeBoxes: [], visibilityMode: 'explicit' };
+    v.currentFrame = 1;
+    v._applyShownObjects();
+    eq(Array.from(v.mask.positions).sort((a, b) => a - b).join(','), '0,1,2',
+        'A entire and nothing of B');
 });
 
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');

@@ -58,6 +58,25 @@ window.addEventListener('load', () => {
       const names = Object.keys(r.objectsData);
       R.objects = names;
 
+      // A PLAIN LOAD, BEFORE ANY API CALL. This is how a user gets here -
+      // fetch one structure, fetch another - and it is where the second object
+      // came up invisible with its eye showing open: the first object's
+      // visibility mask had been filed under it and read back as its own.
+      R.plainDrawn = r.drawnObjects();
+      R.plainN = r.coords.length;
+      R.plainMulti = !!(r.multiState && r.multiState.enabled);
+      R.plainOffsetOfCurrent = r.sourceOffsetOf(r.currentObjectName);
+      {
+        const g0 = r.sourceGroups();
+        const per = {};
+        if (g0 && r.visiblePositions) {
+          for (const i of r.visiblePositions) per[g0[i]] = (per[g0[i]] || 0) + 1;
+        } else if (!r.visiblePositions) {
+          per.all = r.coords.length;
+        }
+        R.plainVisiblePerSource = per;
+      }
+
       r.setShownObjects([names[0]]);
       r.render('one');
       await new Promise((s) => setTimeout(s, 200));
@@ -368,6 +387,10 @@ def main():
             base64.b64decode(cpu.split(",", 1)[1]))
 
     print(f"objects: {R['objects']} on {R['renderer']}")
+    print(f"  plain load: drew {R.get('plainDrawn')}, {R.get('plainN')} positions,"
+          f" merge {R.get('plainMulti')}, visible per source"
+          f" {R.get('plainVisiblePerSource')}, strip object at offset"
+          f" {R.get('plainOffsetOfCurrent')}")
     print(f"  one:   {R['oneN']:6d} positions, {R['oneInk']:8d} ink")
     print(f"  both:  {R['bothN']:6d} positions, {R['bothInk']:8d} ink"
           f"  (merge {'on' if R['multi'] else 'OFF'}, offsets {R['offsets']})")
@@ -405,6 +428,17 @@ def main():
           + (f"  DECLINED: {R['gpuError']}" if R.get("gpuError") else ""))
 
     bad = []
+    if len(R.get("plainDrawn", [])) != 2:
+        bad.append(f"a plain load of two files drew {R.get('plainDrawn')}")
+    if not R.get("plainMulti"):
+        bad.append("a plain load of two files did not merge them")
+    per = R.get("plainVisiblePerSource") or {}
+    if len(per) != 2 or not all(v > 0 for v in per.values()):
+        bad.append(f"after a plain load the visible set covers {per}"
+                   " - an object is on screen only if its positions are visible")
+    if not R.get("plainOffsetOfCurrent"):
+        bad.append("the object the sequence strip shows is at offset 0 - its"
+                   " cells would read the first object's colours")
     if not R["multi"]:
         bad.append("the merge did not switch on")
     if R["mapLen"] != R["bothN"]:

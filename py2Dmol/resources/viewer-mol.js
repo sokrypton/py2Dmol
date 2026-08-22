@@ -1436,15 +1436,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
-            // Save selection state to current object whenever it changes
-            if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
-                this.objectsData[this.currentObjectName].visibilityState = {
-                    positions: new Set(this.visibilityModel.positions),
-                    chains: new Set(this.visibilityModel.chains),
-                    paeBoxes: this.visibilityModel.paeBoxes.map(box => ({ ...box })),
-                    visibilityMode: this.visibilityModel.visibilityMode
-                };
-            }
+            // Save selection state to the object it belongs to - or to each
+            // of them, when several are merged. See _saveVisibilityToObjects.
+            this._saveVisibilityToObjects();
 
             this._composeAndApplyMask(skip3DRender);
         }
@@ -2845,21 +2839,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Save current object's selection state and viewer state
             if (this.currentObjectName && this.currentObjectName !== newObjectName && this.objectsData[this.currentObjectName]) {
                 const obj = this.objectsData[this.currentObjectName];
-                if (!mergedMask) {
-                    obj.visibilityState = {
-                        positions: new Set(this.visibilityModel.positions),
-                        chains: new Set(this.visibilityModel.chains),
-                        paeBoxes: this.visibilityModel.paeBoxes.map(box => ({ ...box })),
-                        visibilityMode: this.visibilityModel.visibilityMode
-                    };
-                } else {
-                    obj.visibilityState = {
-                        positions: this._maskForObject(this.currentObjectName) || new Set(),
-                        chains: new Set(),
-                        paeBoxes: [],
-                        visibilityMode: this.visibilityModel.visibilityMode
-                    };
-                }
+                this._saveVisibilityToObjects();
                 obj.viewerState = {
                     rotation: this._deepCopyMatrix(this.viewerState.rotation),
                     zoom: this.viewerState.zoom,
@@ -2988,15 +2968,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.entropy = undefined;
             }
 
-            // Save the restored selection state (setVisibility would do this, but we're bypassing it)
-            if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
-                this.objectsData[this.currentObjectName].visibilityState = {
-                    positions: new Set(this.visibilityModel.positions),
-                    chains: new Set(this.visibilityModel.chains),
-                    paeBoxes: this.visibilityModel.paeBoxes.map(box => ({ ...box })),
-                    visibilityMode: this.visibilityModel.visibilityMode
-                };
-            }
+            // Save the restored selection state (setVisibility would do this,
+            // but we're bypassing it) - per object under a merge, where the
+            // live mask is not any one object's.
+            this._saveVisibilityToObjects();
 
             // Restore viewer state from new object (fallback to defaults if missing)
             const obj = this.objectsData[newObjectName];
@@ -10309,27 +10284,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
-            // WHAT IS ON SCREEN IS THE AUTHORITY ON WHAT IS HIDDEN.
-            //
-            // The live mask covers every drawn object, in merged indices, and
-            // the merge is rebuilt for reasons that are not a change of shown
-            // objects at all - a frame step, a side chain, a contact. Rebuilt
-            // from each object's SAVED state instead, everything hidden since
-            // the merge began comes back; read as if the live mask were the
-            // current object's own numbering, an object that is not the first
-            // one reads as entirely hidden.
-            const prior = new Map();
-            if (ms.enabled && ms.sourceNames) {
-                for (const nm of ms.sourceNames) prior.set(nm, this._maskForObject(nm));
-            } else if (this.currentObjectName && this.visibilityModel
-                && this.visibilityModel.positions) {
-                // ...and only when there IS a mask. An empty set here is
-                // authoritative - "nothing of this object is visible" - so
-                // manufacturing one out of a missing mask hides the object
-                // the moment a second one joins it.
-                prior.set(this.currentObjectName,
-                    new Set(this.visibilityModel.positions));
-            }
+            // WHAT EACH OBJECT HAD HIDDEN is read from its own record, which
+            // every visibility change keeps up to date in that object's own
+            // numbering - see _saveVisibilityToObjects. Snapshotting the LIVE
+            // mask here instead looked equivalent and was not: on a plain load
+            // the mask still describes the object that was on screen a moment
+            // ago while currentObjectName is already the new one, so the whole
+            // of the old object's mask was attributed to the new one and the
+            // old one vanished from the picture with its eye showing open.
             const sameSources = !!(ms.enabled && ms.sourceNames
                 && ms.sourceNames.length === names.length
                 && ms.sourceNames.every((n, k) => n === names[k]));
@@ -10368,7 +10330,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // the frame slider moved.
             if (!sameSources) this.clearResidueSelection();
             this._loadDataIntoRenderer(merged, true);
-            this._applyMergedVisibility(merged, skipRender, prior);
+            this._applyMergedVisibility(merged, skipRender);
         }
 
         /**
@@ -10431,7 +10393,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          *
          * An object nobody has hidden anything in contributes all of itself.
          */
-        _applyMergedVisibility(merged, skipRender = false, prior = null) {
+        _applyMergedVisibility(merged, skipRender = false) {
             const names = merged.sourceNames;
             const offsets = merged.sourceOffsets;
             const n = merged.coords.length;
@@ -10442,27 +10404,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const off = offsets[s];
                 const end = (s + 1 < offsets.length) ? offsets[s + 1] : n;
                 const name = names[s];
-                // What that object had on screen a moment ago, if it was on
-                // screen at all; otherwise what it was left with when it was
-                // switched away from. `prior` is already in the object's own
-                // numbering - see _maskForObject - which the live mask is not.
-                const was = prior ? prior.get(name) : undefined;
-                if (was instanceof Set) {
-                    // AUTHORITATIVE, EVEN WHEN EMPTY: Hide all leaves an empty
-                    // mask, and reading that as "nobody has said" would put the
-                    // whole object back on screen at the next rebuild.
-                    for (const p of was) {
-                        const at = p + off;
-                        if (at >= off && at < end) vis.add(at);
-                    }
-                    continue;
-                }
-                const st = (name === this.currentObjectName)
-                    ? this.visibilityModel
-                    : (this.objectsData[name] && this.objectsData[name].visibilityState);
+                // That object's own record, in its own numbering.
+                const st = this.objectsData[name] && this.objectsData[name].visibilityState;
                 const hasPos = st && st.positions && st.positions.size > 0;
                 const hasChains = st && st.chains && st.chains.size > 0;
-                if (!hasPos && !hasChains) {
+                // NOBODY HAS ASKED, versus NOTHING IS VISIBLE. An object with
+                // no record, or an untouched one, contributes all of itself;
+                // an EMPTY record in explicit mode is Hide all, and putting
+                // that object back on screen at the next rebuild would undo it.
+                const untouched = !st || !st.positions
+                    || (!hasPos && !hasChains && st.visibilityMode !== 'explicit');
+                if (untouched) {
                     for (let i = off; i < end; i++) vis.add(i);
                     continue;
                 }
@@ -10507,6 +10459,52 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         _mergeWanted() {
             return this.drawnObjects().length > 1;
+        }
+
+        /**
+         * FILE THE LIVE MASK UNDER THE OBJECT OR OBJECTS IT DESCRIBES.
+         *
+         * Every visibility change is written through to the object, so that
+         * switching away and back finds it where it was left. With several
+         * objects merged the mask describes ALL of them, in merged indices -
+         * saved whole under whichever object happens to be current, it writes
+         * another object's hidden residues into this one's record, and reading
+         * it back hides most of the picture. Measured on a plain load of two
+         * structures: 348 positions visible out of 433, all of them the first
+         * object's, and the second invisible with its eye showing open.
+         *
+         * Each object gets its own share, in its own numbering.
+         */
+        _saveVisibilityToObjects() {
+            const vm = this.visibilityModel;
+            if (!vm) return;
+            const ms = this.multiState;
+            if (ms && ms.enabled && ms.sourceNames) {
+                for (const nm of ms.sourceNames) {
+                    const o = this.objectsData[nm];
+                    if (!o) continue;
+                    o.visibilityState = {
+                        positions: this._maskForObject(nm) || new Set(),
+                        // chain ids collide across objects, so the chain half
+                        // of a merged mask means nothing per object - it is
+                        // resolved into positions when the merge is built
+                        chains: new Set(),
+                        paeBoxes: (nm === this.currentObjectName)
+                            ? vm.paeBoxes.map((b) => ({ ...b }))
+                            : ((o.visibilityState && o.visibilityState.paeBoxes) || []),
+                        visibilityMode: vm.visibilityMode
+                    };
+                }
+                return;
+            }
+            if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
+                this.objectsData[this.currentObjectName].visibilityState = {
+                    positions: new Set(vm.positions),
+                    chains: new Set(vm.chains),
+                    paeBoxes: vm.paeBoxes.map((box) => ({ ...box })),
+                    visibilityMode: vm.visibilityMode
+                };
+            }
         }
 
         /**
