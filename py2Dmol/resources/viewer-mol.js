@@ -3592,6 +3592,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         clipSlabForSelection(set) {
             const base = this.clipSlabDefault();
+            this.clipAuto = null;
             const raw = set || (this.selectionInk ? this.selectionInk()
                 : this.residueSelection);
             const sel = this.framingPositions
@@ -3601,22 +3602,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const rc = this.rotatedCoords;
             const n = this.coords ? this.coords.length : 0;
             if (!rc || !n) return base;
-            // the centre, and then the furthest thing from it. Both off the
-            // ROTATED coordinates - a rotation does not change a distance, so
-            // the radius is the same number in any view, and the centre's
-            // depth is the one part that has to be this view's.
+            // The centre, and then the furthest thing from it. In MODEL space,
+            // where neither number depends on the view at all: a distance
+            // survives a rotation, and a centre that is remembered as
+            // coordinates can be re-projected at any angle. That is what makes
+            // the slab TRACK - see _refreshAutoClip.
+            const co = this.coords;
             let cx = 0; let cy = 0; let cz = 0; let m = 0;
             for (const i of sel) {
-                if (!(i >= 0 && i < n) || !rc[i]) continue;
-                cx += rc[i].x; cy += rc[i].y; cz += rc[i].z; m++;
+                if (!(i >= 0 && i < n) || !co[i]) continue;
+                cx += co[i].x; cy += co[i].y; cz += co[i].z; m++;
             }
             if (!m) return base;
             cx /= m; cy /= m; cz /= m;
             let r2 = 0;
             for (const i of sel) {
-                if (!(i >= 0 && i < n) || !rc[i]) continue;
-                const dx = rc[i].x - cx; const dy = rc[i].y - cy;
-                const dz = rc[i].z - cz;
+                if (!(i >= 0 && i < n) || !co[i]) continue;
+                const dx = co[i].x - cx; const dy = co[i].y - cy;
+                const dz = co[i].z - cz;
                 const d = dx * dx + dy * dy + dz * dz;
                 if (d > r2) r2 = d;
             }
@@ -3627,7 +3630,82 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // sits in, not so much that the cut stops being one.
             const pad = 1.5 + 0.5 * (this.lineWidth || 3);
             const half = Math.sqrt(r2) + pad;
-            return { near: cz + half, far: cz - half };
+            // REMEMBERED, so the slab can follow. Pressing Auto and then
+            // rotating used to leave the cut where the selection HAD been, and
+            // pressing it again gave a different answer at every angle - the
+            // depth of the thing had changed and the slab had not. Held as a
+            // point and a radius rather than as two planes, because that is
+            // the part of the answer that does not depend on the view.
+            this.clipAuto = { x: cx, y: cy, z: cz, half };
+            const view = this._autoClipDepth();
+            return (view === null) ? base : { near: view + half, far: view - half };
+        }
+
+        /**
+         * AUTO: fit the slab to the selection and keep it there.
+         *
+         * The one entry point, because the tracking has to survive the set:
+         * setClipSlab drops it (a knob dragged wins over a slab computed), and
+         * this is the one caller that means the opposite.
+         */
+        autoClip(set) {
+            const slab = this.clipSlabForSelection(set);
+            if (!slab) return null;
+            const keep = this.clipAuto;
+            this.setClipSlab(slab.near, slab.far);
+            this.clipAuto = keep;
+            return slab;
+        }
+
+        /**
+         * The remembered auto-clip centre's depth IN THIS VIEW, by the same two
+         * steps _rotateCoords applies to every position: the object's own
+         * best_view rotation, then the user's, about the view centre. One point
+         * rather than the whole array, so this is a handful of multiplies and
+         * can run every frame.
+         */
+        _autoClipDepth() {
+            const a = this.clipAuto;
+            if (!a) return null;
+            const object = this.objectsData
+                ? this.objectsData[this.currentObjectName] : null;
+            let x = a.x; let y = a.y; let z = a.z;
+            const oR = (object && object.rotation_matrix && object.center)
+                ? object.rotation_matrix : null;
+            if (oR) {
+                const oc = object.center;
+                const dx = x - oc[0]; const dy = y - oc[1]; const dz = z - oc[2];
+                x = oR[0][0] * dx + oR[0][1] * dy + oR[0][2] * dz + oc[0];
+                y = oR[1][0] * dx + oR[1][1] * dy + oR[1][2] * dz + oc[1];
+                z = oR[2][0] * dx + oR[2][1] * dy + oR[2][2] * dz + oc[2];
+            }
+            const c = this._computeViewCentre(object);
+            const m = this.viewerState.rotation;
+            if (!m) return null;
+            return m[2][0] * (x - c.x) + m[2][1] * (y - c.y) + m[2][2] * (z - c.z);
+        }
+
+        /**
+         * KEEP AN AUTO SLAB ON ITS SELECTION. Called once per frame, before
+         * anything reads the planes.
+         *
+         * A slab is camera space and the thing it was cut around is not, so a
+         * rotation moves one and not the other: the cut slid off the site, and
+         * pressing Auto again gave a different pair of planes at every angle
+         * because the depth of the selection had changed underneath it. The
+         * thickness never needed to change - a radius does not rotate - only
+         * where the slab sits, and that is one point re-projected.
+         *
+         * Dropped the moment the slab is set by hand (see setClipSlab): a knob
+         * dragged is an answer given, and it must not be overwritten on the
+         * next frame.
+         */
+        _refreshAutoClip() {
+            if (!this.clipAuto || this.clipNear === null) return;
+            const z = this._autoClipDepth();
+            if (z === null) return;
+            this.clipNear = z + this.clipAuto.half;
+            this.clipFar = z - this.clipAuto.half;
         }
 
         /**
@@ -3637,6 +3715,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * Pass nulls to clip nothing.
          */
         setClipSlab(near, far) {
+            // A SLAB SET BY HAND IS AN ANSWER GIVEN, and the next frame must
+            // not overwrite it: any explicit set drops the auto tracking. Auto
+            // itself goes through autoClip, which puts it back afterwards.
+            this.clipAuto = null;
             if (near === null || far === null) {
                 this.clipNear = null;
                 this.clipFar = null;
@@ -9486,6 +9568,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         render(reason = 'Unknown') {
+            // An auto slab follows its selection through a rotation; everything
+            // below reads the planes, so it is brought up to date first.
+            this._refreshAutoClip();
             if (this.currentFrame < 0) {
                 // Clear canvas if no frame is set
                 this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);

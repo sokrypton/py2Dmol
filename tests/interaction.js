@@ -48,6 +48,18 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_GAIN',
     if (!line) throw new Error('constant not found in viewer-mol.js: ' + name);
     eval('global.' + line.trim().replace('const ', ''));
 }
+// ...and Vec3, which some of them construct (a view centre with no object is
+// new Vec3(0, 0, 0)). Same reasoning as the constants: taken from the source
+// so the test scores the shipped class.
+{
+    const at = molSrc.indexOf('class Vec3 {');
+    if (at < 0) throw new Error('Vec3 not found in viewer-mol.js');
+    let d = 0; let k = molSrc.indexOf('{', at);
+    for (; k < molSrc.length; k++) {
+        if (molSrc[k] === '{') d++; else if (molSrc[k] === '}' && !--d) break;
+    }
+    eval('global.Vec3 = ' + molSrc.slice(at, k + 1).replace('class Vec3', 'class'));
+}
 // ...and the module-level FUNCTIONS they call, for the same reason: a lifted
 // method that reaches one of these gets a ReferenceError, which reads as ten
 // unrelated halo tests breaking at once.
@@ -60,7 +72,7 @@ for (const name of ['selectionBandFor']) {
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -1875,6 +1887,9 @@ t('Auto fits the slab to the selection, and uncuts without one', () => {
     v.lineWidth = 3;
     v.clipNear = 40; v.clipFar = -40;
     v.render = () => {};                  // setClipSlab repaints
+    // the auto slab re-projects its centre every frame, so it needs a view
+    v.viewerState = { rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], center: null };
+    v.objectsData = {}; v.currentObjectName = 'o';
     v.residueSelection = new Set([1, 2]);
     const slab = v.clipSlabForSelection();
     // the pad is half the line width to clear the drawn radius, and the rest
@@ -1922,12 +1937,54 @@ t('Auto fits the slab to the selection, and uncuts without one', () => {
     flat.lineWidth = 3;
     flat.clipNear = 40; flat.clipFar = -40;
     flat.render = () => {};
+    flat.viewerState = { rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], center: null };
+    flat.objectsData = {}; flat.currentObjectName = 'o';
     flat.residueSelection = new Set([0, 1]);
     const wide = flat.clipSlabForSelection();
     if (Math.abs((wide.near - wide.far) - 26) > 1e-6) {
         throw new Error(`a selection 20 A wide and flat to the screen got a slab`
             + ` ${(wide.near - wide.far).toFixed(1)} A thick - it will be cut in`
             + ' half the moment the model turns');
+    }
+    // AND IT STAYS ON THE SELECTION THROUGH A ROTATION. A slab is camera space
+    // and the site it was cut around is not, so turning the model moved one
+    // and not the other: the cut slid off, and pressing Auto again gave a
+    // different pair of planes at every angle because the depth of the thing
+    // had changed underneath it.
+    const spin = new Cls();
+    const pts = [[0, 0, 0], [12, 0, 0]];       // the second is off to the side
+    spin.coords = pts.map(([x, y, z]) => ({ x, y, z }));
+    spin.rotatedCoords = pts.map(([x, y, z]) => ({ x, y, z }));
+    spin._rotPending = false;
+    spin.lineWidth = 3;
+    spin.render = () => {};
+    spin.objectsData = {}; spin.currentObjectName = 'o';
+    spin.viewerState = { rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], center: null };
+    spin.residueSelection = new Set([1]);
+    const first = spin.autoClip();
+    // face on, the selected point is at z = 0, so the slab straddles zero
+    if (Math.abs((first.near + first.far) / 2) > 1e-6) {
+        throw new Error('the slab is not centred on the selection');
+    }
+    // ...now turn a quarter turn about y: the point swings to z = -12
+    spin.viewerState.rotation = [[0, 0, 1], [0, 1, 0], [-1, 0, 0]];
+    spin._refreshAutoClip();
+    if (Math.abs((spin.clipNear + spin.clipFar) / 2 + 12) > 1e-6) {
+        throw new Error('after a quarter turn the slab sits at '
+            + ((spin.clipNear + spin.clipFar) / 2).toFixed(1) + ', not on the'
+            + ' selection at -12 - the cut has slid off the thing it was for');
+    }
+    // ...and the thickness never changed, because a radius does not rotate
+    if (Math.abs((spin.clipNear - spin.clipFar) - (first.near - first.far)) > 1e-6) {
+        throw new Error('the slab changed thickness on a rotation');
+    }
+    // A KNOB DRAGGED WINS. Any explicit set drops the tracking, or the next
+    // frame would overwrite the answer the user just gave.
+    spin.setClipSlab(5, -5);
+    spin.viewerState.rotation = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    spin._refreshAutoClip();
+    if (spin.clipNear !== 5 || spin.clipFar !== -5) {
+        throw new Error('a hand-set slab was overwritten by the auto tracking');
     }
     // ...though a selection that is ENTIRELY hidden frames on itself anyway -
     // framingPositions' own guard, shared with Orient, and the alternative is

@@ -2271,10 +2271,12 @@ function setupClipPanel() {
         auto.addEventListener('click', (e) => {
             e.preventDefault();
             const r = viewerApi?.renderer;
-            if (!r || !r.clipSlabForSelection) return;
-            const slab = r.clipSlabForSelection();
-            if (!slab) return;
-            r.setClipSlab(slab.near, slab.far);
+            if (!r || !r.autoClip) return;
+            // ...and it KEEPS the slab on the selection as the model turns -
+            // see _refreshAutoClip. Pressing it again at another angle used to
+            // give a different answer, because the cut had stayed where the
+            // selection had been.
+            if (!r.autoClip()) return;
             fillClipPanel();
         });
     }
