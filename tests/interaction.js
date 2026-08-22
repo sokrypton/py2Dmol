@@ -72,7 +72,7 @@ for (const name of ['selectionBandFor']) {
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -6229,6 +6229,157 @@ t('the ink-cost ratio can never say ink is free', () => {
             + ' is now cheaper than the bare frame it multiplies');
     }
 });
+
+
+
+// SEVERAL OBJECTS AS ONE COORDINATE ARRAY (_mergeObjects).
+//
+// The overlay merges the frames of one object; this merges the current frame
+// of several, and the whole point is that downstream cannot tell them apart -
+// one array, one bond list, one map back to where each position came from.
+// What can go wrong is entirely arithmetic: an unoffset bond index joins two
+// structures that never touched, and a field that arrives short slides every
+// position after it onto the wrong residue.
+function mergeViewer() {
+    const v = new Cls();
+    v.objectsData = {
+        A: {
+            // bonds live on the OBJECT, which is where setCoords persists them
+            // and where the frame load has always read them from
+            bonds: [[1, 2]],
+            frames: [{
+                coords: [[0, 0, 0], [1, 0, 0], [2, 0, 0]],
+                chains: ['A', 'A', 'A'],
+                position_types: ['P', 'P', 'L'],
+                position_names: ['ALA', 'GLY', 'HEM'],
+                residue_numbers: [1, 2, 900],
+                plddts: [10, 20, 30]
+            }]
+        },
+        B: {
+            // parked on its second frame, which is what a merge must take
+            viewerState: { currentFrame: 1 },
+            bonds: [[0, 1]],
+            frames: [
+                { coords: [[9, 9, 9]], chains: ['Z'] },
+                {
+                    coords: [[5, 0, 0], [6, 0, 0]],
+                    chains: ['B', 'B'],
+                    // ONE SHORT - the case that shifts everything after it.
+                    // A field that is simply absent is easy; a field that is
+                    // present and the wrong length is the one that slides
+                    // every later position onto the wrong residue.
+                    plddts: [70]
+                }
+            ]
+        }
+    };
+    v.currentObjectName = 'A';
+    v.currentFrame = 0;
+    return v;
+}
+
+t('a merge concatenates the objects and maps each position back to its source', () => {
+    const v = mergeViewer();
+    const m = v._mergeObjects(['A', 'B']);
+    eq(m.coords.length, 5, 'merged positions');
+    eq(m.sourceNames.join(','), 'A,B', 'sources');
+    eq(m.sourceIdMap.join(''), '00011', 'source of each position');
+    eq(m.sourceOffsets.join(','), '0,3', 'where each source starts');
+    // B is parked on frame 1, so its SECOND frame is the one merged
+    eq(m.coords[3][0], 5, 'B contributed the frame it is parked on');
+});
+
+t('a merged bond can never join two objects', () => {
+    const v = mergeViewer();
+    const m = v._mergeObjects(['A', 'B']);
+    eq(m.bonds.length, 2, 'bond count');
+    eq(m.bonds[0].join('-'), '1-2', "A's bond is unmoved");
+    eq(m.bonds[1].join('-'), '3-4', "B's bond is offset onto B's positions");
+    for (const b of m.bonds) {
+        if (m.sourceIdMap[b[0]] !== m.sourceIdMap[b[1]]) {
+            throw new Error('a bond spans two objects: ' + b.join('-'));
+        }
+    }
+});
+
+t('a field missing from one object cannot shift the ones after it', () => {
+    const v = mergeViewer();
+    const m = v._mergeObjects(['A', 'B']);
+    // B has no names, types or residue numbers at all, and a plddts array
+    // one short of its coordinates
+    for (const k of ['plddts', 'chains', 'position_types', 'position_names',
+        'position_atoms', 'position_elements', 'residue_numbers']) {
+        eq(m[k].length, 5, k + ' length');
+    }
+    // ...and A's own values are still against A's positions
+    eq(m.position_names.slice(0, 3).join(','), 'ALA,GLY,HEM', 'A names');
+    eq(m.residue_numbers[2], 900, "A's ligand residue number");
+    eq(m.plddts.slice(0, 3).join(','), '10,20,30', 'A plddts');
+    eq(m.chains.join(''), 'AAABB', 'chains');
+});
+
+t('PAE is dropped across objects and kept for one', () => {
+    const v = mergeViewer();
+    v.objectsData.A.frames[0].pae = [[0, 1], [1, 0]];
+    eq(v._mergeObjects(['A']).pae !== null, true, 'one object keeps its PAE');
+    eq(v._mergeObjects(['A']).autoColor, 'plddt', 'and colours by it');
+    eq(v._mergeObjects(['A', 'B']).pae, null, 'two objects have no shared PAE');
+});
+
+t('merging one object is the same data as loading it alone', () => {
+    const v = mergeViewer();
+    const m = v._mergeObjects(['A']);
+    eq(m.coords.length, 3, 'positions');
+    eq(m.sourceIdMap.every((s) => s === 0), true, 'one source');
+    eq(m.bonds[0].join('-'), '1-2', 'bonds unmoved');
+    eq(m.autoColor, 'rainbow', 'single chain');
+});
+
+t('an empty or deleted object is skipped, not merged as a hole', () => {
+    const v = mergeViewer();
+    // one with no frames at all, and one with a frame holding no positions
+    v.objectsData.C = { frames: [] };
+    v.objectsData.D = { frames: [{ coords: [] }] };
+    const m = v._mergeObjects(['A', 'gone', 'C', 'D', 'B']);
+    eq(m.sourceNames.join(','), 'A,B', 'only the objects with positions');
+    eq(m.sourceOffsets.join(','), '0,3', 'and no empty source in between');
+    eq(m.coords.length, 5, 'positions');
+    eq(v._mergeObjects(['gone']), null, 'nothing to merge');
+});
+
+// THE SIDE TABLES CARRY TWO DIFFERENT KINDS OF INDEX, and both have to move.
+// `pos`/`frameOf` point at POSITIONS, `bonds`/`toBackbone` at ROWS of the table
+// itself. Offset one and not the other and the second object grows its side
+// chains on the first object's residues.
+t('merged side tables offset positions and rows separately', () => {
+    const v = mergeViewer();
+    const table = (n) => ({
+        pos: new Int32Array([0, 0]),
+        frameOf: new Int32Array([0, 0]),
+        coef: new Float32Array([1, 2, 3, 4, 5, 6]),
+        bonds: new Int32Array([0, 1]),
+        toBackbone: new Int32Array([0]),
+        names: ['CB' + n, 'CG' + n],
+        elements: ['C', 'C'],
+        onBackbone: new Uint8Array([0, 0])
+    });
+    v.objectsData.A.frames[0].sidechains = table('a');
+    v.objectsData.B.frames[1].sidechains = table('b');
+    const sc = v._mergeObjects(['A', 'B']).sidechains;
+    eq(sc.pos.length, 4, 'rows');
+    eq(Array.from(sc.pos).join(','), '0,0,3,3', "B's rows point at B's positions");
+    eq(Array.from(sc.frameOf).join(','), '0,0,3,3', 'frames likewise');
+    eq(Array.from(sc.bonds).join(','), '0,1,2,3', "B's bond is between B's rows");
+    eq(Array.from(sc.toBackbone).join(','), '0,2', 'to-backbone rows');
+    eq(sc.names.join(','), 'CBa,CGa,CBb,CGb', 'names in order');
+    eq(sc.coef.length, 12, 'coefficients');
+    // one object at offset zero is handed through untouched
+    delete v.objectsData.B.frames[1].sidechains;
+    eq(v._mergeObjects(['A']).sidechains, v.objectsData.A.frames[0].sidechains,
+        'a lone table is not rebuilt');
+});
+
 
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');
 process.exit(fail?1:0);

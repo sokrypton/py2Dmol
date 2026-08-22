@@ -5407,6 +5407,191 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
+         * ONE OBJECT'S FRAME, WITH EVERYTHING IT INHERITS RESOLVED.
+         *
+         * A frame stores only what changed: plddts, PAE and bonds may live on
+         * the object or on an earlier frame instead. Both the single-object
+         * load and the multi-object merge need the resolved article, so it is
+         * built in one place.
+         */
+        _resolvedFrame(object, frameIndex) {
+            const data = object?.frames?.[frameIndex];
+            if (!data) return null;
+            const resolvedPlddt = this._resolvePlddtData(object, frameIndex);
+            const resolvedPae = window.PAE ? window.PAE.resolveData(object, frameIndex)
+                : (data.pae || null);
+            return {
+                ...data,
+                plddts: resolvedPlddt ?? data.plddts ?? null,
+                pae: resolvedPae !== null ? resolvedPae : data.pae,
+                bonds: object.bonds || null
+            };
+        }
+
+        /**
+         * SEVERAL OBJECTS AS ONE COORDINATE ARRAY.
+         *
+         * The overlay merges the frames of one object (_mergeFrameRange); this
+         * merges the current frame of several objects, and the two are
+         * deliberately the same shape. Downstream nothing knows the difference:
+         * one array of positions, one bond list with the indices offset, and a
+         * map saying where each position came from - handed to the cartoon as a
+         * bonding group, exactly as frameIdMap is, so nothing joins across
+         * sources.
+         *
+         * That the merge is real and not a composite is what buys shadowing,
+         * depth sorting, picking and both GPU paths with no new code. The price
+         * is that ONE style draws the lot; see MULTI_OBJECT_PLAN.md.
+         *
+         * @param {string[]} names - objects to merge, in drawing order
+         * @returns {Object|null} merged data, plus sourceIdMap (position ->
+         *   index into sourceNames), sourceNames and sourceOffsets
+         */
+        _mergeObjects(names) {
+            const list = (names || []).filter(
+                n => this.objectsData?.[n]?.frames?.length);
+            if (!list.length) return null;
+
+            const coords = [];
+            const plddts = [];
+            const chains = [];
+            const positionTypes = [];
+            const positionNames = [];
+            const positionAtoms = [];
+            const positionElements = [];
+            const residueNumbers = [];
+            const bonds = [];
+            const sourceIdMap = [];
+            const sourceOffsets = [];
+            const sourceNames = [];
+            const sideRows = [];
+            let firstPae;
+
+            for (const name of list) {
+                const object = this.objectsData[name];
+                // The frame each object is PARKED ON. The current object's is
+                // live in this.currentFrame; every other object's was saved
+                // when it was switched away from.
+                let frameIdx = (name === this.currentObjectName)
+                    ? this.currentFrame
+                    : (object.viewerState?.currentFrame ?? 0);
+                frameIdx = Math.max(0, Math.min(frameIdx | 0, object.frames.length - 1));
+
+                const frame = this._resolvedFrame(object, frameIdx);
+                if (!frame) continue;
+
+                const fc = frame.coords || [];
+                const n = fc.length;
+                if (!n) continue;
+
+                const offset = coords.length;
+                const src = sourceNames.length;
+                sourceNames.push(name);
+                sourceOffsets.push(offset);
+
+                const fill = (arr, fallback) => (arr && arr.length === n) ? arr : fallback();
+                const fChains = fill(frame.chains, () => Array(n).fill('A'));
+
+                for (let i = 0; i < n; i++) {
+                    coords.push(fc[i]);
+                    sourceIdMap.push(src);
+                    chains.push(fChains[i] || 'A');
+                }
+                plddts.push(...fill(frame.plddts, () => Array(n).fill(50.0)));
+                positionTypes.push(...fill(frame.position_types, () => Array(n).fill('P')));
+                positionNames.push(...fill(frame.position_names, () => Array(n).fill('UNK')));
+                positionAtoms.push(...fill(frame.position_atoms, () => Array(n).fill('')));
+                positionElements.push(...fill(frame.position_elements, () => Array(n).fill('')));
+                residueNumbers.push(...fill(frame.residue_numbers,
+                    () => Array.from({ length: n }, (_, i) => i + 1)));
+
+                for (const b of (frame.bonds || [])) {
+                    bonds.push([b[0] + offset, b[1] + offset]);
+                }
+                sideRows.push({ table: frame.sidechains || null, offset });
+                if (firstPae === undefined) firstPae = frame.pae || null;
+            }
+
+            if (!coords.length) return null;
+
+            // PAE is a matrix over ONE structure's residues; there is no such
+            // thing across two. Kept when a single object is merged so that
+            // path stays identical to loading it on its own, dropped otherwise
+            // rather than quietly indexed into the wrong rows.
+            const pae = (sourceNames.length === 1) ? (firstPae || null) : null;
+
+            let autoColor;
+            if (pae && pae.length > 0) autoColor = 'plddt';
+            else if (new Set(chains).size > 1) autoColor = 'chain';
+            else autoColor = 'rainbow';
+
+            return {
+                coords,
+                plddts,
+                chains,
+                position_types: positionTypes,
+                position_names: positionNames,
+                position_atoms: positionAtoms,
+                position_elements: positionElements,
+                residue_numbers: residueNumbers,
+                pae,
+                bonds: bonds.length > 0 ? bonds : null,
+                sidechains: this._mergeSidechainTables(sideRows),
+                sourceIdMap,
+                sourceNames,
+                sourceOffsets,
+                autoColor
+            };
+        }
+
+        /**
+         * The side tables of the merged objects, concatenated.
+         *
+         * Every index in a table is relative to its own object: `pos` and
+         * `frameOf` are positions, `bonds` and `toBackbone` are ROWS of the
+         * table itself. Both get their own offset. Without this a merged view
+         * would grow side chains on the wrong residues rather than none.
+         *
+         * @param {Array<{table: Object|null, offset: number}>} parts
+         */
+        _mergeSidechainTables(parts) {
+            const live = parts.filter(p => p.table && p.table.pos && p.table.pos.length);
+            if (!live.length) return null;
+            if (live.length === 1 && live[0].offset === 0) return live[0].table;
+
+            const pos = []; const frameOf = []; const coef = [];
+            const bonds = []; const toBackbone = []; const onBackbone = [];
+            const names = []; const elements = [];
+            let rowBase = 0;
+            for (const { table, offset } of live) {
+                const rows = table.pos.length;
+                for (let i = 0; i < rows; i++) {
+                    pos.push(table.pos[i] + offset);
+                    frameOf.push(table.frameOf[i] + offset);
+                    onBackbone.push(table.onBackbone ? table.onBackbone[i] : 0);
+                    names.push(table.names[i]);
+                    elements.push(table.elements[i]);
+                }
+                for (let i = 0; i < table.coef.length; i++) coef.push(table.coef[i]);
+                for (let i = 0; i < table.bonds.length; i++) bonds.push(table.bonds[i] + rowBase);
+                for (let i = 0; i < table.toBackbone.length; i++) {
+                    toBackbone.push(table.toBackbone[i] + rowBase);
+                }
+                rowBase += rows;
+            }
+            return {
+                pos: new Int32Array(pos),
+                frameOf: new Int32Array(frameOf),
+                coef: new Float32Array(coef),
+                bonds: new Int32Array(bonds),
+                toBackbone: new Int32Array(toBackbone),
+                names,
+                elements,
+                onBackbone: new Uint8Array(onBackbone)
+            };
+        }
+
+        /**
          * Atomically enter overlay mode for the current object.
          * Merges all frames and loads the merged data.
          * This is the SINGLE PATH to enter overlay mode.
@@ -7093,22 +7278,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 return;
             }
 
-            const data = object.frames[frameIndex];
-
-            // Resolve inherited plddt and PAE data
-            const resolvedPlddt = this._resolvePlddtData(object, frameIndex);
-            const resolvedPae = window.PAE ? window.PAE.resolveData(object, frameIndex) : (data.pae || null);
-
-            // Get bonds from object-level if available
-            const resolvedBonds = object.bonds || null;
-
-            // Create resolved data object (use resolved values if frame doesn't have its own)
-            const resolvedData = {
-                ...data,
-                plddts: resolvedPlddt ?? data.plddts ?? null,
-                pae: resolvedPae !== null ? resolvedPae : data.pae,
-                bonds: resolvedBonds
-            };
+            // Inherited plddt, PAE and bonds resolved in the one place the
+            // merge reads them from too.
+            const resolvedData = this._resolvedFrame(object, frameIndex);
+            if (!resolvedData) return;
 
             // Load 3D data (with skipRender option)
             this._loadDataIntoRenderer(resolvedData, skipRender);

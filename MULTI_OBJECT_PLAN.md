@@ -48,8 +48,29 @@ Names whose objects have been deleted are skipped. *(done)*
 **2. `_mergeObjects(names)`**, alongside `_mergeFrameRange` and built the same
 way: concatenate coords, plddts, chains, types, names, atoms, elements,
 residue numbers and bonds (offset per source), and return a `sourceIdMap`.
-Feed it to `assignSecondary` as the bonding group exactly as the overlay's map
-is fed. Rebuilt when the shown set changes, not per frame.
+*(done)* — with, beyond the plan as written:
+
+- `_resolvedFrame(object, frameIndex)`, the inheritance of plddts, PAE and
+  bonds pulled out of `_loadFrameData` so the merge reads a frame the same way
+  a plain load does rather than through a second copy of that logic.
+- Each object contributes **the frame it is parked on** - `this.currentFrame`
+  for the current object, `viewerState.currentFrame` for the rest.
+- **PAE is dropped** across two objects and kept for one. There is no such
+  matrix across two structures, and indexing one object's rows with merged
+  positions is worse than having none.
+- **Side tables merged** (`_mergeSidechainTables`). They carry two kinds of
+  index - `pos`/`frameOf` are positions, `bonds`/`toBackbone` are rows of the
+  table itself - and both are offset. Still per-object: `obj.sidechains`, the
+  set of residues switched ON, is read for the current object only, so a
+  second object's side chains cannot yet be enabled. That is slice 5's
+  expansion.
+- A field that arrives the wrong length is filled to the position count, never
+  spliced short - one short array slides every later position onto the wrong
+  residue.
+
+Still to wire: feed `sourceIdMap` to `assignSecondary` as the bonding group
+exactly as the overlay's map is fed, and rebuild when the shown set changes,
+not per frame.
 
 **3. Colour per object.** The overlay picks ONE auto colour for the whole merge.
 Several objects want one scheme each, so the colour pass needs the source map
@@ -68,7 +89,10 @@ does that expansion for frames (see the `frameOffsets` block).
 is a single structure as far as they are concerned, so it should just work -
 verify, and expect a rebuild whenever the shown set changes.
 
-## The trade-off to decide
+## The trade-off, decided
+
+**CONFIRMED: one style for the merge** - *"no need to mix tube vs cartoon
+paths."*
 
 **A merged array is drawn by ONE style.** Tube and cartoon cannot both be on
 screen under this model. That is the price of the merge, and it buys shadowing,
@@ -77,5 +101,4 @@ picking, depth sorting and the GPU paths unchanged.
 Per-object style would mean going back to compositing passes, which costs all
 four of those. Since the per-object style added this week is about what a
 structure opens AS - a ribosome as tube, a peptide as cartoon - and not about
-comparing two structures drawn differently, the merge looks like the better
-trade. Worth confirming before slice 2 is built.
+comparing two structures drawn differently, the merge is the better trade.
