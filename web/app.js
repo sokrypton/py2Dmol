@@ -2139,10 +2139,28 @@ function syncObjectColorOption() {
     }
 }
 
+/**
+ * The button says how many objects are on screen, so the state is readable
+ * without opening the list - "Object" when one is drawn, "Object 2/3" when two
+ * of three are. The current object is named in the dropdown beside it.
+ */
+function syncObjectListButton() {
+    const { btn } = objectListEls();
+    const renderer = viewerApi?.renderer;
+    if (!btn || !renderer) return;
+    const total = Object.keys(renderer.objectsData || {}).length;
+    const shown = renderer.drawnObjects ? renderer.drawnObjects().length : 1;
+    btn.textContent = (shown > 1) ? `Object ${shown}/${total}` : 'Object';
+    btn.title = (shown > 1)
+        ? `${shown} of ${total} objects are on screen - click to choose`
+        : 'Show or hide objects';
+}
+
 function renderObjectList() {
     const { btn, list, select } = objectListEls();
     const renderer = viewerApi?.renderer;
     if (!list || !btn || !select || !renderer) return;
+    syncObjectListButton();
     if (list.hidden) return;
 
     const names = Object.keys(renderer.objectsData || {});
@@ -2243,7 +2261,11 @@ function attachObjectList() {
     // WHAT IS ON SCREEN CAN CHANGE WITHOUT A CLICK IN THIS LIST - a restored
     // session, a Copy, the Python API. The colour mode that only means
     // something with several objects follows the renderer, not the button.
-    document.addEventListener('py2dmol-color-change', syncObjectColorOption);
+    document.addEventListener('py2dmol-color-change', () => {
+        syncObjectColorOption();
+        syncObjectListButton();
+        updateFrameNameLabel();
+    });
     // REBUILT WHENEVER THE OBJECTS CHANGE. Objects are added, renamed and
     // removed from a dozen places - a load, a Copy, a Cut, a session restore -
     // and every one of them goes through the select's options. Watching those
@@ -2582,12 +2604,18 @@ function updateFrameNameLabel() {
     const obj = r && r.objectsData ? r.objectsData[r.currentObjectName] : null;
     const frames = obj && obj.frames;
     if (!frames || !frames.length) { el.textContent = ''; return; }
-    // ...and only where there is more than one, since for a single structure the
-    // object selector beside it already says the same word.
-    if (frames.length < 2) { el.textContent = ''; el.title = ''; return; }
+    // WHOSE SEQUENCE THIS IS, when it could be anybody's. The strip shows the
+    // CURRENT object, and with several structures on screen there is nothing
+    // else to say which one - the reader is looking at two molecules and one
+    // sequence. Only then: with one object drawn, the name is noise.
+    const drawn = r.drawnObjects ? r.drawnObjects().length : 1;
+    const whose = (drawn > 1) ? r.currentObjectName : '';
+    // ...and only where there is more than one FRAME, since for a single
+    // structure the object selector beside it already says the same word.
     const i = (typeof r.currentFrame === 'number' && r.currentFrame >= 0) ? r.currentFrame : 0;
     const f = frames[i];
-    el.textContent = (f && f.name) ? f.name : '';
+    const frameName = (frames.length > 1 && f && f.name) ? f.name : '';
+    el.textContent = [whose, frameName].filter(Boolean).join(' - ');
     el.title = el.textContent;
 }
 

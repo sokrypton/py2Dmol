@@ -166,6 +166,7 @@ window.addEventListener('load', () => {
       await new Promise((s) => setTimeout(s, 150));
       const btn = document.getElementById('objectListButton');
       btn.click();
+      R.btnOneShown = btn.textContent;
       const rows = Array.from(document.querySelectorAll('.object-list-row'));
       R.rows = rows.map((x) => x.querySelector('.object-list-name').textContent);
       const cur = rows.findIndex((x) => x.classList.contains('is-current'));
@@ -175,6 +176,10 @@ window.addEventListener('load', () => {
       rows[1].querySelector('.object-list-eye').click();
       await new Promise((s) => setTimeout(s, 250));
       R.afterEyeInk = ink(r);
+      R.btnTwoShown = document.getElementById('objectListButton').textContent;
+      // the strip belongs to ONE object, and with two on screen it says which
+      if (window.updateFrameNameLabel) window.updateFrameNameLabel();
+      R.stripLabel = (document.getElementById('frameNameLabel') || {}).textContent;
       R.afterEyeMulti = !!(r.multiState && r.multiState.enabled);
       // the last visible object cannot be hidden - the eye would look broken
       const rows2 = Array.from(document.querySelectorAll('.object-list-row'));
@@ -364,6 +369,8 @@ def main():
           f" {R.get('outsideAfterOrient')} positions off canvas;"
           f" pick at the second object -> {R.get('pickOwner')};"
           f" clip {R.get('clipSlab')} leaves {R.get('clipInk')} ink")
+    print(f"  button: {R.get('btnOneShown')!r} -> {R.get('btnTwoShown')!r};"
+          f" strip labelled {R.get('stripLabel')!r}")
     print(f"  Object mode offered: {R.get('objectOptionShown')},"
           f" colours per object in it: {R.get('flatPerObject')}")
     print(f"  tube:  {R.get('tubeInk')} ink, {R.get('tubeCrossing')} crossing;"
@@ -412,6 +419,13 @@ def main():
         bad.append(f"a pick on the second object reported {R.get('pickOwner')}")
     if not (0 < R.get("clipInk", 0) < R["bothInk"]):
         bad.append(f"auto clip on one object left {R.get('clipInk')} ink")
+    if R.get("stripLabel") != R["objects"][1]:
+        bad.append(f"the sequence strip is labelled {R.get('stripLabel')!r},"
+                   f" not {R['objects'][1]!r}")
+    if R.get("btnOneShown") != "Object":
+        bad.append(f"the button reads {R.get('btnOneShown')!r} with one object shown")
+    if R.get("btnTwoShown") != "Object 2/2":
+        bad.append(f"the button reads {R.get('btnTwoShown')!r} with two shown")
     if not R.get("objectOptionShown"):
         bad.append("the Object colour mode is not offered with two objects up")
     if R.get("flatPerObject") not in ([1, 1], None):
