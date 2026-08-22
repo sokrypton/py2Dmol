@@ -72,22 +72,64 @@ Still to wire: feed `sourceIdMap` to `assignSecondary` as the bonding group
 exactly as the overlay's map is fed, and rebuild when the shown set changes,
 not per frame.
 
-**3. Colour per object.** The overlay picks ONE auto colour for the whole merge.
-Several objects want one scheme each, so the colour pass needs the source map
-where it currently has a single mode.
+**3. Colour per object.** *(done)* - and rather more than colour, because a
+merge that is mapped and coloured correctly can still be invisible. What the
+browser probe (`tests/multi_object.py`) turned up, in order:
+
+- **`object` colour mode**, what `auto` resolves to whenever more than one is
+  merged. Every other scheme gives two structures the same colours as each
+  other - by chain both start at chain A, by rainbow both run blue to red -
+  and one colour each is the whole point of a comparison. A ligand is grey in
+  every other mode; here it says which object it is on.
+- **Rainbow ramps per source** (`sourceRainbowScales`, was `frameRainbowScales`),
+  so each object runs its own blue-to-red instead of taking a slice of one.
+- **`drawnStats()`** - the centre and extent the camera frames on. Left as the
+  current object's, the second object is out of shot: the first working merge
+  measured as two structures correctly merged, mapped and coloured, with LESS
+  ink on screen than one of them alone.
+- **`_applyMergedVisibility`** - each object's own mask expanded into merged
+  indices. Left alone, the mask of whichever object was current still names
+  0..k and everything past it is hidden, which is the second way the same
+  picture came out with one structure in it. Chain ids collide across objects,
+  so the chain half of a mask is resolved into positions and cleared.
+- The selection is dropped when the merge changes; it was a set of indices
+  against the array that just went away.
+
+**5 BEFORE 4.** The order in this list is not the order to build in. Slice 5 is
+what stops the per-object sets being read at the wrong offsets, and until it is
+done a visibility control would ship bases, elements, forced SSE and contacts
+landing on the wrong residues of every object but the first. A control that
+does the wrong thing is worse than one that does nothing.
 
 **4. The list UI.** Object becomes a button; the dropdown becomes rows with an
-eye per row and the active object highlighted. Ships with 2 and 3, not before:
-a visibility control that does not change the picture is worse than none.
+eye per row and the active object highlighted. Ships after 5: a visibility
+control that does not change the picture is worse than none, and one that
+changes the wrong thing is worse still.
 
-**5. Selection and picking.** One merged index space, so picking works
-unchanged - what it needs is the source map to report WHICH object was hit, and
-the per-object selections expanded into merged indices. The overlay already
-does that expansion for frames (see the `frameOffsets` block).
+**5. Selection and picking, and every other per-object set.** One merged index
+space, so picking works unchanged - what it needs is the source map to report
+WHICH object was hit. The sets keyed by position index each need the same
+offset treatment side chains and visibility have had:
 
-**6. The GPU paths.** One resident mesh, keyed by one signature. A merged array
-is a single structure as far as they are concerned, so it should just work -
-verify, and expect a rebuild whenever the shown set changes.
+| set | where | state |
+|---|---|---|
+| `obj.sidechains` | which residues show side chains | done - `shownSidechainSet()` |
+| `visibilityState.positions` | the mask | done - `_applyMergedVisibility` |
+| `obj.bases` | nucleic base plates | TO DO |
+| `obj.elements` | element colouring per residue | TO DO |
+| forced/assigned SSE | `forcedSseFor`, `assignedSseFor` | TO DO |
+| contacts | `_resolveContactToIndices` | TO DO |
+| colour overrides | `getColorOverride` | TO DO |
+| `residueSelection` | dropped on a merge change today | TO DO |
+
+One pair of translators - merged index to (object, local index) and back -
+routed through those accessors, rather than an offset written out eight times.
+
+**6. The GPU paths.** *(verified for the cartoon)* One resident mesh, keyed by
+one signature: a merged array is a single structure as far as they are
+concerned, and the GPU picture of two merged objects is the CPU picture
+(`tests/multi_object.py` compares them in ONE page load). The tube style is
+not verified yet.
 
 ## The trade-off, decided
 

@@ -37,7 +37,9 @@ function registerCustomColorMode(modeName, colorFunc) {
  * Get all valid color modes (including custom ones)
  */
 function getAllValidColorModes() {
-    const builtinModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy'];
+    // 'object' only means anything with more than one object merged in, and
+    // is what 'auto' resolves to there - see setCoords.
+    const builtinModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy', 'object'];
     const customModes = window.py2dmol_customColors ? Object.keys(window.py2dmol_customColors) : [];
     return builtinModes.concat(customModes);
 }
@@ -1244,6 +1246,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 enabled: false,              // Is more than one object merged in?
                 sourceIdMap: null,           // position -> index into sourceNames
                 sourceNames: null,           // the objects merged, in drawing order
+                sourceOffsets: null,         // where each of them starts
+                stats: null,                 // centre and extent of the lot - see drawnStats
                 autoColor: null
             };
 
@@ -2367,7 +2371,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     const normalizedValue = parseFloat(e.target.value);
 
                     // Get object size using standard deviation from center
-                    const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
+                    const object = this.drawnStats();
                     let baseSize = DEFAULT_SIZE;
                     if (object && object.stdDev > 0) {
                         // Use standard deviation * 3.0 as the base size measure
@@ -6243,8 +6247,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         _materialiseSidechains(data) {
             const sc = data.sidechains;
-            const obj = this.objectsData?.[this.currentObjectName];
-            const show = obj && obj.sidechains;
+            // in merged indices when several objects are on screen
+            const show = this.shownSidechainSet();
             this.sidechainMap = null;
             // Drop anything a PREVIOUS materialisation added. Visibility sets
             // outlive a frame load, so turning side chains off would otherwise
@@ -6599,7 +6603,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Priority: plddt (if PAE present) > chain (if multi-chain) > rainbow
             // In overlay mode, use merged auto color based on all frames
             const uniqueChains = new Set(this.chains);
-            if (this.overlayState.enabled && this.overlayState.autoColor) {
+            if (this.multiState && this.multiState.enabled) {
+                // SEVERAL OBJECTS COLOUR BY OBJECT. Anything else and the two
+                // structures you put side by side to compare come out the same
+                // colours as each other - by chain, both start at chain A; by
+                // rainbow, both run blue to red. One colour each is the whole
+                // point of the comparison, and it is what PyMOL does too.
+                this.resolvedAutoColor = 'object';
+            } else if (this.overlayState.enabled && this.overlayState.autoColor) {
                 this.resolvedAutoColor = this.overlayState.autoColor;
             } else {
                 if (hasPAE) {
@@ -6695,33 +6706,34 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
-            // Pre-calculate rainbow scales
-            // In overlay mode: per-frame scales (each frame gets own 0-100% gradient)
-            // In normal mode: global scales
-            if (this.overlayState.enabled && this.overlayState.frameIdMap) {
-                // Per-frame rainbow scales
-                this.frameRainbowScales = {};
+            // Pre-calculate rainbow scales.
+            // A MERGED VIEW RAMPS EACH SOURCE ON ITS OWN - each frame of a
+            // trajectory, or each object, running its own blue-to-red rather
+            // than taking a slice of one ramp spread over the lot. Two copies
+            // of the same protein should look like two copies of it.
+            const rainbowGroups = this.sourceGroups();
+            if (rainbowGroups) {
+                this.sourceRainbowScales = {};
                 for (let i = 0; i < this.positionTypes.length; i++) {
                     const type = this.positionTypes[i];
                     const chainId = this.chains[i] || 'A';
-                    const frameIdx = this.overlayState.frameIdMap[i];
+                    const src = rainbowGroups[i];
                     const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
 
                     if (type === 'P' || type === 'D' || type === 'R' || (type === 'L' && isLigandOnlyChain)) {
-                        // Initialize frame scale if needed
-                        if (!this.frameRainbowScales[frameIdx]) {
-                            this.frameRainbowScales[frameIdx] = {};
+                        if (!this.sourceRainbowScales[src]) {
+                            this.sourceRainbowScales[src] = {};
                         }
-                        if (!this.frameRainbowScales[frameIdx][chainId]) {
-                            this.frameRainbowScales[frameIdx][chainId] = { min: Infinity, max: -Infinity };
+                        if (!this.sourceRainbowScales[src][chainId]) {
+                            this.sourceRainbowScales[src][chainId] = { min: Infinity, max: -Infinity };
                         }
                         const colorIndex = this.perChainIndices[i];
-                        const scale = this.frameRainbowScales[frameIdx][chainId];
+                        const scale = this.sourceRainbowScales[src][chainId];
                         scale.min = Math.min(scale.min, colorIndex);
                         scale.max = Math.max(scale.max, colorIndex);
                     }
                 }
-                // Keep chainRainbowScales as null in overlay mode to avoid confusion
+                // Keep chainRainbowScales as null in a merged view to avoid confusion
                 this.chainRainbowScales = null;
             } else {
                 // Global rainbow scales (normal mode)
@@ -8713,6 +8725,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // No entropy data for this position (ligand, RNA/DNA, or unmapped) - use default grey
                     color = DEFAULT_GREY;
                 }
+            } else if (effectiveColorMode === 'object') {
+                // One colour per source, from the chain palette. A ligand is
+                // grey everywhere else; here it belongs to an object like
+                // everything else does, and greying it would hide which.
+                const g = this.sourceGroups();
+                const src = g ? g[atomIndex] : 0;
+                const colorArray = this.colorblindMode ? chainColorsColorblind : chainColors;
+                const at = (typeof src === 'number' && src >= 0) ? src : 0;
+                color = hexToRgb(colorArray[at % colorArray.length]);
             } else if (effectiveColorMode === 'chain') {
                 const chainId = this.chains[atomIndex] || 'A';
                 if (isLigand && !this.ligandOnlyChains.has(chainId)) {
@@ -8754,9 +8775,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                     // In overlay mode, use per-frame scales; otherwise use global scales
                     let scale = null;
-                    if (this.overlayState.enabled && this.overlayState.frameIdMap && this.frameRainbowScales) {
-                        const frameIdx = this.overlayState.frameIdMap[atomIndex];
-                        scale = this.frameRainbowScales[frameIdx] && this.frameRainbowScales[frameIdx][chainId];
+                    const rgroups = this.sourceGroups();
+                    if (rgroups && this.sourceRainbowScales) {
+                        const src = rgroups[atomIndex];
+                        scale = this.sourceRainbowScales[src] && this.sourceRainbowScales[src][chainId];
                     } else {
                         scale = this.chainRainbowScales && this.chainRainbowScales[chainId];
                     }
@@ -8794,9 +8816,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const m = this.segmentIndices.length;
             if (m === 0) return [];
 
-            // In overlay mode with frame-level colors, let each atom determine its own color mode
-            // Otherwise cache the effective color mode to avoid recalculating for every position
-            let usePerAtomColorMode = this.overlayState.enabled && this.overlayState.frameIdMap;
+            // A merged view colours per source, so each atom resolves its own
+            // mode; otherwise the effective mode is cached rather than asked
+            // again for every position.
+            let usePerAtomColorMode = !!this.sourceGroups();
             if (!effectiveColorMode && !usePerAtomColorMode) {
                 effectiveColorMode = this._getEffectiveColorMode();
             }
@@ -9659,7 +9682,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // THE VIEW SCALE, the one number from the block below that is still
             // needed up here: the GPU draws with it and a pan drag converts
             // screen pixels to Angstroms with it. Arithmetic, not a pass.
-            const maxExtent = (object && object.maxExtent > 0) ? object.maxExtent : 30.0;
+            const framed = this.drawnStats() || object;
+            const maxExtent = (framed && framed.maxExtent > 0) ? framed.maxExtent : 30.0;
             const extent = this.viewerState.extent || maxExtent;
             const padding = 0.9;
             const baseScale = Math.min((displayWidth * padding) / (extent * 2),
@@ -9931,6 +9955,239 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (out.length) return out;
             }
             return this.currentObjectName ? [this.currentObjectName] : [];
+        }
+
+        /**
+         * WHICH OBJECTS ARE ON SCREEN. The list UI writes here.
+         *
+         * Names not loaded are ignored rather than an error - an object can be
+         * deleted while a saved session still names it. An empty set, or one
+         * naming nothing that exists, falls back to the current object: the
+         * viewer never shows nothing because a list went stale.
+         *
+         * @returns {boolean} whether the picture changed
+         */
+        setShownObjects(names, skipRender = false) {
+            const all = this.objectsData || {};
+            const want = new Set((names || []).filter(n => all[n]));
+            const before = this.drawnObjects().join(' ');
+            this.shownObjects = want;
+            const after = this.drawnObjects().join(' ');
+            if (before === after) return false;
+            this._applyShownObjects(skipRender);
+            return true;
+        }
+
+        /**
+         * Load whatever drawnObjects() now says, as ONE coordinate array.
+         *
+         * One object is loaded exactly as it always was - the merge path is not
+         * entered at all, so the ordinary single-object case cannot be slowed
+         * down or subtly changed by code it never runs.
+         */
+        _applyShownObjects(skipRender = false) {
+            const names = this.drawnObjects();
+            const ms = this.multiState;
+
+            if (names.length <= 1) {
+                if (!ms.enabled) return;
+                ms.enabled = false;
+                ms.sourceIdMap = null;
+                ms.sourceNames = null;
+                ms.sourceOffsets = null;
+                ms.autoColor = null;
+                ms.stats = null;
+                this._sourceGroupsCache = null;
+                this._invalidateSegmentCache();
+                this._invalidateShadowCache();
+                // ...and frame on what is left, the same re-framing that
+                // entering the merge did. A camera still set to hold two
+                // structures shows one of them small and off to a side.
+                const back = this.objectsData[this.currentObjectName];
+                if (back && back.center) {
+                    this.viewerState.center = { x: back.center[0], y: back.center[1],
+                        z: back.center[2] };
+                    this.viewerState.extent = back.maxExtent || null;
+                }
+                this._loadFrameData(this.currentFrame, skipRender);
+                return;
+            }
+
+            // THE TWO MERGES ARE EXCLUSIVE. Overlay puts every frame of one
+            // object in the array; this puts one frame of every shown object.
+            // Both at once is a cross product nobody asked for, and one
+            // sourceGroups() answer cannot describe it.
+            if (this.overlayState.enabled) {
+                const cur = this.objectsData[this.currentObjectName];
+                if (cur) this._exitOverlayMode(cur, this.currentFrame, true);
+            }
+
+            const merged = this._mergeObjects(names);
+            if (!merged) return;
+
+            ms.enabled = true;
+            ms.sourceIdMap = merged.sourceIdMap;
+            ms.sourceNames = merged.sourceNames;
+            ms.sourceOffsets = merged.sourceOffsets;
+            ms.autoColor = merged.autoColor;
+            ms.stats = this._mergedStats(merged.coords);
+            if (ms.stats) {
+                this.viewerState.center = { x: ms.stats.center[0],
+                    y: ms.stats.center[1], z: ms.stats.center[2] };
+                this.viewerState.extent = ms.stats.maxExtent;
+            }
+            this._sourceGroupsCache = null;
+            this.lastOperationMode = 'multi-object';
+            this._invalidateSegmentCache();
+            this._invalidateShadowCache();
+            this.lastShadowRotationMatrix = null;
+            // A selection is a set of position indices against the array it
+            // was made on, and that array has just changed underneath it.
+            this.clearResidueSelection();
+            this._loadDataIntoRenderer(merged, true);
+            this._applyMergedVisibility(merged, skipRender);
+        }
+
+        /**
+         * THE CENTRE AND SIZE OF WHAT IS ON SCREEN, which is not the current
+         * object's once more than one is drawn.
+         *
+         * The camera frames on these: the view scale divides by the extent, the
+         * shadow grid is sized by it, and the ortho slider reads the spread.
+         * Left as the current object's, a second object beside it is simply
+         * out of frame - which is what the first run of this looked like:
+         * both structures merged, mapped and coloured correctly, and LESS ink
+         * on screen than one of them alone.
+         *
+         * Shaped like an object on purpose - center, maxExtent, stdDev,
+         * totalPositions, globalCenterSum - so every reader takes it in place
+         * of one with no other change.
+         */
+        drawnStats() {
+            const ms = this.multiState;
+            if (ms && ms.enabled && ms.stats) return ms.stats;
+            return this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
+        }
+
+        /** The same numbers _recomputeObjectStats gives an object, for a merge. */
+        _mergedStats(coords) {
+            const n = coords ? coords.length : 0;
+            if (!n) return null;
+            let cx = 0; let cy = 0; let cz = 0;
+            for (let i = 0; i < n; i++) {
+                cx += coords[i][0]; cy += coords[i][1]; cz += coords[i][2];
+            }
+            cx /= n; cy /= n; cz /= n;
+            let maxSq = 0; let sumSq = 0;
+            for (let i = 0; i < n; i++) {
+                const dx = coords[i][0] - cx;
+                const dy = coords[i][1] - cy;
+                const dz = coords[i][2] - cz;
+                const d = dx * dx + dy * dy + dz * dz;
+                if (d > maxSq) maxSq = d;
+                sumSq += d;
+            }
+            return {
+                center: [cx, cy, cz],
+                maxExtent: Math.sqrt(maxSq),
+                stdDev: Math.sqrt(sumSq / n),
+                totalPositions: n,
+                globalCenterSum: new Vec3(cx * n, cy * n, cz * n)
+            };
+        }
+
+        /**
+         * EVERY SHOWN OBJECT'S OWN VISIBILITY, in merged indices.
+         *
+         * The mask is a set of position indices, and each object's was written
+         * against its own array. Loaded merged and left alone, the mask of the
+         * object that happened to be current still names 0..k - so the second
+         * object, sitting past the end of it, is entirely hidden. That is what
+         * the first working merge looked like: both structures in the array,
+         * both mapped, both coloured, and only one of them on screen.
+         *
+         * An object nobody has hidden anything in contributes all of itself.
+         */
+        _applyMergedVisibility(merged, skipRender = false) {
+            const names = merged.sourceNames;
+            const offsets = merged.sourceOffsets;
+            const n = merged.coords.length;
+            const chains = merged.chains || [];
+            const vis = new Set();
+
+            for (let s = 0; s < names.length; s++) {
+                const off = offsets[s];
+                const end = (s + 1 < offsets.length) ? offsets[s + 1] : n;
+                const name = names[s];
+                // the current object's mask is LIVE; the rest were saved when
+                // each was switched away from
+                const st = (name === this.currentObjectName)
+                    ? this.visibilityModel
+                    : (this.objectsData[name] && this.objectsData[name].visibilityState);
+                const hasPos = st && st.positions && st.positions.size > 0;
+                const hasChains = st && st.chains && st.chains.size > 0;
+                if (!hasPos && !hasChains) {
+                    for (let i = off; i < end; i++) vis.add(i);
+                    continue;
+                }
+                for (let i = off; i < end; i++) {
+                    const local = i - off;
+                    if ((hasPos && st.positions.has(local))
+                        || (hasChains && st.chains.has(chains[i]))) {
+                        vis.add(i);
+                    }
+                }
+            }
+
+            this.setVisibility({
+                positions: vis,
+                // CHAIN IDS COLLIDE ACROSS OBJECTS - both structures have a
+                // chain A - so the chain half of the mask is resolved into
+                // positions above and cleared here rather than re-applied
+                // across everything.
+                chains: new Set(),
+                paeBoxes: [],
+                visibilityMode: (vis.size === n) ? 'default' : 'explicit'
+            }, skipRender);
+        }
+
+        /**
+         * Where an object's positions start in the merged array. Every set
+         * that is keyed by position index - side chains, bases, elements, the
+         * selection - is written against its own object and read against this.
+         *
+         * @param {string} name
+         * @returns {number} the offset, or 0 when nothing is merged
+         */
+        sourceOffsetOf(name) {
+            const ms = this.multiState;
+            if (!ms || !ms.enabled || !ms.sourceNames) return 0;
+            const at = ms.sourceNames.indexOf(name);
+            return at < 0 ? 0 : ms.sourceOffsets[at];
+        }
+
+        /**
+         * THE RESIDUES WHOSE SIDE CHAINS ARE SWITCHED ON, in merged indices.
+         *
+         * `obj.sidechains` is a set of position indices meaningful against its
+         * own object. Merged, every object after the first sits at an offset,
+         * so read raw the second object's set would grow side chains on the
+         * FIRST object's residues - visibly, and on the wrong atoms.
+         */
+        shownSidechainSet() {
+            const ms = this.multiState;
+            if (!ms || !ms.enabled || !ms.sourceNames) {
+                const obj = this.objectsData?.[this.currentObjectName];
+                return (obj && obj.sidechains) || null;
+            }
+            const out = new Set();
+            for (let s = 0; s < ms.sourceNames.length; s++) {
+                const set = this.objectsData?.[ms.sourceNames[s]]?.sidechains;
+                if (!set) continue;
+                const off = ms.sourceOffsets[s];
+                for (const p of set) out.add(p + off);
+            }
+            return out.size ? out : null;
         }
 
         /**
@@ -10354,7 +10611,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // That is the whole speed argument: this pass is ~90% of a tube
             // frame and it grows with the structure.
             const renderShadows = this.shadowEnabled && !gpuWillDraw;
-            const maxExtent = (object && object.maxExtent > 0) ? object.maxExtent : 30.0;
+            const framed = this.drawnStats() || object;
+            const maxExtent = (framed && framed.maxExtent > 0) ? framed.maxExtent : 30.0;
 
             const shadows = new Float32Array(n);
             const tints = new Float32Array(n);

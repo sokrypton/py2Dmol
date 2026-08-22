@@ -72,7 +72,7 @@ for (const name of ['selectionBandFor']) {
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility',];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -5677,12 +5677,13 @@ t('half-colours cannot be served beside the wrong segments', () => {
     const C = new Function('DEFAULT_CONTACT_COLOR', 'return class {'
         + grab('_calculateSegmentColors') + grab('_segmentElementHalves')
         + grab('_segmentElementColor') + grab('_colorSegmentPosition')
-        + grab('elementAt') + grab('_elementOwnerOf') + st[0]
+        + grab('elementAt') + grab('_elementOwnerOf') + grab('sourceGroups') + st[0]
         + ' _getEffectiveColorMode(){return "chain";}'
         + ' getAtomColor(){ return {r:9,g:9,b:9}; }'
         + '}')({ r: 255, g: 255, b: 0 });
     const v = new C();
     v.overlayState = { enabled: false };
+    v.multiState = { enabled: false };
     v.sidechainMap = new Map([[0, { owner: 0, el: 'C' }], [1, { owner: 0, el: 'O' }],
         [2, { owner: 0, el: 'C' }], [3, { owner: 0, el: 'C' }]]);
 
@@ -6468,6 +6469,166 @@ t('nothing gates connectivity or shadows on the frame map directly', () => {
     // also "do not cast shadow between objects" broken.
     if (!/const shadowGroups = this\.sourceGroups\(\);/.test(shadow)) {
         throw new Error('the shadow pass no longer groups by source');
+    }
+});
+
+// SHOWING SEVERAL OBJECTS: what setShownObjects actually does.
+//
+// The single-object case must not go through the merge at all - it is the case
+// that runs a thousand times a session, and a merge path it does not need is a
+// merge path that can slow it down or quietly change it.
+function shownViewer() {
+    const v = mergeViewer();
+    v.multiState = { enabled: false, sourceIdMap: null, sourceNames: null,
+        sourceOffsets: null, autoColor: null };
+    v.shownObjects = new Set();
+    v.loaded = [];
+    v._loadDataIntoRenderer = function (d) { this.loaded.push(d); };
+    v._loadFrameData = function (f) { this.loaded.push({ single: f }); };
+    v._invalidateSegmentCache = function () { this.segCleared = true; };
+    v._invalidateShadowCache = function () { this.shadowCleared = true; };
+    v._exitOverlayMode = function () { this.exitedOverlay = true;
+        this.overlayState.enabled = false; };
+    v.clearResidueSelection = function () { this.selectionCleared = true; };
+    v.setVisibility = function (patch) { this.mask = patch; };
+    v.overlayState = { enabled: false, frameIdMap: null };
+    v.viewerState = { zoom: 1, center: null, extent: null };
+    return v;
+}
+
+t('showing one object never enters the merge', () => {
+    const v = shownViewer();
+    eq(v.setShownObjects(['A']), false, 'A was already the drawn object');
+    eq(v.loaded.length, 0, 'nothing reloaded');
+    eq(v.multiState.enabled, false, 'no merge');
+});
+
+t('showing two objects merges them and records where each starts', () => {
+    const v = shownViewer();
+    eq(v.setShownObjects(['A', 'B']), true, 'the picture changed');
+    eq(v.multiState.enabled, true, 'merged');
+    eq(v.multiState.sourceNames.join(','), 'A,B', 'sources');
+    eq(v.multiState.sourceOffsets.join(','), '0,3', 'offsets');
+    eq(v.loaded.length, 1, 'loaded once');
+    eq(v.loaded[0].coords.length, 5, 'as one array');
+    // EVERY OBJECT'S OWN VISIBILITY, expanded. Nobody has hidden anything, so
+    // all five positions are visible - left as the current object's mask, the
+    // second object is hidden entirely because the mask never mentions it.
+    eq(v.mask.positions.size, 5, 'both objects are visible');
+    eq(v.mask.visibilityMode, 'default', 'nothing is hidden, so nothing is explicit');
+    eq(v.selectionCleared, true, 'the selection was made against the old array');
+    eq(v.segCleared && v.shadowCleared, true, 'the caches for both were dropped');
+    // THE CAMERA HAS TO FRAME THE LOT. Left on the current object, the second
+    // one is simply out of shot - measured in the browser as two structures
+    // correctly merged, mapped and coloured, with LESS ink than one alone.
+    if (!v.viewerState.center) throw new Error('the view was not re-centred');
+    if (!(v.viewerState.extent > 0)) throw new Error('the view extent still fits one object');
+    const st = v.drawnStats();
+    if (!st || !(st.maxExtent > 0) || st.totalPositions !== 5) {
+        throw new Error('drawnStats does not describe the merge');
+    }
+});
+
+t('an object that has something hidden keeps it hidden in the merge', () => {
+    const v = shownViewer();
+    // B has one of its two positions hidden; A has nothing hidden at all
+    v.objectsData.B.visibilityState = { positions: new Set([1]), chains: new Set() };
+    v.setShownObjects(['A', 'B']);
+    eq(Array.from(v.mask.positions).sort((x, y) => x - y).join(','), '0,1,2,4',
+        "A whole, and B's second position only");
+    eq(v.mask.visibilityMode, 'explicit', 'something is hidden');
+});
+
+t('dropping back to one object leaves the merge behind', () => {
+    const v = shownViewer();
+    v.setShownObjects(['A', 'B']);
+    v.loaded = [];
+    eq(v.setShownObjects(['A']), true, 'changed');
+    eq(v.multiState.enabled, false, 'merge off');
+    eq(v.multiState.sourceIdMap, null, 'and its map with it');
+    eq(v.loaded.length, 1, 'reloaded');
+    eq(v.loaded[0].single, 0, 'as a plain frame, not a merge');
+});
+
+t('a merge of objects and a merge of frames are never both on', () => {
+    const v = shownViewer();
+    v.overlayState = { enabled: true, frameIdMap: [0, 0, 0] };
+    v.setShownObjects(['A', 'B']);
+    eq(v.exitedOverlay, true, 'the overlay was left first');
+    eq(v.multiState.enabled, true, 'and the object merge is on');
+});
+
+t('a name that is not loaded is ignored, never drawn as nothing', () => {
+    const v = shownViewer();
+    eq(v.setShownObjects(['nope']), false, 'no change');
+    eq(v.drawnObjects().join(','), 'A', 'still the current object');
+    // ...and it is not REMEMBERED either. Kept, it would lie in wait: load an
+    // object under that name later and it appears on screen unasked, because
+    // a list the user never edited already had it ticked.
+    eq(v.shownObjects.has('nope'), false, 'the stale name was not kept');
+});
+
+t("each object's side chains are read at its own offset", () => {
+    const v = shownViewer();
+    v.objectsData.A.sidechains = new Set([1]);
+    v.objectsData.B.sidechains = new Set([0]);
+    eq(Array.from(v.shownSidechainSet()).join(','), '1', 'one object, no offset');
+    v.setShownObjects(['A', 'B']);
+    eq(Array.from(v.shownSidechainSet()).sort().join(','), '1,3',
+        "B's residue 0 is merged position 3");
+    eq(v.sourceOffsetOf('B'), 3, 'the offset itself');
+    eq(v.sourceOffsetOf('A'), 0, 'the first object is not moved');
+});
+
+// ...and the colour. Two structures put side by side to compare come out
+// identical under every other scheme - by chain both start at chain A, by
+// rainbow both run blue to red - so a merged view colours by OBJECT.
+t('a merged view gives each object a colour of its own', () => {
+    // getAtomColor reaches a good deal of the module - the palette, the colour
+    // hierarchy, the pLDDT ramps - so it is lifted with those supplied rather
+    // than dragged in whole. The palette here is a stand-in on purpose: what
+    // is being scored is which colour each position is sent to, not which
+    // colours the palette holds.
+    const src3 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const grab3 = (n) => {
+        const i2 = src3.indexOf('\n        ' + n + '(');
+        if (i2 < 0) throw new Error('cannot lift ' + n);
+        let j = src3.indexOf('{', i2); let d = 0; let k = j;
+        for (; k < src3.length; k++) {
+            if (src3[k] === '{') d++; else if (src3[k] === '}' && !--d) break;
+        }
+        return src3.slice(i2, k + 1);
+    };
+    const C3 = new Function('resolveColorHierarchy', 'chainColors',
+        'chainColorsColorblind', 'DEFAULT_GREY', 'getPlddtColor', 'getPlddtAFColor',
+        'return class {' + grab3('getAtomColor') + grab3('sourceGroups')
+        + ' _getEffectiveColorMode(){ return "object"; }'
+        + ' _sidechainColorOf(){ return null; }'
+        + ' _colorPositionFor(i){ return i; }'
+        + ' getColorOverride(){ return null; }'
+        + '}')(() => ({ resolvedMode: null, resolvedLiteralColor: null }),
+            ['#ff0000', '#00ff00', '#0000ff'], ['#ff0000', '#00ff00', '#0000ff'],
+            { r: 160, g: 160, b: 160 }, () => ({ r: 0, g: 0, b: 0 }),
+            () => ({ r: 0, g: 0, b: 0 }));
+    const v = new C3();
+    v.coords = new Array(4).fill(0);
+    v.objectsData = {}; v.currentObjectName = 'A';
+    v.overlayState = { enabled: false, frameIdMap: null };
+    v.multiState = { enabled: true, sourceIdMap: [0, 0, 1, 1] };
+    v.positionTypes = ['P', 'P', 'P', 'P'];
+    v.chains = ['A', 'A', 'A', 'A'];
+    v.plddts = [50, 50, 50, 50];
+    const a = v.getAtomColor(0, 'object');
+    const b = v.getAtomColor(3, 'object');
+    if (a.r === b.r && a.g === b.g && a.b === b.b) {
+        throw new Error('both objects came out the same colour');
+    }
+    eq(JSON.stringify(v.getAtomColor(1, 'object')), JSON.stringify(a),
+        'one object is one colour');
+    // a ligand is grey in every other mode; here it says which object it is on
+    v.positionTypes = ['L', 'P', 'P', 'L'];
+    if (JSON.stringify(v.getAtomColor(0, 'object')) === JSON.stringify(v.getAtomColor(3, 'object'))) {
+        throw new Error('ligands were greyed and stopped saying which object');
     }
 });
 
