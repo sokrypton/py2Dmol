@@ -351,15 +351,13 @@
     background: var(--color-gray-400);
 }
 
-/* Active state for grey buttons (used by nav-button.active) */
-.btn-grey.active,
-.nav-button.active {
+/* Active state for a grey button. */
+.btn-grey.active {
     background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-hover) 100%);
     color: white;
 }
 
-.btn-grey.active:hover:not(:disabled),
-.nav-button.active:hover:not(:disabled) {
+.btn-grey.active:hover:not(:disabled) {
     background: linear-gradient(135deg, var(--color-success-hover) 0%, var(--color-success-dark) 100%);
 }
 
@@ -381,8 +379,6 @@
     width: 40px;
     /* Height inherits from btn/btn-small; width stays fixed for icons */
 }
-
-
 
 
 /* Specific button overrides (for backward compatibility) */
@@ -426,30 +422,6 @@
     text-align: center;
 }
 
-/* Navigation buttons - extends .btn base class */
-/* Note: nav-button should be used with .btn class: <button class="btn nav-button"> */
-
-.nav-button.btn-small {
-    line-height: var(--btn-height-small);
-}
-
-/* Greyed-out state for navigation buttons */
-.nav-button.greyed-out {
-    background: var(--color-gray-100);
-    color: var(--color-gray-400);
-    cursor: not-allowed;
-    opacity: 0.6;
-}
-
-.nav-button.greyed-out:hover {
-    background: var(--color-gray-100);
-    color: var(--color-gray-400);
-}
-
-/* Scoped nav-button styles for viewer instance (backward compatibility) */
-.py2dmol-viewer-instance .nav-button {
-    line-height: var(--btn-h);
-}
 
 /* ============================================================================
    TOGGLE SWITCHES (UNIFIED STYLE)
@@ -1133,37 +1105,6 @@ table.layout-table td {
     vertical-align: top;
 }
 
-/* Selection Mode Toggle */
-
-.selection-mode-toggle label {
-    flex: 1;
-    text-align: center;
-    padding: 8px 12px;
-    cursor: pointer;
-    background-color: #f9fafb;
-    color: #4b5563;
-    font-size: 14px;
-    font-weight: 500;
-    transition: background-color 0.2s ease-in-out, color 0.2s ease-in-out;
-    position: relative;
-}
-
-.selection-mode-toggle label:first-of-type {
-    border-right: 1px solid #d1d5db;
-}
-
-.selection-mode-toggle input[type="radio"] {
-    display: none;
-}
-
-.selection-mode-toggle input[type="radio"]:checked+span {
-    color: #ffffff;
-}
-
-.selection-mode-toggle label:has(input:checked) {
-    background-color: #4f46e5;
-    color: #ffffff;
-}
 
 /* [EDIT] Removed old opacity styles for .residue-span */
 
@@ -1202,21 +1143,6 @@ table.layout-table td {
 
 .sequence-content:not(.hidden) {
     margin-top: 8px;
-}
-
-
-.sequence-toggle-btn:hover {
-    color: #1f2937;
-}
-
-.sequence-toggle-btn .chevron {
-    font-size: 24px;
-    color: #6b7280;
-    transition: transform 0.2s ease;
-    line-height: 1;
-    font-weight: normal;
-    display: inline-block;
-    vertical-align: middle;
 }
 
 
@@ -1597,21 +1523,6 @@ table.layout-table td {
     display: block;
 }
 
-/* ============================================================================
-   LINK BUTTON (for README and other links)
-   ============================================================================ */
-
-.link-button:hover,
-.link-button:focus-visible {
-    text-decoration: underline;
-    color: #2563eb;
-}
-
-.link-button:disabled {
-    color: #9ca3af;
-    cursor: not-allowed;
-    pointer-events: none;
-}
 
 /* A TOGGLE THAT LIVES OUTSIDE THE VIEWER. The .btn-toggle rules are scoped to
    .py2dmol-viewer-instance, and Use GPU sits in the page header beside Save and

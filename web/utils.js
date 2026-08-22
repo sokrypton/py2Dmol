@@ -2358,8 +2358,6 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
     const atomSerialToIndex = new Map();
     // Also map chain:seq:atomName to index for CIF struct_conn resolution
     const atomIdToIndex = new Map();
-    // Map resKey:atomName to new index for chemCompBondMap resolution
-    const resAtomIdToIndex = new Map();
     // the residues that contribute more than one position - see the ligand
     // branch below, and the chem_comp_bond pass that consumes this
     const multiAtomResidues = [];

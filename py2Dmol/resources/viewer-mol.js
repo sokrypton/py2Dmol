@@ -11073,10 +11073,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const displayWidth = config.display?.size[0] || 300;
     const displayHeight = config.display?.size[1] || 300;
 
-    const paeSize = Array.isArray(config.pae?.size) || (typeof config.pae?.size === 'object' && config.pae.size.length !== undefined)
-        ? config.pae.size[0]
-        : config.pae?.size || 300;
-
     // Initialize canvas with DPI scaling (before renderer creation)
     canvas.width = displayWidth * currentDPR;
     canvas.height = displayHeight * currentDPR;
