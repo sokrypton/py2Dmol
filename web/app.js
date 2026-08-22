@@ -2262,14 +2262,17 @@ function setupClipPanel() {
             if (r && r.setClipFade) r.setClipFade(parseFloat(fadeEl.value) / 100);
         });
     }
-    const reset = document.getElementById('clipResetButton');
-    if (reset) {
-        reset.addEventListener('click', (e) => {
+    // AUTO: THE SLAB THE SELECTION ASKS FOR, and the rest state when there is
+    // no selection to ask. It replaces Reset rather than joining it - with
+    // nothing picked the two are the same answer, and a cut is nearly always
+    // wanted around something rather than at a depth chosen by dragging.
+    const auto = document.getElementById('clipAutoButton');
+    if (auto) {
+        auto.addEventListener('click', (e) => {
             e.preventDefault();
             const r = viewerApi?.renderer;
-            if (!r || !r.clipSlabOn()) return;
-            // Back to the rest state, which cuts nothing from any angle.
-            const slab = r.clipSlabDefault();
+            if (!r || !r.clipSlabForSelection) return;
+            const slab = r.clipSlabForSelection();
             if (!slab) return;
             r.setClipSlab(slab.near, slab.far);
             fillClipPanel();

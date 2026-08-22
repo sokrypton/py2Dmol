@@ -321,7 +321,9 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                              the right, which cannot cross. No figures: where the knobs
                              are IS the answer, and the picture shows the rest.
                              Switching Clip off puts the panel away and LEAVES the cut;
-                             Reset is what uncuts. -->
+                             AUTO is what re-cuts: it fits the slab to the selection,
+                             and with nothing selected that is the uncut rest state -
+                             which is what the button used to say Reset for. -->
                         <style>
                             /* [hidden] is a UA rule and an inline display:flex outranks
                                it - the same trap the style panel documents below. */
@@ -393,7 +395,9 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     <input type="range" id="clipFar" aria-label="Far clipping plane">
                                     <input type="range" id="clipNear" aria-label="Near clipping plane">
                                 </div>
-                                <button id="clipResetButton" class="btn btn-grey btn-small" style="font-size: 11px;">Reset</button>
+                                <button id="clipAutoButton" class="btn btn-grey btn-small"
+                                    title="Fit the slab to the selection - or uncut, with nothing selected"
+                                    style="font-size: 11px;">Auto</button>
                             </div>
                             <div style="display: flex; flex-direction: row; align-items: center; gap: 8px;">
                                 <label for="clipFadeSlider" class="font-medium text-gray-700"
@@ -402,7 +406,7 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                 <input type="range" id="clipFadeSlider" min="0" max="100" value="10" step="5"
                                     style="flex: 1; min-width: 0; outline: none;"
                                     title="Soft edge: how far outside each plane the drawing fades out instead of stopping. 0 is a hard cut.">
-                                <!-- Reset stands over this space on the row above; without
+                                <!-- Auto stands over this space on the row above; without
                                      it the two tracks would end in different places, which
                                      is the whole reason the rows were split. -->
                                 <span aria-hidden="true" id="clipResetSpacer"

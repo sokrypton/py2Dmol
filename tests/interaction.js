@@ -60,7 +60,7 @@ for (const name of ['selectionBandFor']) {
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -1852,13 +1852,90 @@ t('the clip is one range control, and nothing is drawn over the picture', () => 
     // two separate sliders is what was confusing.
     const panel = html.slice(html.indexOf('id="clipPanel"'),
         html.indexOf('id="styleAppearanceContainer"'));
-    for (const id of ['clipFar', 'clipNear', 'clipResetButton']) {
+    for (const id of ['clipFar', 'clipNear', 'clipAutoButton']) {
         if (!panel.includes('id="' + id + '"')) {
             throw new Error('the clip panel has no ' + id);
         }
     }
     if (!/#clipRange input\[type=range\][^}]*position: absolute/.test(html)) {
         throw new Error('the two handles are not on one track');
+    }
+});
+
+t('Auto fits the slab to the selection, and uncuts without one', () => {
+    // A CUT IS WANTED AROUND SOMETHING. You pick a site and you want the rest
+    // of the structure out of the way; doing that by hand means dragging two
+    // knobs against a picture that changes as you drag, when the answer is
+    // already known - the selection has a depth range in this view.
+    const v = new Cls();
+    const pos = [[0, 0, -30], [0, 0, 3], [0, 0, 5], [0, 0, 30]];
+    v.coords = pos.map(([x, y, z]) => ({ x, y, z }));
+    v.rotatedCoords = pos.map(([x, y, z]) => ({ x, y, z }));
+    v._rotPending = false;
+    v.lineWidth = 3;
+    v.clipNear = 40; v.clipFar = -40;
+    v.render = () => {};                  // setClipSlab repaints
+    v.residueSelection = new Set([1, 2]);
+    const slab = v.clipSlabForSelection();
+    // the pad is half the line width to clear the drawn radius, and the rest
+    // is context - 3 A at the default width
+    if (Math.abs(slab.near - 8) > 1e-6 || Math.abs(slab.far - 0) > 1e-6) {
+        throw new Error(`the slab is ${slab.far}..${slab.near}, not the selection's`
+            + ' 3..5 with room to breathe');
+    }
+    // the two positions at +/-30 are outside it, which is the point
+    if (v.clipAccepts && (v.setClipSlab(slab.near, slab.far), v.clipAccepts(30))) {
+        throw new Error('the far end of the structure survived the auto slab');
+    }
+    // ...AND WITH NOTHING SELECTED IT IS THE REST STATE, which is the answer
+    // the Reset button used to give: no selection, no context, and the only
+    // sensible context-free slab is all of it.
+    v.residueSelection = null;
+    const rest = v.clipSlabForSelection();
+    const base = v.clipSlabDefault();
+    if (!rest || !base || Math.abs(rest.near - base.near) > 1e-6
+        || Math.abs(rest.far - base.far) > 1e-6) {
+        throw new Error('Auto with no selection is not the rest state, so'
+            + ' replacing Reset with it took away the only way to uncut');
+    }
+    // ...and it asks the MASK, the same as Orient does: a hidden atom is not
+    // part of what the view is being cut around. Hide the one at z = 5 and the
+    // slab closes onto the one at z = 3.
+    v.residueSelection = new Set([1, 2]);
+    v.visiblePositions = new Set([0, 1, 3]);
+    const half = v.clipSlabForSelection();
+    if (Math.abs(half.near - 6) > 1e-6 || Math.abs(half.far - 0) > 1e-6) {
+        throw new Error(`hiding half the selection left the slab at ${half.far}`
+            + `..${half.near}, not closed onto what is still drawn`);
+    }
+    // THE THICKNESS IS THE SELECTION'S RADIUS, NOT ITS DEPTH IN THIS VIEW,
+    // because the user is going to rotate. A site lying flat in the screen
+    // plane has almost no depth: cut to that and a quarter turn stands it on
+    // end and slices it in half. These two are 20 A apart ACROSS the screen
+    // and at the same depth, so a depth-range slab would be 6 A thick (the pad
+    // alone) and this one is 26.
+    const flat = new Cls();
+    const across = [[-10, 0, 0], [10, 0, 0], [0, 0, 25]];
+    flat.coords = across.map(([x, y, z]) => ({ x, y, z }));
+    flat.rotatedCoords = across.map(([x, y, z]) => ({ x, y, z }));
+    flat._rotPending = false;
+    flat.lineWidth = 3;
+    flat.clipNear = 40; flat.clipFar = -40;
+    flat.render = () => {};
+    flat.residueSelection = new Set([0, 1]);
+    const wide = flat.clipSlabForSelection();
+    if (Math.abs((wide.near - wide.far) - 26) > 1e-6) {
+        throw new Error(`a selection 20 A wide and flat to the screen got a slab`
+            + ` ${(wide.near - wide.far).toFixed(1)} A thick - it will be cut in`
+            + ' half the moment the model turns');
+    }
+    // ...though a selection that is ENTIRELY hidden frames on itself anyway -
+    // framingPositions' own guard, shared with Orient, and the alternative is
+    // an Auto that silently uncuts because of something you hid earlier.
+    v.visiblePositions = new Set([0, 3]);
+    const allHidden = v.clipSlabForSelection();
+    if (Math.abs(allHidden.near - 8) > 1e-6) {
+        throw new Error('a fully hidden selection no longer frames on itself');
     }
 });
 

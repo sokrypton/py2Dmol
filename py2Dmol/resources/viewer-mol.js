@@ -3555,6 +3555,82 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
+         * THE SLAB THAT HOLDS THE SELECTION - what Auto sets.
+         *
+         * A cut is nearly always wanted around something: you pick a site and
+         * you want the rest of the structure out of the way. Doing that by hand
+         * means dragging two knobs against a picture that changes as you drag,
+         * and the answer is already known - the selection has a depth range in
+         * this view, and the slab is that range with room to breathe.
+         *
+         * WITH NOTHING SELECTED IT IS THE REST STATE, which cuts nothing from
+         * any angle. That is the same answer the Reset button used to give, so
+         * Auto replaces it rather than sitting beside it: no selection, no
+         * context, and the only sensible context-free slab is all of it.
+         *
+         * The set is expanded the way Orient expands it (framingPositions): a
+         * residue's side-chain atoms and a ligand's other atoms belong to the
+         * thing you picked, and hidden ones do not.
+         *
+         * THICK ENOUGH TO SURVIVE A ROTATION. The obvious slab is the
+         * selection's depth range in this view, and it is wrong the moment the
+         * model turns: a site lying flat in the screen plane has almost no
+         * depth, so that slab is a few Angstrom thick, and a quarter turn
+         * stands the site up on end and cuts it in half.
+         *
+         * The selection's RADIUS does not turn. Half the thickness is the
+         * distance from the selection's centre to the furthest thing in it, so
+         * the slab holds the whole of it whatever angle it is seen from - the
+         * same reason a bounding sphere is used for framing rather than a
+         * bounding box.
+         *
+         * Its CENTRE is still this view's: a slab is camera space and its
+         * depth has to come from somewhere. That part goes stale on a rotation
+         * about anything other than the selection itself, which is what makes
+         * this a button rather than a mode - and pressing Orient first pins
+         * the view to the selection, after which it does not move at all.
+         */
+        clipSlabForSelection(set) {
+            const base = this.clipSlabDefault();
+            const raw = set || (this.selectionInk ? this.selectionInk()
+                : this.residueSelection);
+            const sel = this.framingPositions
+                ? this.framingPositions(raw) : raw;
+            if (!sel || !sel.size) return base;
+            this._ensureRotated();
+            const rc = this.rotatedCoords;
+            const n = this.coords ? this.coords.length : 0;
+            if (!rc || !n) return base;
+            // the centre, and then the furthest thing from it. Both off the
+            // ROTATED coordinates - a rotation does not change a distance, so
+            // the radius is the same number in any view, and the centre's
+            // depth is the one part that has to be this view's.
+            let cx = 0; let cy = 0; let cz = 0; let m = 0;
+            for (const i of sel) {
+                if (!(i >= 0 && i < n) || !rc[i]) continue;
+                cx += rc[i].x; cy += rc[i].y; cz += rc[i].z; m++;
+            }
+            if (!m) return base;
+            cx /= m; cy /= m; cz /= m;
+            let r2 = 0;
+            for (const i of sel) {
+                if (!(i >= 0 && i < n) || !rc[i]) continue;
+                const dx = rc[i].x - cx; const dy = rc[i].y - cy;
+                const dz = rc[i].z - cz;
+                const d = dx * dx + dy * dy + dz * dz;
+                if (d > r2) r2 = d;
+            }
+            // ROOM TO BREATHE. A position is a point and the thing drawn at it
+            // has a radius, so a slab through the extreme atoms cuts the very
+            // residues it was asked to show. Half the line width clears the
+            // geometry and the rest is context - enough to see what the site
+            // sits in, not so much that the cut stops being one.
+            const pad = 1.5 + 0.5 * (this.lineWidth || 3);
+            const half = Math.sqrt(r2) + pad;
+            return { near: cz + half, far: cz - half };
+        }
+
+        /**
          * Set the slab. near is the plane closer to the camera (larger z), far
          * the one further away; near <= far is refused rather than swapped,
          * because a slab of nothing is a drawing of nothing and reads as a bug.
