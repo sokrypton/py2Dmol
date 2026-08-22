@@ -48,6 +48,15 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_GAIN',
     if (!line) throw new Error('constant not found in viewer-mol.js: ' + name);
     eval('global.' + line.trim().replace('const ', ''));
 }
+// ...and the module-level FUNCTIONS they call, for the same reason: a lifted
+// method that reaches one of these gets a ReferenceError, which reads as ten
+// unrelated halo tests breaking at once.
+for (const name of ['selectionBandFor']) {
+    const at = molSrc.indexOf('function ' + name + '(');
+    if (at < 0) throw new Error('function not found in viewer-mol.js: ' + name);
+    eval('global.' + name + ' = ' + molSrc.slice(at, molSrc.indexOf('\n    }', at) + 6)
+        .replace('function ' + name, 'function'));
+}
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
@@ -1896,6 +1905,39 @@ t('the nucleic trace is smoothed, and everything nucleic reads the same trace', 
     }
 });
 
+t('the selection band holds its proportion at every size', () => {
+    // THE BAND STOPPED TRACKING WHATEVER GOT BIG ON SCREEN. Its margin is
+    // proportional - 1.3 x the drawn radius, which is what makes a highlight
+    // look the same at every zoom - but the ceiling on it was a flat 14 px. A
+    // ribbon is 2-7 px and never reached it, so the rule looked right; zoom in,
+    // or mark a metal (27 px at zoom 4 against a helix's 7), and the margin is
+    // held at 14 while the thing keeps growing, so the band tightens onto it.
+    // Reported as the highlight not tracking the zoom. It was not the zoom, it
+    // was the size on screen - which is exactly what a flat pixel clamp cannot
+    // follow, at either end.
+    // the shipped rule itself, lifted with the rest of the module (see the top)
+    const bandFor = global.selectionBandFor;
+    // ...the proportion it exists to hold. 2.3 = 1 + the 1.3 gain, as a radius.
+    for (const rad of [2, 3.5, 5.4, 7, 10, 13]) {
+        const ratio = bandFor(rad, 1) / 2 / rad;
+        if (Math.abs(ratio - 2.3) > 0.02) {
+            throw new Error(`a mark of ${rad} px gets a band ${ratio.toFixed(2)}x its`
+                + ' radius, not the 2.3x the gain asks for');
+        }
+    }
+    // big marks may fall off it - a band cannot grow without limit - but they
+    // must not collapse onto the thing the way a flat ceiling made them
+    for (const rad of [20, 27, 50]) {
+        const ratio = bandFor(rad, 1) / 2 / rad;
+        if (ratio < 1.7) {
+            throw new Error(`a mark of ${rad} px gets only ${ratio.toFixed(2)}x its`
+                + ' radius - the ceiling is flat again and the band stops tracking');
+        }
+    }
+    // ...and the floor still marks a hairline
+    if (bandFor(0.4, 1) / 2 < 2.5) throw new Error('a hairline gets no band at all');
+});
+
 t('every projection sizes a position through the same rule', () => {
     // FOUR PROJECTIONS fill screenRadius - the 2D pass at the end of its
     // render, the GPU's projectPositions, _projectForPicking, and the older
@@ -2705,9 +2747,16 @@ t('the selection band is a proportion of what it marks, not a fixed width', () =
         }
     }
     if (zoomedOut > 8) throw new Error('the floor is too heavy: ' + zoomedOut);
-    // the ceiling keeps a zoomed-in band an annotation rather than a slab
-    if (zoomedIn > 2 * (34.6 * 0.5 + 14) + 0.01) {
-        throw new Error('the reach is uncapped: ' + zoomedIn);
+    // The ceiling keeps a zoomed-in band an annotation rather than a slab -
+    // but PROPORTIONALLY. It used to be a flat 14 px, and that is the size at
+    // which the band stops following what it marks: a ribbon never reaches it,
+    // so the rule looked right, while anything big on screen - a metal at zoom
+    // 4 is 27 px against a helix's 7 - had its margin held while it kept
+    // growing. Reported as the highlight not tracking the zoom. The bound is
+    // therefore the gain itself: 1 + 1.3 as a radius, and never more.
+    const reach = zoomedIn / 2 / (34.6 * 0.5);
+    if (reach > 1 + SELECTION_HALO_GAIN + 0.02) {
+        throw new Error('the reach is uncapped: ' + reach.toFixed(2) + 'x');
     }
 });
 

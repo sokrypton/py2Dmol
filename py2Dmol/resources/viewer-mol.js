@@ -493,11 +493,36 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     //
     // Proportional keeps the same look at every zoom: 1.3 reproduces the old
     // width at the default view (5.4 px radius, 7.05 against 7). The floor
-    // keeps a hairline structure marked at all; the ceiling stops a band 45 px
-    // wide at zoom 4, where proportion alone stops reading as an annotation.
+    // keeps a hairline structure marked at all; the ceiling stops proportion
+    // alone from turning the band into the picture.
+    //
+    // THE CEILING GROWS WITH THE MARK, and it has to. Flat, it is the point
+    // where the band stops tracking anything: a ribbon at the default view is
+    // 2-7 px and never reaches it, so it looked right, while anything that gets
+    // BIG on screen - zoom in, or a metal, whose ball is 27 px at zoom 4
+    // against a helix's 7 - asks for 35 px of margin, is given 14, and the
+    // band tightens onto the thing as you zoom instead of holding its
+    // proportion. Reported as the highlight not tracking the zoom, and it was
+    // not the zoom: it was the size on screen, which is what a flat pixel
+    // clamp cannot follow. Growing at half the radius keeps the annotation
+    // bounded - a band 100 px across is still not 130 - while leaving the
+    // proportional rule in charge everywhere it used to be.
     // What fraction of the PICKING radius the band is measured off - see
     // radiusAt. Half, which is about what the geometry is actually drawn at.
     const SELECTION_HALO_RADIUS_FRAC = 0.5;
+    /**
+     * How wide the band over something of drawn radius `rad` is - a DIAMETER,
+     * because it is used as a stroke width.
+     *
+     * Module scope so it can be tested: the proportion it holds is the whole
+     * point of it, and it is not visible in a screenshot of one zoom.
+     */
+    function selectionBandFor(rad, pxScale) {
+        const r = rad || 2;
+        const ceiling = SELECTION_HALO_MAX_PX * pxScale + 0.5 * r;
+        return 2 * (r + Math.min(ceiling,
+            Math.max(SELECTION_HALO_MIN_PX * pxScale, SELECTION_HALO_GAIN * r)));
+    }
     const SELECTION_HALO_GAIN = 1.3;
     const SELECTION_HALO_MIN_PX = 2.5;
     const SELECTION_HALO_MAX_PX = 14;
@@ -6939,6 +6964,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * side chain that turned grey when you coloured its residue would lose
          * the thing the colour was for.
          */
+        static get SELECTION_BAND() { return selectionBandFor; }
+
         static get ELEMENT_COLORS() {
             return {
                 N: { r: 51, g: 51, b: 255 },      // blue
@@ -8029,12 +8056,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const sdr = this.screenDrawRadius;
             const radiusAt = (i) => (sdr && sdr[i])
                 || ((sr[i] || 2) * SELECTION_HALO_RADIUS_FRAC);
-            const bandFor = (r) => {
-                const rad = r || 2;
-                return 2 * (rad + Math.min(SELECTION_HALO_MAX_PX * pxScale,
-                    Math.max(SELECTION_HALO_MIN_PX * pxScale,
-                        SELECTION_HALO_GAIN * rad)));
-            };
+            const bandFor = (r) => selectionBandFor(r, pxScale);
             // ...QUANTISED, so a hundred residues do not become a hundred
             // strokes: half a pixel is finer than the eye reads on a band.
             const bucketOf = (r) => Math.round(bandFor(r) * 2) / 2;
