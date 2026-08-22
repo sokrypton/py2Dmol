@@ -5208,6 +5208,33 @@ t('the style toggles are grouped together, three to a row', () => {
 // Safe in both because it is only ever a REQUEST: the control removes itself
 // when WebGL2 is absent, the renderer falls back to the 2D path for anything
 // the GPU declines, and PNG/SVG export goes through 2D whatever it says.
+t('the render path has a seam for a second object', () => {
+    // GROUNDWORK, not a feature: an Object list that shows several structures
+    // at once needs a render pass that can run twice in one frame, and a pass
+    // that clears the canvas cannot. See MULTI_OBJECT_PLAN.md.
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    if (!/_clearCanvas\(ctx\) \{/.test(mol)) {
+        throw new Error('the clear is still welded into the drawing pass');
+    }
+    if (!/if \(!\(opts && opts\.skipClear\)\) this\._clearCanvas\(ctx\);/.test(mol)) {
+        throw new Error('a second object cannot be drawn without wiping the first');
+    }
+    // ...and the question "which objects" is asked in one place, so the day it
+    // answers with several, every caller already does the right thing.
+    const at = mol.indexOf('drawnObjects() {');
+    if (at < 0) throw new Error('nothing owns the list of drawn objects');
+    const body = mol.slice(at, mol.indexOf('\n        }', at));
+    if (!/this\.shownObjects/.test(body) || !/this\.currentObjectName/.test(body)) {
+        throw new Error('drawnObjects does not fall back to the current object,'
+            + ' which is every session today');
+    }
+    // an object can be deleted while the set still names it
+    if (!/for \(const name of Object\.keys\(all\)\)/.test(body)) {
+        throw new Error('the shown set is trusted without checking the objects'
+            + ' still exist');
+    }
+});
+
 t('an object switch draws once, and after the frames are in', () => {
     // A switch is followed by half a dozen things that each ask for a render -
     // the visibility mask, the scatter, the sequence view, and app.js

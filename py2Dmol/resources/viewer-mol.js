@@ -1351,6 +1351,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Batch loading flag to suppress unnecessary renders during bulk data loading
             this._batchLoading = false;
+            // WHICH OBJECTS ARE ON SCREEN. Empty means "just the current one",
+            // which is every session today; the object list will write names
+            // into it. Read through drawnObjects(), never directly, so the
+            // day it holds several the callers need no changing.
+            // See MULTI_OBJECT_PLAN.md.
+            this.shownObjects = new Set();
 
             // Width multipliers are now always based on TYPE_BASELINES (no scaling factors needed)
 
@@ -9710,8 +9716,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         // Core rendering logic - can render to any context (canvas, SVG, etc.)
-        _renderToContext(ctx, displayWidth, displayHeight) {
-            // Clear the full canvas in device pixels, independent of current transform
+        /**
+         * PAINT THE GROUND. Lifted out of _renderToContext so that one frame
+         * can hold more than one object: a pass that clears cannot be run
+         * twice. See MULTI_OBJECT_PLAN.md - this is the seam the rest of that
+         * work hangs off, and on a single object it is the same two calls in
+         * the same order as before.
+         */
+        _clearCanvas(ctx) {
             ctx.save();
             ctx.setTransform(1, 0, 0, 1, 0, 0);
             if (this.isTransparent) {
@@ -9721,6 +9733,36 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
             }
             ctx.restore();
+        }
+
+        /**
+         * WHICH OBJECTS THIS FRAME DRAWS, in the order they are drawn.
+         *
+         * One, today - and the callers ask through here rather than reading
+         * currentObjectName so that the day it returns several, they already
+         * do the right thing. `shownObjects` is the set the object list will
+         * write to; anything not in objectsData is ignored rather than
+         * dropped, because an object can be deleted while the set remembers
+         * it.
+         */
+        drawnObjects() {
+            const all = this.objectsData || {};
+            const want = this.shownObjects;
+            if (want && want.size) {
+                const out = [];
+                // the load order, so the list and the painting agree
+                for (const name of Object.keys(all)) {
+                    if (want.has(name)) out.push(name);
+                }
+                if (out.length) return out;
+            }
+            return this.currentObjectName ? [this.currentObjectName] : [];
+        }
+
+        _renderToContext(ctx, displayWidth, displayHeight, opts) {
+            // ...unless the caller is compositing several objects and has
+            // already painted the ground for this frame.
+            if (!(opts && opts.skipClear)) this._clearCanvas(ctx);
 
             // Check segment length
             if (this.coords.length === 0 || this.segmentIndices.length === 0 || !this.currentObjectName) {
