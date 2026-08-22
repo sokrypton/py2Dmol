@@ -1119,6 +1119,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // it, so richardson kept ribbon's 3.0 while taking every other
             // preset value.
             this._lineWidthUserSet = false;
+            // WIDTH IS REMEMBERED PER STYLE. The slider is one control but it
+            // is not one quantity: in tube it is the radius of the tube, in
+            // cartoon it scales the ribbon. A width dragged in tube used to
+            // follow the switch into cartoon and arrive as a ribbon several
+            // times too wide - invisible until opening a second, smaller
+            // structure started switching style on its own, and then it looked
+            // like the tube's settings being copied into cartoon, which is
+            // what it was.
+            this._widthByStyle = {};
             // Same idea for THICKNESS, and for the ligand's sake. The plain
             // cartoon preset sets thickness 0 because a flat ribbon is the look
             // it means; a ligand stick at 0 is not a thinner stick, it is a
@@ -2304,7 +2313,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // isTrusted is false for any event dispatched from script
                     // and true only for one the browser raised from real input,
                     // which is exactly the distinction wanted here.
-                    if (e.isTrusted) this._lineWidthUserSet = true;
+                    if (e.isTrusted) {
+                        this._lineWidthUserSet = true;
+                        // ...and against the style it was made in, so the other
+                        // style keeps its own
+                        if (!this._widthByStyle) this._widthByStyle = {};
+                        this._widthByStyle[this.style] = this.lineWidth;
+                    }
                     if (!this.isPlaying) {
                         this.render('updateUIControls: lineWidthSlider');
                     }
@@ -2518,7 +2533,26 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * the dropdown, the panel row filter, the delegation check - carried a
          * special case reading "...or richardson" to undo the mistake.
          */
-        setStyle(style) {
+        /**
+         * @param {string} style 'tube' or 'cartoon'
+         * @param {boolean} [quiet] set the style WITHOUT drawing. For a caller
+         *   that is about to draw anyway - _switchToObject restores an object's
+         *   style before its frames are loaded, so the render here would build
+         *   the picture out of the PREVIOUS object's coordinates and throw it
+         *   away a moment later. Measured on a ribosome-to-peptide switch:
+         *   1,150-1,550 ms of a 2 s switch, all of it wasted.
+         */
+        setStyle(style, quiet) {
+            // QUIET IS A FLAG ON THE RENDERER, not a parameter threaded down.
+            // The draw this has to stop is not the one at the end of this
+            // method: setPreset draws too, and so does anything else the
+            // switch reaches. Suppressing only the last one left the cost
+            // exactly where it was (measured: 1,143 ms of a 1,144 ms call).
+            if (quiet) {
+                const prev = this._quietStyle;
+                this._quietStyle = true;
+                try { return this.setStyle(style); } finally { this._quietStyle = prev; }
+            }
             if (style !== 'tube' && style !== 'cartoon') {
                 console.warn(`Invalid style "${style}" - expected "tube" or "cartoon".`);
                 return;
@@ -2577,7 +2611,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.styleSelect.value = style;
             }
             if (this._syncStylePanel) this._syncStylePanel();
-            this.render('setStyle');
+            if (!quiet) this.render('setStyle');
         }
 
         /**
@@ -2608,8 +2642,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * falls back to a flat position count - chosen as what fits in a 4 GB
          * heap with a typical structure already in it.
          */
-        _cartoonWouldFit() {
-            const positions = (this.coords && this.coords.length) || 0;
+        /**
+         * @param {number} [nPositions] count to ask about, when it is not the
+         *   one currently loaded. _switchToObject restores an object's style
+         *   BEFORE its frames are loaded - this.coords is still the previous
+         *   object's there, so a small structure following a huge one was
+         *   refused its own cartoon and came back as a tube.
+         */
+        _cartoonWouldFit(nPositions) {
+            const positions = (typeof nPositions === 'number') ? nPositions
+                : ((this.coords && this.coords.length) || 0);
             const needMB = Math.round(positions * 14000 / 1048576);
             const m = (typeof performance !== 'undefined') && performance.memory;
             if (!m || !m.jsHeapSizeLimit) {
@@ -2685,9 +2727,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const table = window.py2dmolCartoon && window.py2dmolCartoon.STYLE_DEFAULTS;
             const d = table && (table[style] || table.cartoon);
             if (!d) return;
-            // Width is shared with ribbon, so it follows the style only until
-            // the user takes it over (see _lineWidthUserSet).
-            if (!this._lineWidthUserSet) this.lineWidth = d.width;
+            // WIDTH: this style's own, if it was ever set by hand; the
+            // profile's otherwise. The latch alone made it sticky ACROSS
+            // styles, which carried a tube radius into a cartoon ribbon - see
+            // _widthByStyle. Keyed on the current style, which setStyle has
+            // already assigned by the time this runs, and not on the argument:
+            // that is a PRESET name (richardson, 3d) on half the call sites.
+            // THE LATCH NO LONGER DECIDES, the memory does. _lineWidthUserSet
+            // is one flag for both styles, so once it closed the width stopped
+            // following ANY switch - which is how a tube radius arrived in
+            // cartoon as a ribbon width. A style that has never had its width
+            // dragged takes the profile's; one that has takes its own back.
+            const mine = this._widthByStyle && this._widthByStyle[this.style];
+            this.lineWidth = (typeof mine === 'number') ? mine : d.width;
             this.cartoonThickness = d.thickness;
             this.cartoonOutlineTint = d.outlineTint;
             this.cartoonHighlight = d.highlight;
@@ -2722,6 +2774,31 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         // Switch to a different object (handles save/restore of selection state)
         _switchToObject(newObjectName) {
+            // ONE DRAW PER SWITCH, AND NOT UNTIL THE NEW OBJECT IS IN.
+            //
+            // A switch is followed by half a dozen things that each ask for a
+            // render - the visibility mask, the scatter, the sequence view,
+            // and app.js re-running the Ortho slider - and every one of them
+            // fires while this.coords still holds the PREVIOUS object: the
+            // frames are loaded by the caller, after this returns. Cheap while
+            // both objects were drawn the same way; ruinous once the style
+            // travels with the object, because switching to a small cartoon
+            // meant building a full cartoon of the ribosome still in memory
+            // and throwing it away. Measured on 4UG0 -> 6MRR: one
+            // render('orthoSlider') of 1,146 ms with 17,550 positions loaded,
+            // for a picture of 68.
+            //
+            // Held until the next frame, by which time the caller has loaded
+            // the frames, and then drawn ONCE.
+            this._switchQuiet = true;
+            if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(() => {
+                    this._switchQuiet = false;
+                    this.render('object switch settled');
+                });
+            } else {
+                this._switchQuiet = false;
+            }
             // Save current object's selection state and viewer state
             if (this.currentObjectName && this.currentObjectName !== newObjectName && this.objectsData[this.currentObjectName]) {
                 const obj = this.objectsData[this.currentObjectName];
@@ -2746,7 +2823,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // It rides with the rest of the per-object view state.
                     clipNear: this.clipNear,
                     clipFar: this.clipFar,
-                    clipFade: this.clipFade
+                    clipFade: this.clipFade,
+                    // ...AND SO DOES THE STYLE. A ribosome is drawn as a tube
+                    // because a ribbon of it is a tangle; a peptide beside it
+                    // is not, and switching between the two should not mean
+                    // setting the style again each time. The flag rides along
+                    // with it so an automatic choice stays automatic and a
+                    // hand-picked one stays picked.
+                    style: this.style,
+                    styleChosen: !!this.styleChosen
                 };
 
                 // Persist scatter metadata (labels/limits) from renderer before switching away
@@ -2867,7 +2952,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 currentFrame: -1,
                 clipNear: null,
                 clipFar: null,
-                clipFade: CLIP_FADE_DEFAULT
+                clipFade: CLIP_FADE_DEFAULT,
+                style: null,
+                styleChosen: false
             };
             this.viewerState = {
                 rotation: this._deepCopyMatrix(saved.rotation),
@@ -2888,6 +2975,43 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.clipFar = (typeof saved.clipFar === 'number') ? saved.clipFar : null;
             this.clipFade = (typeof saved.clipFade === 'number')
                 ? saved.clipFade : CLIP_FADE_DEFAULT;
+
+            // ...AND ITS STYLE, for the same reason the clip travels: what is
+            // right for a ribosome is not right for the peptide beside it.
+            // An object that has never been drawn (no saved style) keeps
+            // whatever is on screen, and the loader's size rule decides for it
+            // a moment later - see tubeByDefaultIfBig in web/app.js.
+            //
+            // setStyle, not an assignment: a style carries a whole profile of
+            // defaults with it, and half-switching leaves the panel describing
+            // one style while the renderer draws another.
+            this.styleChosen = !!saved.styleChosen;
+            if (saved.style && saved.style !== this.style && this.setStyle) {
+                // ...ASKED ABOUT THE OBJECT BEING SWITCHED TO, not the one on
+                // screen. The frames are loaded by the caller, after this, so
+                // this.coords is still the PREVIOUS object's - and a small
+                // structure following a huge one had its cartoon refused on
+                // the huge one's size and came back as a tube.
+                const fr = obj.frames && obj.frames[
+                    (saved.currentFrame >= 0 ? saved.currentFrame : 0)];
+                const nPos = (fr && fr.coords && fr.coords.length) || 0;
+                const fits = saved.style !== 'cartoon' || this.cartoonForce
+                    || !this._cartoonWouldFit || this._cartoonWouldFit(nPos).ok;
+                if (fits) {
+                    const force = this.cartoonForce;
+                    this.cartoonForce = true;      // the size question is settled
+                    // ...AND NOT A PIXEL DRAWN HERE. setStyle ends in a render,
+                    // and at this point the new object's frames are not loaded
+                    // yet - this.coords still holds the PREVIOUS object's. On a
+                    // switch from a ribosome to a peptide that render built a
+                    // full cartoon of the ribosome and threw it away a moment
+                    // later when 68 positions replaced 17,550: measured 1,150
+                    // to 1,550 ms of the 2 s the switch took, all of it wasted.
+                    // The caller draws once the frames are in.
+                    this.setStyle(saved.style, true);
+                    this.cartoonForce = force;
+                }
+            }
 
             // Restore currentFrame from viewerState
             this.currentFrame = this.viewerState.currentFrame;
@@ -9568,6 +9692,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         render(reason = 'Unknown') {
+            // A STYLE BEING SET WITHOUT DRAWING. _switchToObject restores an
+            // object's style before its frames are loaded, so anything drawn
+            // here is built out of the PREVIOUS object's coordinates and thrown
+            // away a moment later - see setStyle's quiet flag.
+            if (this._quietStyle || this._switchQuiet) return;
             // An auto slab follows its selection through a rotation; everything
             // below reads the planes, so it is brought up to date first.
             this._refreshAutoClip();

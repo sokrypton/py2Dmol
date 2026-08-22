@@ -3984,7 +3984,11 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
 const BIG_STRUCTURE_RESIDUES = 2000;
 
 function tubeByDefaultIfBig(r, objectName) {
-    if (!r || r.styleChosen || r.style !== 'cartoon' || r.cartoonForce) return;
+    // A HAND-PICKED STYLE IS STICKY AND AN AUTOMATIC ONE IS NOT. Choosing in
+    // the Style panel sets styleChosen, and from then on this rule keeps out
+    // of the way for every object - a stated preference is a preference. What
+    // the rule decides on its own belongs to the structure it decided about.
+    if (!r || r.styleChosen || r.cartoonForce) return;
     if (!r.setStyle) return;
     // COUNTED OFF THE FRAME, not off the renderer. This runs while the object
     // is being switched to, and renderer.positionTypes is still the PREVIOUS
@@ -4007,11 +4011,19 @@ function tubeByDefaultIfBig(r, objectName) {
     } else {
         n = (frame.coords && frame.coords.length) || 0;
     }
-    if (n <= BIG_STRUCTURE_RESIDUES) return;
-    r.setStyle('tube');
-    styleFallbackNote = `${n.toLocaleString()} residues - showing tube;`
-        + ' pick Cartoon in Style for the ribbon.';
-    setStatus('');
+    // BOTH WAYS, which is the whole of it. This used to return unless the
+    // renderer was already on cartoon, so the first big structure switched it
+    // to tube and every structure after it stayed there however small: load a
+    // ribosome, fetch a peptide, get a tube. The decision is about the
+    // structure being loaded, so it has to be able to answer either way.
+    const want = n > BIG_STRUCTURE_RESIDUES ? 'tube' : 'cartoon';
+    if (r.style === want) return;
+    r.setStyle(want);
+    if (want === 'tube') {
+        styleFallbackNote = `${n.toLocaleString()} residues - showing tube;`
+            + ' pick Cartoon in Style for the ribbon.';
+        setStatus('');
+    }
 }
 
 function dropToTubeIfCartoonWontFit(r) {
@@ -7347,8 +7359,16 @@ function saveViewerState() {
             if (objectData.viewerState) {
                 // If this is the current object, use the live viewerState to ensure it's up-to-date
                 // (The one in objectsData is only updated when switching AWAY from the object)
-                const sourceState = (objectName === renderer.currentObjectName) ? renderer.viewerState : objectData.viewerState;
+                const isCurrent = objectName === renderer.currentObjectName;
+                const sourceState = isCurrent ? renderer.viewerState : objectData.viewerState;
 
+                // THE CLIP AND THE STYLE LIVE ON THE RENDERER while an object
+                // is the current one, and in its stored viewerState the rest
+                // of the time - _switchToObject moves them across. Saving only
+                // the fields that live in viewerState both times lost them:
+                // a session came back unclipped, and every object came back in
+                // whatever style the session as a whole was saved in.
+                const held = isCurrent ? renderer : sourceState;
                 objToSave.viewerState = {
                     rotation: sourceState.rotation,
                     zoom: sourceState.zoom,
@@ -7356,7 +7376,12 @@ function saveViewerState() {
                     focalLength: sourceState.focalLength,
                     center: sourceState.center,
                     extent: sourceState.extent,
-                    currentFrame: sourceState.currentFrame
+                    currentFrame: sourceState.currentFrame,
+                    clipNear: held.clipNear !== undefined ? held.clipNear : null,
+                    clipFar: held.clipFar !== undefined ? held.clipFar : null,
+                    clipFade: held.clipFade,
+                    style: held.style || null,
+                    styleChosen: !!held.styleChosen
                 };
             }
 
@@ -7727,14 +7752,24 @@ async function loadViewerState(stateData) {
                     if (!renderer.objectsData[objData.name]) {
                         renderer.objectsData[objData.name] = {};
                     }
+                    const vs = objData.viewerState;
                     renderer.objectsData[objData.name].viewerState = {
-                        rotation: objData.viewerState.rotation,
-                        zoom: objData.viewerState.zoom,
-                        ortho: objData.viewerState.ortho,
-                        focalLength: objData.viewerState.focalLength,
-                        center: objData.viewerState.center,
-                        extent: objData.viewerState.extent,
-                        currentFrame: objData.viewerState.currentFrame
+                        rotation: vs.rotation,
+                        zoom: vs.zoom,
+                        ortho: vs.ortho,
+                        focalLength: vs.focalLength,
+                        center: vs.center,
+                        extent: vs.extent,
+                        currentFrame: vs.currentFrame,
+                        // ...and what _switchToObject moves on and off the
+                        // renderer. Absent in a session saved before these were
+                        // written, which reads as "never set" - the same thing
+                        // an object that has never been clipped says.
+                        clipNear: (typeof vs.clipNear === 'number') ? vs.clipNear : null,
+                        clipFar: (typeof vs.clipFar === 'number') ? vs.clipFar : null,
+                        clipFade: vs.clipFade,
+                        style: vs.style || null,
+                        styleChosen: !!vs.styleChosen
                     };
                 }
             }

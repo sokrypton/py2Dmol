@@ -72,7 +72,7 @@ for (const name of ['selectionBandFor']) {
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -5208,6 +5208,148 @@ t('the style toggles are grouped together, three to a row', () => {
 // Safe in both because it is only ever a REQUEST: the control removes itself
 // when WebGL2 is absent, the renderer falls back to the 2D path for anything
 // the GPU declines, and PNG/SVG export goes through 2D whatever it says.
+t('an object switch draws once, and after the frames are in', () => {
+    // A switch is followed by half a dozen things that each ask for a render -
+    // the visibility mask, the scatter, the sequence view, and app.js
+    // re-running the Ortho slider - and every one of them fires while
+    // this.coords still holds the PREVIOUS object, because the frames are
+    // loaded by the caller afterwards. That was cheap while every object was
+    // drawn the same way. Once the style travels with the object it is not:
+    // switching to a small cartoon built a full cartoon of the ribosome still
+    // in memory and threw it away. Measured on 4UG0 -> 6MRR, one
+    // render('orthoSlider') of 1,146 ms with 17,550 positions loaded, to draw
+    // a picture of 68 - and 38 ms for the whole switch once held.
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const sw = mol.slice(mol.indexOf('_switchToObject(newObjectName) {'));
+    const head = sw.slice(0, 1800);
+    if (!/this\._switchQuiet = true/.test(head)) {
+        throw new Error('nothing holds the renders back over a switch');
+    }
+    // ...RELEASED ON THE NEXT FRAME, by which time the caller has loaded the
+    // frames - and then drawn once. Without the release the viewer would stop
+    // drawing altogether, which is the failure this flag risks.
+    if (!/requestAnimationFrame\(\(\) => \{[\s\S]{0,200}_switchQuiet = false/.test(head)) {
+        throw new Error('the hold is never released on a frame');
+    }
+    if (!/_switchQuiet = false;[\s\S]{0,120}this\.render\(/.test(head)) {
+        throw new Error('the hold is released without drawing, so the switch'
+            + ' leaves the previous object on screen');
+    }
+    if (!/typeof requestAnimationFrame === 'function'/.test(head)
+        || !/\} else \{[\s\S]{0,80}_switchQuiet = false/.test(head)) {
+        throw new Error('with no requestAnimationFrame - a headless or export'
+            + ' context - the flag is never cleared and nothing draws again');
+    }
+    if (!/if \(this\._quietStyle \|\| this\._switchQuiet\) return;/.test(mol)) {
+        throw new Error('render does not honour the hold');
+    }
+});
+
+t('a saved session carries each object\'s clip and style', () => {
+    // _switchToObject moves the clip and the style on and off the renderer as
+    // objects change, but the SAVE copied only the fields that live in
+    // viewerState the whole time - so a session came back unclipped, and every
+    // object came back in whatever style the session as a whole was saved in.
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    const save = app.slice(app.indexOf('const isCurrent = objectName'),
+        app.indexOf('objects.push(objToSave)'));
+    for (const k of ['clipNear', 'clipFar', 'clipFade', 'style', 'styleChosen']) {
+        if (!save.includes(k)) throw new Error('the save drops ' + k);
+    }
+    // ...taken off the RENDERER for the current object, because that is where
+    // they live while an object is on screen
+    if (!/const held = isCurrent \? renderer : sourceState/.test(save)) {
+        throw new Error("the current object's clip and style are read from its"
+            + ' stored state, which is only written when switching AWAY from it');
+    }
+    const load = app.slice(app.indexOf('renderer.objectsData[objData.name].viewerState = {'));
+    const body = load.slice(0, load.indexOf('};'));
+    for (const k of ['clipNear', 'clipFar', 'clipFade', 'style', 'styleChosen']) {
+        if (!body.includes(k)) throw new Error('the load drops ' + k);
+    }
+    // an older session has none of these, and absent must read as "never set"
+    if (!/style: vs\.style \|\| null/.test(body)) {
+        throw new Error('a session saved before this will restore undefined as a style');
+    }
+});
+
+t('the colour modes are ordered by how often they are reached for', () => {
+    const html = fs.readFileSync('index.html', 'utf8');
+    const at = html.indexOf('id="colorSelect"');
+    const sel = html.slice(at, html.indexOf('</select>', at));
+    const order = [...sel.matchAll(/<option value="(\w+)"/g)].map((m) => m[1]);
+    // Auto first because it is the answer most of the time, then the three
+    // that apply to any structure, then the two that only mean anything on a
+    // prediction. Entropy is last and hidden until an MSA is loaded.
+    const want = ['auto', 'rainbow', 'chain', 'ss', 'plddt', 'deepmind', 'entropy'];
+    if (order.join() !== want.join()) {
+        throw new Error('the colour modes read ' + order.join(', ')
+            + ' rather than ' + want.join(', '));
+    }
+});
+
+t('a style belongs to its object, and a width to its style', () => {
+    // OPEN A RIBOSOME AND THEN A PEPTIDE and the peptide arrived as a tube,
+    // because the style was one setting for the whole viewer. It belongs to
+    // the object: what is right for a ribosome is not right for the peptide
+    // beside it, and switching between the two should not mean setting the
+    // style again each time.
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const sw = mol.slice(mol.indexOf('_switchToObject(newObjectName) {'));
+    const save = sw.slice(0, sw.indexOf('// Restore viewer state'));
+    if (!/style: this\.style/.test(save) || !/styleChosen: !!this\.styleChosen/.test(save)) {
+        throw new Error('the style does not travel with the object it was set on');
+    }
+    // ...QUIETLY: the frames are not in yet, so a draw here is built from the
+    // previous object's coordinates (see the switch-draws-once test).
+    if (!/this\.setStyle\(saved\.style, true\)/.test(sw)) {
+        throw new Error('a switched-to object does not get its style back,'
+            + ' or gets it loudly enough to draw the wrong structure');
+    }
+    // ...AND THE SIZE QUESTION IS ASKED ABOUT THE INCOMING OBJECT. The frames
+    // are loaded by the caller, AFTER the switch, so this.coords is still the
+    // previous object's here - a small structure following a huge one had its
+    // cartoon refused on the huge one's size and came back as a tube.
+    if (!/_cartoonWouldFit\(nPos\)/.test(sw)) {
+        throw new Error('the cartoon fit is judged on whatever is still loaded,'
+            + ' not on the object being switched to');
+    }
+    if (!/_cartoonWouldFit\(nPositions\)/.test(mol)) {
+        throw new Error('the fit check cannot be asked about another object');
+    }
+
+    // A WIDTH BELONGS TO ITS STYLE. The slider is one control and not one
+    // quantity: in tube it is the radius of the tube, in cartoon it scales the
+    // ribbon. Dragged in tube it used to follow the switch and arrive as a
+    // ribbon several times too wide - which is what "tube settings copied into
+    // cartoon" was, once opening an object started switching style by itself.
+    const v = new Cls();
+    global.window = global.window || {};
+    const DEF = { cartoon: { width: 3, thickness: 0, outlineTint: 0, highlight: 1.8,
+        sheetFlat: 0, pencil: 0 }, tube: { width: 3, thickness: 0, outlineTint: 0,
+        highlight: 1.8, sheetFlat: 0, pencil: 0 } };
+    const had = global.window.py2dmolCartoon;
+    global.window.py2dmolCartoon = { STYLE_DEFAULTS: DEF };
+    try {
+        v._widthByStyle = { tube: 4.5 };
+        v._lineWidthUserSet = true;      // the old latch, which must not decide
+        v.style = 'cartoon';
+        v._applyStyleDefaults('cartoon');
+        if (v.lineWidth !== 3) {
+            throw new Error(`cartoon opened at width ${v.lineWidth} - the tube's`
+                + ' 4.5 followed it across');
+        }
+        v.style = 'tube';
+        v._applyStyleDefaults('tube');
+        if (v.lineWidth !== 4.5) {
+            throw new Error('tube did not get its own width back');
+        }
+    } finally {
+        if (had === undefined) delete global.window.py2dmolCartoon;
+        else global.window.py2dmolCartoon = had;
+    }
+});
+
 t('a large structure opens as tube, and a chosen style is left alone', () => {
     // NOT the memory rule below it: this is about what is worth looking at.
     // Past a couple of thousand residues the ribbon is a tangle at any zoom
@@ -5251,12 +5393,30 @@ t('a large structure opens as tube, and a chosen style is left alone', () => {
     if (small.style !== 'cartoon') {
         throw new Error('1000 residues was pushed to tube - the rule is PAST a thousand');
     }
+    // ...AND IT ANSWERS BOTH WAYS. The rule used to return unless the renderer
+    // was already on cartoon, so the first big structure switched it to tube
+    // and everything after it stayed there however small: load a ribosome,
+    // fetch a peptide, get a tube. The decision is about the structure being
+    // loaded, so it has to be able to come back.
+    const afterBig = viewer(300, { style: 'tube' });
+    fn(afterBig, 'o', 1000, () => {});
+    if (afterBig.style !== 'cartoon') {
+        throw new Error('a 300-residue structure loaded into tube because the'
+            + ' one before it was a ribosome');
+    }
     // ...and a style someone picked is theirs: loading a second structure must
     // not undo it
     const chosen = viewer(5000, { styleChosen: true });
     fn(chosen, 'o', 1000, () => {});
     if (chosen.style !== 'cartoon') {
         throw new Error('a hand-picked cartoon was overridden by the size rule');
+    }
+    // ...both ways round: a hand-picked TUBE survives a small structure too,
+    // which is the case the "both ways" change above could have broken.
+    const chosenTube = viewer(300, { style: 'tube', styleChosen: true });
+    fn(chosenTube, 'o', 1000, () => {});
+    if (chosenTube.style !== 'tube') {
+        throw new Error('a hand-picked tube was undone by loading a small structure');
     }
     // A LIGAND IS NOT A RESIDUE. Counting coordinates would put a small
     // structure with a big ligand, or one showing its side chains, over the
