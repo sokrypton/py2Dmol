@@ -518,14 +518,19 @@ function modeSelectNode() {
         },
     };
 }
-function panelRun(selection, sidechained = new Set(), hasContact = false, types = null) {
+function panelRun(selection, sidechained = new Set(), hasContact = false, types = null,
+    shown = null) {
     const nodes = {
         selectionTools: { classList: { toggle(c, on) { this._on = on; } } },
         selectionPanel: { hidden: null },
         selectionPanelCount: { textContent: null },
         contactRow: { hidden: null },
         clearAllResidues: { disabled: null },
-        elementsShowToggle: { checked: false, indeterminate: false },
+        elementsShowToggle: (() => {
+            const label = { hidden: null };
+            return { checked: false, indeterminate: false, hidden: null,
+                closest: () => label, label };
+        })(),
         mainchainShowToggle: { checked: false, indeterminate: false },
         sidechainModeSelect: modeSelectNode(),
         contactShowToggle: { checked: false, indeterminate: false },
@@ -553,7 +558,10 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
             positionTypes: types || [],
             visiblePositions: null,
             currentObjectName: 'obj',
-            objectsData: { obj: {} },
+            // `shown` is what the OBJECT has switched on - obj.sidechains -
+            // while `sidechained` is what the structure HAS. The panel reads
+            // both, and the side-chain mode is the first of the two.
+            objectsData: { obj: shown ? { sidechains: shown } : {} },
         } },
         // a usable shape, not a bare {}: the panel reads the contact's stored
         // weight to load the width slider
@@ -717,6 +725,44 @@ t('SSE is offered for protein and withheld from nucleic acid', () => {
     }
     if (panelRun(null, new Set(), false, PROT).selSsSelect.hidden !== true) {
         throw new Error('SSE is offered with nothing selected');
+    }
+});
+
+t('Elements is offered only where there are atoms to colour', () => {
+    // A property of ATOMS: on None there is nothing to colour, and a plate is
+    // one flat shape with no elements in it. The toggle sat there in both,
+    // doing nothing a user could see.
+    const PROT = ['P', 'P'];
+    const NUC = ['D', 'D'];
+    // side chains drawn as atoms - the panel reads Full
+    const full = panelRun([0, 1], new Set([0, 1]), false, PROT, new Set([0, 1]));
+    if (full.sidechainModeSelect.value !== 'full') {
+        throw new Error('the harness did not reach Full: ' + full.sidechainModeSelect.value);
+    }
+    if (full.elementsShowToggle.label.hidden !== false) {
+        throw new Error('Elements is hidden while the side chains are drawn');
+    }
+    // nothing drawn
+    const none = panelRun([0, 1], new Set([0, 1]), false, PROT);
+    if (none.sidechainModeSelect.value !== 'none') {
+        throw new Error('the harness did not reach None: ' + none.sidechainModeSelect.value);
+    }
+    if (none.elementsShowToggle.label.hidden !== true) {
+        throw new Error('Elements is offered with no side chains to colour');
+    }
+    // a plate has no elements in it either
+    const plate = panelRun([0, 1], new Set(), false, NUC);
+    if (plate.sidechainModeSelect.value !== 'plate') {
+        throw new Error('the harness did not reach Plate: ' + plate.sidechainModeSelect.value);
+    }
+    if (plate.elementsShowToggle.label.hidden !== true) {
+        throw new Error('Elements is offered for a base plate');
+    }
+    // ...and it is the LABEL that hides, or the word stays on the row with no
+    // control under it
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    if (!/const wrap = elTog\.closest \? elTog\.closest\('label'\) : null;/.test(app)) {
+        throw new Error('the checkbox hides on its own, leaving its text behind');
     }
 });
 
@@ -3600,7 +3646,11 @@ t('the selection toggles show all, none and mixed', () => {
         contactWidthSlider: { hidden: null, value: null },
         sidechainRow: { hidden: null },
         sidechainModeSelect: modeSelectNode(),
-        elementsShowToggle: { checked: false, indeterminate: false },
+        elementsShowToggle: (() => {
+            const label = { hidden: null };
+            return { checked: false, indeterminate: false, hidden: null,
+                closest: () => label, label };
+        })(),
         mainchainShowToggle: { checked: false, indeterminate: false },
         contactShowToggle: { checked: false, indeterminate: false },
     };
@@ -3648,7 +3698,11 @@ t('the Elements toggle reads on until it is switched off', () => {
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
         sidechainRow: { hidden: null }, basesRow: { hidden: null },
-        elementsShowToggle: { checked: false, indeterminate: false },
+        elementsShowToggle: (() => {
+            const label = { hidden: null };
+            return { checked: false, indeterminate: false, hidden: null,
+                closest: () => label, label };
+        })(),
         basesShowToggle: { checked: false, indeterminate: false },
         mainchainShowToggle: { checked: false, indeterminate: false },
         contactShowToggle: { checked: false, indeterminate: false },
@@ -3691,7 +3745,11 @@ t('the toggles ignore a selected position that no longer exists', () => {
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
         sidechainRow: { hidden: null }, basesRow: { hidden: null },
-        elementsShowToggle: { checked: false, indeterminate: false },
+        elementsShowToggle: (() => {
+            const label = { hidden: null };
+            return { checked: false, indeterminate: false, hidden: null,
+                closest: () => label, label };
+        })(),
         basesShowToggle: { checked: false, indeterminate: false },
         mainchainShowToggle: { checked: false, indeterminate: false },
         contactShowToggle: { checked: false, indeterminate: false },
@@ -3738,7 +3796,11 @@ t('the show toggles are disabled along with the rest of the panel', () => {
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
         sidechainRow: { hidden: null }, basesRow: { hidden: null },
-        elementsShowToggle: { checked: false, indeterminate: false },
+        elementsShowToggle: (() => {
+            const label = { hidden: null };
+            return { checked: false, indeterminate: false, hidden: null,
+                closest: () => label, label };
+        })(),
         basesShowToggle: { checked: false, indeterminate: false },
         mainchainShowToggle: { checked: false, indeterminate: false },
         contactShowToggle: { checked: false, indeterminate: false },

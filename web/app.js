@@ -1012,6 +1012,18 @@ function setupEventListeners() {
             // draw: a structure with no side-chain atoms and no bases has none
             scSel.disabled = !scAble.length && !hasNuc;
         }
+        // ELEMENT COLOURS ARE A PROPERTY OF ATOMS, so the control only makes
+        // sense while there are atoms drawn. On None there is nothing to
+        // colour, and a plate is one flat shape with no elements in it - the
+        // toggle sat there in both, doing nothing a user could see. Hidden by
+        // its LABEL, which is what carries the text: hiding the checkbox alone
+        // leaves "Elements" on the row with no control.
+        const elTog = document.getElementById('elementsShowToggle');
+        if (elTog) {
+            const wrap = elTog.closest ? elTog.closest('label') : null;
+            (wrap || elTog).hidden = !(scSel && scSel.value === 'full');
+        }
+
         // MAIN CHAIN IS THE BACKBONE. The set names what is HIDDEN, so a
         // position in it is a toggle that is off.
         const hidBB = renderer.backboneHiddenSet ? renderer.backboneHiddenSet() : null;
