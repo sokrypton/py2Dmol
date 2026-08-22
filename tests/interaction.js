@@ -1896,6 +1896,47 @@ t('the nucleic trace is smoothed, and everything nucleic reads the same trace', 
     }
 });
 
+t('every projection sizes a position through the same rule', () => {
+    // FOUR PROJECTIONS fill screenRadius - the 2D pass at the end of its
+    // render, the GPU's projectPositions, _projectForPicking, and the older
+    // per-position projectPosition - and each used to size a position itself.
+    // They agreed for as long as everything was a segment of something. A lone
+    // atom is not: it is drawn as a ball of its element's van der Waals radius,
+    // and the selection band over a zinc came out of the width of a BOND,
+    // sitting inside the metal it was marking. Two of the four were fixed
+    // before anyone noticed the other two were writing the same array.
+    const files = ['py2Dmol/resources/viewer-mol.js',
+        'py2Dmol/resources/viewer-cartoon.js',
+        'py2Dmol/resources/viewer-cartoon-gpu.js'];
+    let writes = 0;
+    for (const f of files) {
+        const lines = fs.readFileSync(f, 'utf8').split('\n');
+        for (let i = 0; i < lines.length; i++) {
+            if (!/screenRadius\[[^\]]+\]\s*=/.test(lines[i])) continue;
+            writes++;
+            const near = lines.slice(Math.max(0, i - 8), i + 3).join('\n');
+            if (!near.includes('_positionRadiiPx')) {
+                throw new Error(`${f}:${i + 1} sizes a position without the shared`
+                    + ' rule - a fifth copy of it, and the one that will be wrong'
+                    + ' about whatever is drawn at a size it does not know');
+            }
+        }
+    }
+    if (writes < 3) throw new Error('found only ' + writes + ' projections - regex stale');
+    // ...and the rule itself: exact for a lone atom, the old estimate otherwise
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = mol.indexOf('_positionRadiiPx(i, base, wm, pe, scale) {');
+    if (at < 0) throw new Error('no shared rule to share');
+    const body = mol.slice(at, mol.indexOf('\n        }', at));
+    if (!/loneAtomRadiusA/.test(body) || !/SELECTION_HALO_RADIUS_FRAC/.test(body)) {
+        throw new Error('the rule no longer covers both kinds of position');
+    }
+    // the band measures off the DRAWN radius, and nothing else
+    if (!/screenDrawRadius/.test(mol.slice(mol.indexOf('_paintSelectionHalo')))) {
+        throw new Error('the selection band is back to guessing from the click target');
+    }
+});
+
 t('a metal has a colour and a size of its own', () => {
     // A LONE ION USED TO TAKE WHATEVER THE LIGAND PALETTE HANDED IT - a zinc
     // came out orange in one chain and green in the next - and was drawn at

@@ -6725,6 +6725,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     this.screenX = new Float32Array(numPositions);
                     this.screenY = new Float32Array(numPositions);
                     this.screenRadius = new Float32Array(numPositions);
+                    // ...and HOW BIG THE THING IS ACTUALLY DRAWN, which is a
+                    // different question from how big a click target it wants
+                    // and is what anything MARKING it has to measure off.
+                    this.screenDrawRadius = new Float32Array(numPositions);
                     this.screenValid = new Int32Array(numPositions);
                 }
 
@@ -8016,13 +8020,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // So one fraction, everywhere: the band is measured off half the
             // picking radius, which puts it around the ribbon rather than over
             // it and takes the default view from 24.9 px to 12.5.
-            // ...and the halving is about the PICKING radius being bigger than
-            // the drawn one. For a lone atom it is not: screenRadius is the
-            // ball's own radius there, exactly what is on screen, so halving it
-            // put the band through the middle of the metal it was marking.
-            const loneSel = this._loneAtoms;
-            const radiusAt = (i) => (sr[i] || 2)
-                * ((loneSel && loneSel.has(i)) ? 1 : SELECTION_HALO_RADIUS_FRAC);
+            // ONE QUESTION, ASKED ONCE: how big is this position drawn. The
+            // projection answers it (screenDrawRadius) - exactly for a lone
+            // atom, and by the old half-the-click-target estimate for a ribbon,
+            // which is what this fraction always meant. Asking it here instead
+            // needs a branch per kind of thing, and a metal was the first kind
+            // the estimate was wrong about rather than the only one.
+            const sdr = this.screenDrawRadius;
+            const radiusAt = (i) => (sdr && sdr[i])
+                || ((sr[i] || 2) * SELECTION_HALO_RADIUS_FRAC);
             const bandFor = (r) => {
                 const rad = r || 2;
                 return 2 * (rad + Math.min(SELECTION_HALO_MAX_PX * pxScale,
@@ -9173,10 +9179,51 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * path has its own version of this (projectPositions in
          * viewer-cartoon-gpu.js) for the same reason.
          */
+        /**
+         * HOW BIG POSITION i IS ON SCREEN - the two answers, from one place.
+         *
+         *   drawn  the radius of the thing that is actually painted. What
+         *          anything MARKING the position measures off.
+         *   pick   the radius that counts as a hit, which is deliberately
+         *          bigger than the drawn thing for a ribbon: a residue is a
+         *          click target the size of a residue, not the width of the
+         *          tape drawn through it.
+         *
+         * The two differ, and confusing them is what put a selection band
+         * through the middle of a metal: the band took the picking radius and
+         * halved it, which is a fair estimate of a RIBBON's width and simply
+         * wrong for a ball drawn at a known radius.
+         *
+         * A LONE ATOM IS THE CASE THE ESTIMATE CANNOT COVER. It is not a
+         * segment of anything - it is drawn as a ball of its element's van der
+         * Waals radius, a zinc 1.39 A against a potassium's 2.75 - so its size
+         * comes from the element and follows the zoom, and there is nothing to
+         * estimate. Everything else keeps the old estimate exactly.
+         *
+         * Here rather than in either caller because there are TWO projections
+         * (this and projectPosition, the older per-position one) and they had
+         * already drifted: sizing a metal in one of them left the other
+         * handing out the width of a bond.
+         */
+        _positionRadiiPx(i, base, wm, pe, scale) {
+            const lone = this._loneAtoms;
+            if (lone && lone.has(i) && this.elementAt) {
+                const api = typeof window !== 'undefined' && window.py2dmolCartoon;
+                const el = this.elementAt(i);
+                if (el && api && api.loneAtomRadiusA) {
+                    const d = api.loneAtomRadiusA(el) * scale * pe;
+                    return { drawn: d, pick: Math.max(2, d) };
+                }
+            }
+            const pick = Math.max(2, base * wm * 0.5 * pe);
+            return { drawn: pick * SELECTION_HALO_RADIUS_FRAC, pick };
+        }
+
         _projectForPicking(displayWidth, displayHeight, scale) {
             const np = this.coords.length;
             const sx = this.screenX; const sy = this.screenY;
             const sr = this.screenRadius; const sv = this.screenValid;
+            const sdr = this.screenDrawRadius;
             if (!sx || !sv || sx.length < np) return;
             const rotated = this.rotatedCoords;
             this.screenFrameId++;
@@ -9208,7 +9255,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const wm = (types && tw && tw[types[i]]) || 0.5;
                 sx[i] = cx + v.x * scale * pe;
                 sy[i] = cy - v.y * scale * pe;
-                sr[i] = Math.max(2, base * wm * 0.5 * pe);
+                const rr = this._positionRadiiPx(i, base, wm, pe, scale);
+                sr[i] = rr.pick;
+                if (sdr) sdr[i] = rr.drawn;
                 sv[i] = fid;
             }
         }
@@ -10013,6 +10062,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const screenX = this.screenX;
             const screenY = this.screenY;
             const screenRadius = this.screenRadius;
+            const screenDrawRadius = this.screenDrawRadius;
             const screenValid = this.screenValid;
 
             // Helper to project a position if not already projected
@@ -10029,22 +10079,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     const type = this.positionTypes[idx];
                     widthMultiplier = (this.typeWidthMultipliers && this.typeWidthMultipliers[type]) || 0.5;
                 }
-                let atomLineWidth = baseLineWidthPixels * widthMultiplier;
-                // ...EXCEPT A LONE ATOM, which is not a segment of anything: it
-                // is drawn as a ball of its element's van der Waals radius, and
-                // a click target or a selection band built from the Line Width
-                // control instead marks a circle that is not the one on screen.
-                // A zinc is 1.39 A and a potassium 2.75; the old number was the
-                // same for both, and did not follow the zoom the ball does.
-                const lone = this._loneAtoms;
-                if (lone && lone.has(idx) && this.elementAt) {
-                    const api = typeof window !== 'undefined' && window.py2dmolCartoon;
-                    const el = this.elementAt(idx);
-                    if (el && api && api.loneAtomRadiusA) {
-                        atomLineWidth = 2 * api.loneAtomRadiusA(el) * scale;
-                    }
-                }
 
+                let pe = 1;
                 if (isPerspective(this.viewerState)) {
                     const z = this.viewerState.focalLength - vec.z;
                     // Clamp z to prevent division by zero or negative values
@@ -10053,16 +10089,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         screenValid[idx] = 0; // Mark invalid
                         return;
                     }
-                    const perspectiveScale = this.viewerState.focalLength / z;
-                    x = centerX + (vec.x * scale * perspectiveScale);
-                    y = centerY - (vec.y * scale * perspectiveScale);
-                    atomLineWidth *= perspectiveScale;
+                    pe = this.viewerState.focalLength / z;
+                    x = centerX + (vec.x * scale * pe);
+                    y = centerY - (vec.y * scale * pe);
                 } else {
                     x = centerX + vec.x * scale;
                     y = centerY - vec.y * scale;
                 }
 
-                radius = Math.max(2, atomLineWidth * 0.5);
+                // THE SAME TWO RADII _projectForPicking uses - see
+                // _positionRadiiPx. This path used to compute its own, which is
+                // how the two came to disagree about a metal.
+                const rr = this._positionRadiiPx(idx, baseLineWidthPixels,
+                    widthMultiplier, pe, scale);
+                radius = rr.pick;
+                screenDrawRadius[idx] = rr.drawn;
 
                 screenX[idx] = x;
                 screenY[idx] = y;

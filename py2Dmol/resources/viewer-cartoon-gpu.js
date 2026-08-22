@@ -4339,7 +4339,13 @@ function projectPositions(renderer, dw, dh) {
         }
         renderer.screenX[i] = cx + vx * sc * pe;
         renderer.screenY[i] = cy - vy * sc * pe;
-        renderer.screenRadius[i] = Math.max(2, lw * 0.25 * pe);
+        // the renderer's own rule for both radii - see _positionRadiiPx, and
+        // the note beside the same call in viewer-cartoon.js. wm 0.5 is this
+        // line's own `lw * 0.25 * pe`.
+        const rr = renderer._positionRadiiPx
+            ? renderer._positionRadiiPx(i, lw, 0.5, pe, sc) : null;
+        renderer.screenRadius[i] = rr ? rr.pick : Math.max(2, lw * 0.25 * pe);
+        if (rr && renderer.screenDrawRadius) renderer.screenDrawRadius[i] = rr.drawn;
         renderer.screenValid[i] = fid;
     }
 }

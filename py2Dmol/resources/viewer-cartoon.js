@@ -12084,7 +12084,24 @@
                 if (!A) { renderer.screenValid[i] = 0; continue; }
                 renderer.screenX[i] = A[0];
                 renderer.screenY[i] = A[1];
-                renderer.screenRadius[i] = Math.max(2, baseLineWidthPixels * 0.25 * A[3]);
+                // BOTH RADII, FROM THE RENDERER'S OWN RULE. There are four
+                // projections in this codebase - this one, _projectForPicking,
+                // projectPosition and the GPU's - and each used to size a
+                // position itself. They agreed until something was drawn at a
+                // size none of them knew about: a lone atom is a ball of its
+                // element's van der Waals radius, so the selection band over a
+                // zinc was drawn from the width of a bond.
+                //
+                // wm 0.5 reproduces this line's own `base * 0.25 * pe` exactly,
+                // so nothing else moves.
+                const rr = renderer._positionRadiiPx
+                    ? renderer._positionRadiiPx(i, baseLineWidthPixels, 0.5, A[3], scale)
+                    : null;
+                renderer.screenRadius[i] = rr
+                    ? rr.pick : Math.max(2, baseLineWidthPixels * 0.25 * A[3]);
+                if (rr && renderer.screenDrawRadius) {
+                    renderer.screenDrawRadius[i] = rr.drawn;
+                }
                 renderer.screenValid[i] = fid;
             }
         }
