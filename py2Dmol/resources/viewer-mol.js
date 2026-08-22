@@ -3756,7 +3756,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // build against the one the source had, and a caller that passed
             // neither would get a table that renumbers cleanly and draws
             // nothing - which is the bug this exists to fix.
-            const localFrame = window.py2dmolCartoon && window.py2dmolCartoon.localFrame;
+            const C = window.py2dmolCartoon;
+            const localFrame = C && C.localFrame;
+            // A NUCLEIC TRACE STEPS 5.5-6.5 A, and localFrame's default range is
+            // the peptide's 3.0-4.2 - so every nucleotide read as a chain break
+            // here, every row was dropped as "unframable at source", and a
+            // copied RNA arrived with no bases at all. The range is the one the
+            // table was BUILT with; anything else and the coefficients mean
+            // something different in the copy from what they meant here.
+            const nucLo = C && C.NUCLEIC_STEP_MIN;
+            const nucHi = C && C.NUCLEIC_STEP_MAX;
+            const types = this.positionTypes || [];
+            // ...asked of the SOURCE index either way: a destination anchor is
+            // the same residue, just renumbered.
+            const isNuc = (which, i) => {
+                const src = which === 's' ? i : selectedIndices[i];
+                return types[src] === 'D' || types[src] === 'R';
+            };
             const nSrc = srcCoords.length;
             const nDst = dstCoords.length;
             const srcAt = (i) => ({ x: srcCoords[i][0], y: srcCoords[i][1], z: srcCoords[i][2] });
@@ -3768,13 +3784,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (!frameCache.has(key)) {
                     const at = which === 's' ? srcAt : dstAt;
                     const n = which === 's' ? nSrc : nDst;
-                    frameCache.set(key,
-                        (localFrame && localFrame(at, n, i, fbuf, null)) ? fbuf.slice() : null);
+                    const nuc = isNuc(which, i);
+                    const ok = localFrame && (nuc
+                        ? localFrame(at, n, i, fbuf, null, nucLo, nucHi)
+                        : localFrame(at, n, i, fbuf, null));
+                    frameCache.set(key, ok ? fbuf.slice() : null);
                 }
                 return frameCache.get(key);
             };
             const pos = []; const frameOf = []; const coef = [];
-            const names = []; const elements = [];
+            const names = []; const elements = []; const onBackbone = [];
             const rowOf = new Map();          // old table row -> new table row
             for (let k = 0; k < sc.pos.length; k++) {
                 const owner = renumber.get(sc.pos[k]);
@@ -3811,6 +3830,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
                 names.push(sc.names[k]);
                 elements.push(sc.elements[k]);
+                // ...and whether this row is a backbone atom kept on purpose -
+                // proline's ring-closing N. Dropped here, a copied proline goes
+                // back to diving into the ribbon.
+                onBackbone.push((sc.onBackbone && sc.onBackbone[k]) ? 1 : 0);
             }
             if (!pos.length) return null;
             // bonds are TABLE ROWS, not positions, so they renumber separately
@@ -3837,6 +3860,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 toBackbone: new Int32Array(toBackbone),
                 names,
                 elements,
+                onBackbone: new Uint8Array(onBackbone),
             };
         }
 

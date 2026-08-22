@@ -218,6 +218,43 @@ test('every display key the panel writes is one the copy knows about', () => {
     }
 });
 
+// ---- and the side chains of a NUCLEIC copy ----------------------------------
+//
+// A copied RNA arrived with its `sidechains` set naming every residue and no
+// atoms to show for it. _remapSidechains rebuilds each row's coefficients
+// through the frame the copy can build, and it asked localFrame for that frame
+// at the peptide's step range - 3.0 to 4.2 A. A nucleic trace steps 5.5-6.5
+// C4' to C4', so every anchor read as a chain break, every row was dropped as
+// "unframable at source", and the table came out empty. Measured on 1EHZ,
+// copying 38 of its 76 nucleotides: 0 table rows and 0 atoms, against 461 and
+// 461 with the range passed.
+test('a copied RNA keeps its bases', () => {
+    const at = SRC.indexOf('_remapSidechains(sc, selectedIndices, srcCoords, dstCoords) {');
+    if (at < 0) throw new Error('_remapSidechains is gone');
+    const body = SRC.slice(at, SRC.indexOf('\n        /**', at));
+    if (!/localFrame\(at, n, i, fbuf, null, nucLo, nucHi\)/.test(body)) {
+        throw new Error('the remap frames a nucleotide at the peptide step range, '
+            + 'so every base is dropped from the copy');
+    }
+    // the range is the one the table was BUILT with, or the coefficients mean
+    // something different in the copy from what they meant in the parent
+    if (!/C\.NUCLEIC_STEP_MIN/.test(body) || !/C\.NUCLEIC_STEP_MAX/.test(body)) {
+        throw new Error('the remap invents its own step range');
+    }
+    // asked of the SOURCE index either way - a destination anchor is the same
+    // residue, renumbered
+    if (!/const src = which === 's' \? i : selectedIndices\[i\];/.test(body)) {
+        throw new Error('the destination anchor is not mapped back to its residue, '
+            + 'so its type is read off the wrong position');
+    }
+    // ...and proline's ring-closing N stays marked, or a copied proline goes
+    // back to diving into the ribbon
+    if (!/onBackbone\.push\(\(sc\.onBackbone && sc\.onBackbone\[k\]\)/.test(body)
+        || !/onBackbone: new Uint8Array\(onBackbone\)/.test(body)) {
+        throw new Error('the copy loses which atoms are backbone atoms kept on purpose');
+    }
+});
+
 // ---- the MSA that comes with the copy ---------------------------------------
 //
 // A copy has to show the same conservation for a residue as the structure it
