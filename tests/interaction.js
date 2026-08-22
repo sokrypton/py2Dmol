@@ -534,7 +534,7 @@ function modeSelectNode() {
     };
 }
 function panelRun(selection, sidechained = new Set(), hasContact = false, types = null,
-    shown = null, ligEls = new Set(), visible = null, sse = null) {
+    shown = null, ligEls = new Set(), visible = null, sse = null, basesOff = null) {
     const nodes = {
         selectionTools: { classList: { toggle(c, on) { this._on = on; } } },
         selectionPanel: { hidden: null },
@@ -605,7 +605,10 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
             // `shown` is what the OBJECT has switched on - obj.sidechains -
             // while `sidechained` is what the structure HAS. The panel reads
             // both, and the side-chain mode is the first of the two.
-            objectsData: { obj: shown ? { sidechains: shown } : {} },
+            // `basesOff` is an empty base set - the object saying "no plates
+            // here", which is how a nucleotide with nothing drawn is expressed
+            objectsData: { obj: Object.assign({}, shown ? { sidechains: shown } : {},
+                basesOff ? { bases: new Set() } : {}) },
         } },
         // a usable shape, not a bare {}: the panel reads the contact's stored
         // weight to load the width slider
@@ -883,10 +886,10 @@ t('Elements is offered only where there are atoms to colour', () => {
     if (full.elementsShowToggle.label.hidden !== false) {
         throw new Error('Elements is hidden while the side chains are drawn');
     }
-    // nothing drawn
+    // nothing drawn - the switch is off, and there is no style menu to read
     const none = panelRun([0, 1], new Set([0, 1]), false, PROT);
-    if (none.sidechainModeSelect.value !== 'none') {
-        throw new Error('the harness did not reach None: ' + none.sidechainModeSelect.value);
+    if (none.sidechainShowToggle.checked !== false) {
+        throw new Error('the harness did not reach "not drawn"');
     }
     if (none.elementsShowToggle.label.hidden !== true) {
         throw new Error('Elements is offered with no side chains to colour');
@@ -907,47 +910,67 @@ t('Elements is offered only where there are atoms to colour', () => {
     }
 });
 
-t('a protein gets a switch, a nucleotide gets the three-way', () => {
-    // A protein side chain is drawn or it is not - two states, and a menu to
-    // choose between two is a menu where a switch would do. Only a nucleotide
-    // has the third, the plate. One of the two is on the row, never both.
+t('Show comes first on every row, and the style menu after it', () => {
+    // EVERY ROW ON THIS PANEL ANSWERS "IS THIS DRAWN" WITH A SWITCH. The
+    // side-chain row answered it with a three-way menu wherever the selection
+    // had a nucleotide - so the same question had two shapes depending on what
+    // was picked, and None hid inside a list where every other row has a
+    // switch. The switch is the question; the menu is the second question,
+    // WHICH WAY, and only a nucleotide has two answers to it.
     const NUC = ['D', 'D'];
     const PROT = ['P', 'P'];
-    const prot = panelRun([0, 1], new Set([0, 1]), false, PROT);
-    if (prot.sidechainShowToggle.label.hidden !== false
-        || prot.sidechainModeSelect.hidden !== true) {
-        throw new Error('a protein selection is not offered the plain switch');
+    const prot = panelRun([0, 1], new Set([0, 1]), false, PROT, new Set([0, 1]));
+    if (prot.sidechainShowToggle.label.hidden !== false) {
+        throw new Error('a protein selection has no Show switch');
     }
+    if (prot.sidechainModeSelect.hidden !== true) {
+        throw new Error('a protein is offered a style menu, and it has one style');
+    }
+    // A NUCLEOTIDE KEEPS THE SWITCH TOO, with the menu beside it
     const nuc = panelRun([0, 1], new Set(), false, NUC);
-    // THE LABEL, not the checkbox: the input is invisible on its own, so
-    // hiding it leaves the word "Show" on the row beside the menu.
-    if (nuc.sidechainShowToggle.label.hidden !== true
-        || nuc.sidechainModeSelect.hidden !== false) {
-        throw new Error('a nucleic selection still shows the Show button');
+    if (nuc.sidechainShowToggle.label.hidden !== false) {
+        throw new Error('a nucleic selection lost its Show switch');
     }
-    const app0 = fs.readFileSync('web/app.js', 'utf8');
-    if (!/const wrapTog = scTog\.closest \? scTog\.closest\('label'\) : null;/.test(app0)) {
-        throw new Error('the switch hides by its checkbox, which is invisible anyway');
+    if (nuc.sidechainShowToggle.checked !== true) {
+        throw new Error('a nucleotide drawn as a plate does not read as shown');
     }
-    if (nuc.sidechainModeSelect._opts.plate.hidden !== false
-        || prot.sidechainModeSelect._opts.plate.hidden !== true) {
-        throw new Error('Plate is offered where there is no base to draw');
+    if (nuc.sidechainModeSelect.hidden !== false
+        || nuc.sidechainModeSelect.value !== 'plate') {
+        throw new Error('the style menu is missing or does not read Plate: '
+            + nuc.sidechainModeSelect.value);
     }
-    // BOTH READ THE SAME ANSWER. The mode is worked out once, from the object,
-    // and whichever control is on the row shows it - so the switch cannot say
-    // one thing while the menu behind it says another.
+    // ...AND THE MENU GOES WITH THE THING IT DESCRIBES. A way of drawing
+    // something that is not drawn is a control for nothing.
+    const off = panelRun([0, 1], new Set(), false, NUC, null, new Set(), null,
+        null, new Set([0, 1]));
+    if (off.sidechainShowToggle.checked !== false) {
+        throw new Error('a hidden nucleotide reads as shown');
+    }
+    if (off.sidechainModeSelect.hidden !== true) {
+        throw new Error('the style menu is offered for something not drawn');
+    }
+    // BOTH READ THE SAME ANSWER, worked out once from the object.
     const app = fs.readFileSync('web/app.js', 'utf8');
     if (!/const mode = modes\.size === 1 \? \[\.\.\.modes\]\[0\] : '';/.test(app)) {
         throw new Error('the two controls no longer share one answer');
     }
-    if (!/setSelectionSidechainMode\(p2, v \? 'full' : 'none'\)/.test(app)) {
-        throw new Error('the switch does not drive the same action as the menu');
+    // ...and Show brings back the way it was last drawn rather than jumping to
+    // the atoms, which is not a plain switch's decision to make
+    if (!/setSelectionSidechainMode\(p2, v \? style : 'none'\)/.test(app)) {
+        throw new Error('Show does not drive the style the menu names');
     }
-    const shown = panelRun([0, 1], new Set([0, 1]), false, PROT, new Set([0, 1]));
-    if (shown.sidechainShowToggle.checked !== true) {
-        throw new Error('the switch does not read back what is drawn');
+    if (!/\(nuc \? 'plate' : 'full'\)/.test(app)) {
+        throw new Error('switching a nucleotide on no longer defaults to the plate');
+    }
+    // HIDDEN, NOT FORGOTTEN. Blanking the menu while nothing is drawn loses
+    // the answer the switch needs when it comes back: pick Full, switch off,
+    // switch on, and the plate returns instead of the atoms you asked for.
+    if (!/if \(mode === 'plate' \|\| mode === 'full'\) scSel\.value = mode;/.test(app)
+        || !/else if \(mode === ''\) scSel\.value = '';/.test(app)) {
+        throw new Error('the style menu forgets its answer while it is hidden');
     }
 });
+
 
 t('a nucleotide picks None, Plate or Full from one control', () => {
     // The plate had a row of its own, called "Side chain", next to the row
@@ -969,14 +992,17 @@ t('a nucleotide picks None, Plate or Full from one control', () => {
         || !/setSelectionSidechains\(positions, mode === 'full'\)/.test(body)) {
         throw new Error('the three modes do not drive the two stores');
     }
-    // the Plate option is offered only where the selection HAS nucleotides
+    // the menu itself is offered only where the selection HAS nucleotides: a
+    // protein side chain has one way of being drawn, so Show is the whole
+    // question there
     const NUC = ['D', 'D'];
     const PROT = ['P', 'P'];
-    if (panelRun([0, 1], new Set(), false, NUC).sidechainModeSelect._opts.plate.hidden !== false) {
-        throw new Error('Plate is hidden on a nucleic selection');
+    if (panelRun([0, 1], new Set(), false, NUC).sidechainModeSelect.hidden !== false) {
+        throw new Error('the style menu is hidden on a nucleic selection');
     }
-    if (panelRun([0, 1], new Set(), false, PROT).sidechainModeSelect._opts.plate.hidden !== true) {
-        throw new Error('Plate is offered on a protein selection');
+    if (panelRun([0, 1], new Set([0, 1]), false, PROT, new Set([0, 1]))
+        .sidechainModeSelect.hidden !== true) {
+        throw new Error('a style menu is offered on a protein selection');
     }
 
     // A BASE IS A SIDE CHAIN, in the table as well as on the panel: the
@@ -4774,20 +4800,31 @@ t('the selection toggles show all, none and mixed', () => {
             } },
             () => null, () => ({ w: 4, col: 5 }));
         f();
-        return nodes.sidechainModeSelect;
+        return nodes;
     };
-    let t2 = run([1, 2], new Set([1, 2]));
-    if (t2.value !== 'full') throw new Error('all shown did not read as full');
-    t2 = run([1, 2], new Set());
-    if (t2.value !== 'none') throw new Error('none shown did not read as none');
-    t2 = run([1, 2], new Set([1]));
-    if (t2.value !== '') {
-        throw new Error('a MIXED selection did not read as mixed - it was shown as "'
-            + t2.value + '", which is a lie about half of what was picked');
+    // A PROTEIN HAS ONE WAY OF BEING DRAWN, so Show is the whole question and
+    // the style menu is not on the row at all - drawn or not.
+    let n2 = run([1, 2], new Set([1, 2]));
+    if (n2.sidechainModeSelect.hidden !== true || n2.sidechainShowToggle.checked !== true) {
+        throw new Error('a protein with its side chains drawn reads wrong');
     }
-    // ...and with nothing selected the control reads blank rather than stale
-    t2 = run([], new Set([1, 2]));
-    if (t2.value !== '') throw new Error('an empty selection left a stale state');
+    n2 = run([1, 2], new Set());
+    if (n2.sidechainModeSelect.hidden !== true || n2.sidechainShowToggle.checked !== false) {
+        throw new Error('a protein with nothing drawn reads wrong');
+    }
+    // A MIXED selection - one drawn, one not - is neither, so the SWITCH reads
+    // indeterminate rather than picking a side and lying about half of it.
+    n2 = run([1, 2], new Set([1]));
+    if (n2.sidechainShowToggle.indeterminate !== true
+        || n2.sidechainShowToggle.checked !== false) {
+        throw new Error('a mixed selection did not read as mixed');
+    }
+    // ...and with nothing selected the controls read blank rather than stale
+    n2 = run([], new Set([1, 2]));
+    if (n2.sidechainModeSelect.value !== ''
+        || n2.sidechainShowToggle.checked !== false) {
+        throw new Error('an empty selection left a stale state');
+    }
 });
 
 // Elements default ON, so their toggle must read on for an untouched object -
@@ -4960,7 +4997,13 @@ t('every selection toggle has a name of its own', () => {
     const sel = html.match(/<select[^>]*id="sidechainModeSelect"[^>]*>/);
     if (!sel) throw new Error('no sidechainModeSelect');
     if (!/aria-label="/.test(sel[0])) throw new Error('the mode select has no name');
-    for (const v of ['none', 'plate', 'full']) {
+    // ...and the styles it offers. None left the list when Show came back: it
+    // is the switch being off, and hiding "not drawn" inside a list of styles
+    // was the thing that made this row read differently from every other one.
+    if (/id="sidechainModeSelect"[\s\S]{0,400}value="none"/.test(html)) {
+        throw new Error('None is back in the style list');
+    }
+    for (const v of ['plate', 'full']) {
         if (!new RegExp('value="' + v + '"').test(html)) {
             throw new Error('the mode select has no ' + v + ' option');
         }

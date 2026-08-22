@@ -1123,25 +1123,38 @@ function setupEventListeners() {
         // ...and on a LIGAND row the switch stays, meaning the ligand itself:
         // drawn or not drawn, which is the same two states a protein side chain
         // has. The menu never appears there - a ligand has no plate.
+        // SHOW FIRST, ALWAYS, AND THE STYLE AFTER IT.
+        //
+        // Every row on this panel answers "is this drawn" with a Show switch,
+        // and the side-chain row answered it with a three-way menu instead
+        // wherever the selection had a nucleotide - so the same question had
+        // two shapes depending on what you had picked, and None hid inside a
+        // list where every other row has a switch. The switch is the question
+        // now; the menu is the second question, WHICH WAY, and it appears
+        // beside it only where there is a choice to make - a nucleotide, which
+        // can be a plate or its real atoms. A protein side chain and a ligand
+        // have one way of being drawn, so they have no menu.
         const ligPos = ligandRowPositions(live);
         const ligShown = ligPos ? visibleState(ligPos) : false;
         const scNothing = !scAble.length && !hasNuc;
         if (scTog) {
             const wrapTog = scTog.closest ? scTog.closest('label') : null;
-            (wrapTog || scTog).hidden = hasNuc || (scNothing && !ligPos);
-        }
-        if (scSel) scSel.hidden = !hasNuc;
-        if (scTog) {
+            (wrapTog || scTog).hidden = scNothing && !ligPos;
             set('sidechainShowToggle', ligPos ? ligShown
-                : tally(scAble, scSet, false));
+                : (mode === '' ? null : mode !== 'none'));
         }
         if (scSel) {
-            scSel.value = mode;
-            const plateOpt = scSel.querySelector('option[value="plate"]');
-            if (plateOpt) plateOpt.hidden = !hasNuc;
-            // ...and the control is offered only where there is something to
-            // draw: a structure with no side-chain atoms and no bases has none
-            scSel.disabled = !scAble.length && !hasNuc;
+            // ...and the style menu only while it is showing: a way of drawing
+            // a thing that is not drawn is a control for nothing.
+            scSel.hidden = !hasNuc || mode === 'none' || mode === '';
+            // HIDDEN, NOT FORGOTTEN. Blanking it while nothing is drawn lost
+            // the answer the switch needs when it comes back on: pick Full,
+            // switch off, switch on, and the plate returned instead of the
+            // atoms you had asked for. Mixed is the one state with no style to
+            // remember.
+            if (mode === 'plate' || mode === 'full') scSel.value = mode;
+            else if (mode === '') scSel.value = '';
+            scSel.disabled = false;
         }
         // ELEMENT COLOURS ARE A PROPERTY OF ATOMS, so the control only makes
         // sense while there are atoms drawn. On None there is nothing to
@@ -1716,7 +1729,16 @@ function setupEventListeners() {
         onToggle('sidechainShowToggle', (p2, v) => {
             const lig = ligandRowPositions(p2);
             if (lig) { setSelectionVisible(lig, v, false); return; }
-            setSelectionSidechainMode(p2, v ? 'full' : 'none');
+            // SHOW MEANS "DRAWN", AND THE MENU SAYS HOW. Switching on a
+            // nucleotide brings back whichever way it was last drawn - the
+            // plate unless the menu says otherwise - rather than jumping to the
+            // atoms, which is not what a plain Show should decide.
+            const r = viewerApi?.renderer;
+            const sel = document.getElementById('sidechainModeSelect');
+            const nuc = !!(r && r.hasBasesFor && r.hasBasesFor(p2));
+            const style = (sel && (sel.value === 'full' || sel.value === 'plate'))
+                ? sel.value : (nuc ? 'plate' : 'full');
+            setSelectionSidechainMode(p2, v ? style : 'none');
         });
         // the side-chain MODE is a select, not a toggle, but it reads the
         // selection the same way every control on this panel does
