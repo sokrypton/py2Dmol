@@ -11596,7 +11596,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             };
             let vFmt = null; let secIn = null; let fpsIn = null;
             let mbpsIn = null; let sizeSel = null; let colorsSel = null;
-            let framesIn = null;
+            let framesIn = null; let colorsLab = null;
             let videoRow = null;
             if (sources.length && formats.length) {
                 rule();
@@ -11635,11 +11635,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // greyed out pretending to be part of the format.
                 const gifOk = formats.some((f) => f.id === 'gif');
                 if (gifOk) {
+                // ...NAMED LIKE THE REST OF THE ROW. Sec, FPS, Mbps and Size
+                // all say what they are in front of the value; "256 col"
+                // repeated the unit inside every option instead, which is the
+                // only control on the row that spelled itself out four times.
+                colorsLab = el('label', CAP, 'Color');
+                colorsLab.setAttribute('for', 'saveGifColors');
+                vRow.appendChild(colorsLab);
                 colorsSel = menu('saveGifColors', [
-                    { value: 256, label: '256 col' },
-                    { value: 128, label: '128 col' },
-                    { value: 64, label: '64 col' },
-                    { value: 32, label: '32 col' },
+                    { value: 256, label: '256' },
+                    { value: 128, label: '128' },
+                    { value: 64, label: '64' },
+                    { value: 32, label: '32' },
                 ], opts.colors || 256,
                 'How many colours the GIF palette holds. A cartoon has few, so '
                 + '64 is usually indistinguishable and about half the size.');
@@ -11687,6 +11694,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     frL.style.display = framesOnly ? '' : 'none';
                     framesIn.style.display = framesOnly ? '' : 'none';
                     if (colorsSel) colorsSel.style.display = gif ? '' : 'none';
+                    if (colorsLab) colorsLab.style.display = gif ? '' : 'none';
                     // A GIF'S LIMITS ARE APPLIED TO THE CONTROLS, not just to
                     // the recording. The sink clamps either way, but a panel
                     // reading 30 fps and 1194x1194 over a file that came out

@@ -3534,6 +3534,19 @@ t('a GIF is always cut out, and says so once', () => {
     if (!/fpsIn\.max = gif \? LIM\.maxFps : 60/.test(body)) {
         throw new Error('the fps cap no longer reaches the control');
     }
+    // THE PALETTE MENU IS NAMED LIKE THE REST OF THE ROW. Sec, FPS, Mbps and
+    // Size all say what they are in front of the value; the colour menu used
+    // to repeat its unit inside every option instead - "256 col", four times.
+    if (/label: '\d+ col'/.test(body)) {
+        throw new Error('the colour options spell out their unit again');
+    }
+    if (!/colorsLab = el\('label', CAP, 'Color'\)/.test(body)) {
+        throw new Error('the colour menu has no caption');
+    }
+    if (!/if \(colorsLab\) colorsLab\.style\.display = gif/.test(body)) {
+        throw new Error('the caption does not hide with its menu, so "Color"'
+            + ' sits on the row over nothing');
+    }
 });
 
 t('every capture format builds a sink and finishes a file', () => {
