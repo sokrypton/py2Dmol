@@ -7365,5 +7365,28 @@ t('two objects with the same chain id are two different chains', () => {
     eq(allowed.has(v.chainKeyAt(2)), false, "two's chain A is not");
 });
 
+// ...AND THE STRIP'S OWN CHAIN PATHS, which are where the report came from:
+// clicking chain A selected chain A of every object on screen. Three routes
+// reach a whole chain - the click, the toggle-off, and a shift range across
+// labels - and all three have to carry the object.
+t('every route to a whole chain names the object it belongs to', () => {
+    const seq = fs.readFileSync('py2Dmol/resources/viewer-seq.js', 'utf8');
+    if (!/const positionsOfChain = \(chainId, objectName\)/.test(seq)) {
+        throw new Error('positionsOfChain does not take an object');
+    }
+    const calls = seq.match(/positionsOfChain\([^)]*\)/g) || [];
+    if (calls.length < 3) throw new Error('the chain routes have moved');
+    for (const c of calls) {
+        if (/positionsOfChain\((?!chainId, objectName)[^,)]*\)$/.test(c)) {
+            throw new Error('a whole-chain selection is made without an object: ' + c);
+        }
+    }
+    // ...and the range across labels walks (object, chain) pairs
+    if (!/chainOrder = \(\) => \(layout\.chainLabelPositions \|\| \[\]\)\s*\n\s*\.map\(\(c\) => \(\{ chain: c\.chainId, object: c\.object \}\)\)/.test(seq)) {
+        throw new Error('the chain range walks bare ids, so it sweeps up the'
+            + " other object's chain on the way");
+    }
+});
+
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');
 process.exit(fail?1:0);

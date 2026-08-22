@@ -501,6 +501,11 @@
             ctx.save();
             ctx.font = `600 ${Math.round(layout.charHeight * 0.8)}px monospace`;
             ctx.textBaseline = 'middle';
+            // ...and LEFT, explicitly. Every text setting is inherited from
+            // whatever drew last, and the residue pass leaves it centred - so
+            // the heading was centred on its own left edge and the name came
+            // out with its first characters off the canvas: "1BBH" as "3BH".
+            ctx.textAlign = 'left';
             for (const lab of layout.objectLabelPositions) {
                 const yOffset = lab.y - scrollTop;
                 if (yOffset + lab.height < 0 || yOffset > scrollableAreaHeight) continue;
@@ -1972,17 +1977,26 @@ function positionLetter(position, chainType) {
             anchorBase = new Set(renderer.residueSelection || []);
         };
 
-        const chainOrder = () => (layout.chainLabelPositions || []).map((c) => c.chainId);
+        // ...IN LABEL ORDER, AND EACH WITH ITS OBJECT. Two objects both have a
+        // chain A, so a range walked by bare id both picks the wrong end and
+        // sweeps up the other object's chain on the way.
+        const chainOrder = () => (layout.chainLabelPositions || [])
+            .map((c) => ({ chain: c.chainId, object: c.object }));
+        const chainSlot = (order, chainId, objectName) => order.findIndex(
+            (c) => c.chain === chainId
+                && (!objectName || !c.object || c.object === objectName));
 
         // Union of every chain from a to b in label order, inclusive.
-        const chainRangePositions = (chainA, chainB) => {
+        const chainRangePositions = (chainA, chainB, objectA, objectB) => {
             const order = chainOrder();
-            const i0 = order.indexOf(chainA);
-            const i1 = order.indexOf(chainB);
+            const i0 = chainSlot(order, chainA, objectA);
+            const i1 = chainSlot(order, chainB, objectB);
             const picked = new Set();
             if (i0 < 0 || i1 < 0) return picked;
             for (let k = Math.min(i0, i1); k <= Math.max(i0, i1); k++) {
-                for (const i of positionsOfChain(order[k])) picked.add(i);
+                for (const i of positionsOfChain(order[k].chain, order[k].object)) {
+                    picked.add(i);
+                }
             }
             return picked;
         };
@@ -1998,7 +2012,8 @@ function positionLetter(position, chainType) {
             if (!anchorItem) return null;
             const base = new Set(anchorBase);
             if (anchorItem.type === 'chain' && item.type === 'chain') {
-                const picked = chainRangePositions(anchorItem.chainId, item.chainId);
+                const picked = chainRangePositions(anchorItem.chainId, item.chainId,
+                    anchorItem.object, item.object);
                 for (const i of base) picked.add(i);
                 return picked;
             }
@@ -2134,7 +2149,8 @@ function positionLetter(position, chainType) {
                     dragState.active = true;
                     if (over.chainId === dragState.endChainId) return;
                     dragState.endChainId = over.chainId;
-                    setLocalPreview(chainRangePositions(item.chainId, over.chainId));
+                    setLocalPreview(chainRangePositions(item.chainId, over.chainId,
+                        item.object, over.object));
                     lastSequenceUpdateHash = null;
                     scheduleRender();
                     return;
@@ -2164,11 +2180,12 @@ function positionLetter(position, chainType) {
                         const over = endPos
                             ? getSelectableItemAtPosition(endPos.x, endPos.y, layout, sequenceViewMode)
                             : null;
-                        if (over && over.type === 'chain' && over.chainId === startItem.chainId) {
-                            // Select the WHOLE chain. Clicking it again clears
-                            // it, so the label toggles rather than only ever
-                            // adding.
-                            const all = positionsOfChain(over.chainId);
+                        if (over && over.type === 'chain' && over.chainId === startItem.chainId
+                            && over.object === startItem.object) {
+                            // Select the WHOLE chain - THAT object's chain.
+                            // Clicking it again clears it, so the label toggles
+                            // rather than only ever adding.
+                            const all = positionsOfChain(over.chainId, over.object);
                             const cur = renderer.residueSelection;
                             const already = all.size > 0 && cur
                                 && [...all].every((i) => cur.has(i));
