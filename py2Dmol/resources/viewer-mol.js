@@ -5331,9 +5331,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // asked for; the sink takes the frame that was just rendered.
                 if (this._recSink) this._recSink.frame();
 
-                // Give MediaRecorder time to capture (MediaRecorder captures at 30fps = ~33ms per frame)
-                // Use animationSpeed or minimum 50ms to ensure capture
-                const captureDelay = Math.max(50, this.animationSpeed);
+                // PACED BY THE FRAME RATE THAT WAS ASKED FOR. A recording is
+                // timestamped by the wall clock, so how long each frame is held
+                // here IS the frame rate of the file - and this used to hold
+                // each one for the viewer's animation speed instead, which has
+                // nothing to do with the FPS box. Floored at 60 fps: past that
+                // the render cannot keep up and the pacing stops meaning
+                // anything.
+                const fps2 = (this._recSink && this._recSink.fps) || 30;
+                const captureDelay = Math.max(1000 / 60, 1000 / fps2);
 
                 this.recordingFrameSequence = setTimeout(() => {
                     // Advance to next frame
@@ -8814,7 +8820,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // elements, its state lives in _captureOpts, and there is no
             // half-edited field to lose.
             if (this._savePanel && this._saveAnchor && !this._captureBusy) {
-                this._rebuildSavePanel();
+                this._rebuildSavePanel(true);      // every size in it just changed
             }
         }
 
@@ -10702,7 +10708,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 };
             }
 
-            const stream = target.captureStream(fps);
+            // MANUAL CAPTURE. captureStream(fps) samples the canvas on its own
+            // clock AND accepts requestFrame, so every rendered frame went in
+            // twice over: a 6-frame trajectory came out a 12-frame video, twice
+            // the length the panel promised. With 0 the stream produces exactly
+            // the frames it is handed. Chrome, Firefox and Safari all take it;
+            // if one does not, the old behaviour is the fallback.
+            let stream;
+            try { stream = target.captureStream(0); }
+            catch (e) { stream = target.captureStream(fps); }
             const bits = Math.max(1, Math.min(80, Number(o.mbps) || 5)) * 1000000;
             let rec;
             try {
@@ -10720,7 +10734,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     onDone(chunks.length ? new Blob(chunks, { type: fmt.mime }) : null, fmt.ext);
                 }
             };
-            rec.start(100);
+            // STARTED ON THE FIRST FRAME, not before it. A recorder started
+            // while the canvas already holds the opening frame captures that
+            // state as a frame of its own, so a 6-frame trajectory came out 7
+            // frames long - the first one twice.
+            let started = false;
+            const begin = () => { if (!started) { started = true; rec.start(100); } };
             const track = stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
             return {
                 width: w, height: h, fps, note, ext: fmt.ext, rendersItself,
@@ -10731,6 +10750,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     if (octx) { paint(); blit(); } else if (!o.sourceCanvas) {
                         this.render('capture');
                     }
+                    begin();
                     // captureStream samples the canvas on its own clock;
                     // nudging it where supported keeps one rendered frame to
                     // one video frame.
@@ -10744,6 +10764,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 },
                 finish: (done) => {
                     onDone = done;
+                    if (!started) { done(null, fmt.ext); return; }   // nothing was ever handed over
                     // let the last frame land in the stream before closing
                     setTimeout(() => { try { rec.stop(); } catch (e) { /* stopped */ } }, 1000 / fps);
                 },
@@ -11501,16 +11522,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._buildSavePanel(this._saveAnchor);
         }
 
-        /** Same panel, same options, current numbers - see _updateCanvasDimensions. */
-        _rebuildSavePanel() {
+        /**
+         * Same panel, same options, current numbers - see
+         * _updateCanvasDimensions.
+         *
+         * @param {boolean} fresh - drop whatever the line was saying. A resize
+         *        changes every size in it, so a result from before the resize
+         *        ("Saved ... 3738x3738") is describing a file made at a size
+         *        the panel no longer offers.
+         */
+        _rebuildSavePanel(fresh) {
             if (!this._savePanel) return;
             // A RESULT SURVIVES THE REBUILD, A DESCRIPTION DOES NOT. "Saved
             // turn: ... 0.1 MB" is news and has to stay; "WebM 598x598" is a
             // description of settings against a canvas that has just changed
             // size, and restoring it would put the old numbers back over the
             // new ones the rebuild exists to produce.
-            const note = this._captureNote;
-            const keep = note && !/^(WebM|MP4|GIF|PNG|SVG)\b.*\u00b7/.test(note.text);
+            const note = fresh ? null : this._captureNote;
+            const keep = note && !/^(WebM|MP4|GIF|PNG|SVG|Images)\b.*\u00b7/.test(note.text);
             this._savePanel.remove();
             this._savePanel = null;
             this._buildSavePanel(this._saveAnchor);
@@ -11995,7 +12024,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // the length. It used to be written only when record was
                 // pressed, so until then the line described the last thing
                 // recorded rather than the thing on the row.
-                source: srcSel ? srcSel.value : ((sources[0] || {}).id || ''),
+                //
+                // ...AND ONLY WHERE THERE WAS A CHOICE. With one source there
+                // is no menu, and writing that single option down made it look
+                // chosen: open the panel with Rotate off and the only source is
+                // F, so switching Rotate on afterwards kept F instead of
+                // landing on FR, which is what having both on means.
+                source: srcSel ? srcSel.value : (this.captureOpts().source || ''),
             });
             // WRITTEN BACK ON EVERY CHANGE, not read at the moment a button is
             // pressed. The panel is rebuilt whenever the canvas is resized (see

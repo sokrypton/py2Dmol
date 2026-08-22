@@ -3578,6 +3578,31 @@ t('a GIF is always cut out, and says so once', () => {
     }
 });
 
+t('a recording is exactly the frames it was handed', () => {
+    const sink = methodBody('_makeVideoSink');
+    // captureStream(fps) samples the canvas on its OWN clock as well as
+    // accepting requestFrame, so every rendered frame went in twice over: a
+    // 6-frame trajectory came out a 12-frame video, twice the length the panel
+    // promised. 0 means "only what you hand me".
+    if (!/captureStream\(0\)/.test(sink)) {
+        throw new Error('the stream samples on its own clock again');
+    }
+    if (!/catch \(e\) \{ stream = target\.captureStream\(fps\); \}/.test(sink)) {
+        throw new Error('no fallback for a browser that refuses a manual stream');
+    }
+    // ...and the trajectory is paced by the frame rate that was asked for. A
+    // file is timestamped by the wall clock, so how long a frame is held IS
+    // the frame rate - and this used to hold each one for the viewer's
+    // animation speed, which has nothing to do with the FPS box.
+    const seq = methodBody('recordFrameSequence');
+    if (!/const captureDelay = Math\.max\(1000 \/ 60, 1000 \/ fps2\)/.test(seq)) {
+        throw new Error('the trajectory is not paced by the chosen frame rate');
+    }
+    if (/this\.animationSpeed/.test(seq)) {
+        throw new Error('the trajectory is paced by the animation speed again');
+    }
+});
+
 t('every capture format builds a sink and finishes a file', () => {
     const realMR = global.MediaRecorder;
     const realZip = global.JSZip; const realGif = global.window.py2dmolGif;
@@ -3821,8 +3846,9 @@ t('the capture panel follows the window size', () => {
     // promising the old numbers.
     const at = src.indexOf('        _updateCanvasDimensions() {');
     const body = src.slice(at, src.indexOf('\n        }', at));
-    if (!/_rebuildSavePanel\(\)/.test(body)) {
-        throw new Error('a resize does not refresh the capture panel');
+    if (!/_rebuildSavePanel\(true\)/.test(body)) {
+        throw new Error('a resize does not refresh the capture panel, or does'
+            + ' not clear a line describing the size it used to be');
     }
     if (!/!this\._captureBusy/.test(body)) {
         throw new Error('the panel would be rebuilt out from under a running job');
