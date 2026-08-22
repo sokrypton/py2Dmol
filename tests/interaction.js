@@ -3720,6 +3720,12 @@ t('the capture panel says everything in one line, inside itself', () => {
     if (!/dataset\.info = '1'/.test(body)) {
         throw new Error('the panel has no info line');
     }
+    // ...BEHIND ITS OWN RULE. Flush under the Video row it reads as one more
+    // of that row's readouts - a size for the recording - when it describes
+    // the image above as well and reports whatever was last written.
+    if (!/rule\(\);\s*\n\s*const info = el\('div'/.test(body)) {
+        throw new Error('the info line is not separated from the video row');
+    }
     if (!/_captureStatus\(/.test(body)) throw new Error('the panel never writes to it');
     // ...and no capture path may go around it
     const stray = [];

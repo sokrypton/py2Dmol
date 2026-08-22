@@ -11827,6 +11827,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // of into the page's status line, which is somewhere else, under
             // whatever the loader said last, and does not exist at all in the
             // embedded viewer.
+            // ...BEHIND A LINE OF ITS OWN. It describes both outputs and it
+            // reports whatever was last written, so sitting flush under the
+            // Video row it read as another of that row's readouts - a size for
+            // the recording rather than a size for the image above it too.
+            rule();
             const info = el('div', 'font-size:11px; color:#6b7280; line-height:1.35;'
                 + ' overflow-wrap:anywhere; min-width:0; white-space:pre-line;');
             info.dataset.info = '1';
