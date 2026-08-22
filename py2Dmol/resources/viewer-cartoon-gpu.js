@@ -1325,6 +1325,12 @@ uniform mat3 uRot;
 uniform vec2 uSize;
 uniform vec2 uZRange;
 uniform float uScale, uPersp, uFL;
+// WHERE THE VIEW IS CENTRED, as an offset from the centre the instances were
+// built about - model space, so it goes in before the rotation. Orient moves
+// the centre onto a selection; without this the tube stays framed on the
+// coordinate mean it was built around. Zero on every frame that has not
+// moved it. Same idea and same name as VS3D's.
+uniform vec3 uShift;
 // extra radius in DISPLAY pixels, and a depth push, for the outline pass
 uniform float uGrowPx, uPushZ, uRatio;
 uniform float uDepthCue;   // per-segment depth darkening, the flat cue
@@ -1342,8 +1348,8 @@ out vec3 vJColA, vJColB;
 out float vCapA, vCapB;
 out float vNoAO;
 void main() {
-  vec3 a = uRot * aP0;
-  vec3 b = uRot * aP1;
+  vec3 a = uRot * (aP0 + uShift);
+  vec3 b = uRot * (aP1 + uShift);
   float peA = uPersp > 0.5 ? uFL / max(0.1, uFL - a.z) : 1.0;
   float peB = uPersp > 0.5 ? uFL / max(0.1, uFL - b.z) : 1.0;
   vA = vec2(uSize.x * 0.5 + a.x * uScale * peA, uSize.y * 0.5 - a.y * uScale * peA);
@@ -1969,6 +1975,14 @@ let residentHasContacts = false;
 let progTube, bufTube, tubeCount = 0;
 let tubeRange = [-1, 1];        // the depth range the capsules are mapped through
 let tubeSig = null;             // what the instance buffer was built from
+// ...AND THE CENTRE THEY WERE BUILT ABOUT. The instance data is model space
+// with this subtracted, and it is deliberately view-independent - so when the
+// view centre MOVES, as Orient moves it onto a selection, the difference has
+// to reach the shader as a uniform. Without it the tube went on being drawn
+// about the coordinate mean: measured on 1UBQ, orienting on residue 9 moved
+// the 2D drawing's ink centroid to (217, 434) and left the GPU's at (299,
+// 278), which is the whole structure still sitting in the middle.
+let tubeCentre = [0, 0, 0];
 let tubeTouch = null;           // per-position count of drawn segments, reused
 let tubeClaim = null;           // ...and which segment owns each joint's cap
 let tubeData = null;            // the instance staging array, reused
@@ -4741,6 +4755,7 @@ function buildTube(renderer, S) {
     let cx = 0; let cy = 0; let cz = 0;
     for (let i = 0; i < n; i++) { cx += co[i].x; cy += co[i].y; cz += co[i].z; }
     cx /= n; cy /= n; cz /= n;
+    tubeCentre = [cx, cy, cz];
     const lw = renderer.lineWidth || 3.0;
     // HOW MANY DRAWN SEGMENTS TOUCH EACH POSITION. An end shared with the next
     // segment is not an end of anything - the chain runs straight through it -
@@ -4994,7 +5009,17 @@ function drawTube(cv, renderer, prm) {
         new Float32Array([R[0][0], R[1][0], R[2][0],
             R[0][1], R[1][1], R[2][1], R[0][2], R[1][2], R[2][2]]));
     gl.uniform2f(gl.getUniformLocation(progTube, 'uSize'), cv.width, cv.height);
-    gl.uniform2f(gl.getUniformLocation(progTube, 'uZRange'), tubeRange[0], tubeRange[1]);
+    // THE SHIFT, AND THE DEPTH RANGE THAT TRAVELS WITH IT. The range was
+    // measured about the centre the instances were built around, and a shift
+    // moves every z by the same amount - the rotated shift's z component.
+    const fr = framingOf(renderer);
+    const sh = [tubeCentre[0] - fr.centre[0], tubeCentre[1] - fr.centre[1],
+        tubeCentre[2] - fr.centre[2]];
+    gl.uniform3f(gl.getUniformLocation(progTube, 'uShift'), sh[0], sh[1], sh[2]);
+    const Rt = currentRot();
+    const dzTube = Rt[2][0] * sh[0] + Rt[2][1] * sh[1] + Rt[2][2] * sh[2];
+    gl.uniform2f(gl.getUniformLocation(progTube, 'uZRange'),
+        tubeRange[0] + dzTube, tubeRange[1] + dzTube);
     u('uScale', (renderer._viewScale || 1) * ratio);
     uploadClip(progTube);
     u('uPersp', isPersp() ? 1 : 0);

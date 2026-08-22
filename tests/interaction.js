@@ -2199,6 +2199,42 @@ t('a metal has a colour and a size of its own', () => {
     }
 });
 
+t('the tube follows the view centre, so Orient goes where it says', () => {
+    // ORIENT MOVES THE VIEW CENTRE onto the selection. The tube's instance data
+    // is model space with the COORDINATE MEAN subtracted and is deliberately
+    // view-independent - turning the model does not change a byte of it - so a
+    // centre that moves has to reach the shader as a uniform. It did not: the
+    // faces and the ink programs both had uShift and the tube program had no
+    // such thing, so it went on drawing about the mean. Measured on 1UBQ,
+    // orienting on residue 9 put the 2D drawing's ink centroid at (217, 434)
+    // and left the GPU's at (299, 278) - the whole structure still sitting in
+    // the middle of the canvas, which is what "Orient moves it somewhere else"
+    // looks like from the outside.
+    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const at = gpu.indexOf('const VSTUBE');
+    const vs = gpu.slice(at, gpu.indexOf('`;', at));
+    if (!/uniform vec3 uShift/.test(vs)) {
+        throw new Error('the tube shader takes no view shift, so Orient cannot move it');
+    }
+    // BOTH ENDS. One of the two carrying it would shear every segment.
+    if (!/uRot \* \(aP0 \+ uShift\)/.test(vs) || !/uRot \* \(aP1 \+ uShift\)/.test(vs)) {
+        throw new Error('the shift is not applied to both ends of the capsule');
+    }
+    // ...and the draw fills it from the live framing against the centre the
+    // instances were built about
+    if (!/uniform3f\(gl\.getUniformLocation\(progTube, 'uShift'\)/.test(gpu)) {
+        throw new Error('nothing sets the tube shift at draw time');
+    }
+    if (!/tubeCentre\[0\] - fr\.centre\[0\]/.test(gpu)) {
+        throw new Error('the shift is not the move since the instances were built');
+    }
+    // THE DEPTH RANGE TRAVELS WITH IT, or the slab and the depth mapping are
+    // measured about a centre the geometry has left.
+    if (!/tubeRange\[0\] \+ dzTube/.test(gpu)) {
+        throw new Error('the tube depth range does not follow the shift');
+    }
+});
+
 t('one segment owns the ball at a joint, and both paint it', () => {
     // TWO TUBES MEETING AT AN ATOM overlap in a lens, and a depth buffer picks
     // between their surfaces per pixel. The surfaces cross right there, so the
