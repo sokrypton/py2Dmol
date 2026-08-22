@@ -3489,6 +3489,20 @@ t('the Capture button does not change identity with the animation state', () => 
 // the first "\n        }" reads somebody else's body the moment the method
 // grows a nested block, which is how one of these first reported a feature
 // missing while it was there.
+// ONE METHOD'S BODY, brace-matched. Slicing to the first "\n        }" reads
+// past the end the moment the method has a nested block - which is how a check
+// on _deliverVideo went on passing with the line it checks for deleted.
+function methodBody(name) {
+    const at = src.indexOf('\n        ' + name + '(');
+    if (at < 0) throw new Error(name + ' is gone');
+    let d = 0; let k = src.indexOf('{', at);
+    const start = k;
+    for (; k < src.length; k++) {
+        if (src[k] === '{') d++; else if (src[k] === '}' && !--d) break;
+    }
+    return src.slice(start, k + 1);
+}
+
 function capturePanelBody() {
     // the BUILDER, which is where the controls are; _toggleSaveImagePanel is
     // now just open-or-close around it
@@ -3680,9 +3694,13 @@ t('one capture model: defaults, formats and sizes', () => {
     // ...and the MENU says the multiplier, because the line under the row
     // already says what the file will be. Two places for one number, and the
     // menu was the widest control in a 160px panel because of it.
-    if (sizes.some((z) => z.label !== `${z.scale}x`)) {
-        throw new Error('the size menu spells out pixels again: '
-            + JSON.stringify(sizes.map((z) => z.label)));
+    const want = { 0.25: '1/4', 0.5: '1/2', 1: '1', 2: '2', 4: '4' };
+    for (const z of sizes) {
+        if (z.label !== want[z.scale]) {
+            throw new Error('the size menu reads '
+                + JSON.stringify(sizes.map((y) => y.label))
+                + ' - fractions are fractions, and the x repeats the label');
+        }
     }
     v.canvas = { width: 3000, height: 3000 };
     if (v.videoSizes().some((z) => z.w > 4096)) {
@@ -3769,6 +3787,15 @@ t('the capture panel says everything in one line, inside itself', () => {
     // ...and the description follows the settings
     if (!/_describeCapture\(\)/.test(body)) {
         throw new Error('nothing describes what the settings will produce');
+    }
+    // THE VIEW STAYS STILL WHEN A RECORDING ENDS. The record button lifts the
+    // panel's pause so the recorder can drive its own frames, and the
+    // recorders hand auto-rotate back when they finish - so the structure
+    // started spinning again the moment a take ended, under a panel whose job
+    // is to hold it still while the next one is set up.
+    const deliver = methodBody('_deliverVideo');
+    if (!/if \(this\._savePanel\) this\._pauseForSavePanel\(\);/.test(deliver)) {
+        throw new Error('the spin restarts under an open capture panel');
     }
 });
 
@@ -3857,13 +3884,30 @@ t('the save panel can still record a trajectory', () => {
         throw new Error('the panel has no Frames source - recording the frames'
             + ' playing through was lost');
     }
-    if (!/this\.toggleRecording\(\)/.test(body)) {
-        throw new Error("the Frames button does not call toggleRecording()");
+    if (!/this\.toggleRecording\(vo\)/.test(body)) {
+        throw new Error('the Frames source does not reach toggleRecording()');
     }
     // ...and the other two, each gated on the mode that makes it possible
-    if (!/this\.autoRotate\) sources\.push/.test(body)
+    if (!/if \(spin\) sources\.push/.test(body)
         || !/this\.drawMode\) sources\.push/.test(body)) {
-        throw new Error('Turn and Draw are no longer gated on their modes');
+        throw new Error('Rotate and Draw are no longer gated on their modes');
+    }
+    // A TRAJECTORY CAN PLAY WHILE THE VIEW TURNS, and a drawing can build up
+    // while it turns. Both recorders could always do it; with one button per
+    // source there was no way to ASK for it - whether you got it depended on
+    // whether Rotate happened to be on.
+    for (const combo of ["'frames\\+turn'", "'draw\\+turn'"]) {
+        if (!new RegExp('id: ' + combo).test(body)) {
+            throw new Error('no combination source ' + combo);
+        }
+    }
+    // ONE BUTTON. A row of buttons reading Rotate, Frames, Draw+Rotate is a row
+    // of sentences; the choice belongs in a menu beside the other menus.
+    if (!/const recBtn = button\('\\u25CF'/.test(body)) {
+        throw new Error('the record button is not a single dot');
+    }
+    if (!/saveVideoSource/.test(body)) {
+        throw new Error('there is no menu for what to record');
     }
     if (!/saveRotationVideo\(vo\)/.test(body) || !/saveDrawingVideo\(vo\)/.test(body)) {
         throw new Error('a source button no longer reaches its recorder');
@@ -3916,7 +3960,7 @@ t('the save panel sizes its controls consistently', () => {
     if (!/if \(skin\) b\.className = skin;/.test(body)) {
         throw new Error('the skin is looked up and then not put on the button');
     }
-    for (const label of ["button\\('Save'", "const b = button\\(''"]) {
+    for (const label of ["button\\('Save'", "button\\('\\\\u25CF'"]) {
         if (!new RegExp(label).test(body)) {
             throw new Error('a button skipped the shared builder: ' + label);
         }

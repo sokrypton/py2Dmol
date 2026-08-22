@@ -5302,6 +5302,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // _makeVideoSink); rendering here as well would draw every frame
             // twice, and on the GPU path at two different sizes, which rebuilds
             // the mesh both times.
+            if (this._recSpin) {
+                this.viewerState.rotation = multiplyMatrices(
+                    rotationMatrixY((2 * Math.PI * currentFrame) / this._recSpin.n),
+                    this._recSpin.R0);
+            }
             if (!this._recSink || !this._recSink.rendersItself) this.render();
             this.lastRenderedFrame = currentFrame;
             this.updateUIControls();
@@ -5339,16 +5344,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         // Toggle recording
-        toggleRecording() {
+        toggleRecording(opts) {
             if (this.isRecording) {
                 this.stopRecording();
             } else {
-                this.startRecording();
+                this.startRecording(opts);
             }
         }
 
         // Start recording animation
-        startRecording() {
+        startRecording(opts) {
             // Check if we have frames to record
             if (!this.currentObjectName) {
                 console.warn("Cannot record: No object loaded");
@@ -5408,8 +5413,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // frame rate and bitrate all come from captureOpts through the
             // shared sink. It used to be a fourth copy of the MediaRecorder
             // dance, hard-coded to 30 fps and 20 Mbps.
-            const vopts = this.captureOpts();
+            const vopts = Object.assign(this.captureOpts(), opts || {});
             const fps = Math.max(5, Math.min(60, Number(vopts.fps) || 30));
+            // ...AND IT CAN TURN WHILE IT PLAYS, if that is what was asked for.
+            // One revolution over the whole trajectory, driven per frame like
+            // the other two recorders drive theirs, rather than left to
+            // auto-rotate's wall clock - so the file does not depend on how
+            // fast this machine happens to render.
+            this._recSpin = vopts.spin
+                ? { R0: this.viewerState.rotation.map((row) => [...row]),
+                    n: Math.max(2, object.frames.length), was: this.autoRotate }
+                : null;
+            if (this._recSpin) this.autoRotate = false;
 
             if (hasScatter) {
                 // Create composite canvas for both molecular viewer and scatter plot
@@ -5523,6 +5538,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         // Finish recording and download file
         finishRecording(blob, ext, sink) {
             this._captureBusy = false;
+            // put the view back where the recording found it, and hand rotation
+            // back to whoever had it
+            if (this._recSpin) {
+                this.viewerState.rotation = this._recSpin.R0.map((row) => [...row]);
+                this.autoRotate = this._recSpin.was;
+                this._recSpin = null;
+            }
             if (blob) {
                 const frames = (this.recordingEndFrame || 0) + 1;
                 this._deliverVideo(blob, ext, 'Frames',
@@ -5530,6 +5552,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     + (sink ? `, ${sink.width}x${sink.height}${sink.note}` : ''));
             } else {
                 this._captureStatus('No video data recorded', true);
+                if (this._savePanel) this._pauseForSavePanel();
             }
 
             // Clean up all recording state
@@ -10454,7 +10477,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // want for a GIF, for a slide, or for anything going into a
             // message - and there was no way to ask for one: the recording was
             // whatever the canvas happened to be.
-            for (const k of [0.25, 0.5, 1, 2, 3]) {
+            const FRACTION = { 0.25: '1/4', 0.5: '1/2' };
+            for (const k of [0.25, 0.5, 1, 2, 4]) {
                 const w = 2 * Math.round(c.width * k / 2);
                 const h = 2 * Math.round(c.height * k / 2);
                 if (w < 64 || h < 64) continue;            // below this it is a thumbnail
@@ -10463,8 +10487,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // under the row already says what the file will be - "WebM
                 // 598x598 - 6s at 30 fps" - so spelling the same number into
                 // the menu said it twice and made the widest control in a
-                // 160px panel out of the half that was already there.
-                out.push({ scale: k, w, h, label: `${k}x` });
+                // 160px panel out of the half that was already there. And a
+                // fraction reads as a fraction: "0.25x" is a decimal doing a
+                // fraction's job, with an x repeating what the control's own
+                // name already says.
+                out.push({ scale: k, w, h, label: FRACTION[k] || String(k) });
             }
             return out;
         }
@@ -10832,6 +10859,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         /** One place that turns a finished recording into a file on disk. */
         _deliverVideo(blob, ext, what, detail) {
             this._captureBusy = false;
+            // THE PANEL IS STILL OPEN, so the view goes back to being held. The
+            // record button lifts the pause to let the recorder drive its own
+            // frames, and the recorders hand auto-rotate back when they finish
+            // - so the structure started spinning again the moment a recording
+            // ended, under a panel whose whole job is to hold it still while
+            // the next take is set up.
+            if (this._savePanel) this._pauseForSavePanel();
             if (!blob) {
                 this._captureStatus('No video data recorded', true);
                 return;
@@ -11192,7 +11226,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // same reason the frames are: so the file does not depend on how
             // fast this machine happens to render.
             const R0 = this.viewerState.rotation.map((row) => [...row]);
-            const turning = !!this.autoRotate;
+            // ASKED FOR, NOT INFERRED. The panel offers Draw and Draw+Rotate as
+            // separate things to record; before that this read whatever
+            // auto-rotate happened to be, so which of the two you got was a
+            // side effect of a switch somewhere else on the page.
+            const turning = (o.spin === undefined) ? !!this.autoRotate : !!o.spin;
             this.autoRotate = false;
             this._drawR0 = R0;
             this._drawWasAuto = turning;
@@ -11437,12 +11475,25 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         _buildSavePanel(anchorEl) {
             const obj = this.currentObjectName
                 ? this.objectsData[this.currentObjectName] : null;
+            // WHAT THERE IS TO RECORD, INCLUDING THE COMBINATIONS. A
+            // trajectory can play while the view turns, and a drawing can build
+            // up while it turns - the recorders could always do both, but the
+            // panel had one button per source and no way to say "both", so the
+            // combination depended on whether Rotate happened to be on when you
+            // pressed Frames. It is a choice now, and pressing record cannot
+            // mean two things.
+            const spin = !!this.autoRotate;
+            const hasFrames = !!(obj && obj.frames && obj.frames.length > 1);
             const sources = [];
-            if (this.autoRotate) sources.push({ id: 'turn', label: 'Turn' });
-            if (this.drawMode) sources.push({ id: 'draw', label: 'Draw' });
-            if (obj && obj.frames && obj.frames.length > 1) {
-                sources.push({ id: 'frames', label: 'Frames' });
+            if (hasFrames) sources.push({ id: 'frames', label: 'Frames', spin: false });
+            if (hasFrames && spin) {
+                sources.push({ id: 'frames+turn', label: 'Frames+Rotate', spin: true });
             }
+            if (this.drawMode) sources.push({ id: 'draw', label: 'Draw', spin: false });
+            if (this.drawMode && spin) {
+                sources.push({ id: 'draw+turn', label: 'Draw+Rotate', spin: true });
+            }
+            if (spin) sources.push({ id: 'turn', label: 'Rotate', spin: true });
             // A running animation is paused while the panel is up, so what is
             // saved is the frame that was on screen when it was opened.
             if (sources.length) this._pauseForSavePanel();
@@ -11611,7 +11662,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             };
             let vFmt = null; let secIn = null; let fpsIn = null;
             let mbpsIn = null; let sizeSel = null; let colorsSel = null;
-            let framesIn = null; let colorsLab = null;
+            let framesIn = null; let colorsLab = null; let srcSel = null;
             let videoRow = null;
             if (sources.length && formats.length) {
                 rule();
@@ -11788,30 +11839,44 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 recRow.appendChild(el('span', CAP,
                     'Turn on Rotate or Draw, or load frames'));
             } else {
-                for (const src of sources) {
-                    const b = button('', src.id === 'frames'
-                        ? 'Record the frames playing through'
-                        : (src.id === 'draw' ? 'Record the drawing building up'
-                            : 'Record one full turn'));
-                    b.dataset.rec = src.id;
-                    // the dot carries the red, so the button keeps the page's
-                    // own colours and still reads as a record button
-                    b.appendChild(el('span', 'color:#ef4444; margin-right:4px;', '\u25CF'));
-                    b.appendChild(document.createTextNode(src.label));
-                    b.addEventListener('click', (ev) => {
-                        ev.preventDefault();
-                        if (this._captureBusy) return;
-                        // EVERY FAILURE HAS TO COME BACK HERE. Marking the
-                        // panel busy and then throwing on the way to the
-                        // recorder leaves every button disabled with no
-                        // recording running and nothing said - which is how a
-                        // one-word mistake in the sink (a missing `const zip`)
-                        // read as "Capture, Rotate, Turn does not record" and
-                        // as "the GIF path is broken", both at once, for the
-                        // rest of the session.
-                        try {
-                        const vo = readVideo();
-                        this._captureOpts = Object.assign(this.captureOpts(), vo);
+                // ONE BUTTON, AND A MENU WHERE THERE IS A CHOICE. A row of
+                // buttons reading "Rotate", "Frames", "Draw+Rotate" is a row of
+                // sentences; the button is the verb and belongs to the row's
+                // controls, so what to record joins them as one more menu and
+                // the button is the red dot it always wanted to be.
+                if (sources.length > 1) {
+                    const want = sources.some((x) => x.id === opts.source)
+                        ? opts.source : sources[0].id;
+                    srcSel = menu('saveVideoSource', sources.map((x) => (
+                        { value: x.id, label: x.label })), want, 'What to record');
+                    recRow.appendChild(srcSel);
+                }
+                const recBtn = button('\u25CF', '');
+                recBtn.dataset.rec = '1';
+                recBtn.style.color = '#ef4444';
+                const pick = () => sources.find((x) => x.id
+                    === (srcSel ? srcSel.value : sources[0].id)) || sources[0];
+                const syncRec = () => {
+                    const src = pick();
+                    recBtn.title = 'Record: ' + src.label;
+                };
+                if (srcSel) srcSel.addEventListener('change', syncRec);
+                syncRec();
+                recBtn.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    if (this._captureBusy) return;
+                    // EVERY FAILURE HAS TO COME BACK HERE. Marking the panel
+                    // busy and then throwing on the way to the recorder leaves
+                    // every button disabled with no recording running and
+                    // nothing said - which is how a one-word mistake in the
+                    // sink (a missing `const zip`) read as "Capture, Rotate,
+                    // Turn does not record" and as "the GIF path is broken",
+                    // both at once, for the rest of the session.
+                    try {
+                        const src = pick();
+                        const vo = Object.assign(readVideo(), { spin: src.spin });
+                        this._captureOpts = Object.assign(this.captureOpts(), vo,
+                            { source: src.id });
                         // THE PANEL STAYS UP while it records. It used to close
                         // itself, which put the progress and the result
                         // somewhere the user was no longer looking - and left
@@ -11825,18 +11890,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         // Recording a drawing RESTARTS it from blank paper, so
                         // pressing record part way through a run still gives a
                         // whole one. A turn has no beginning, so it does not.
-                        if (src.id === 'draw') this.saveDrawingVideo(vo);
+                        if (src.id.startsWith('draw')) this.saveDrawingVideo(vo);
                         else if (src.id === 'turn') this.saveRotationVideo(vo);
-                        else this.toggleRecording();
-                        } catch (err) {
-                            this._captureBusy = false;
-                            this._syncCaptureButtons();
-                            this._captureStatus('Could not record: ' + err.message, true);
-                            throw err;      // ...and still say so in the console
-                        }
-                    });
-                    recRow.appendChild(b);
-                }
+                        else this.toggleRecording(vo);
+                    } catch (err) {
+                        this._captureBusy = false;
+                        this._syncCaptureButtons();
+                        this._captureStatus('Could not record: ' + err.message, true);
+                        throw err;      // ...and still say so in the console
+                    }
+                });
+                recRow.appendChild(recBtn);
             }
 
             okBtn.addEventListener('click', (e) => {
