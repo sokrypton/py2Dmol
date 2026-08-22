@@ -1063,11 +1063,9 @@ function setupEventListeners() {
         };
         if (none || !renderer || !obj) {
             for (const id of ['elementsShowToggle', 'mainchainShowToggle',
-                'sidechainShowToggle', 'contactShowToggle']) {
+                'sidechainShowToggle', 'contactShowToggle', 'plateShowToggle']) {
                 set(id, false);
             }
-            const scSel0 = document.getElementById('sidechainModeSelect');
-            if (scSel0) scSel0.value = '';
             return;
         }
         // ...and only positions that still EXIST. A selection outlives the
@@ -1110,7 +1108,7 @@ function setupEventListeners() {
         };
         const modes = new Set(live.map(modeOf));
         const mode = modes.size === 1 ? [...modes][0] : '';
-        const scSel = document.getElementById('sidechainModeSelect');
+        const scSel = document.getElementById('plateShowToggle');
         const scTog = document.getElementById('sidechainShowToggle');
         // WHICH OF THE TWO IS ON THE ROW. A protein side chain is drawn or it
         // is not; only a nucleotide has the plate as well, and only there is a
@@ -1144,17 +1142,21 @@ function setupEventListeners() {
                 : (mode === '' ? null : mode !== 'none'));
         }
         if (scSel) {
-            // ...and the style menu only while it is showing: a way of drawing
-            // a thing that is not drawn is a control for nothing.
-            scSel.hidden = !hasNuc || mode === 'none' || mode === '';
-            // HIDDEN, NOT FORGOTTEN. Blanking it while nothing is drawn lost
-            // the answer the switch needs when it comes back on: pick Full,
-            // switch off, switch on, and the plate returned instead of the
-            // atoms you had asked for. Mixed is the one state with no style to
-            // remember.
-            if (mode === 'plate' || mode === 'full') scSel.value = mode;
-            else if (mode === '') scSel.value = '';
-            scSel.disabled = false;
+            // ...and the Plate switch only while something IS drawn: a way of
+            // drawing a thing that is not drawn is a control for nothing. By
+            // its LABEL, which is what carries the word - the checkbox is
+            // invisible on its own.
+            const wrapPlate = scSel.closest ? scSel.closest('label') : null;
+            (wrapPlate || scSel).hidden = !hasNuc || mode === 'none' || mode === '';
+            // ON MEANS PLATE, off means the real atoms. Left alone while
+            // nothing is drawn, so the answer survives a switch off and on:
+            // pick atoms, hide them, show them again, and they are still atoms.
+            if (mode === 'plate' || mode === 'full') {
+                scSel.checked = mode === 'plate';
+                scSel.indeterminate = false;
+            } else if (mode === '') {
+                scSel.indeterminate = true;
+            }
         }
         // ELEMENT COLOURS ARE A PROPERTY OF ATOMS, so the control only makes
         // sense while there are atoms drawn. On None there is nothing to
@@ -1734,21 +1736,16 @@ function setupEventListeners() {
             // plate unless the menu says otherwise - rather than jumping to the
             // atoms, which is not what a plain Show should decide.
             const r = viewerApi?.renderer;
-            const sel = document.getElementById('sidechainModeSelect');
+            const plate = document.getElementById('plateShowToggle');
             const nuc = !!(r && r.hasBasesFor && r.hasBasesFor(p2));
-            const style = (sel && (sel.value === 'full' || sel.value === 'plate'))
-                ? sel.value : (nuc ? 'plate' : 'full');
+            const style = nuc ? ((plate && !plate.checked) ? 'full' : 'plate') : 'full';
             setSelectionSidechainMode(p2, v ? style : 'none');
         });
-        // the side-chain MODE is a select, not a toggle, but it reads the
-        // selection the same way every control on this panel does
-        const scMode = document.getElementById('sidechainModeSelect');
-        if (scMode) {
-            scMode.addEventListener('change', withSelection((positions) => {
-                if (scMode.value) setSelectionSidechainMode(positions, scMode.value);
-                updateSelectionToolsState();
-            }));
-        }
+        // PLATE OR ATOMS, for a nucleotide that is being drawn at all. Show
+        // owns whether; this owns which.
+        onToggle('plateShowToggle', (p2, v) => {
+            setSelectionSidechainMode(p2, v ? 'plate' : 'full');
+        });
         onToggle('contactShowToggle', (p2, v) => (v
             ? addSelectionContact(p2) : removeSelectionContact(p2)));
 
