@@ -2476,7 +2476,6 @@
                     const drawWidth = CHAR_WIDTH;
                     if (drawWidth > 0) {
                         // Draw from bottom up, no gap between letters
-                        const drawY = yOffset - drawHeight;
 
                         // Clip logo rendering to extend all the way to queryY (no gap)
                         ctx.save();

@@ -987,7 +987,9 @@ function setupEventListeners() {
         set('elementsShowToggle', tally(scAble,
             obj.elements instanceof Set ? obj.elements : null, true));
         const t = renderer.positionTypes || [];
-        const nuc = live.filter((i) => t[i] === 'D' || t[i] === 'R');
+        // ...and whether any of it is a nucleotide, which is the renderer's own
+        // question rather than a second copy of the type test
+        const hasNuc = !!(renderer.hasBasesFor && renderer.hasBasesFor(live));
         // THE SIDE-CHAIN MODE, read back per residue and shown only when the
         // whole selection agrees. Plate is offered only where the selection has
         // nucleotides - a protein has no such thing, and an option that does
@@ -998,8 +1000,8 @@ function setupEventListeners() {
         // toggle; a selection with nucleotides in it has three and takes the
         // select. Never both - two controls for one question is what this row
         // just stopped being.
-        if (scTog) scTog.hidden = !!nuc.length;
-        if (scSel) scSel.hidden = !nuc.length;
+        if (scTog) scTog.hidden = hasNuc;
+        if (scSel) scSel.hidden = !hasNuc;
         if (scTog) {
             const scSet0 = obj.sidechains instanceof Set ? obj.sidechains : null;
             set('sidechainShowToggle', tally(scAble, scSet0, false));
@@ -1016,10 +1018,10 @@ function setupEventListeners() {
             const modes = new Set(live.map(modeOf));
             scSel.value = modes.size === 1 ? [...modes][0] : '';
             const plateOpt = scSel.querySelector('option[value="plate"]');
-            if (plateOpt) plateOpt.hidden = !nuc.length;
+            if (plateOpt) plateOpt.hidden = !hasNuc;
             // ...and the row itself is offered only where there is something to
             // draw: a structure with no side-chain atoms and no bases has none
-            scSel.disabled = !scAble.length && !nuc.length;
+            scSel.disabled = !scAble.length && !hasNuc;
         }
         // MAIN CHAIN IS THE BACKBONE. The set names what is HIDDEN, so a
         // position in it is a toggle that is off.
@@ -1101,20 +1103,6 @@ function setupEventListeners() {
         for (const i of positions) (drawsSomething(i) ? show : hide).push(i);
         if (hide.length) setSelectionVisible(withAtoms(hide), false, false);
         if (show.length) setSelectionVisible(withAtoms(show), true, false);
-    }
-
-    // Base plates, per nucleotide. Unlike side chains this is a pure DRAWING
-    // change - the bases are already positions, nothing is materialised - so it
-    // is a repaint, not a frame reload.
-    function setSelectionBases(positions, on) {
-        const renderer = viewerApi?.renderer;
-        if (!renderer || !renderer.setBasesFor) return;
-        if (on && renderer.cartoonBasePlates === false) {
-            setStatus('Base plates are switched off for this view.');
-            return;
-        }
-        if (!renderer.setBasesFor(positions, on)) return;   // nothing to redraw
-        renderer.render('selection bases');
     }
 
     // WITHIN N ANGSTROM OF WHAT IS SELECTED, atom to atom. The renderer does
@@ -3065,7 +3053,6 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
     let framesAdded = 0;
     const loadAsFramesCheckbox = document.getElementById('loadAsFramesCheckbox');
     const alignFramesCheckbox = document.getElementById('alignFramesCheckbox');
-    const isLoadAsFrames = loadAsFramesCheckbox ? loadAsFramesCheckbox.checked : false;
     const shouldAlign = alignFramesCheckbox ? alignFramesCheckbox.checked : false;
 
     // Check if object with same name already exists in tempBatch or pendingObjects
@@ -3275,8 +3262,6 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
         // 4 ms clamped timer. See yieldIfBusy in utils.js.
         await yieldIfBusy();
         const model = maybeFilterLigands(models[i]);
-        const originalPositionCount = models[i].length;
-        const filteredPositionCount = model.length;
 
         // Convert parsed atoms to frame data
         // Pass conectMap (PDB) and structConn (CIF) for bond resolution
@@ -3307,7 +3292,6 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
                 // We need to filter out ligand positions from the PAE matrix
 
                 // Count total ligands identified
-                const totalLigands = originalIsLigandPosition.filter(x => x).length;
 
                 // Determine dimensions
                 const isFlat = !!paeData.buffer;

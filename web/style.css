@@ -366,10 +366,6 @@
 
 /* .btn-blue removed - use .btn-primary instead */
 
-.btn-disabled {
-    background: linear-gradient(135deg, var(--color-gray-200), var(--color-gray-300));
-    color: var(--color-gray-400);
-}
 
 /* Button utility classes */
 .btn-flex {
@@ -386,17 +382,8 @@
     /* Height inherits from btn/btn-small; width stays fixed for icons */
 }
 
-.btn-min-width-sm {
-    min-width: 80px;
-}
 
-.btn-min-width-md {
-    min-width: 100px;
-}
 
-.btn-min-width-lg {
-    min-width: 170px;
-}
 
 /* Specific button overrides (for backward compatibility) */
 #fetch-btn {
@@ -441,10 +428,6 @@
 
 /* Navigation buttons - extends .btn base class */
 /* Note: nav-button should be used with .btn class: <button class="btn nav-button"> */
-.nav-button {
-    /* Inherits all base .btn styles when used with .btn */
-    line-height: var(--btn-height);
-}
 
 .nav-button.btn-small {
     line-height: var(--btn-height-small);
@@ -1053,14 +1036,6 @@
     border-radius: 8px;
 }
 
-.upload-option-label {
-    font-size: 12px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: #6b7280;
-    margin-bottom: 4px;
-}
 
 .upload-toggle-item {
     display: flex;
@@ -1140,21 +1115,9 @@ h1 {
     color: #6b7280;
 }
 
-.bg-white.p-6.rounded-2xl {
-    background: #ffffff;
-    padding: 24px;
-    border-radius: 16px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
-    border: 1px solid #e5e7eb;
-}
-
 /* ============================================================================
    UTILITY CLASSES
    ============================================================================ */
-.vertical-divider-md {
-    width: 1px;
-    background: linear-gradient(to bottom, transparent, #e5e7eb 10%, #e5e7eb 90%, transparent);
-}
 
 .hidden {
     display: none !important;
@@ -1171,13 +1134,6 @@ table.layout-table td {
 }
 
 /* Selection Mode Toggle */
-.selection-mode-toggle {
-    display: flex;
-    border: 1px solid #d1d5db;
-    border-radius: 8px;
-    overflow: hidden;
-    margin-bottom: 12px;
-}
 
 .selection-mode-toggle label {
     flex: 1;
@@ -1248,18 +1204,6 @@ table.layout-table td {
     margin-top: 8px;
 }
 
-.sequence-toggle-btn {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    background: none;
-    border: none;
-    padding: 0;
-    cursor: pointer;
-    font-size: 15px;
-    font-weight: 600;
-    color: #374151;
-}
 
 .sequence-toggle-btn:hover {
     color: #1f2937;
@@ -1275,11 +1219,6 @@ table.layout-table td {
     vertical-align: middle;
 }
 
-.sequence-title {
-    font-weight: 600;
-    color: #374151;
-    font-size: 15px;
-}
 
 .sequence-content.hidden {
     display: none;
@@ -1661,20 +1600,6 @@ table.layout-table td {
 /* ============================================================================
    LINK BUTTON (for README and other links)
    ============================================================================ */
-.link-button {
-    background: none;
-    border: none;
-    color: #3b82f6;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    padding: 0;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    pointer-events: auto;
-    text-decoration: none;
-}
 
 .link-button:hover,
 .link-button:focus-visible {

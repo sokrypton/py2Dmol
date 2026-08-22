@@ -2139,12 +2139,6 @@
         // copy - is for the flattening cycles only: taking the side vector
         // against the smoothed tangent instead threw away most of what the
         // surface fit had just bought (partner faces 5 deg -> 21).
-        const rawTan = (i) => {
-            const a = at(Math.max(0, i - 1)), b = at(Math.min(n - 1, i + 1));
-            const x = b.x - a.x, y = b.y - a.y, z = b.z - a.z;
-            const l = Math.hypot(x, y, z);
-            return l > 1e-9 ? [x / l, y / l, z / l] : null;
-        };
         const orthoNorm = (v, t) => {
             if (!v || !t) return v;
             const d = v[0] * t[0] + v[1] * t[1] + v[2] * t[2];
@@ -4323,14 +4317,6 @@
         // Midpoint of a base pair - it lies on the local helix axis, and both
         // the ribbon frame and the plate frame are built from it so the two stay
         // consistent with each other.
-        const naMid = (i) => {
-            if (i < 0 || i >= n) return null;
-            const j = pairOf[i];
-            if (j < 0 || j >= n) return null;
-            const a = rotated[i], b = rotated[j];
-            return [(a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2];
-        };
-
         // ribbon side vector per residue, filled as each run is framed - see
         // the store below
         const protSide = new Array(n);
@@ -5316,7 +5302,6 @@
                     ? renderer.getColorOverride(i) : null;
                 const ovN = hasColorOverrides && renderer.getColorOverride
                     ? renderer.getColorOverride(iN) : null;
-                const ovCol = ovI || ovN;
                 // A COLOUR BELONGS TO A RESIDUE, BUT AN INTERVAL SPANS TWO.
                 //
                 // colors[segIdx] is getAtomColor(idx1) - a segment takes its
@@ -6419,7 +6404,6 @@
         // for getting rid of. A contact is a cylinder: same width, same depth,
         // and its radius is its own, not the ribbon's thickness control.
         const contactR = CONTACT_WIDTH / 2;
-        const contactHW = contactR;
         const contactHT = contactR;
         // A CONTACT IS A FLAT BRIGHT STROKE. That is the default and it is a
         // deliberate one: a contact is annotation OVER the picture, not part of

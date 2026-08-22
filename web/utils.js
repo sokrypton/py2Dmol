@@ -1034,7 +1034,6 @@ function* parseCIFSteps(text) {
         atomCount++;
     }
 
-    const modelCount = modelMap.size;
 
     const models = Array.from(modelMap.keys())
         .sort((a, b) => a - b)
@@ -2589,48 +2588,10 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
     // 3. Process explicit bonds from _chem_comp_bond (CIF component bonds)
     if (chemCompBondMap && chemCompBondMap.size > 0) {
         // Group atoms by residue unique ID (chain:resSeq:resName)
-        // We need to map the original atom serial/ID to the *new* index in the coords array.
-        // The `atomSerialToIndex` and `atomIdToIndex` maps already do this for the *final* positions.
-        // However, the `chemCompBondMap` refers to atom names within a residue, not serials or IDs.
-        // We need to map (resKey, atomName) -> newIndex.
-        // The `resAtomIdToIndex` map was intended for this, but it's not populated.
-        // Let's re-populate `resAtomIdToIndex` during the initial atom processing loop,
-        // or create a new map here that links (resKey, atomName) to the final `coords` index.
-
-        // Let's create a temporary map for this purpose, mapping (resKey, atomName) to the index in `coords`.
-        // This requires iterating through the `allResidues` and their atoms again,
-        // or modifying the initial loop to populate this map for *all* atoms that end up in `coords`.
-
-        // For simplicity and to avoid re-looping all atoms, let's assume `resAtomIdToIndex`
-        // should have been populated during the main loop where `coords` are built.
-        // Since it wasn't, we need to reconstruct a similar mapping for the atoms that *made it into* `coords`.
-
-        // A more robust way: iterate through the `allResidues` and their atoms,
-        // and for each atom that was added to `coords`, store its (resKey, atomName) -> newIndex.
-        const finalResidueAtomToIndex = new Map(); // Map<resKey, Map<atomName, finalCoordIndex>>
-
-        // This requires re-iterating through the logic that populates `coords` to get the correct indices.
-        // This is complex because `coords` indices are conditional.
-        // A simpler approach is to use the `atomSerialToIndex` or `atomIdToIndex` if the original atoms
-        // had unique identifiers that map to the final `coords` indices.
-
-        // Given the current structure, the `atomIdToIndex` (chain:resSeq:atomName -> newIndex)
-        // is the most suitable for resolving `chemCompBondMap` bonds.
-        // The `chemCompBondMap` bonds are defined by `atom1` and `atom2` (atom names) within a `resName`.
-        // So we need to find all atoms belonging to a specific residue (resName, chain, resSeq)
-        // and then map their atom names to the `coords` index.
-
-        // Let's iterate through the original `atoms` array to build a map of
-        // (chain:resSeq:resName) -> Map(atomName -> originalAtomObject)
-        // and then use `atomIdToIndex` to get the final `coords` index.
-
-        // This is tricky because `chemCompBondMap` applies to *residues*, not individual atoms.
-        // The `convertParsedToFrameData` function filters atoms and only adds certain ones to `coords`.
-        // So we need to find the `coords` indices for the atoms specified in `chemCompBondMap` for a given residue.
-
-        // Let's use the `residueMap` created earlier, which contains all atoms for each residue.
-        // Then, for each atom in `residue.atoms`, we can check if it was added to `coords`
-        // by looking it up in `atomIdToIndex`.
+        // WHICH POSITION EACH NAMED ATOM BECAME. The component table names its
+        // bonds by ATOM NAME within a residue, and coords is indexed by
+        // position - so the lookup goes through atomIdToIndex, which is keyed
+        // chain:resSeq:atomName and holds only the atoms that made it in.
 
         const processedBonds = new Set(); // To avoid duplicate bonds from this source
 

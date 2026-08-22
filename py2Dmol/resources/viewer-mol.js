@@ -9868,7 +9868,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Calculate opacity based on position in visibleOrder
                 // i=0 is furthest (start of sliced array), i=numRendered-1 is closest
                 // Distance from front: numRendered - 1 - i
-                const distFromFront = numRendered - 1 - i;
                 // NO IN-GEOMETRY SELECTION INK. This used to recolour the
                 // style's own outline pass, which put the selection into the
                 // depth sort: a selected residue behind anything was hidden by
@@ -9893,7 +9892,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Skip shadows/tints/depth for contact segments - keep them bright and flat
                 if (segInfo.type !== 'C') {
                     // Cache zNorm value
-                    const zNormVal = zNorm[idx];
 
                     if (renderShadows) {
                         const tintFactor = (0.50 * tints[idx]) / 3;
@@ -11054,8 +11052,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const paeSize = Array.isArray(config.pae?.size) || (typeof config.pae?.size === 'object' && config.pae.size.length !== undefined)
         ? config.pae.size[0]
         : config.pae?.size || 300;
-    const paeDisplayWidth = paeSize;
-    const paeDisplayHeight = paeSize;
 
     // Initialize canvas with DPI scaling (before renderer creation)
     canvas.width = displayWidth * currentDPR;
@@ -11090,7 +11086,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
     }
     if (canvasContainer && window.ResizeObserver) {
-        let resizeRaf = null;
         let lastWidth = displayWidth;
         let lastHeight = displayHeight;
         const resizeObserver = new ResizeObserver(entries => {
