@@ -186,6 +186,43 @@ window.addEventListener('load', () => {
       r.render('both again');
       await new Promise((s) => setTimeout(s, 200));
 
+      // ORIENT, PICKING AND AUTO CLIP, the three things that ask "where is the
+      // structure" and used to be answered by the current object alone.
+      window.applyBestViewRotation(false);
+      await new Promise((s) => setTimeout(s, 300));
+      R.orientInk = ink(r);
+      // every drawn position still projects inside the canvas after Orient
+      r._ensurePickProjection();
+      let outside = 0;
+      for (let i = 0; i < r.coords.length; i++) {
+        if (!r.screenValid || !r.screenValid[i]) continue;
+        const x = r.screenX[i]; const y = r.screenY[i];
+        if (x < 0 || y < 0 || x > r.displayWidth || y > r.displayHeight) outside++;
+      }
+      R.outsideAfterOrient = outside;
+
+      // pick where the SECOND object is drawn: the hit must belong to it
+      const probe = R.offsets[1] + 5;
+      r._ensurePickProjection();
+      // pickResidueAt takes CLIENT coordinates and subtracts the canvas rect
+      const rect = r.canvas.getBoundingClientRect();
+      const hit = r.pickResidueAt(r.screenX[probe] + rect.left,
+        r.screenY[probe] + rect.top);
+      R.pickHit = hit;
+      R.pickOwner = (hit >= 0 && r.ownerOf) ? (r.ownerOf(hit) || {}).name : null;
+
+      // auto clip on a selection in the second object
+      r.setResidueSelection(new Set([probe]));
+      if (r.autoClip) r.autoClip(r.residueSelection);
+      r.render('clipped');
+      await new Promise((s) => setTimeout(s, 200));
+      R.clipInk = ink(r);
+      R.clipSlab = [r.clipNear, r.clipFar];
+      r.setClipSlab(null, null);
+      r.clearResidueSelection();
+      r.render('unclipped');
+      await new Promise((s) => setTimeout(s, 200));
+
       // THE TUBE STYLE, which has a GPU program of its own (VSTUBE) and its
       // own joint handling - a merged array must be one structure to it too.
       const styleWas = r.style;
@@ -323,6 +360,10 @@ def main():
           f" after the eye {R.get('afterEyeInk')} ink"
           f" (merge {R.get('afterEyeMulti')}),"
           f" hiding everything leaves {R.get('lastOneLeft')}")
+    print(f"  orient: {R.get('orientInk')} ink,"
+          f" {R.get('outsideAfterOrient')} positions off canvas;"
+          f" pick at the second object -> {R.get('pickOwner')};"
+          f" clip {R.get('clipSlab')} leaves {R.get('clipInk')} ink")
     print(f"  Object mode offered: {R.get('objectOptionShown')},"
           f" colours per object in it: {R.get('flatPerObject')}")
     print(f"  tube:  {R.get('tubeInk')} ink, {R.get('tubeCrossing')} crossing;"
@@ -365,6 +406,12 @@ def main():
         bad.append("the last visible object could be hidden")
     if R.get("sharedColors"):
         bad.append(f"two objects share colours {R['sharedColors']}")
+    if R.get("outsideAfterOrient"):
+        bad.append(f"{R['outsideAfterOrient']} positions are off canvas after Orient")
+    if R.get("pickOwner") != R["sources"][1]:
+        bad.append(f"a pick on the second object reported {R.get('pickOwner')}")
+    if not (0 < R.get("clipInk", 0) < R["bothInk"]):
+        bad.append(f"auto clip on one object left {R.get('clipInk')} ink")
     if not R.get("objectOptionShown"):
         bad.append("the Object colour mode is not offered with two objects up")
     if R.get("flatPerObject") not in ([1, 1], None):

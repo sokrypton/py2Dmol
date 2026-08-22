@@ -2682,6 +2682,16 @@ function applyBestViewRotation(animate = true) {
             const c = positionIndex >= 0 ? xyzAt(positionIndex) : null;
             if (c) coordsForBestView.push(c);
         }
+    } else if (renderer.multiState && renderer.multiState.enabled) {
+        // EVERYTHING THAT IS DRAWN, not everything in the current object. With
+        // several objects merged, `frame` is one of them - orienting on it
+        // alone swings the view onto that structure and leaves the others
+        // wherever they land, which is not what Orient with nothing selected
+        // is asking for.
+        for (let i = 0; i < liveCoords.length; i++) {
+            const c = xyzAt(i);
+            if (c) coordsForBestView.push(c);
+        }
     } else {
         // No selection or all positions selected: use all coordinates
         coordsForBestView = frame.coords;
