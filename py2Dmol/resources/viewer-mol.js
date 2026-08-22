@@ -5304,7 +5304,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // the mesh both times.
             if (this._recSpin) {
                 this.viewerState.rotation = multiplyMatrices(
-                    rotationMatrixY((2 * Math.PI * currentFrame) / this._recSpin.n),
+                    rotationMatrixY((2 * Math.PI * this._recSpin.turns * currentFrame)
+                        / this._recSpin.n),
                     this._recSpin.R0);
             }
             if (!this._recSink || !this._recSink.rendersItself) this.render();
@@ -5422,7 +5423,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // fast this machine happens to render.
             this._recSpin = vopts.spin
                 ? { R0: this.viewerState.rotation.map((row) => [...row]),
-                    n: Math.max(2, object.frames.length), was: this.autoRotate }
+                    n: Math.max(2, object.frames.length), was: this.autoRotate,
+                    turns: Math.max(1, Math.min(10, Number(vopts.rotations) || 1)) }
                 : null;
             if (this._recSpin) this.autoRotate = false;
 
@@ -10401,7 +10403,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         static get CAPTURE_DEFAULTS() {
             return { format: 'png', dpi: 200,
-                seconds: 6, fps: 30, mbps: 12, container: 'webm', scale: 1 };
+                seconds: 6, fps: 30, mbps: 12, container: 'webm', scale: 1,
+                rotations: 1 };
         }
 
         /** The panel's state, defaults filled in, so every reader agrees. */
@@ -10801,20 +10804,38 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
             const bits = [`${fmt.label} ${w}x${h}`];
             lines.push('');
+            // WHAT THIS COMBINATION WILL ACTUALLY PRODUCE. The four sources
+            // differ in who sets the length, so the line has to work it out
+            // rather than repeat the boxes: on F and FR the trajectory decides
+            // and the seconds are DERIVED (N frames at the chosen rate); on R
+            // and RF the seconds decide and the frame count is derived. Saying
+            // "6s" over a recording whose length the trajectory fixes is the
+            // kind of small lie that makes a panel untrustworthy.
+            const obj2 = this.currentObjectName
+                ? this.objectsData[this.currentObjectName] : null;
+            const nTraj = (obj2 && obj2.frames) ? obj2.frames.length : 0;
+            const src = o.source || '';
+            const led = (src === 'F' || src === 'FR') && nTraj > 1;
+            if (!zip) {
+                const n = led ? nTraj : Math.max(2, Math.round(o.seconds * fps));
+                const secs = led ? (nTraj / fps) : o.seconds;
+                bits.push(`${n} frames`, `${(Math.round(secs * 10) / 10)}s at ${fps} fps`);
+                if (src === 'R' || src === 'FR' || src === 'RF' || src === 'DR') {
+                    const t = Math.max(1, Math.min(10, o.rotations || 1));
+                    bits.push(`${t} turn${t === 1 ? '' : 's'}`);
+                }
+                if (src === 'RF' && nTraj > 1) bits.push(`${nTraj} model frames fitted`);
+            }
             if (zip) {
-                // one per trajectory frame where there is a trajectory to
-                // follow, and the count otherwise
-                const traj = this.currentObjectName
-                    && this.objectsData[this.currentObjectName];
-                const n = (traj && traj.frames && traj.frames.length > 1)
-                    ? traj.frames.length + ' PNGs, one per frame'
-                    : (o.frames || 36) + ' PNGs';
+                // one per trajectory frame where the trajectory sets the
+                // length, and the count where it does not
+                const n = led ? `${nTraj} PNGs, one per frame`
+                    : `${o.frames || 36} PNGs`;
                 bits.push(n, `${o.dpi} dpi`);
             } else if (gif) {
-                bits.push(`${o.seconds}s at ${fps} fps`);
                 bits.push(`${o.colors} colours`, 'transparent');
             } else {
-                bits.push(`${o.seconds}s at ${fps} fps`, `${o.mbps} Mbps`);
+                bits.push(`${o.mbps} Mbps`);
             }
             lines[lines.length - 1] = bits.join(' \u00b7 ');
             this._captureStatus(lines.join('\n'));
@@ -11337,15 +11358,39 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 ? Math.max(2, Math.min(600, Number(o.frames) || 36))
                 : Math.max(2, Math.round(seconds * fps));
 
-            const step = (2 * Math.PI) / N;
+            // HOW MANY TURNS, over however many frames this recording has.
+            const turns = Math.max(1, Math.min(10, Number(o.rotations) || 1));
+            const step = (2 * Math.PI * turns) / N;
+            // ...AND THE TRAJECTORY, FITTED INTO IT. RF says "turn for this
+            // long and play the frames inside that": a trajectory longer than
+            // the recording is sampled, a shorter one holds each frame for
+            // several video frames. The frame is loaded WITHOUT rendering -
+            // the sink renders, once, at the size it is recording.
+            const object = this.currentObjectName
+                ? this.objectsData[this.currentObjectName] : null;
+            const nFrames = (o.playFrames && object && object.frames)
+                ? object.frames.length : 0;
             let i = 0;
             const tick = () => {
+                if (nFrames > 1) {
+                    const at = Math.min(nFrames - 1, Math.floor((i * nFrames) / N));
+                    if (at !== this.currentFrame) {
+                        this.currentFrame = at;
+                        if (!this.overlayState || !this.overlayState.enabled) {
+                            this._loadFrameData(at, true);
+                        }
+                        this.lastRenderedFrame = at;
+                    }
+                }
                 if (i >= N) {
                     sink.finish((blob, ext) => {
                         this._endRotationVideo(R0, wasAuto, null);
                         this._deliverVideo(blob, ext, 'Turn',
                             `${N} frames, ${seconds}s at ${sink.fps}fps, `
-                            + `${sink.width}x${sink.height}${sink.note}, loops seamlessly`);
+                            + `${turns} turn${turns === 1 ? '' : 's'}`
+                            + (nFrames > 1 ? `, ${nFrames} model frames` : '')
+                            + `, ${sink.width}x${sink.height}${sink.note}`
+                            + ', loops seamlessly');
                     });
                     return;
                 }
@@ -11482,18 +11527,46 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // combination depended on whether Rotate happened to be on when you
             // pressed Frames. It is a choice now, and pressing record cannot
             // mean two things.
+            // FOUR WAYS TO PUT A TRAJECTORY AND A TURN IN ONE FILE, and the
+            // difference between them is WHO DECIDES HOW LONG IT IS:
+            //
+            //   F    the frames, played once, not turning. The trajectory
+            //        decides: N frames at the chosen rate.
+            //   R    a turn on the spot. You decide, in seconds.
+            //   FR   frames-led. Every frame is played, once, and the rotation
+            //        is fitted into however long that takes.
+            //   RF   rotation-led. The turn runs for the seconds you asked for
+            //        and the whole trajectory is fitted into it - so a long
+            //        trajectory is sampled and a short one holds frames.
+            //
+            // Which controls are worth showing follows straight from that
+            // column: Sec means something only where YOU set the length, so it
+            // is offered for R and RF and derived for the other two.
             const spin = !!this.autoRotate;
             const hasFrames = !!(obj && obj.frames && obj.frames.length > 1);
             const sources = [];
-            if (hasFrames) sources.push({ id: 'frames', label: 'Frames', spin: false });
+            if (hasFrames) {
+                sources.push({ id: 'F', label: 'F', spin: false, timed: false,
+                    title: 'Play the frames once' });
+            }
             if (hasFrames && spin) {
-                sources.push({ id: 'frames+turn', label: 'Frame+Rot', spin: true });
+                sources.push({ id: 'FR', label: 'FR', spin: true, timed: false,
+                    title: 'Play the frames once, with the rotation fitted into them' });
+                sources.push({ id: 'RF', label: 'RF', spin: true, timed: true,
+                    title: 'Turn for the time you set, with the frames fitted into it' });
             }
-            if (this.drawMode) sources.push({ id: 'draw', label: 'Draw', spin: false });
+            if (this.drawMode) {
+                sources.push({ id: 'D', label: 'D', spin: false, timed: true,
+                    title: 'Record the drawing building up' });
+            }
             if (this.drawMode && spin) {
-                sources.push({ id: 'draw+turn', label: 'Draw+Rot', spin: true });
+                sources.push({ id: 'DR', label: 'DR', spin: true, timed: true,
+                    title: 'Record the drawing building up while the view turns' });
             }
-            if (spin) sources.push({ id: 'turn', label: 'Rotate', spin: true });
+            if (spin) {
+                sources.push({ id: 'R', label: 'R', spin: true, timed: true,
+                    title: 'Turn on the spot' });
+            }
             // A running animation is paused while the panel is up, so what is
             // saved is the frame that was on screen when it was opened.
             if (sources.length) this._pauseForSavePanel();
@@ -11662,7 +11735,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             };
             let vFmt = null; let secIn = null; let fpsIn = null;
             let mbpsIn = null; let sizeSel = null; let colorsSel = null;
-            let framesIn = null; let colorsLab = null; let srcSel = null;
+            let framesIn = null; let colorsLab = null; let srcSel = null; let rotIn = null;
             // ...assigned with the video row, called from the record row too:
             // what the count control means depends on WHICH source is picked.
             let syncVideo = () => {};
@@ -11689,6 +11762,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const [frL, fr] = num('saveFrameCount', 'Count', opts.frames || 36,
                     2, 600, 'How many images to write, over one full turn');
                 vRow.appendChild(frL); vRow.appendChild(fr); framesIn = fr;
+                // HOW MANY TURNS. One is the usual answer, but a trajectory
+                // fitted into a single revolution can be too slow to read - two
+                // or three turns over the same frames give the eye a second
+                // look at every angle.
+                const [rotL, rot] = num('saveRotations', 'Rot', opts.rotations || 1,
+                    1, 10, 'How many full turns the recording makes');
+                vRow.appendChild(rotL); vRow.appendChild(rot); rotIn = rot;
                 const [mbL, mb] = num('saveMbpsInput', 'Mbps', opts.mbps, 1, 80,
                     'Bitrate: how many megabits a second of video is ALLOWED - '
                     + 'a ceiling, not a target. Flat colour and clean edges '
@@ -11754,13 +11834,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // format does not move the rest of the row about.
                     mbL.style.display = (gif || zip) ? 'none' : '';
                     mbpsIn.style.display = (gif || zip) ? 'none' : '';
-                    // ...and the pair that times a video gives way to the one
-                    // that counts images
-                    const timed = !zip;
-                    secL.style.display = timed ? '' : 'none';
-                    secIn.style.display = timed ? '' : 'none';
-                    fpsL.style.display = timed ? '' : 'none';
-                    fpsIn.style.display = timed ? '' : 'none';
+                    // ...and the frame rate is the one control every source
+                    // needs: it is how fast the file plays, whoever decided how
+                    // many frames there are. Images have no rate at all.
+                    fpsL.style.display = zip ? 'none' : '';
+                    fpsIn.style.display = zip ? 'none' : '';
                     // THE COUNT IS FOR A TURN OR A DRAWING, which have no
                     // frames of their own to follow - it says how many PNGs to
                     // write over one revolution. A trajectory HAS frames, and
@@ -11769,9 +11847,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // than off the list is the difference between "Frames: 36"
                     // sitting beside a Frames recording, saying something that
                     // is not true of it, and not being there at all.
-                    const picked = srcSel ? srcSel.value : (sources[0] || {}).id;
-                    const counted = zip && (picked === 'turn' || picked === 'draw'
-                        || picked === 'draw+turn');
+                    const pickedId = srcSel ? srcSel.value : (sources[0] || {}).id;
+                    const src = sources.find((x) => x.id === pickedId) || sources[0] || {};
+                    // SEC IS ONLY A CONTROL WHERE YOU SET THE LENGTH. On F and
+                    // FR the trajectory does: the file is N frames long at the
+                    // rate you chose, and a seconds box there would be a number
+                    // that either does nothing or silently drops frames.
+                    const timed = !!src.timed;
+                    secL.style.display = (timed && !zip) ? '' : 'none';
+                    secIn.style.display = (timed && !zip) ? '' : 'none';
+                    // ...and a rotation count only where something rotates
+                    const turns = !!src.spin;
+                    rotL.style.display = turns ? '' : 'none';
+                    rotIn.style.display = turns ? '' : 'none';
+                    // THE IMAGE COUNT is for a recording with no frames of its
+                    // own to follow - a turn or a drawing. A trajectory has
+                    // them, and then the answer is one image per frame.
+                    const counted = zip && (pickedId === 'R' || pickedId === 'D'
+                        || pickedId === 'DR');
                     frL.style.display = counted ? '' : 'none';
                     framesIn.style.display = counted ? '' : 'none';
                     if (colorsSel) colorsSel.style.display = gif ? '' : 'none';
@@ -11821,6 +11914,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // is counted rather than timed
                 dpi: Number(dpiSel.value) || 200,
                 frames: framesIn ? Number(framesIn.value) || 36 : 36,
+                rotations: rotIn ? Number(rotIn.value) || 1 : 1,
+                // WHICH OF THE FOUR, so the description can work out who sets
+                // the length. It used to be written only when record was
+                // pressed, so until then the line described the last thing
+                // recorded rather than the thing on the row.
+                source: srcSel ? srcSel.value : ((sources[0] || {}).id || ''),
             });
             // WRITTEN BACK ON EVERY CHANGE, not read at the moment a button is
             // pressed. The panel is rebuilt whenever the canvas is resized (see
@@ -11828,7 +11927,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // would be lost with it - so it lives in _captureOpts and the DOM
             // is filled from there.
             for (const c of [fmtSel, dpiSel, vFmt, secIn, fpsIn, mbpsIn, sizeSel,
-                colorsSel, framesIn]) {
+                colorsSel, framesIn, rotIn]) {
                 if (c) c.addEventListener('change', commit);
             }
             commit();
@@ -11862,8 +11961,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // trajectory loaded is a request to see it turning, so the
                     // combination is what record means unless something else
                     // was picked.
-                    const preferred = sources.find((x) => x.id === 'frames+turn')
-                        || sources.find((x) => x.id === 'draw+turn') || sources[0];
+                    const preferred = sources.find((x) => x.id === 'FR')
+                        || sources.find((x) => x.id === 'DR') || sources[0];
                     const want = sources.some((x) => x.id === opts.source)
                         ? opts.source : preferred.id;
                     srcSel = menu('saveVideoSource', sources.map((x) => (
@@ -11881,8 +11980,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 };
                 if (srcSel) {
                     srcSel.addEventListener('change', syncRec);
-                    // ...and the row follows the source: see syncVideo
-                    srcSel.addEventListener('change', () => syncVideo());
+                    // ...and the row follows the source, and so does what the
+                    // panel remembers: without the commit the description went
+                    // on describing whichever source was last RECORDED, so
+                    // picking F still read "1 turn" from the FR before it.
+                    srcSel.addEventListener('change', () => { syncVideo(); commit(); });
                 }
                 syncRec();
                 recBtn.addEventListener('click', (ev) => {
@@ -11913,9 +12015,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         // Recording a drawing RESTARTS it from blank paper, so
                         // pressing record part way through a run still gives a
                         // whole one. A turn has no beginning, so it does not.
-                        if (src.id.startsWith('draw')) this.saveDrawingVideo(vo);
-                        else if (src.id === 'turn') this.saveRotationVideo(vo);
-                        else this.toggleRecording(vo);
+                        if (src.id === 'D' || src.id === 'DR') this.saveDrawingVideo(vo);
+                        else if (src.id === 'R' || src.id === 'RF') {
+                            // RF is the turn, with the trajectory fitted into
+                            // it - the rotation recorder already drives its own
+                            // frames on a clock, which is exactly what "fit the
+                            // frames into this many seconds" needs.
+                            this.saveRotationVideo(Object.assign({}, vo,
+                                { playFrames: src.id === 'RF' }));
+                        } else this.toggleRecording(vo);
                     } catch (err) {
                         this._captureBusy = false;
                         this._syncCaptureButtons();

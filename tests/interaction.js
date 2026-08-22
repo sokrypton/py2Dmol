@@ -3440,9 +3440,10 @@ t('the capture panel calls its seconds field Sec, and says so once', () => {
         if (n !== 1) throw new Error(id + ' appears ' + n + ' times - the video'
             + ' settings must exist once, not once per output');
     }
-    // one full revolution is what makes "seconds per turn" the truth for a Turn
-    if (!/const step = \(2 \* Math\.PI\) \/ N;/.test(src)) {
-        throw new Error('the turn is no longer exactly one revolution');
+    // ...and the turn is a whole number of revolutions over the whole
+    // recording, which is what makes "seconds" mean the length of the file
+    if (!/const step = \(2 \* Math\.PI \* turns\) \/ N;/.test(src)) {
+        throw new Error('the turn is not a whole number of revolutions');
     }
 });
 
@@ -3871,6 +3872,21 @@ t('a recorded frame is rendered once, at the size it is recorded', () => {
 
 t('the save panel can still record a trajectory', () => {
     const body = capturePanelBody();
+    // FOUR WAYS TO PUT A TRAJECTORY AND A TURN IN ONE FILE, named for what
+    // they are and differing in WHO SETS THE LENGTH:
+    //   F  frames once, no turning        (the trajectory sets it)
+    //   FR frames once, rotation fitted   (the trajectory sets it)
+    //   RF a timed turn, frames fitted    (you set it)
+    //   R  a timed turn                   (you set it)
+    for (const id of ["'F'", "'FR'", "'RF'", "'R'"]) {
+        if (!new RegExp("id: " + id + ",").test(body)) {
+            throw new Error('no source ' + id);
+        }
+    }
+    if (!/timed: false/.test(body) || !/timed: true/.test(body)) {
+        throw new Error('the sources no longer say who sets the length, so the'
+            + ' panel cannot know whether Sec means anything');
+    }
     // The Record row lists one button per SOURCE, and Frames is the one that
     // came from a separate record button in the controls bar. It has to be
     // gated on there being frames to play: the old button did not gate itself
@@ -3880,38 +3896,58 @@ t('the save panel can still record a trajectory', () => {
         throw new Error('the Frames source is not gated on there being frames'
             + ' to play');
     }
-    if (!/sources\.push\(\{ id: 'frames'/.test(body)) {
-        throw new Error('the panel has no Frames source - recording the frames'
+    if (!/sources\.push\(\{ id: 'F',/.test(body)) {
+        throw new Error('the panel has no frames source - recording the frames'
             + ' playing through was lost');
     }
     if (!/this\.toggleRecording\(vo\)/.test(body)) {
         throw new Error('the Frames source does not reach toggleRecording()');
     }
     // ...and the other two, each gated on the mode that makes it possible
-    if (!/if \(spin\) sources\.push/.test(body)
-        || !/this\.drawMode\) sources\.push/.test(body)) {
+    if (!/if \(spin\) \{\s*\n\s*sources\.push/.test(body)
+        || !/if \(this\.drawMode\) \{/.test(body)) {
         throw new Error('Rotate and Draw are no longer gated on their modes');
     }
     // A TRAJECTORY CAN PLAY WHILE THE VIEW TURNS, and a drawing can build up
     // while it turns. Both recorders could always do it; with one button per
     // source there was no way to ASK for it - whether you got it depended on
     // whether Rotate happened to be on.
-    for (const combo of ["'frames\\+turn'", "'draw\\+turn'"]) {
-        if (!new RegExp('id: ' + combo).test(body)) {
-            throw new Error('no combination source ' + combo);
-        }
-    }
     // ...and the combination is what record MEANS when both are on: switching
     // Rotate on with a trajectory loaded is a request to see it turning.
-    if (!/const preferred = sources\.find\(\(x\) => x\.id === 'frames\+turn'\)/.test(body)) {
+    if (!/const preferred = sources\.find\(\(x\) => x\.id === 'FR'\)/.test(body)) {
         throw new Error('the combination is not the default when both are on');
     }
     // THE COUNT IS FOR A TURN OR A DRAWING. A trajectory has frames of its
     // own, so "Frames: 36" beside a Frames recording said something that is
     // not true of it - it is read off the PICKED source now, not off the list.
-    if (!/const picked = srcSel \? srcSel\.value/.test(body)
-        || !/picked === 'turn' \|\| picked === 'draw'/.test(body)) {
+    if (!/const pickedId = srcSel \? srcSel\.value/.test(body)
+        || !/pickedId === 'R' \|\| pickedId === 'D'/.test(body)) {
         throw new Error('the image count does not follow the picked source');
+    }
+    // SEC FOLLOWS THE SOURCE TOO. On F and FR the trajectory sets the length -
+    // N frames at the chosen rate - and a seconds box there is a number that
+    // either does nothing or silently drops frames.
+    if (!/const timed = !!src\.timed;/.test(body)) {
+        throw new Error('Sec is not gated on who sets the length');
+    }
+    if (!/rotIn\.style\.display = turns/.test(body)) {
+        throw new Error('the rotation count is not gated on something rotating');
+    }
+    // ...and picking a source must WRITE it, or the description goes on
+    // describing whichever source was last recorded - picking F still read
+    // "1 turn" off the FR before it.
+    if (!/srcSel\.addEventListener\('change', \(\) => \{ syncVideo\(\); commit\(\); \}\)/.test(body)) {
+        throw new Error('the picked source is not committed');
+    }
+    // THE LINE WORKS THE LENGTH OUT rather than repeating the boxes: on F and
+    // FR the trajectory sets it and the seconds are derived; on R and RF the
+    // seconds set it and the frame count is derived.
+    const desc = methodBody('_describeCapture');
+    if (!/const led = \(src === 'F' \|\| src === 'FR'\) && nTraj > 1;/.test(desc)) {
+        throw new Error('the description does not know who sets the length');
+    }
+    if (!/model frames fitted/.test(desc)) {
+        throw new Error('RF does not say that the trajectory is fitted into it');
     }
     if (/num\('saveFrameCount', 'Frames'/.test(body)) {
         throw new Error('the count is called Frames again, beside a source of'
@@ -3925,8 +3961,19 @@ t('the save panel can still record a trajectory', () => {
     if (!/saveVideoSource/.test(body)) {
         throw new Error('there is no menu for what to record');
     }
-    if (!/saveRotationVideo\(vo\)/.test(body) || !/saveDrawingVideo\(vo\)/.test(body)) {
-        throw new Error('a source button no longer reaches its recorder');
+    if (!/saveRotationVideo\(Object\.assign/.test(body)
+        || !/saveDrawingVideo\(vo\)/.test(body)) {
+        throw new Error('a source no longer reaches its recorder');
+    }
+    // RF IS THE TURN WITH THE FRAMES FITTED IN: the rotation recorder already
+    // drives its own frames on a clock, which is what "fit the trajectory into
+    // this many seconds" needs, so it plays them rather than a second driver
+    // being written.
+    if (!/playFrames: src\.id === 'RF'/.test(body)) {
+        throw new Error('RF does not play the frames');
+    }
+    if (!/const nFrames = \(o\.playFrames/.test(src)) {
+        throw new Error('the rotation recorder cannot play a trajectory');
     }
     // with nothing recordable the row SAYS so rather than offering a dead button
     if (!/Turn on Rotate or Draw, or load frames/.test(body)) {
