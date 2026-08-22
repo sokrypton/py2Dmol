@@ -1183,10 +1183,39 @@ h1 {
     margin: 0;
 }
 
-.page-head p {
-    margin: 0;
-    font-size: 13px;
-    color: #6b7280;
+/* THE PAGE-LEVEL BUTTONS, SMALLER AND QUIETER. Save, Clear All and GPU sit at
+   the top of the page for the whole session, while Fetch and Upload are used
+   once and then not again - so at the same size and saturation the standing
+   three took the eye first, and the first thing to do on this page is load
+   something. Small height, and the colour held back until the pointer is on
+   them: still red for Clear All and blue for Save, still recognisable at a
+   glance, but no longer shouting over the panel below. */
+.page-actions .btn,
+.page-actions .btn-toggle-global,
+.page-actions .btn-toggle-global>span {
+    height: var(--btn-height-small);
+    padding: 0 var(--btn-padding-x-small);
+    font-size: 12px;
+    gap: 6px;
+}
+
+.page-actions .btn,
+.page-actions .btn-toggle-global>span {
+    box-shadow: none;
+    opacity: 0.72;
+}
+
+.page-actions .btn:hover,
+.page-actions .btn-toggle-global:hover>span {
+    opacity: 1;
+    box-shadow: var(--shadow-sm);
+}
+
+/* ...and the GPU switch keeps its green when it is ON, because that one is a
+   STATE rather than an action: which way it stands is worth reading without
+   hovering. Held at the same weight as its neighbours otherwise. */
+.page-actions .btn-toggle-global input:checked+span {
+    opacity: 0.85;
 }
 
 .text-gray-500 {

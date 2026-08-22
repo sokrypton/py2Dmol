@@ -2214,39 +2214,51 @@ t('every projection sizes a position through the same rule', () => {
     }
 });
 
-t('the page header is one line, and clear of the buttons', () => {
-    // The title and the line under it were two stacked blocks with their own
-    // margins - 73 px of page for a word and a sentence, above a panel that is
-    // now three lines itself. Measured after: 31 px, and the fetch panel
-    // starts 48 px higher.
+t('the header is the title alone, and the page buttons keep quiet', () => {
+    // The title and a strapline were two stacked blocks with their own margins
+    // - 73 px of page for a word and a sentence, above a panel that is three
+    // lines itself. The line said "Upload a PDB/CIF file, or fetch by PDB or
+    // UniProt ID", which describes the two controls directly beneath it: a box
+    // whose placeholder is an ID, and a button that says Upload.
     const html = fs.readFileSync('index.html', 'utf8');
     const head = html.indexOf('class="page-head"');
     if (head < 0) throw new Error('the header block is gone');
     const block = html.slice(head, html.indexOf('id="upload-options-container"'));
-    if (!/<h1>/.test(block) || !/<p>/.test(block)) {
-        throw new Error('the header no longer holds both the title and the line');
+    if (!/<h1>/.test(block)) throw new Error('the header lost its title');
+    if (/<p>/.test(block)) {
+        throw new Error('the strapline is back - it describes the two controls'
+            + ' directly under it');
     }
     const css = fs.readFileSync('web/style.css', 'utf8');
     const rule = css.slice(css.indexOf('.page-head {'), css.indexOf('.page-head h1'));
-    if (!/align-items:\s*baseline/.test(rule)) {
-        throw new Error('the two are not on one baseline, so the strapline'
-            + ' floats beside the title like a caption');
-    }
     // SAVE, CLEAR ALL AND GPU ARE POSITIONED ABSOLUTELY against the same
-    // container, so nothing pushes the strapline out of their way: it runs
-    // underneath them instead of wrapping. The padding is what reserves the
+    // container, so nothing pushes the header out of their way: a title long
+    // enough would run underneath them. The padding is what reserves the
     // space, and it is the kind of thing a later tidy-up removes as unused.
     if (!/padding-right:\s*\d+px/.test(rule)) {
         throw new Error('the header reserves no room for the button cluster'
-            + ' pinned to its top right - a longer line will run under it');
+            + ' pinned to its top right');
     }
-    // ...and the strapline does not repeat what the ID box already says: the
-    // chain-suffix examples moved into its placeholder, which is where someone
-    // about to type an ID is looking.
-    const strap = block.slice(block.indexOf('<p>'), block.indexOf('</p>'));
-    if (/1tim_AB|1timA/.test(strap)) {
-        throw new Error('the strapline still carries the syntax examples that'
-            + ' the ID box placeholder now shows');
+    // ...AND THOSE THREE ARE SMALLER AND QUIETER THAN THE PANEL'S. They stand
+    // there for the whole session while Fetch and Upload are used once, so at
+    // equal weight the standing three take the eye first - and the first thing
+    // to do on this page is load something. Measured: 28 px at 12 px type and
+    // 0.72 opacity, against 36 px at 14 px and full.
+    if (!/class="page-actions"/.test(html)) {
+        throw new Error('the page-level buttons are no longer marked as such');
+    }
+    const act = css.slice(css.indexOf('.page-actions .btn,'));
+    if (!/--btn-height-small/.test(act.slice(0, 400))) {
+        throw new Error('the page buttons are full height again');
+    }
+    if (!/opacity:\s*0\.7/.test(act.slice(0, 800))) {
+        throw new Error('the page buttons are at full strength again, competing'
+            + ' with Fetch and Upload for the eye');
+    }
+    // ...and the load button says what it does. "Files" named the things
+    // rather than the action, beside a Fetch that names an action.
+    if (!/id="upload-button"[\s\S]{0,200}<span>Upload<\/span>/.test(html)) {
+        throw new Error('the upload button does not say Upload');
     }
 });
 

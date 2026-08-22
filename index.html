@@ -39,7 +39,14 @@ AI Context: STANDALONE WEB APP ENTRY POINT
 
     <!-- Total width (600 + 8 + 340 = 948px) -->
     <div class="mx-auto" style="width: 948px; position: relative;">
-        <div style="position: absolute; top: 0; right: 0; display: flex; gap: 8px; align-items: center;">
+        <!-- SAVE, CLEAR ALL AND GPU are about the page, not about the thing you
+             are loading, and they are here every second of a session while
+             Fetch and Upload are used once. Smaller and quieter than the
+             controls in the panel below for that reason: three full-size
+             buttons in strong colours at the top of the page took the eye
+             first, and the first thing to do on this page is load something. -->
+        <div class="page-actions"
+            style="position: absolute; top: 0; right: 0; display: flex; gap: 6px; align-items: center;">
             <!-- USE GPU sits with Save and Clear All because it is a GLOBAL setting,
                  not something about the file being fetched. It is the rendering
                  BACKEND and applies to both styles equally, and it wears the same
@@ -72,17 +79,15 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                 <span>Clear All</span>
             </button>
         </div>
-        <!-- TITLE AND STRAPLINE ON ONE LINE. Two stacked blocks with their own
-             margins spent three lines of the page on a word and a sentence,
-             above a panel that is now three lines itself.
-             The chain suffixes used to live here, as the only part of the
-             syntax a user cannot guess - they are in the ID box's own
-             placeholder now (1a3n_AB), which is where someone about to type an
-             ID is already looking, so the line keeps what is left: what this
-             page takes. -->
+        <!-- JUST THE TITLE. The line under it said "Upload a PDB/CIF file, or
+             fetch by PDB or UniProt ID", which is a description of the two
+             controls directly beneath it: a box whose placeholder is an ID and
+             a button that says Upload. The chain suffixes it used to carry -
+             the only part of the syntax nobody can guess - are in that box's
+             placeholder now (1a3n_AB), where someone about to type an ID is
+             already looking. -->
         <div class="page-head">
             <h1>2Dmol</h1>
-            <p>Upload a PDB/CIF file, or fetch by PDB or UniProt ID.</p>
         </div>
 
         <div id="upload-options-container" class="container-box" style="width: 948px; margin-bottom: 10px;">
@@ -107,7 +112,7 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                     <button id="fetch-btn" class="btn btn-primary">Fetch</button>
                     <button id="upload-button" class="btn btn-secondary">
                         <i class="fa-solid fa-file-arrow-up"></i>
-                        <span>Files</span>
+                        <span>Upload</span>
                     </button>
                     <input type="file" id="file-upload"
                         accept=".pdb,.cif,.ent,.zip,.json,.cst,.a3m,.fasta,.fa,.fas,.sto,.csv" multiple
