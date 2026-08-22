@@ -10288,7 +10288,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             ms.sourceAutoColors = merged.sourceAutoColors;
             ms.autoColor = merged.autoColor;
             ms.stats = this._mergedStats(merged.coords);
-            if (ms.stats) {
+            // FRAME ON THE LOT WHEN THE LOT CHANGES, and not otherwise. The
+            // camera has to move when an object joins or leaves, or the new one
+            // is out of shot - but a rebuild for a frame step or a side chain
+            // is not a request to re-frame, and doing it there threw away every
+            // pan the user had made since the merge began.
+            if (ms.stats && !sameSources) {
                 this.viewerState.center = { x: ms.stats.center[0],
                     y: ms.stats.center[1], z: ms.stats.center[2] };
                 this.viewerState.extent = ms.stats.maxExtent;
@@ -10300,11 +10305,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._invalidateShadowCache();
             this.lastShadowRotationMatrix = null;
             // A selection is a set of position indices against the array it
-            // was made on, and that array has just changed underneath it.
-            // ...but only when the SOURCES change. A rebuild for a frame step
-            // or a side chain keeps the same objects at the same offsets, and
-            // dropping the selection there would clear it every time the frame
-            // slider moved.
+            // was made on - meaningless once the SOURCES change. A rebuild for
+            // a frame step or a side chain keeps the same objects at the same
+            // offsets, and clearing there would empty the selection every time
+            // the frame slider moved.
             if (!sameSources) this.clearResidueSelection();
             this._loadDataIntoRenderer(merged, true);
             this._applyMergedVisibility(merged, skipRender, prior);
@@ -10385,11 +10389,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // screen at all; otherwise what it was left with when it was
                 // switched away from. `prior` is already in the object's own
                 // numbering - see _maskForObject - which the live mask is not.
-                const was = prior && prior.get(name);
-                const saved = (name === this.currentObjectName)
+                const was = prior ? prior.get(name) : undefined;
+                if (was instanceof Set) {
+                    // AUTHORITATIVE, EVEN WHEN EMPTY: Hide all leaves an empty
+                    // mask, and reading that as "nobody has said" would put the
+                    // whole object back on screen at the next rebuild.
+                    for (const p of was) {
+                        const at = p + off;
+                        if (at >= off && at < end) vis.add(at);
+                    }
+                    continue;
+                }
+                const st = (name === this.currentObjectName)
                     ? this.visibilityModel
                     : (this.objectsData[name] && this.objectsData[name].visibilityState);
-                const st = was ? { positions: was, chains: null } : saved;
                 const hasPos = st && st.positions && st.positions.size > 0;
                 const hasChains = st && st.chains && st.chains.size > 0;
                 if (!hasPos && !hasChains) {
@@ -10465,10 +10478,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return out.size ? out : null;
         }
 
-        /** The visibility mask, likewise: one object's share, in its numbering. */
+        /**
+         * The visibility mask, likewise: one object's share, in its numbering.
+         *
+         * AN EMPTY SET IS AN ANSWER. "Nothing of this object is visible" is
+         * what Hide all gives, and it has to be distinguishable from "no mask
+         * here" - which is read as "all of it" by the caller. Null is returned
+         * only when there is no live mask at all.
+         */
         _maskForObject(name) {
             const set = this.visibilityModel && this.visibilityModel.positions;
-            if (!set || !set.size) return null;
+            if (!set) return null;
             const ms = this.multiState;
             if (!ms || !ms.enabled) return new Set(set);
             const out = new Set();

@@ -6971,9 +6971,14 @@ t('rebuilding the merge keeps what was hidden and what was selected', () => {
     v.setVisibility = function (patch) { this.mask = patch; };
 
     // the same objects again: what a frame step does
+    // ...and a pan the user made since the merge began
+    v.viewerState.center = { x: 7, y: 8, z: 9 };
+    v.viewerState.extent = 42;
     v._applyShownObjects();
     eq(Array.from(v.mask.positions).sort((a, b) => a - b).join(','), '0,1,2,3',
         'the hidden position stayed hidden');
+    eq(v.viewerState.center.x, 7, 'the view was not re-framed under the user');
+    eq(v.viewerState.extent, 42, 'nor re-zoomed');
     eq(v.residueSelection ? Array.from(v.residueSelection).join(',') : 'null', '4',
         'and the selection survived a rebuild that changed no objects');
 
@@ -7082,6 +7087,20 @@ t('the merges do not spread whole arrays into push', () => {
         if (bad) throw new Error(fn + ' spreads an array into push (' + bad.length
             + ' place(s)) - a structure over about 100k positions throws');
     }
+});
+
+t('Hide all survives a rebuild - an empty mask is an answer', () => {
+    const v = shownViewer();
+    v.setShownObjects(['A', 'B']);
+    v.currentFrame = 1;
+    // what Hide all leaves: a mask that names nothing, in explicit mode
+    v.visibilityModel = { positions: new Set(), chains: new Set(),
+        visibilityMode: 'explicit' };
+    v._applyShownObjects();
+    eq(v.mask.positions.size, 0,
+        'everything came back on screen - an empty mask was read as "nobody has'
+        + ' said anything" rather than as "nothing is visible"');
+    eq(v.mask.visibilityMode, 'explicit', 'and it is explicit, not default');
 });
 
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');
