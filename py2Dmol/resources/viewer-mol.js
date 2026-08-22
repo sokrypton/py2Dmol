@@ -1236,6 +1236,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 autoColor: null              // Auto color determination (rainbow/chain/plddt)
             };
 
+            // Several objects shown at once, merged into one coordinate array
+            // the same way the overlay merges frames - see _mergeObjects and
+            // MULTI_OBJECT_PLAN.md. The two are mutually exclusive: a merge is
+            // of frames or of objects, never both.
+            this.multiState = {
+                enabled: false,              // Is more than one object merged in?
+                sourceIdMap: null,           // position -> index into sourceNames
+                sourceNames: null,           // the objects merged, in drawing order
+                autoColor: null
+            };
+
             // Debug properties
             this.lastOperationMode = 'unknown'; // Track mode: 'single-frame', 'merged', 'overlay-toggle', etc.
 
@@ -6653,22 +6664,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Include ligands in ligand-only chains for rainbow coloring
             this.perChainIndices = new Array(n);
             const chainIndices = {}; // Temporary tracker
-            let lastFrame = -1; // Track frame changes for overlay mode
+            let lastFrame = -1; // the source the walk is currently inside
+            const chainIndexGroups = this.sourceGroups();
 
             for (let i = 0; i < n; i++) {
                 const type = this.positionTypes[i];
                 const chainId = this.chains[i] || 'A';
                 const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
 
-                // In overlay mode, reset chain indices when frame changes
-                if (this.overlayState.enabled && this.overlayState.frameIdMap) {
-                    const currentFrame = this.overlayState.frameIdMap[i];
-                    if (currentFrame !== lastFrame) {
-                        // Frame changed, reset all chain counters
+                // Chain A of the second source is not a continuation of
+                // chain A of the first, so the count along it starts again.
+                if (chainIndexGroups) {
+                    const src = chainIndexGroups[i];
+                    if (src !== lastFrame) {
                         for (const key in chainIndices) {
                             chainIndices[key] = 0;
                         }
-                        lastFrame = currentFrame;
+                        lastFrame = src;
                     }
                 }
 
@@ -6767,6 +6779,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                 const ligandIndicesByChain = new Map(); // Group ligands by chain
                 const chainPolymerBounds = new Map(); // Track first/last polymer per chain
+                // Nothing joins across sources - see sourceGroups().
+                const srcGroups = this.sourceGroups();
 
                 // Helper function to check if position type is polymer (for rendering only)
                 const isPolymer = (type) => (type === 'P' || type === 'D' || type === 'R');
@@ -6798,13 +6812,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                                 const samePolymerType = (type1 === type2) ||
                                     ((type1 === 'D' || type1 === 'R') && (type2 === 'D' || type2 === 'R'));
 
-                                // In overlay mode, also check that both atoms are in the same frame
-                                let sameFrame = true;
-                                if (this.overlayState.enabled && this.overlayState.frameIdMap) {
-                                    sameFrame = this.overlayState.frameIdMap[i] === this.overlayState.frameIdMap[i + 1];
-                                }
+                                // ...and that both ends came from the same
+                                // source - the same frame of a trajectory, or
+                                // the same object of a multi-object view.
+                                const sameSource = !srcGroups
+                                    || srcGroups[i] === srcGroups[i + 1];
 
-                                if (samePolymerType && this.chains[i] === this.chains[i + 1] && sameFrame) {
+                                if (samePolymerType && this.chains[i] === this.chains[i + 1] && sameSource) {
                                     const start = this.coords[i];
                                     const end = this.coords[i + 1];
                                     const distSq = start.distanceToSq(end);
@@ -6901,13 +6915,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                             continue;
                         }
 
-                        // In overlay mode, skip bonds between different frames
-                        if (this.overlayState.enabled && this.overlayState.frameIdMap) {
-                            const frame1 = this.overlayState.frameIdMap[idx1];
-                            const frame2 = this.overlayState.frameIdMap[idx2];
-                            if (frame1 !== frame2) {
-                                continue;
-                            }
+                        // A bond never spans two sources - two frames of a
+                        // trajectory, or two objects.
+                        if (srcGroups && srcGroups[idx1] !== srcGroups[idx2]) {
+                            continue;
                         }
 
                         const start = this.coords[idx1];
@@ -9922,6 +9933,60 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return this.currentObjectName ? [this.currentObjectName] : [];
         }
 
+        /**
+         * WHICH POSITIONS ARE ALLOWED TO BE PART OF THE SAME THING.
+         *
+         * The coordinate array can hold more than one structure at a time -
+         * every frame of a trajectory in overlay mode, or several objects in a
+         * multi-object view - and in both cases a position may only bond,
+         * count along a chain, and cast a shadow WITHIN its own source. The two
+         * merges therefore answer to one array here rather than each gating its
+         * own copy of those rules, which is how the overlay came to have four
+         * such gates and a fifth one it was missing.
+         *
+         * SIDE CHAINS ARE APPENDED AFTER THE MERGE, so the map is SHORTER than
+         * the coordinate array whenever any are showing. Read raw, every one of
+         * those atoms comes back undefined - which compares equal to every
+         * other undefined, so they all silently become one extra source that
+         * bonds to itself and shades itself. Each appended atom is given its
+         * owning residue's source instead, and the extension is cached against
+         * the map it was built from.
+         *
+         * @returns {Array|null} one source id per position, or null when the
+         *   array holds a single structure and every position may reach any
+         *   other.
+         */
+        sourceGroups() {
+            const n = this.coords ? this.coords.length : 0;
+            const ov = this.overlayState;
+            const ms = this.multiState;
+            let base = null;
+            if (ov && ov.enabled && ov.frameIdMap) base = ov.frameIdMap;
+            else if (ms && ms.enabled && ms.sourceIdMap) base = ms.sourceIdMap;
+            if (!base || !n) return null;
+            if (base.length === n) return base;
+            // A map LONGER than the array is stale - the merge it describes is
+            // not the one loaded - and guessing which part of it still applies
+            // would cut the structure somewhere arbitrary.
+            if (base.length > n) return null;
+
+            const c = this._sourceGroupsCache;
+            if (c && c.base === base && c.out.length === n) return c.out;
+
+            const out = base.slice ? Array.from(base) : Array.prototype.slice.call(base);
+            const map = this.sidechainMap;
+            for (let i = base.length; i < n; i++) {
+                const owner = map && map.get(i) ? map.get(i).owner : undefined;
+                // No owner means nothing here knows where the position came
+                // from; give it a source of its own rather than fold it into
+                // somebody else's, so a stray bond is visible instead of wrong.
+                out.push((owner !== undefined && owner < base.length)
+                    ? base[owner] : -(i + 1));
+            }
+            this._sourceGroupsCache = { base, out };
+            return out;
+        }
+
         _renderToContext(ctx, displayWidth, displayHeight) {
             // Clear the full canvas in device pixels, independent of current transform
             ctx.save();
@@ -10370,32 +10435,37 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             );
 
             if (renderShadows && !skipShadowCalc) {
-                // OVERLAY MODE: Calculate shadows per-frame independently
-                if (this.overlayState.enabled && this.overlayState.frameIdMap) {
-                    // Group segments by frame
-                    const segmentsByFrame = new Map();
-                    const frameNumPositions = new Map();
+                // A MERGED VIEW SHADES EACH SOURCE ON ITS OWN. Frames of a
+                // trajectory sit on top of each other, so a shared shadow pass
+                // has them darkening each other into mud; objects placed side
+                // by side for comparison have the same problem, and "do not
+                // cast shadow between objects" was the ask. One pass per
+                // source answers both.
+                const shadowGroups = this.sourceGroups();
+                if (shadowGroups) {
+                    const segmentsBySource = new Map();
+                    const sourceNumPositions = new Map();
 
                     for (let i = 0; i < visibleOrder.length; i++) {
                         const segIdx = visibleOrder[i];
-                        const frameIdx = this.overlayState.frameIdMap[segments[segIdx].idx1];
-                        if (!segmentsByFrame.has(frameIdx)) {
-                            segmentsByFrame.set(frameIdx, []);
-                            frameNumPositions.set(frameIdx, 0);
+                        const src = shadowGroups[segments[segIdx].idx1];
+                        if (!segmentsBySource.has(src)) {
+                            segmentsBySource.set(src, []);
+                            sourceNumPositions.set(src, 0);
                         }
-                        segmentsByFrame.get(frameIdx).push(segIdx);
+                        segmentsBySource.get(src).push(segIdx);
                     }
 
-                    // Count positions per frame
+                    // how big each source is on its own, which is what the
+                    // shadow pass sizes its grid from
                     for (let i = 0; i < this.coords.length; i++) {
-                        const frameIdx = this.overlayState.frameIdMap[i];
-                        frameNumPositions.set(frameIdx, (frameNumPositions.get(frameIdx) || 0) + 1);
+                        const src = shadowGroups[i];
+                        sourceNumPositions.set(src, (sourceNumPositions.get(src) || 0) + 1);
                     }
 
-                    // Calculate shadows for each frame independently
-                    for (const [frameIdx, frameSegments] of segmentsByFrame) {
-                        const framePositions = frameNumPositions.get(frameIdx);
-                        this._calculateFrameShadows(frameSegments, framePositions, segments, segData, maxExtent, shadows, tints);
+                    for (const [src, srcSegments] of segmentsBySource) {
+                        this._calculateFrameShadows(srcSegments, sourceNumPositions.get(src),
+                            segments, segData, maxExtent, shadows, tints);
                     }
                 }
                 // NORMAL MODE: Calculate shadows for all visible segments

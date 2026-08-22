@@ -3740,7 +3740,13 @@
         // --- secondary structure, cached per object/frame ---
         // Distances are rotation-invariant, so this never changes with the view.
         // guarded like secForColor below: render can run before overlayState exists
+        // ...keyed on WHICH objects are in the array as well as which frame:
+        // shown-set changes keep the object name and can keep the position
+        // count, and a cached assignment from the other set is a structure
+        // drawn with somebody else's helices.
         const secKey = `${renderer.currentObjectName}|${renderer.currentFrame}|${n}|${renderer.overlayState && renderer.overlayState.enabled}`
+            + `|${(renderer.multiState && renderer.multiState.enabled
+                && renderer.multiState.sourceNames) ? renderer.multiState.sourceNames.join(',') : ''}`
             + sseKey(renderer);
         //
         // The assignment runs over the WHOLE structure at once rather than per
@@ -3760,13 +3766,12 @@
         let ladders = renderer._cartoonLadder;
         if (!sec || renderer._cartoonSecKey !== secKey) {
             if (renderer._cartoonSecKey !== secKey) cacheRebuilt = true;
-            // In overlay mode every frame of the trajectory is in `coords` at
-            // once, so the frame index each position belongs to is handed over
-            // as a bonding group: a residue may only bond within its own frame.
-            const ovMap = (renderer.overlayState && renderer.overlayState.enabled
-                && renderer.overlayState.frameIdMap
-                && renderer.overlayState.frameIdMap.length === n)
-                ? renderer.overlayState.frameIdMap : null;
+            // A merged view has more than one structure in `coords` at once -
+            // every frame of a trajectory in overlay mode, or several objects
+            // side by side - so the source each position came from is handed
+            // over as a bonding group: a residue may only bond within its own.
+            const groupSrc = renderer.sourceGroups ? renderer.sourceGroups() : null;
+            const ovMap = (groupSrc && groupSrc.length === n) ? groupSrc : null;
             // Which residues are actually one polymer, taken from the segments
             // the file gave us rather than guessed from distance. Runs are
             // already this: bbSeg[i] connects i to i+1.

@@ -72,7 +72,7 @@ for (const name of ['selectionBandFor']) {
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -6380,6 +6380,96 @@ t('merged side tables offset positions and rows separately', () => {
         'a lone table is not rebuilt');
 });
 
+
+// WHICH POSITIONS MAY BE PART OF THE SAME THING (sourceGroups).
+//
+// One coordinate array can hold several structures - every frame of a
+// trajectory, or several objects - and the rules that must not cross a source
+// boundary (bonding, chain counting, shadowing) all read this one array. The
+// case that bites is that SIDE CHAINS ARE APPENDED AFTER the merge: read raw,
+// the map is short and every appended atom comes back undefined, which
+// compares equal to every other undefined - so they become one phantom source,
+// and each is severed from the residue it grows out of.
+function grpViewer(n) {
+    const v = new Cls();
+    v.coords = new Array(n).fill(0);
+    v.overlayState = { enabled: false, frameIdMap: null };
+    v.multiState = { enabled: false, sourceIdMap: null };
+    return v;
+}
+
+t('no merge means every position may reach any other', () => {
+    eq(grpViewer(4).sourceGroups(), null, 'no groups');
+});
+
+t('the overlay and the object merge answer through one array', () => {
+    const a = grpViewer(4);
+    a.overlayState = { enabled: true, frameIdMap: [0, 0, 1, 1] };
+    eq(a.sourceGroups().join(''), '0011', 'frames');
+    const b = grpViewer(4);
+    b.multiState = { enabled: true, sourceIdMap: [0, 1, 1, 1] };
+    eq(b.sourceGroups().join(''), '0111', 'objects');
+    // both set: the frames of ONE object, which is the merge that is loaded
+    b.overlayState = { enabled: true, frameIdMap: [0, 0, 1, 1] };
+    eq(b.sourceGroups().join(''), '0011', 'the overlay is the loaded merge');
+});
+
+t('an appended side-chain atom belongs to the source of its residue', () => {
+    const v = grpViewer(6);
+    v.multiState = { enabled: true, sourceIdMap: [0, 0, 1, 1] };
+    // two atoms appended, one grown from position 1 and one from position 3
+    v.sidechainMap = new Map([[4, { owner: 1 }], [5, { owner: 3 }]]);
+    const g = v.sourceGroups();
+    eq(g.length, 6, 'one id per position');
+    eq(g.join(','), '0,0,1,1,0,1', 'each atom took its residue\'s source');
+    // ...and the same array is handed back rather than rebuilt per read
+    eq(v.sourceGroups(), g, 'cached');
+    // a rebuilt map is not the cached one
+    v.multiState = { enabled: true, sourceIdMap: [0, 0, 0, 1] };
+    eq(v.sourceGroups().join(','), '0,0,0,1,0,1', 'rebuilt for a new merge');
+});
+
+t('an appended atom with no owner is its own source, never somebody else\'s', () => {
+    const v = grpViewer(5);
+    v.multiState = { enabled: true, sourceIdMap: [0, 0, 1, 1] };
+    v.sidechainMap = null;
+    const g = v.sourceGroups();
+    if (g[4] === 0 || g[4] === 1) {
+        throw new Error('an unowned position was folded into a real source');
+    }
+});
+
+t('a map longer than the array is refused', () => {
+    const v = grpViewer(2);
+    v.multiState = { enabled: true, sourceIdMap: [0, 0, 1, 1] };
+    eq(v.sourceGroups(), null, 'stale map');
+});
+
+// ...and the gates actually read it. Each of these used to test
+// overlayState.frameIdMap directly, which is how the overlay came to sever
+// side chains from their backbone and shade them as a source of their own.
+t('nothing gates connectivity or shadows on the frame map directly', () => {
+    const src2 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    if (src2.indexOf('\n        sourceGroups()') < 0) throw new Error('sourceGroups is gone');
+    // the segment builder: where bonds and chain breaks are decided
+    const at = src2.indexOf('// Generate Segment Definitions ONCE');
+    const to = src2.indexOf('this.cachedSegmentIndices = this.segmentIndices.map', at);
+    if (at < 0 || to < 0) throw new Error('cannot find the segment builder');
+    if (/frameIdMap/.test(src2.slice(at, to))) {
+        throw new Error('the segment builder reads frameIdMap instead of sourceGroups()');
+    }
+    const shadow = src2.slice(src2.indexOf('renderShadows && !skipShadowCalc'), 
+        src2.indexOf('renderShadows && !skipShadowCalc') + 2600);
+    if (/frameIdMap/.test(shadow)) {
+        throw new Error('the shadow pass reads frameIdMap instead of sourceGroups()');
+    }
+    // ...and it does still ask. A merged view that shades every source
+    // together is the mud the per-frame pass was written to avoid, and it is
+    // also "do not cast shadow between objects" broken.
+    if (!/const shadowGroups = this\.sourceGroups\(\);/.test(shadow)) {
+        throw new Error('the shadow pass no longer groups by source');
+    }
+});
 
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');
 process.exit(fail?1:0);
