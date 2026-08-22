@@ -502,7 +502,7 @@
     // Nucleic backbone half-width. Wider than a protein coil (0.42): the
     // strand has to stay legible next to 3.6 A base plates, and a duplex
     // read as thread when it matched the coil width.
-    const NA_HALF_A = 1.55;
+    const NA_HALF_A = 2.0;
     const LOOP_TUBE_A = 0.35;              // loop tube radius
     const RIBBON_TH_A = 0.25;              // slab half-thickness (total 0.5 A)
     // NUCLEIC GEOMETRY IS THICKER THAN PROTEIN. A duplex is drawn as two thin
@@ -8941,7 +8941,11 @@
                 if (i < 0 || i >= n) return null;
                 const j = pairOf[i];
                 if (j < 0 || j >= n) return null;
-                const a = rotated[i], b = rotated[j];
+                // the SMOOTHED rails, like everything else the plate is built
+                // from: this midpoint is what the whole helix axis is fitted
+                // through, and an axis fitted to the raw trace tilts every
+                // plate on a ribbon drawn through the smoothed one
+                const a = naPos[i], b = naPos[j];
                 return [(a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2];
             };
             // ---- ONE AXIS PER PAIR, THEN SMOOTHED ALONG THE STEM ----------
@@ -9062,7 +9066,15 @@
                 const j = pairOf[i];
                 if (j < 0 || j < i) continue;          // emit each pair once
                 if (!vis(i) || !vis(j)) continue;
-                const pi = rotated[i], pj = rotated[j];
+                // A RUNG STARTS AT ITS OWN RAIL. These are the two ends of
+                // the pair and everything about the rung is built from them -
+                // where it leaves the ribbon, the pair midpoint it runs to,
+                // the axis it sits normal to - so reading the RAW trace here
+                // while the rails are drawn through the smoothed one starts
+                // each rung up to an Angstrom off its ribbon: it begins inside
+                // the band and stabs out of the far side, which is what the
+                // plates looked like the moment the trace was smoothed.
+                const pi = naPos[i], pj = naPos[j];
                 let lx = pj.x - pi.x, ly = pj.y - pi.y, lz = pj.z - pi.z;
                 const ll = Math.hypot(lx, ly, lz);
                 if (ll < 1e-3) continue;
