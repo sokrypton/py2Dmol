@@ -767,6 +767,17 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     <option value="C">Loop</option>
                                 </select>
                             </div>
+                            <!-- WHAT THE SELECTION IS, above; WHAT TO DO WITH IT,
+                                 below. The rows above set properties of the residues
+                                 you have picked - how they are drawn, what colour,
+                                 which structure - and read as a group because they
+                                 all answer "what does this look like". Find and
+                                 Contact do something instead: one changes the
+                                 selection, the other adds an annotation. Running
+                                 them into the same stack of labelled rows made
+                                 Find look like another property with a button
+                                 next to it. -->
+                            <div class="selection-panel-divider" id="selActionDivider"></div>
                             <!-- FIND INTERACTIONS: the residues whose SIDE CHAINS
                                  come within 5 A of the selection, atom to atom, side
                                  chains rebuilt whether or not they are drawn.

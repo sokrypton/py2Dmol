@@ -1493,6 +1493,17 @@ function setupEventListeners() {
         // and did nothing whichever was picked. It hides rather than
         // disabling, because the row it sits on is about the main chain and
         // stays useful - a greyed control there reads as something broken.
+        // ...AND THE LINE ONLY MEANS ANYTHING WITH SOMETHING ABOVE IT. Both
+        // property rows can go at once - a ligand takes the main chain row
+        // away, and a selection with no elements to colour takes the other -
+        // and a divider at the top of the panel is a rule under nothing.
+        const divider = document.getElementById('selActionDivider');
+        if (divider) {
+            const scR = document.getElementById('sidechainRow');
+            const mcR = document.getElementById('mainchainRow');
+            divider.hidden = none
+                || ((!scR || scR.hidden) && (!mcR || mcR.hidden));
+        }
         const ssHide = document.getElementById('selSsSelect');
         if (ssHide) {
             const renderer = viewerApi?.renderer;

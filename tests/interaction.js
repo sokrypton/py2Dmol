@@ -576,6 +576,7 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
         // the row carries a name and a swatch as well as its controls, and
         // both change when the only thing left on it is a ligand's elements
         mainchainRow: { hidden: null },
+        selActionDivider: { hidden: null },
         sidechainRow: (() => {
             const label = { textContent: 'Side chains' };
             const swatch = { hidden: null };
@@ -644,6 +645,42 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
     f();
     return nodes;
 }
+
+t('a line separates what the selection IS from what to do with it', () => {
+    // The rows above set properties of the picked residues - how they are
+    // drawn, what colour, which structure. Find and Contact do something
+    // instead: one changes the selection, the other adds an annotation. In one
+    // undivided stack of labelled rows, Find read as another property with a
+    // button beside it.
+    const html = fs.readFileSync('index.html', 'utf8');
+    const div = html.indexOf('id="selActionDivider"');
+    if (div < 0) throw new Error('the selection panel has no divider');
+    const mc = html.indexOf('id="mainchainRow"');
+    const find = html.indexOf('id="nearbyRow"');
+    if (!(mc < div && div < find)) {
+        throw new Error('the divider is not between the property rows and Find');
+    }
+    const css = fs.readFileSync('web/style.css', 'utf8');
+    if (!/\.selection-panel-divider\s*\{[^}]*background/.test(css)) {
+        throw new Error('the divider has no line to draw');
+    }
+    if (!/\.selection-panel-divider\[hidden\]\s*\{\s*display:\s*none/.test(css)) {
+        throw new Error('the divider cannot be hidden, and [hidden] is a UA rule'
+            + ' that any display value outranks');
+    }
+    // ...AND IT GOES WHEN THERE IS NOTHING ABOVE IT. Both property rows can be
+    // taken away at once - a ligand has no main chain row, and a selection
+    // with no elements to colour loses the other - and a rule under nothing is
+    // a line across the top of the panel.
+    const shown = panelRun([4, 5], new Set([4, 5]), false, null, new Set([4, 5]));
+    if (shown.selActionDivider.hidden) {
+        throw new Error('the divider is hidden with rows above it');
+    }
+    const empty = panelRun(null);
+    if (!empty.selActionDivider.hidden) {
+        throw new Error('the divider is drawn with no selection at all');
+    }
+});
 
 t('a selection full of side-chain atoms still reads as its residues', () => {
     // SHOWING SIDE CHAINS CHANGES WHAT SELECTING A CHAIN SELECTS. The atoms are

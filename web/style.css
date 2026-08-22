@@ -1258,6 +1258,17 @@ table.layout-table td {
 
 .selection-panel-row[hidden] { display: none; }
 
+/* PROPERTIES ABOVE, ACTIONS BELOW. A hairline the full width of the panel:
+   the rows are already small and closely stacked, so anything heavier reads as
+   two panels rather than as a break in one list. */
+.selection-panel-divider {
+    height: 1px;
+    background: #e5e7eb;
+    margin: 3px 0 3px 0;
+}
+
+.selection-panel-divider[hidden] { display: none; }
+
 
 /* Fixed width so the two rows' controls line up under each other; without it
    "Side chains" and "Main chain" push their buttons to different columns and
