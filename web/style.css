@@ -1811,6 +1811,13 @@ table.layout-table td {
 }
 
 .object-list-row + .object-list-row { border-top: 1px solid #f3f4f6; }
+
+/* ALL sits above the objects and is not one of them, so it is ruled off rather
+   than listed with them. */
+.object-list-all {
+    border-bottom: 1px solid #e5e7eb;
+    font-weight: 600;
+}
 .object-list-row:hover { background: var(--color-gray-100); }
 
 .object-list-eye {

@@ -2095,16 +2095,19 @@ function updateObjectNavigationButtons() {
 // ============================================================================
 // THE OBJECT LIST
 // ============================================================================
-// ONE QUESTION: which objects are on screen. Everything loaded is drawn until
-// an eye is clicked, so the button reads "All" and opens into a row per object
-// with an eye and a name. The whole row is the switch.
+// ONE QUESTION: which objects are on screen.
 //
-// It used to answer a second question too - which object is CURRENT, the one
-// Copy, Delete, the side-chain toggles and the sequence strip act on - and
-// with the shown set empty meaning "the current object", picking one in the
-// list took the other off the screen: "when I click one it hides the other".
-// That question now belongs to the picker in the sequence header, where the
-// thing it governs is visible.
+// ONE OBJECT AT A TIME IS THE RESTING STATE, chosen with the dropdown in the
+// sequence header - which is how the viewer has always worked, and loading a
+// second file must not change it. Showing several is something the user asks
+// for: press All, or light an eye in the list. The first row IS All, and
+// switching it off comes back to the object being edited.
+//
+// The list used to answer a second question too - which object is CURRENT, the
+// one Copy, Delete, the side-chain toggles and the sequence strip act on - and
+// with the shown set meaning "the current object", picking one in the list took
+// the other off the screen: "when I click one it hides the other". That
+// question belongs to the picker, where the thing it governs is visible.
 
 function objectListEls() {
     return {
@@ -2149,10 +2152,8 @@ function syncObjectListButton() {
     if (!btn || !renderer) return;
     const total = Object.keys(renderer.objectsData || {}).length;
     const shown = renderer.drawnObjects ? renderer.drawnObjects().length : 1;
-    btn.textContent = (shown >= total) ? 'All' : `${shown}/${total}`;
-    btn.title = (shown >= total)
-        ? 'All objects are on screen - click to choose'
-        : `${shown} of ${total} objects are on screen - click to choose`;
+    btn.textContent = (shown >= total && total > 1) ? 'All' : `${shown}/${total}`;
+    btn.title = `${shown} of ${total} objects on screen - click to choose`;
 }
 
 function renderObjectList() {
@@ -2165,6 +2166,26 @@ function renderObjectList() {
     const names = Object.keys(renderer.objectsData || {});
     const shown = shownObjectSet(renderer);
     list.innerHTML = '';
+
+    // ALL, first and separated: the one press that puts everything on screen,
+    // and the way back to one object when it is switched off again.
+    const allOn = names.length > 0 && names.every((n) => shown.has(n));
+    const allRow = document.createElement('div');
+    allRow.className = 'object-list-row object-list-all' + (allOn ? '' : ' is-hidden');
+    allRow.title = allOn
+        ? 'Back to one object at a time'
+        : 'Put every object on screen at once';
+    allRow.innerHTML = (allOn
+        ? '<span class="object-list-eye"><i class="fa-regular fa-eye"></i></span>'
+        : '<span class="object-list-eye"><i class="fa-regular fa-eye-slash"></i></span>')
+        + '<span class="object-list-name">All</span>';
+    allRow.addEventListener('click', () => {
+        // ...and off means the empty set, which is "just the one being edited"
+        renderer.setShownObjects(allOn ? [] : names);
+        syncObjectColorOption();
+        renderObjectList();
+    });
+    list.appendChild(allRow);
 
     for (const name of names) {
         const on = shown.has(name);
@@ -2204,6 +2225,9 @@ function toggleObjectShown(name) {
     if (!renderer || !renderer.setShownObjects) return;
     const shown = shownObjectSet(renderer);
     if (shown.has(name)) {
+        // THE LAST ONE CANNOT BE SWITCHED OFF: an empty set means "the object
+        // being edited", so the picture would come back with that one in it
+        // and the eye would read as broken.
         if (shown.size <= 1) return;
         shown.delete(name);
     } else {

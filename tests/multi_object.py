@@ -59,23 +59,14 @@ window.addEventListener('load', () => {
       R.objects = names;
 
       // A PLAIN LOAD, BEFORE ANY API CALL. This is how a user gets here -
-      // fetch one structure, fetch another - and it is where the second object
-      // came up invisible with its eye showing open: the first object's
-      // visibility mask had been filed under it and read back as its own.
+      // fetch one structure, fetch another - and the resting state is ONE
+      // object on screen, the one the picker names, exactly as the viewer has
+      // always behaved. Loading a second file does not change what you are
+      // looking at, and does not merge anything.
       R.plainDrawn = r.drawnObjects();
       R.plainN = r.coords.length;
       R.plainMulti = !!(r.multiState && r.multiState.enabled);
-      R.plainOffsetOfCurrent = r.sourceOffsetOf(r.currentObjectName);
-      {
-        const g0 = r.sourceGroups();
-        const per = {};
-        if (g0 && r.visiblePositions) {
-          for (const i of r.visiblePositions) per[g0[i]] = (per[g0[i]] || 0) + 1;
-        } else if (!r.visiblePositions) {
-          per.all = r.coords.length;
-        }
-        R.plainVisiblePerSource = per;
-      }
+      R.plainVisible = r.visiblePositions ? r.visiblePositions.size : r.coords.length;
 
       r.setShownObjects([names[0]]);
       r.render('one');
@@ -241,39 +232,60 @@ window.addEventListener('load', () => {
       await new Promise((s) => setTimeout(s, 250));
 
       // THE LIST UI, driven as a user drives it: press the button, click a
-      // row. Every object is on screen to begin with - that is the default -
-      // so the first click takes one OFF.
+      // row. ONE object is on screen to begin with, so All is the row that
+      // puts the rest up and the way back to one.
+      r.setShownObjects([]);            // the resting state: just the edited one
+      r.render('resting');
+      await new Promise((s) => setTimeout(s, 200));
       const btn = document.getElementById('objectListButton');
-      R.btnAll = btn.textContent;
+      R.btnOne = btn.textContent;
       btn.click();
-      const rows = Array.from(document.querySelectorAll('.object-list-row'));
-      R.rows = rows.map((x) => x.querySelector('.object-list-name').textContent);
-      R.hiddenRowsAtStart = rows.filter((x) => x.classList.contains('is-hidden')).length;
+      const rows0 = Array.from(document.querySelectorAll('.object-list-row'));
+      R.rows = rows0.map((x) => x.querySelector('.object-list-name').textContent);
       R.swatches = document.querySelectorAll('.object-list-swatch').length;
+      R.oneObjectInk = ink(r);
 
-      // ...measured against the picture as it stands NOW, not against the ink
-      // from the top of the run: Orient has moved the camera since.
-      R.beforeHideInk = ink(r);
-      rows[1].click();
+      rows0[0].click();                 // press All
+      await new Promise((s) => setTimeout(s, 300));
+      R.afterAllDrawn = r.drawnObjects();
+      R.afterAllInk = ink(r);
+      R.btnAll = document.getElementById('objectListButton').textContent;
+
+      const rowsA = Array.from(document.querySelectorAll('.object-list-row'));
+      rowsA[0].click();                 // ...and off again, back to one
+      await new Promise((s) => setTimeout(s, 300));
+      R.afterAllOffDrawn = r.drawnObjects();
+      R.afterAllOffInk = ink(r);
+
+      // ONE OBJECT'S OWN EYE, from the resting state: it JOINS what is there
+      // rather than replacing it, which is the whole complaint that started
+      // this - "when I click one it hides the other".
+      R.beforeJoinInk = ink(r);
+      R.beforeJoinDrawn = r.drawnObjects();
+      const rowsB = Array.from(document.querySelectorAll('.object-list-row'));
+      rowsB[1].click();
       await new Promise((s) => setTimeout(s, 250));
-      R.afterHideInk = ink(r);
-      R.afterHideDrawn = r.drawnObjects();
-      R.afterHideMulti = !!(r.multiState && r.multiState.enabled);
+      R.afterJoinInk = ink(r);
+      R.afterJoinDrawn = r.drawnObjects();
+      R.afterJoinMulti = !!(r.multiState && r.multiState.enabled);
       R.btnSome = document.getElementById('objectListButton').textContent;
 
-      // ...and back on, from the row that is now dimmed
+      // ...and off again, back to where it was
       const rows2 = Array.from(document.querySelectorAll('.object-list-row'));
       rows2[1].click();
       await new Promise((s) => setTimeout(s, 250));
-      R.afterShowInk = ink(r);
-      R.afterShowDrawn = r.drawnObjects();
-      R.btnAllAgain = document.getElementById('objectListButton').textContent;
+      R.afterLeaveInk = ink(r);
+      R.afterLeaveDrawn = r.drawnObjects();
 
-      // the last visible object cannot be hidden - an empty set means ALL, so
-      // the picture would come back whole and the eye would read as broken
+      // THE LAST ONE CANNOT BE SWITCHED OFF: an empty set means "the object
+      // being edited", so the picture would come back with that one in it and
+      // the eye would read as broken.
       const rows3 = Array.from(document.querySelectorAll('.object-list-row'));
-      rows3[0].click();
-      rows3[1].click();
+      rows3[1].click();                 // both on
+      await new Promise((s) => setTimeout(s, 200));
+      const rows4 = Array.from(document.querySelectorAll('.object-list-row'));
+      rows4[1].click();                 // one off
+      rows4[2].click();                 // ...and the other, which must refuse
       await new Promise((s) => setTimeout(s, 200));
       R.lastOneLeft = r.drawnObjects().length;
       r.setShownObjects(names);
@@ -388,9 +400,7 @@ def main():
 
     print(f"objects: {R['objects']} on {R['renderer']}")
     print(f"  plain load: drew {R.get('plainDrawn')}, {R.get('plainN')} positions,"
-          f" merge {R.get('plainMulti')}, visible per source"
-          f" {R.get('plainVisiblePerSource')}, strip object at offset"
-          f" {R.get('plainOffsetOfCurrent')}")
+          f" merge {R.get('plainMulti')}, {R.get('plainVisible')} visible")
     print(f"  one:   {R['oneN']:6d} positions, {R['oneInk']:8d} ink")
     print(f"  both:  {R['bothN']:6d} positions, {R['bothInk']:8d} ink"
           f"  (merge {'on' if R['multi'] else 'OFF'}, offsets {R['offsets']})")
@@ -405,14 +415,15 @@ def main():
     print(f"  hiding 40 of the second object: {R['hiddenInk']} ink,"
           f" back to {R['restoredInk']}; first object touched:"
           f" {R['hiddenOnFirst']}, second object's lowest index {R['hiddenLocal']}")
-    print(f"  list: rows {R.get('rows')}, swatches {R.get('swatches')},"
-          f" hidden at start {R.get('hiddenRowsAtStart')}; button"
-          f" {R.get('btnAll')!r} -> {R.get('btnSome')!r} -> {R.get('btnAllAgain')!r}")
-    print(f"  from {R.get('beforeHideInk')} ink:"
-          f" hide -> {R.get('afterHideDrawn')} ({R.get('afterHideInk')} ink,"
-          f" merge {R.get('afterHideMulti')}); show -> {R.get('afterShowDrawn')}"
-          f" ({R.get('afterShowInk')} ink); hiding everything leaves"
-          f" {R.get('lastOneLeft')}")
+    print(f"  list: rows {R.get('rows')}, swatches {R.get('swatches')};"
+          f" button {R.get('btnOne')!r} -> All -> {R.get('btnAll')!r}")
+    print(f"  All: {R.get('oneObjectInk')} ink -> {R.get('afterAllInk')}"
+          f" ({R.get('afterAllDrawn')}) -> off {R.get('afterAllOffInk')}"
+          f" ({R.get('afterAllOffDrawn')})")
+    print(f"  one eye: {R.get('beforeJoinDrawn')} -> {R.get('afterJoinDrawn')}"
+          f" ({R.get('beforeJoinInk')} -> {R.get('afterJoinInk')} ink,"
+          f" merge {R.get('afterJoinMulti')}) -> off {R.get('afterLeaveDrawn')};"
+          f" last one stays: {R.get('lastOneLeft') == 1}")
     print(f"  picker: {R.get('pickerOptions')} showing {R.get('pickerValue')!r};"
           f" picking the other -> editing {R.get('afterPickCurrent')},"
           f" drawn {R.get('afterPickDrawn')}")
@@ -428,17 +439,14 @@ def main():
           + (f"  DECLINED: {R['gpuError']}" if R.get("gpuError") else ""))
 
     bad = []
-    if len(R.get("plainDrawn", [])) != 2:
-        bad.append(f"a plain load of two files drew {R.get('plainDrawn')}")
-    if not R.get("plainMulti"):
-        bad.append("a plain load of two files did not merge them")
-    per = R.get("plainVisiblePerSource") or {}
-    if len(per) != 2 or not all(v > 0 for v in per.values()):
-        bad.append(f"after a plain load the visible set covers {per}"
-                   " - an object is on screen only if its positions are visible")
-    if not R.get("plainOffsetOfCurrent"):
-        bad.append("the object the sequence strip shows is at offset 0 - its"
-                   " cells would read the first object's colours")
+    if R.get("plainDrawn") != [R["objects"][1]]:
+        bad.append(f"a plain load of two files drew {R.get('plainDrawn')} - the"
+                   " resting state is the object being edited, on its own")
+    if R.get("plainMulti"):
+        bad.append("a plain load merged two objects without being asked to")
+    if R.get("plainVisible") != R.get("plainN"):
+        bad.append(f"only {R.get('plainVisible')} of {R.get('plainN')} positions"
+                   " are visible after a plain load")
     if not R["multi"]:
         bad.append("the merge did not switch on")
     if R["mapLen"] != R["bothN"]:
@@ -461,31 +469,38 @@ def main():
         bad.append(f"a pick on the second object reported {R.get('pickOwner')}")
     if not (0 < R.get("clipInk", 0) < R["bothInk"]):
         bad.append(f"auto clip on one object left {R.get('clipInk')} ink")
-    if R.get("btnAll") != "All":
-        bad.append(f"the button reads {R.get('btnAll')!r} with everything on screen")
-    if R.get("btnSome") != "1/2":
-        bad.append(f"the button reads {R.get('btnSome')!r} with one object hidden")
-    if R.get("btnAllAgain") != "All":
-        bad.append(f"the button reads {R.get('btnAllAgain')!r} after showing it again")
-    if R.get("rows") != R["objects"]:
-        bad.append("the list does not name every object")
-    if R.get("hiddenRowsAtStart"):
-        bad.append("an object was already hidden - everything should start on screen")
+    if R.get("rows") != ["All"] + R["objects"]:
+        bad.append(f"the list reads {R.get('rows')} - All first, then the objects")
     if R.get("swatches"):
         bad.append("the rows still carry colour swatches")
-    if len(R.get("afterHideDrawn", [])) != 1:
-        bad.append(f"clicking a row left {R.get('afterHideDrawn')} drawn")
-    if R.get("afterHideMulti"):
-        bad.append("one object left on screen is still a merge")
-    if not (R.get("afterHideInk", 0) < R.get("beforeHideInk", 0)):
-        bad.append("hiding an object did not remove its ink")
-    if R.get("afterShowDrawn") != R["objects"]:
-        bad.append(f"showing it again left {R.get('afterShowDrawn')} drawn")
-    if abs(R.get("afterShowInk", 0) - R.get("beforeHideInk", 1)) > 0.02 * R.get("beforeHideInk", 1):
-        bad.append(f"showing it again left {R.get('afterShowInk')} ink,"
-                   f" not the {R.get('beforeHideInk')} it started with")
+    if R.get("btnOne") != "1/2":
+        bad.append(f"the button reads {R.get('btnOne')!r} with one object on screen")
+    if R.get("afterAllDrawn") != R["objects"]:
+        bad.append(f"All left {R.get('afterAllDrawn')} on screen")
+    if R.get("btnAll") != "All":
+        bad.append(f"the button reads {R.get('btnAll')!r} after All")
+    if not (R.get("afterAllInk", 0) > R.get("oneObjectInk", 0)):
+        bad.append("All did not add any ink")
+    if len(R.get("afterAllOffDrawn", [])) != 1:
+        bad.append(f"All switched off left {R.get('afterAllOffDrawn')} - it should"
+                   " come back to the object being edited")
+    if abs(R.get("afterAllOffInk", 0) - R.get("oneObjectInk", 1)) > 0.02 * R.get("oneObjectInk", 1):
+        bad.append("All switched off did not restore the one-object picture")
+    if R.get("afterJoinDrawn") != R["objects"]:
+        bad.append(f"lighting an eye left {R.get('afterJoinDrawn')} drawn -"
+                   " it should JOIN what is on screen, not replace it")
+    if not R.get("afterJoinMulti"):
+        bad.append("two objects on screen are not merged")
+    if not (R.get("afterJoinInk", 0) > R.get("beforeJoinInk", 0)):
+        bad.append("lighting an eye did not add ink")
+    if R.get("btnSome") != "All":
+        bad.append(f"the button reads {R.get('btnSome')!r} with both on screen")
+    if len(R.get("afterLeaveDrawn", [])) != 1:
+        bad.append(f"switching it off again left {R.get('afterLeaveDrawn')}")
+    if abs(R.get("afterLeaveInk", 0) - R.get("beforeJoinInk", 1)) > 0.02 * R.get("beforeJoinInk", 1):
+        bad.append("switching it off again did not restore the picture")
     if R.get("lastOneLeft") != 1:
-        bad.append("the last visible object could be hidden")
+        bad.append("the last object on screen could be switched off")
     if not R.get("pickerVisible"):
         bad.append("the object picker is not visible beside the sequence")
     if R.get("pickerOptions") != R["objects"]:

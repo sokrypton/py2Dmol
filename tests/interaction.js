@@ -5245,7 +5245,7 @@ t('the CA-CB bond is as thick as the rest of the side chain', () => {
     }
 });
 
-t('the drawn objects are asked for in one place, and default to all of them', () => {
+t('the drawn objects are asked for in one place, and default to the edited one', () => {
     // ONE question, one answer: which objects does this frame draw. Everything
     // that used to read currentObjectName for that reads this instead, so the
     // day it returns several names the callers need no changing - and it does
@@ -5263,17 +5263,17 @@ t('the drawn objects are asked for in one place, and default to all of them', ()
             + ' still exist');
     }
 
-    // EMPTY MEANS ALL. Tying what is drawn to what is being edited is what made
-    // picking an object in the list take the other one off the screen.
+    // EMPTY MEANS THE ONE BEING EDITED - the resting state, and what loading a
+    // second file leaves you in. Showing several is asked for, not stumbled into.
     const v = new Cls();
     v.objectsData = { A: {}, B: {}, C: {} };
     v.currentObjectName = 'B';
     v.shownObjects = new Set();
-    eq(v.drawnObjects().join(','), 'A,B,C', 'everything loaded is on screen');
+    eq(v.drawnObjects().join(','), 'B', 'just the object being edited');
     v.shownObjects = new Set(['C', 'A']);
     eq(v.drawnObjects().join(','), 'A,C', 'in load order, whatever order it was set in');
     v.shownObjects = new Set(['gone']);
-    eq(v.drawnObjects().join(','), 'A,B,C', 'a set naming nothing that exists is no set');
+    eq(v.drawnObjects().join(','), 'B', 'a set naming nothing that exists is no set');
 });
 
 t('an object switch draws once, and after the frames are in', () => {
@@ -6541,25 +6541,31 @@ function shownViewer() {
     };
     v.overlayState = { enabled: false, frameIdMap: null };
     v.viewerState = { zoom: 1, center: null, extent: null };
-    // TWO OBJECTS ARE LOADED, so both are on screen and merged - that is the
-    // resting state now, not something a test has to switch on. A frame load
-    // is what builds it; setFrame does this after every load.
-    v._applyShownObjects();
-    v.loaded = [];
+    // TWO OBJECTS ARE LOADED, and one of them is on screen - the resting
+    // state. Tests that want the merge ask for it, the way the user does.
     return v;
 }
 
-t('two loaded objects are both on screen without being asked', () => {
+/** ...and the same, with both objects showing. */
+function mergedViewer() {
     const v = shownViewer();
-    eq(v.drawnObjects().join(','), 'A,B', 'everything loaded is drawn');
-    eq(v.multiState.enabled, true, 'and merged, without anything being switched on');
-    // ...and asking for exactly that changes nothing
-    eq(v.setShownObjects(['A', 'B']), false, 'both were already drawn');
+    v.setShownObjects(['A', 'B']);
+    v.loaded = [];
+    v.mask = null;
+    return v;
+}
+
+t('a second object does not put itself on screen', () => {
+    const v = shownViewer();
+    eq(v.drawnObjects().join(','), 'A', 'only the object being edited');
+    eq(v.multiState.enabled, false, 'nothing merged');
+    // ...and asking for what is already drawn changes nothing
+    eq(v.setShownObjects(['A']), false, 'A was already the drawn object');
     eq(v.loaded.length, 0, 'nothing reloaded');
 });
 
-t('showing one of two is a change, and leaves the merge', () => {
-    const v = shownViewer();
+t('going back to one object leaves the merge', () => {
+    const v = mergedViewer();
     eq(v.setShownObjects(['A']), true, 'the picture changed');
     eq(v.multiState.enabled, false, 'no merge for one object');
     eq(v.loaded.length, 1, 'reloaded');
@@ -6568,10 +6574,6 @@ t('showing one of two is a change, and leaves the merge', () => {
 
 t('showing two objects merges them and records where each starts', () => {
     const v = shownViewer();
-    // from one object back to both: the state a hidden object leaves behind
-    v.setShownObjects(['A']);
-    v.loaded = [];
-    v.mask = null;
     eq(v.setShownObjects(['A', 'B']), true, 'the picture changed');
     eq(v.multiState.enabled, true, 'merged');
     eq(v.multiState.sourceNames.join(','), 'A,B', 'sources');
@@ -6599,10 +6601,8 @@ t('showing two objects merges them and records where each starts', () => {
 t('an object that has something hidden keeps it hidden in the merge', () => {
     const v = shownViewer();
     // B has one of its two positions hidden; A has nothing hidden at all
-    v.setShownObjects(['A']);
-    v.objectsData.B.visibilityState = { positions: new Set([1]), chains: new Set() };
-    // ...and nothing live to override it with - see _maskForObject
-    v.visibilityModel = { positions: null, chains: new Set() };
+    v.objectsData.B.visibilityState = { positions: new Set([1]), chains: new Set(),
+        paeBoxes: [], visibilityMode: 'explicit' };
     v.setShownObjects(['A', 'B']);
     eq(Array.from(v.mask.positions).sort((x, y) => x - y).join(','), '0,1,2,4',
         "A whole, and B's second position only");
@@ -6610,7 +6610,7 @@ t('an object that has something hidden keeps it hidden in the merge', () => {
 });
 
 t('dropping back to one object leaves the merge behind', () => {
-    const v = shownViewer();
+    const v = mergedViewer();
     eq(v.setShownObjects(['A']), true, 'changed');
     eq(v.multiState.enabled, false, 'merge off');
     eq(v.multiState.sourceIdMap, null, 'and its map with it');
@@ -6620,9 +6620,7 @@ t('dropping back to one object leaves the merge behind', () => {
 
 t('a merge of objects and a merge of frames are never both on', () => {
     const v = shownViewer();
-    v.setShownObjects(['A']);
     v.overlayState = { enabled: true, frameIdMap: [0, 0, 0] };
-    v.multiState.enabled = false;
     v.setShownObjects(['A', 'B']);
     eq(v.exitedOverlay, true, 'the overlay was left first');
     eq(v.multiState.enabled, true, 'and the object merge is on');
@@ -6631,7 +6629,7 @@ t('a merge of objects and a merge of frames are never both on', () => {
 t('a name that is not loaded is ignored, never drawn as nothing', () => {
     const v = shownViewer();
     eq(v.setShownObjects(['nope']), false, 'no change');
-    eq(v.drawnObjects().join(','), 'A,B', 'everything is still drawn');
+    eq(v.drawnObjects().join(','), 'A', 'still the object being edited');
     // ...and it is not REMEMBERED either. Kept, it would lie in wait: load an
     // object under that name later and it appears on screen unasked, because
     // a list the user never edited already had it ticked.
@@ -6642,7 +6640,6 @@ t("each object's side chains are read at its own offset", () => {
     const v = shownViewer();
     v.objectsData.A.sidechains = new Set([1]);
     v.objectsData.B.sidechains = new Set([0]);
-    v.setShownObjects(['A']);
     eq(Array.from(v.shownSidechainSet()).join(','), '1', 'one object, no offset');
     v.setShownObjects(['A', 'B']);
     eq(Array.from(v.shownSidechainSet()).sort().join(','), '1,3',
@@ -7195,7 +7192,7 @@ t('switching the edited object leaves a merged picture alone', () => {
 // its eye showing open, because the first object's mask had been filed under
 // it and read back as its own.
 t('each object is filed with its own share of the mask', () => {
-    const v = shownViewer();
+    const v = mergedViewer();
     v.currentObjectName = 'B';
     v.currentFrame = 1;
     // everything visible except B's second position
@@ -7209,7 +7206,7 @@ t('each object is filed with its own share of the mask', () => {
 });
 
 t('an object nobody has touched is drawn whole, an emptied one is not', () => {
-    const v = shownViewer();
+    const v = mergedViewer();
     // A: no record at all. B: a record that names nothing, explicitly.
     delete v.objectsData.A.visibilityState;
     v.objectsData.B.visibilityState = { positions: new Set(), chains: new Set(),

@@ -95,11 +95,11 @@ browser probe (`tests/multi_object.py`) turned up, in order:
 - The selection is dropped when the merge changes; it was a set of indices
   against the array that just went away.
 
-**4. The list UI.** *(done, after 5)* The **All** button opens into a row per
-object - an eye and a name, the whole row a switch - and says `2/3` once
-something is switched off. No swatch and no current-object marking: this
-control answers one question, and the second one moved to the picker beside the
-sequence strip. See "The model, as shipped" below.
+**4. The list UI.** *(done, after 5)* The button opens into an **All** row and
+then a row per object - an eye and a name, the whole row a switch - and reads
+`1/2` while one object is up, `All` when every one of them is. No swatch and no
+current-object marking: this control answers one question, and the second one
+moved to the picker beside the sequence strip. See "The model, as shipped".
 
 **ONE OBJECT IS EDITED AT A TIME.** The sequence strip, the panels, the PAE map
 and the MSA follow the picked object, and the others are geometry on screen
@@ -203,15 +203,23 @@ Two questions, asked in two places, and the whole design is keeping them apart:
 
 | question | control | state |
 |---|---|---|
-| which objects are ON SCREEN | the **All** button and its list of eyes | `shownObjects`, empty meaning ALL |
+| which objects are ON SCREEN | the list: an **All** row, then a row per object | `shownObjects`, empty meaning "the one being edited" |
 | which object is being EDITED | the **picker beside the sequence strip** | `currentObjectName` |
 
-The first version tied them together - the shown set was empty and meant "the
-current object" - so picking an object in the list took the other one off the
-screen. Reported as *"it's a little confusing, when i click one it hides the
-other"*, and the fix was to make the default ALL rather than "the current one",
-and to move the editing question to where the thing it governs is: the
-sequence strip.
+**One object at a time is the resting state** - chosen with the dropdown, which
+is how the viewer has always worked. Loading a second file does not change what
+you are looking at and does not merge anything: *"by default unless user clicks
+all, the original behavior should remain, one object displayed at a time
+selected via dropdown menu."* Showing several is asked for - press **All**, or
+light one object's eye, which JOINS it to what is on screen rather than
+replacing it. Switching All off comes back to the object being edited.
+
+The first version tied the two questions together: the shown set meant "the
+current object", so picking one in the list took the other off the screen -
+*"it's a little confusing, when i click one it hides the other"*. The second
+went too far the other way and drew everything by default. What separates them
+is the empty set meaning "the edited one" while the LIST is what puts others
+up, and the editing question living where the thing it governs is.
 
 **Nothing about the picture changes when the edited object changes.** A switch
 normally restores that object's camera, clip, style and visibility mask; under

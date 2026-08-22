@@ -10200,14 +10200,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const out = names.filter((n) => want.has(n));
                 if (out.length) return out;
             }
-            // EMPTY MEANS ALL. Everything loaded is on screen until somebody
-            // switches one off, which is what the list's eyes are for. It used
-            // to mean "the current object", and that tied what is DRAWN to what
-            // is being EDITED: picking an object in the list took the other one
-            // off the screen, reported as "when I click one it hides the other".
-            // The two are separate questions now - the eyes answer one and the
-            // picker beside the sequence answers the other.
-            if (names.length) return names;
+            // EMPTY MEANS THE ONE BEING EDITED, and that is the resting state:
+            // one object on screen, chosen with the dropdown, exactly as it has
+            // always been. Showing several is something the user asks for, by
+            // pressing All or lighting an eye in the list - never something
+            // that happens to them because a second file was loaded.
             return this.currentObjectName ? [this.currentObjectName] : [];
         }
 
