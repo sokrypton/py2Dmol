@@ -984,9 +984,16 @@ function setupEventListeners() {
         const live = list.filter((i) => i < nPos);
         const owners = renderer.sidechainOwners ? renderer.sidechainOwners() : null;
         const scAble = owners ? live.filter((i) => owners.has(i)) : [];
-        set('elementsShowToggle', tally(scAble,
-            obj.elements instanceof Set ? obj.elements : null, true));
         const t = renderer.positionTypes || [];
+        // ELEMENTS ARE NOT ONLY A SIDE-CHAIN THING. A ligand atom is a position
+        // of its own and carries its own element, so it can be coloured by it
+        // with no side chain anywhere in the selection - which is why this is
+        // tallied over the renderer's element owners rather than over scAble.
+        const elOwners = renderer.elementOwners ? renderer.elementOwners() : owners;
+        const elAble = elOwners ? live.filter((i) => elOwners.has(i)) : [];
+        const ligEl = !!(elOwners && live.some((i) => t[i] === 'L' && elOwners.has(i)));
+        set('elementsShowToggle', tally(elAble,
+            obj.elements instanceof Set ? obj.elements : null, true));
         // ...and whether any of it is a nucleotide, which is the renderer's own
         // question rather than a second copy of the type test
         const hasNuc = !!(renderer.hasBasesFor && renderer.hasBasesFor(live));
@@ -1018,9 +1025,14 @@ function setupEventListeners() {
         // absolutely positioned at zero opacity, with the label carrying the
         // word - so hiding it left "Show" on the row beside the menu that had
         // replaced it. The select IS its own visible element and hides itself.
+        // ...and neither is on the row when the selection has no side chain to
+        // draw at all, which is what a LIGAND selection is: it reaches this row
+        // only for its elements, and a Show switch there would be a control for
+        // side chains that the selection does not have.
+        const scNothing = !scAble.length && !hasNuc;
         if (scTog) {
             const wrapTog = scTog.closest ? scTog.closest('label') : null;
-            (wrapTog || scTog).hidden = hasNuc;
+            (wrapTog || scTog).hidden = hasNuc || scNothing;
         }
         if (scSel) scSel.hidden = !hasNuc;
         if (scTog) set('sidechainShowToggle', tally(scAble, scSet, false));
@@ -1038,10 +1050,25 @@ function setupEventListeners() {
         // toggle sat there in both, doing nothing a user could see. Hidden by
         // its LABEL, which is what carries the text: hiding the checkbox alone
         // leaves "Elements" on the row with no control.
+        // A LIGAND IS ALWAYS ITS ATOMS - there is no plate and nothing to
+        // switch on first - so its elements are offered whatever the side-chain
+        // mode reads, which for a ligand is None because it owns no side chain.
         const elTog = document.getElementById('elementsShowToggle');
         if (elTog) {
             const wrap = elTog.closest ? elTog.closest('label') : null;
-            (wrap || elTog).hidden = mode !== 'full';
+            (wrap || elTog).hidden = mode !== 'full' && !ligEl;
+        }
+        // WHAT THE ROW IS CALLED, when the only thing left on it is Elements.
+        // "Side chains" over a ligand's element switch names something the
+        // selection has not got; the swatch beside it colours side chains
+        // through their owning residue, which a ligand atom is not.
+        const scRowEl = document.getElementById('sidechainRow');
+        if (scRowEl) {
+            const ligOnly = scNothing && ligEl;
+            const lbl = scRowEl.querySelector('.selection-panel-label');
+            if (lbl) lbl.textContent = ligOnly ? 'Ligand' : 'Side chains';
+            const swatch = scRowEl.querySelector('.selection-color-wrap');
+            if (swatch) swatch.hidden = ligOnly;
         }
 
         // MAIN CHAIN IS THE BACKBONE. The set names what is HIDDEN, so a
@@ -1288,8 +1315,11 @@ function setupEventListeners() {
         const scRow = document.getElementById('sidechainRow');
         if (scRow) {
             const renderer = viewerApi?.renderer;
-            scRow.hidden = none || !renderer || !renderer.hasSidechainsFor
-                || !renderer.hasSidechainsFor(picked);
+            // hasElementsFor, not hasSidechainsFor: it answers yes for every
+            // residue with a side chain AND for a ligand atom that knows its
+            // element, which is the other reason this row has something to do.
+            scRow.hidden = none || !renderer || !renderer.hasElementsFor
+                || !renderer.hasElementsFor(picked);
         }
         // Elements rides that same row rather than gating itself: it colours
         // the atoms the row draws, so wherever there are none it is already
@@ -3399,6 +3429,11 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
             position_types: frameData.position_types ? [...frameData.position_types] : undefined,
             plddts: frameData.plddts ? [...frameData.plddts] : undefined,
             position_names: frameData.position_names ? [...frameData.position_names] : undefined,
+            // A LIGAND ATOM'S OWN NAME AND ELEMENT, present only where the file
+            // had a ligand in it. The element is what colour-by-element reads;
+            // the name is what the atom is called.
+            position_atoms: frameData.position_atoms ? [...frameData.position_atoms] : undefined,
+            position_elements: frameData.position_elements ? [...frameData.position_elements] : undefined,
             residue_numbers: frameData.residue_numbers ? [...frameData.residue_numbers] : undefined,
             pae: frameData.pae,
             // Carried by REFERENCE, not copied. This is a read-only table of
@@ -6843,6 +6878,8 @@ function saveViewerState() {
                 if (frame.name) frameData.name = frame.name;
                 if (frame.position_types) frameData.position_types = frame.position_types;
                 if (frame.residue_numbers) frameData.residue_numbers = frame.residue_numbers;
+                if (frame.position_atoms) frameData.position_atoms = frame.position_atoms;
+                if (frame.position_elements) frameData.position_elements = frame.position_elements;
                 if (frame.bonds) frameData.bonds = frame.bonds;
                 if (frame.scatter) frameData.scatter = frame.scatter;
                 if (frame.color) frameData.color = frame.color;
@@ -7238,6 +7275,8 @@ async function loadViewerState(stateData) {
                         pae: frameData.pae,  // undefined if missing (will use inheritance or default)
                         scatter: frameData.scatter,  // undefined if missing (will use inheritance or default)
                         position_names: frameData.position_names,  // undefined if missing (will default)
+                        position_atoms: frameData.position_atoms,  // ligands only; undefined elsewhere
+                        position_elements: frameData.position_elements,
                         residue_numbers: frameData.residue_numbers,  // undefined if missing (will default)
                         bonds: frameData.bonds || objBonds,  // undefined if both missing
                         // The THIRD field-by-field frame build in this codebase

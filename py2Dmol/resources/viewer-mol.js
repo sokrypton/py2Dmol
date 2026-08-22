@@ -4053,6 +4053,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 plddts: sourcePlddt ? [] : undefined,
                 position_types: frame.position_types ? [] : undefined,
                 position_names: frame.position_names ? [] : undefined,
+                // a ligand atom's own name and element, where the frame has
+                // them - a copy of a ligand that lost these would lose its
+                // element colours with them
+                position_atoms: frame.position_atoms ? [] : undefined,
+                position_elements: frame.position_elements ? [] : undefined,
                 residue_numbers: frame.residue_numbers ? [] : undefined,
                 pae: undefined, // Will be handled separately
                 bonds: undefined, // Will be handled separately
@@ -4083,6 +4088,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
                     if (frame.position_names && idx < frame.position_names.length) {
                         extractedFrame.position_names.push(frame.position_names[idx]);
+                    }
+                    if (frame.position_atoms && idx < frame.position_atoms.length) {
+                        extractedFrame.position_atoms.push(frame.position_atoms[idx]);
+                    }
+                    if (frame.position_elements && idx < frame.position_elements.length) {
+                        extractedFrame.position_elements.push(frame.position_elements[idx]);
                     }
                     if (frame.residue_numbers && idx < frame.residue_numbers.length) {
                         extractedFrame.residue_numbers.push(frame.residue_numbers[idx]);
@@ -4944,6 +4955,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const mergedChains = [];
             const mergedPositionTypes = [];
             const mergedPositionNames = [];
+            // ligand atom names and elements, blank-filled for the frames that
+            // have none so the merged arrays stay in step with the coordinates
+            const mergedPositionAtoms = [];
+            const mergedPositionElements = [];
             const mergedResidueNumbers = [];
             const mergedBonds = [];
             const frameIdMap = [];
@@ -4983,6 +4998,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 mergedPlddts.push(...plddts);
                 mergedPositionTypes.push(...positionTypes);
                 mergedPositionNames.push(...positionNames);
+                mergedPositionAtoms.push(...(frame.position_atoms
+                    && frame.position_atoms.length === frameAtomCount
+                    ? frame.position_atoms : Array(frameAtomCount).fill('')));
+                mergedPositionElements.push(...(frame.position_elements
+                    && frame.position_elements.length === frameAtomCount
+                    ? frame.position_elements : Array(frameAtomCount).fill('')));
                 mergedResidueNumbers.push(...residueNumbers);
 
                 // Preserve original chain IDs from this frame
@@ -5017,6 +5038,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 chains: mergedChains,
                 position_types: mergedPositionTypes,
                 position_names: mergedPositionNames,
+                position_atoms: mergedPositionAtoms,
+                position_elements: mergedPositionElements,
                 residue_numbers: mergedResidueNumbers,
                 pae: this.pae || null,
                 bonds: mergedBonds.length > 0 ? mergedBonds : null,
@@ -5767,13 +5790,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // it does not warn, and it does not fail. Missing plddts that way
             // filled every position with 50, the low-confidence band, and an
             // AlphaFold model turned entirely red the moment a side chain was
-            // shown. The five here are exactly the five _setDataField handles;
-            // adding a sixth there means adding it here.
+            // shown. The ones here are exactly the ones _setDataField handles;
+            // adding another there means adding it here.
             const coords = data.coords.slice();
             const types = (data.position_types || []).slice();
             const chains = (data.chains || []).slice();
             const names = (data.position_names || []).slice();
             const numbers = (data.residue_numbers || []).slice();
+            // Only present where a ligand was loaded. Left empty otherwise
+            // rather than grown to the coordinate count: _setDataField would
+            // take a short array for a missing one and fill in the default,
+            // which is the same blank.
+            const atomNames = (data.position_atoms || []).slice();
+            const atomEls = (data.position_elements || []).slice();
             const plddts = data.plddts ? data.plddts.slice() : null;
             const bondsOut = (data.bonds || []).slice();
             // position index -> {anchor, cx, cy, cz}, so the cartoon can put
@@ -5812,6 +5841,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 chains.push(chains[owner] !== undefined ? chains[owner] : '');
                 names.push(names[owner] !== undefined ? names[owner] : '');
                 numbers.push(numbers[owner] !== undefined ? numbers[owner] : 0);
+                // The table knows this atom's name and element; the arrays are
+                // where every other consumer looks for them. Both are dropped
+                // from a SAVED table - see trimSidechainTable - so a reloaded
+                // session leaves these blank and the side chain colours from
+                // sidechainMap.el instead, which is where it always came from.
+                if (atomNames.length) atomNames.push((sc.names && sc.names[k]) || '');
+                if (atomEls.length) atomEls.push((sc.elements && sc.elements[k]) || '');
                 // pLDDT is a per-RESIDUE confidence, so an atom of that residue
                 // carries the residue's own value - which also keeps a side
                 // chain the same colour as the backbone it grows out of.
@@ -5945,6 +5981,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 ...data,
                 coords, position_types: types, chains,
                 position_names: names, residue_numbers: numbers, bonds: bondsOut,
+                position_atoms: atomNames.length ? atomNames : data.position_atoms,
+                position_elements: atomEls.length ? atomEls : data.position_elements,
                 plddts: plddts || data.plddts,
             };
         }
@@ -5966,14 +6004,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     data.position_names,
                     data.residue_numbers,
                     skipRender,
-                    data.bonds
+                    data.bonds,
+                    data.position_atoms,
+                    data.position_elements
                 );
             } else {
                 console.warn(`[_loadDataIntoRenderer] No data to load: coords=${data?.coords?.length}`);
             }
         }
 
-        setCoords(coords, plddts, chains, positionTypes, hasPAE = false, positionNames, residueNumbers, skipRender = false, bonds = null) {
+        setCoords(coords, plddts, chains, positionTypes, hasPAE = false, positionNames, residueNumbers, skipRender = false, bonds = null, positionAtoms = null, positionElements = null) {
             // Invalidate shadow cache when coordinates change (different geometry needs new shadows)
             this._invalidateShadowCache();
             this.lastShadowRotationMatrix = null;
@@ -6024,6 +6064,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._setDataField('positionTypes', 'cachedPositionTypes', positionTypes, n, (n) => Array(n).fill('P'));
             this._setDataField('positionNames', 'cachedPositionNames', positionNames, n, (n) => Array(n).fill('UNK'));
             this._setDataField('residueNumbers', 'cachedResidueNumbers', residueNumbers, n, (n) => Array.from({ length: n }, (_, i) => i + 1));
+            // Blank everywhere but a ligand atom, which is the only position
+            // that stands for one atom of the file rather than a whole residue.
+            this._setDataField('positionAtoms', 'cachedPositionAtoms', positionAtoms, n, (n) => Array(n).fill(''));
+            this._setDataField('positionElements', 'cachedPositionElements', positionElements, n, (n) => Array(n).fill(''));
 
             // Calculate what 'auto' should resolve to
             // Priority: plddt (if PAE present) > chain (if multi-chain) > rainbow
@@ -6899,21 +6943,76 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * that was coloured stays coloured, with only its heteroatoms standing
          * out. That is PyMOL's colour-by-element too.
          */
+        /**
+         * This position's element, whatever kind of position it is.
+         *
+         * Two sources, because there are two kinds of atom in the array. An
+         * appended side-chain atom carries its element in sidechainMap, put
+         * there when the table was materialised; a LIGAND atom is a position of
+         * the file's own, and its element was read off the file at capture and
+         * kept in positionElements. Everything else - an alpha carbon, a C4' -
+         * stands for a whole residue rather than an atom and has none.
+         */
+        elementAt(index) {
+            const e = this.sidechainMap && this.sidechainMap.get(index);
+            if (e) return (e.el || '').toUpperCase();
+            const el = this.positionElements && this.positionElements[index];
+            return el ? el.toUpperCase() : '';
+        }
+
+        /**
+         * Which position owns this atom's element switch. A side-chain atom is
+         * switched with its residue, so it answers with the owner; a ligand
+         * atom is its own, since a ligand is selected atom by atom.
+         */
+        _elementOwnerOf(index) {
+            const e = this.sidechainMap && this.sidechainMap.get(index);
+            return e ? e.owner : index;
+        }
+
+        /**
+         * Every position whose element could be coloured: the residues with a
+         * side chain, plus the ligand atoms that know what they are.
+         *
+         * Cached against the two things it is built from - the side-chain table
+         * and the element array - because it is asked on every selection change
+         * and both are replaced wholesale rather than edited.
+         */
+        elementOwners() {
+            const sc = this.sidechains;
+            const els = this.positionElements;
+            if (this._elOwnersScFor !== sc || this._elOwnersElFor !== els) {
+                this._elOwnersScFor = sc;
+                this._elOwnersElFor = els;
+                const out = new Set(sc && sc.pos ? sc.pos : []);
+                const types = this.positionTypes || [];
+                if (els) {
+                    for (let i = 0; i < els.length; i++) {
+                        if (els[i] && types[i] === 'L' && !(this.sidechainMap
+                            && this.sidechainMap.has(i))) out.add(i);
+                    }
+                }
+                this._elOwners = out.size ? out : null;
+            }
+            return this._elOwners;
+        }
+
         _segmentElementHalves(segInfo) {
-            const map = this.sidechainMap;
-            if (!map) return null;
-            const a = map.get(segInfo.idx1);
-            const b = map.get(segInfo.idx2);
-            if (!a || !b) return null;
-            // ...unless this residue's elements were switched off. Absent means
+            const ea = this.elementAt(segInfo.idx1);
+            const eb = this.elementAt(segInfo.idx2);
+            if (!ea && !eb) return null;
+            // ...unless these atoms' elements were switched off. Absent means
             // ON for everything, so a structure nobody has touched keeps them.
+            // Asked per END rather than for the bond: a ligand atom answers for
+            // itself, so the two ends of a bond can be switched separately, and
+            // half of one is still worth drawing.
             const obj = this.currentObjectName
                 ? this.objectsData[this.currentObjectName] : null;
             const only = obj && obj.elements instanceof Set ? obj.elements : null;
-            if (only && !only.has(a.owner)) return null;
+            const on = (i) => !only || only.has(this._elementOwnerOf(i));
             const T = this.constructor.ELEMENT_COLORS;
-            const ca = T[(a.el || '').toUpperCase()] || null;
-            const cb = T[(b.el || '').toUpperCase()] || null;
+            const ca = (ea && on(segInfo.idx1)) ? (T[ea] || null) : null;
+            const cb = (eb && on(segInfo.idx2)) ? (T[eb] || null) : null;
             if (!ca && !cb) return null;
             return { a: ca, b: cb };
         }
@@ -7324,12 +7423,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
-         * Is there anything here whose elements could be coloured? Side-chain
-         * atoms are the only things that carry an element, so the row is
-         * offered exactly where the Side chains row is.
+         * Is there anything here whose elements could be coloured? A residue
+         * with a side chain, or a ligand atom that knows what element it is -
+         * see elementOwners. Everything else is a position standing for a whole
+         * residue, which has no single element to colour by.
          */
         hasElementsFor(positions) {
-            return this.hasSidechainsFor(positions);
+            const owners = this.elementOwners();
+            if (!owners) return false;
+            for (const i of positions) if (owners.has(i)) return true;
+            return false;
         }
 
         /**
@@ -7348,7 +7451,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const obj = this.currentObjectName
                 ? this.objectsData[this.currentObjectName] : null;
             if (!obj) return false;
-            const owners = this.sidechainOwners();
+            const owners = this.elementOwners();
             if (!owners) return false;
             let cur;
             if (obj.elements instanceof Set) cur = new Set(obj.elements);

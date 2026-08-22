@@ -303,6 +303,22 @@ attempt here painted the entire segment with its non-carbon end's colour, a
 bond-length smear where the app draws half of one. On 1UBQ, 78 segments carry
 halves and 468 primitives come back painted an element colour.
 
+**A LIGAND ATOM CARRIES ITS OWN ELEMENT.** Element colour reads
+`sidechainMap` for an appended side-chain atom, and a ligand atom is not in it —
+it is a position of the file's own — so ligands were left out of colour-by-
+element entirely until `position_atoms` and `position_elements` were captured
+beside `position_names`. They are blank at every position that stands for a
+whole residue (an alpha carbon, a C4'), and the element comes from the FILE'S
+OWN COLUMN: a ligand atom called `CL` is chlorine in one file and a carbon in
+another, and haem names four nitrogens NA, NB, NC and ND, so a two-letter guess
+off the name would invent a sodium. Where the column is silent the first letter
+is taken and nothing more. The switch is per atom for a ligand and per residue
+for a side chain (`elementOwners`), and the selection row renames itself
+*Ligand* when that is all it has on it. Measured on 3PTB: 94 pixels change when
+the benzamidine's two nitrogens are switched off, restoring exactly, CPU and GPU
+alike — the GPU only because the element set is in the mesh signature, since
+cutting a bond at its midpoint is geometry.
+
 **Colour does not rebuild either.** Every primitive reports the palette SLOT it
 took (`ci`, plus `half` for the two half-bond colours element colouring
 supplies), the mesh stores that slot per face, and the colours themselves live

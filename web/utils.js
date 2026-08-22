@@ -2341,6 +2341,32 @@ function normalizePlddt(value) {
     return value;
 }
 
+/**
+ * The element symbol for one parsed atom.
+ *
+ * THE COLUMN FIRST, ALWAYS. A PDB file names it in columns 77-78 and an mmCIF
+ * in type_symbol, and that is the only place the two-letter elements can be
+ * read reliably: a ligand atom called CL is chlorine in one file and a carbon
+ * in another (haem names its four nitrogens NA, NB, NC, ND), and no rule over
+ * names alone tells them apart.
+ *
+ * So when the column is silent - old PDB files leave it blank - this takes the
+ * FIRST LETTER and stops. That reads chlorine as carbon, which is exactly what
+ * the drawing did before any of this existed, and never invents a sodium out
+ * of a nitrogen. The colour table only names N, O, S and SE, so a first-letter
+ * guess is either right or uncoloured; a two-letter guess could be wrong AND
+ * coloured.
+ *
+ * @param {object} atom - a parsed atom, with .element and .atomName
+ * @returns {string} an uppercase symbol, or '' if there is nothing to go on
+ */
+function elementOfAtom(atom) {
+    const col = (atom.element || '').trim().toUpperCase();
+    if (col) return col;
+    const m = /[A-Za-z]/.exec(atom.atomName || '');
+    return m ? m[0].toUpperCase() : '';
+}
+
 // CONVERSION, ALSO IN SLICES. Same reason as parseCIFSteps: this is half a
 // second on a capsid, made of five passes of 20-200 ms each, and run as one
 // block it is half a second in which the browser produces no frames and the
@@ -2353,6 +2379,13 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
     const position_types = [];
     const residues = [];
     const residue_numbers = [];
+    // ONE ENTRY PER POSITION, and empty for everything that is not a ligand
+    // atom. A backbone position stands for a whole residue - "the atom" there
+    // is the alpha carbon or the C4', which is a fact about the model rather
+    // than about the file - so only the ligand branch, where a position IS an
+    // atom, has a name and an element to record.
+    const position_atoms = [];
+    const position_elements = [];
 
     // Map atom serial/ID to new index in coords array
     const atomSerialToIndex = new Map();
@@ -2519,6 +2552,12 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
                     plddts.push(normalizePlddt(atom.b));
                     position_chains.push(atom.chain);
                     position_types.push('L');
+                    // Written by index rather than pushed: the other branches
+                    // have no atom to name, and padding them with a blank at
+                    // every push is three more places to get the alignment
+                    // wrong. Filled in below.
+                    position_atoms[newIndex] = atom.atomName || '';
+                    position_elements[newIndex] = elementOfAtom(atom);
                             residues.push(atom.res_name || atom.resName || residue.resName);
                     residue_numbers.push(atom.res_seq || atom.resSeq || residue.resSeq);
 
@@ -2635,7 +2674,21 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
             }
         }
     }
+    // The holes left by the by-index writes above become blanks, so the arrays
+    // are as long as the coordinates and every consumer can index them
+    // directly. Attached only when something actually filled one: a structure
+    // with no ligand would otherwise carry two arrays of nothing per frame.
+    let anyAtomNames = false;
+    for (let i = 0; i < coords.length; i++) {
+        if (position_atoms[i]) anyAtomNames = true; else position_atoms[i] = '';
+        if (!position_elements[i]) position_elements[i] = '';
+    }
+
     const result = { coords, atomIdToIndex };
+    if (anyAtomNames) {
+        result.position_atoms = position_atoms;
+        result.position_elements = position_elements;
+    }
 
     if (bonds.length > 0) {
         result.bonds = bonds;

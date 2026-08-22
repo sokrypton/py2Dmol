@@ -745,9 +745,17 @@ class view:
         if self._position_residue_numbers is not None:
             payload["residue_numbers"] = list(self._position_residue_numbers)
 
+        # A LIGAND ATOM'S OWN NAME AND ELEMENT. Every other position stands for
+        # a whole residue - its alpha carbon, its C4' - and has neither; these
+        # are what colour-by-element reads for a ligand.
+        if self._position_atoms is not None:
+            payload["position_atoms"] = list(self._position_atoms)
+        if self._position_elements is not None:
+            payload["position_elements"] = list(self._position_elements)
+
         return payload
 
-    def _update(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None, align=True, position_names=None, residue_numbers=None, atom_types=None, allow_reflection=False):
+    def _update(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None, align=True, position_names=None, residue_numbers=None, atom_types=None, allow_reflection=False, position_atoms=None, position_elements=None):
       """
       Updates the internal state with new data. Coordinates are kept in original space.
       Rotation matrix is ALWAYS computed for first frame (best_view).
@@ -800,6 +808,8 @@ class view:
       self._scatter = scatter
       self._position_names = position_names
       self._position_residue_numbers = residue_numbers
+      self._position_atoms = position_atoms
+      self._position_elements = position_elements
 
       # --- Final Safety Check (ensure arrays match coord length if provided) ---
       n_positions = self._coords.shape[0]
@@ -819,6 +829,12 @@ class view:
       if self._position_residue_numbers is not None and len(self._position_residue_numbers) != n_positions:
           print(f"Warning: Residue numbers length mismatch. Ignoring residue numbers for this frame.")
           self._position_residue_numbers = None
+      for attr, label in (("_position_atoms", "Atom names"),
+                          ("_position_elements", "Elements")):
+          value = getattr(self, attr)
+          if value is not None and len(value) != n_positions:
+              print(f"Warning: {label} length mismatch. Ignoring {label.lower()} for this frame.")
+              setattr(self, attr, None)
 
     def _find_object_by_name(self, name):
         """Find and return object by name, or None if not found."""
@@ -1076,6 +1092,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 prev_position_types = None
                 prev_position_names = None
                 prev_residue_numbers = None
+                prev_position_atoms = None
+                prev_position_elements = None
                 prev_bonds = None
                 prev_scatter = None
 
@@ -1118,6 +1136,20 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                         if curr_residue_numbers is not None:
                             light_frame["residue_numbers"] = curr_residue_numbers
                         prev_residue_numbers = curr_residue_numbers
+
+                    # a ligand atom's own name and element, sent the same way:
+                    # they never change between frames of one structure, so
+                    # after the first they cost nothing
+                    curr_position_atoms = frame.get("position_atoms")
+                    if frame_idx == 0 or curr_position_atoms != prev_position_atoms:
+                        if curr_position_atoms is not None:
+                            light_frame["position_atoms"] = curr_position_atoms
+                        prev_position_atoms = curr_position_atoms
+                    curr_position_elements = frame.get("position_elements")
+                    if frame_idx == 0 or curr_position_elements != prev_position_elements:
+                        if curr_position_elements is not None:
+                            light_frame["position_elements"] = curr_position_elements
+                        prev_position_elements = curr_position_elements
 
                     # position_types
                     curr_position_types = frame.get("position_types")
@@ -1302,6 +1334,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._scatter = None
         self._position_names = None
         self._position_residue_numbers = None
+        self._position_atoms = None
+        self._position_elements = None
         self._is_live = False
 
         # Reset incremental update tracking
@@ -1656,6 +1690,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._scatter = None
         self._position_names = None
         self._position_residue_numbers = None
+        self._position_atoms = None
+        self._position_elements = None
 
         if name is None:
             name = f"{len(self.objects)}"
@@ -1678,7 +1714,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             self._send_incremental_update()
     
     def add(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None,
-            name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False):
+            name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False, position_atoms=None, position_elements=None):
         """
         Adds a new *frame* of data to the viewer.
 
@@ -1756,6 +1792,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     position_names=_slice(position_names, i),
                     residue_numbers=_slice(residue_numbers, i),
                     atom_types=_slice(atom_types, i),
+                    position_atoms=_slice(position_atoms, i),
+                    position_elements=_slice(position_elements, i),
                     contacts=contacts,  # contacts/bonds/color assumed shared across batch
                     bonds=bonds,
                     color=color,
@@ -1815,7 +1853,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         # --- Step 2: Update Python-side alignment state ---
         self._update(coords, plddts, chains, position_types, pae, scatter,
             align=align, position_names=position_names, residue_numbers=residue_numbers, atom_types=atom_types,
-            allow_reflection=allow_reflection)
+            allow_reflection=allow_reflection, position_atoms=position_atoms,
+            position_elements=position_elements)
         data_dict = self._get_data_dict() # This reads the full, correct data
 
         data_dict["name"] = None  # Don't set frame-level name; use object name instead
@@ -1908,7 +1947,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             self._send_incremental_update()
 
     def replace(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None,
-                name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False):
+                name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False, position_atoms=None, position_elements=None):
         """
         Replace frame(s) for an object (streaming mode).
 
@@ -1939,7 +1978,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._update(coords, plddts=plddts, chains=chains, position_types=position_types, pae=pae,
                      scatter=scatter, align=align, position_names=position_names,
                      residue_numbers=residue_numbers, atom_types=atom_types,
-                     allow_reflection=allow_reflection)
+                     allow_reflection=allow_reflection, position_atoms=position_atoms,
+                     position_elements=position_elements)
 
         frame_data = self._get_data_dict()
         if color is not None:
@@ -2416,7 +2456,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
              
         for i, model in enumerate(models_to_process):
             (coords, plddts, position_chains, position_types, position_names,
-             residue_numbers) = self._parse_model(model, chains, load_ligands=load_ligands)
+             residue_numbers, position_atoms,
+             position_elements) = self._parse_model(model, chains, load_ligands=load_ligands)
 
             if coords:
                 coords_np = np.array(coords)
@@ -2442,6 +2483,10 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     align=align,
                     position_names=position_names,
                     residue_numbers=residue_numbers,
+                    # ...and only where a ligand was loaded: an all-blank pair
+                    # of arrays is a per-frame cost for nothing
+                    position_atoms=position_atoms if any(position_atoms) else None,
+                    position_elements=position_elements if any(position_atoms) else None,
                     color=color if i == 0 else None) # Only add color to first frame/model call
 
 
@@ -2451,8 +2496,11 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
 
         Returns:
             tuple: (coords, plddts, position_chains, position_types,
-                    position_names, residue_numbers)
+                    position_names, residue_numbers, position_atoms,
+                    position_elements)
             - residue_numbers: List of PDB residue sequence numbers (one per position)
+            - position_atoms/position_elements: a ligand atom's own name and
+              element; blank at every position that stands for a whole residue
                               For ligands: multiple positions share the same residue number
         """
         coords = []
@@ -2461,6 +2509,11 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         position_types = []
         position_names = []
         residue_numbers = []
+        # ONE ENTRY PER POSITION, blank for everything that is not a ligand
+        # atom: a backbone position stands for a whole residue, so "the atom"
+        # there is a fact about the model rather than about the file.
+        position_atoms = []
+        position_elements = []
         for chain in model:
             if chains_filter is None or chain.name in chains_filter:
                 for residue in chain:
@@ -2491,6 +2544,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                             position_types.append('P')
                             position_names.append(residue.name)
                             residue_numbers.append(residue.seqid.num)
+                            position_atoms.append('')
+                            position_elements.append('')
 
                     elif is_nucleic:
                         c4_atom = None
@@ -2520,6 +2575,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                                 position_types.append('R') # Default to RNA
                             position_names.append(residue.name)
                             residue_numbers.append(residue.seqid.num)
+                            position_atoms.append('')
+                            position_elements.append('')
 
                     else:
                         # Ligand: use all heavy atoms
@@ -2532,9 +2589,16 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                                     position_types.append('L')
                                     position_names.append(residue.name)
                                     residue_numbers.append(residue.seqid.num)
+                                    # gemmi reads the element from the file's
+                                    # own column, which is the only place a
+                                    # two-letter element can be read at all -
+                                    # a ligand atom called CL is chlorine in
+                                    # one file and a carbon in another.
+                                    position_atoms.append(atom.name)
+                                    position_elements.append(atom.element.name.upper())
                 
         return (coords, plddts, position_chains, position_types,
-                position_names, residue_numbers)
+                position_names, residue_numbers, position_atoms, position_elements)
 
     def add_contacts(self, contacts, name=None):
         """
@@ -3030,7 +3094,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     frame_data["plddts"] = [round(p) for p in frame["plddts"]]
 
                 # Copy other fields
-                for key in ["chains", "position_types", "position_names", "residue_numbers", "bonds", "scatter", "color", "pae"]:
+                for key in ["chains", "position_types", "position_names", "residue_numbers",
+                            "position_atoms", "position_elements", "bonds", "scatter", "color", "pae"]:
                     if key in frame:
                         frame_data[key] = frame[key]
 
@@ -3159,6 +3224,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     plddts = np.array(frame_data["plddts"]) if "plddts" in frame_data else None
                     position_names = frame_data.get("position_names")
                     residue_numbers = frame_data.get("residue_numbers")
+                    position_atoms = frame_data.get("position_atoms")
+                    position_elements = frame_data.get("position_elements")
                     pae = np.array(frame_data["pae"]) if "pae" in frame_data else None
                     scatter = frame_data.get("scatter")  # Load scatter data [x, y]
                     bonds = frame_data.get("bonds")
@@ -3176,6 +3243,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                         align=False,  # Don't re-align loaded data
                         position_names=position_names,
                         residue_numbers=residue_numbers,
+                        position_atoms=position_atoms,
+                        position_elements=position_elements,
                         bonds=bonds,
                         color=color  # Pass frame-level color to add()
                     )

@@ -51,7 +51,7 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_GAIN',
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -519,7 +519,7 @@ function modeSelectNode() {
     };
 }
 function panelRun(selection, sidechained = new Set(), hasContact = false, types = null,
-    shown = null) {
+    shown = null, ligEls = new Set()) {
     const nodes = {
         selectionTools: { classList: { toggle(c, on) { this._on = on; } } },
         selectionPanel: { hidden: null },
@@ -541,7 +541,15 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
         contactShowToggle: { checked: false, indeterminate: false },
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
-        sidechainRow: { hidden: null },
+        // the row carries a name and a swatch as well as its controls, and
+        // both change when the only thing left on it is a ligand's elements
+        sidechainRow: (() => {
+            const label = { textContent: 'Side chains' };
+            const swatch = { hidden: null };
+            return { hidden: null, label, swatch,
+                querySelector: (sel) => (sel.indexOf('label') >= 0 ? label
+                    : (sel.indexOf('color-wrap') >= 0 ? swatch : null)) };
+        })(),
         selSsSelect: { hidden: null, disabled: null },
     };
     const doc = { getElementById: (id) => nodes[id] || null };
@@ -556,7 +564,9 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
         doc, () => selection,
         { renderer: {
             hasSidechainsFor: (p2) => p2.some((i) => sidechained.has(i)),
-            hasElementsFor: (p2) => p2.some((i) => sidechained.has(i)),
+            // a ligand atom owns its own element, with no side chain anywhere
+            hasElementsFor: (p2) => p2.some((i) => sidechained.has(i) || ligEls.has(i)),
+            elementOwners: () => new Set([...sidechained, ...ligEls]),
             hasBasesFor: (p2) => !!types && p2.some((i) => types[i] === 'D' || types[i] === 'R'),
             hasSseFor: (p2) => (types ? p2.some((i) => types[i] === 'P') : true),
             sidechainOwners: () => sidechained,
@@ -1674,6 +1684,14 @@ t('hiding a base rebuilds the GPU mesh, because a plate is geometry', () => {
     if (!/const baseShown = \(res\) => !baseSet \|\| baseSet\.has\(res\)/.test(cart)) {
         throw new Error('the 2D pass no longer decides plates per residue');
     }
+    // SWITCHING ELEMENTS OFF IS GEOMETRY TOO, for the reason the halves term
+    // in the same signature gives: a bond whose ends differ is CUT at its
+    // midpoint when the mesh is captured. The halves term is a LENGTH, and the
+    // array keeps its length whatever is in it, so it cannot see the uncut.
+    if (!/o && o\.elements \? 'e' \+ idOf\(o\.elements\)/.test(sig)) {
+        throw new Error('the mesh signature does not name the element set, so'
+            + ' switching element colours off leaves the cut mesh on screen');
+    }
 });
 
 t('the backbone hides per selection, and the side chains keep their CA', () => {
@@ -2428,6 +2446,48 @@ t('the panel hides the side-chain row when the selection has none', () => {
     // and with nothing selected the whole panel goes, row included
     if (panelRun(null).sidechainRow.hidden !== true) {
         throw new Error('the row survived an empty selection');
+    }
+});
+
+
+t('a ligand selection gets the Elements switch and nothing else', () => {
+    // A LIGAND HAS NO SIDE CHAIN, so the row it borrows must stop calling
+    // itself one: it reaches the panel only because its atoms carry elements.
+    const types = { 4: 'L', 5: 'L' };
+    const lig = panelRun([4, 5], new Set(), false, types, null, new Set([4, 5]));
+    if (lig.sidechainRow.hidden !== false) {
+        throw new Error('the row is hidden for a ligand, so its element colours'
+            + ' cannot be reached at all');
+    }
+    if (lig.elementsShowToggle.label.hidden !== false) {
+        throw new Error('Elements is hidden for a ligand - the side-chain mode'
+            + ' reads None there and always will');
+    }
+    if (lig.sidechainShowToggle.label.hidden !== true) {
+        throw new Error('the Show switch is on a ligand row, where there is no'
+            + ' side chain for it to draw');
+    }
+    if (lig.sidechainModeSelect.hidden !== true) {
+        throw new Error('the None/Plate/Full menu is on a ligand row');
+    }
+    if (lig.sidechainRow.label.textContent !== 'Ligand') {
+        throw new Error('the row still calls itself Side chains over a ligand');
+    }
+    if (lig.sidechainRow.swatch.hidden !== true) {
+        throw new Error('the side-chain colour swatch is offered for a ligand,'
+            + ' which it colours through an owning residue it has not got');
+    }
+    // ...and a protein selection is untouched by any of that
+    const prot = panelRun([4, 5], new Set([4, 5]), false, { 4: 'P', 5: 'P' },
+        new Set([4, 5]));
+    if (prot.sidechainRow.label.textContent !== 'Side chains') {
+        throw new Error('a protein row was renamed');
+    }
+    if (prot.sidechainRow.swatch.hidden !== false) {
+        throw new Error('a protein row lost its colour swatch');
+    }
+    if (prot.sidechainShowToggle.label.hidden !== false) {
+        throw new Error('a protein lost its Show switch');
     }
 });
 
@@ -3558,7 +3618,8 @@ t('half-colours cannot be served beside the wrong segments', () => {
     if (!st) throw new Error('ELEMENT_COLORS is gone');
     const C = new Function('DEFAULT_CONTACT_COLOR', 'return class {'
         + grab('_calculateSegmentColors') + grab('_segmentElementHalves')
-        + grab('_segmentElementColor') + grab('_colorSegmentPosition') + st[0]
+        + grab('_segmentElementColor') + grab('_colorSegmentPosition')
+        + grab('elementAt') + grab('_elementOwnerOf') + st[0]
         + ' _getEffectiveColorMode(){return "chain";}'
         + ' getAtomColor(){ return {r:9,g:9,b:9}; }'
         + '}')({ r: 255, g: 255, b: 0 });
@@ -3599,6 +3660,9 @@ function elViewer(owners) {
     v.objectsData = { obj: {} };
     v.sidechainOwners = () => new Set(owners);
     v.hasSidechainsFor = (ps) => ps.some((i) => owners.includes(i));
+    // elementOwners is the real one, and builds from the table - so this is
+    // the table, rather than one more stub that could disagree with it
+    v.sidechains = { pos: owners.slice() };
     return v;
 }
 
@@ -3642,6 +3706,83 @@ t('turning element colours off actually stops the colouring', () => {
     if (!v._segmentElementHalves(seg)) throw new Error('switching back on did nothing');
 });
 
+// A LIGAND ATOM IS AN ATOM. It is a position of the file's own rather than a
+// row of the side-chain table, so none of the side-chain machinery knows it -
+// which is why colour-by-element skipped ligands entirely until its element was
+// captured alongside its name.
+t('a ligand atom carries its own name and element out of the file', () => {
+    const u = fs.readFileSync('web/utils.js', 'utf8');
+    const m = u.match(/function elementOfAtom\(atom\)[\s\S]*?\n\}/);
+    if (!m) throw new Error('elementOfAtom is gone from web/utils.js');
+    // eslint-disable-next-line no-new-func
+    const el = new Function(m[0] + '; return elementOfAtom;')();
+    if (el({ element: 'Cl', atomName: 'CL1' }) !== 'CL') {
+        throw new Error('the element column was not used - a two-letter element'
+            + ' can only be read there');
+    }
+    if (el({ element: '', atomName: 'N1' }) !== 'N') {
+        throw new Error('a blank column left the atom with no element at all');
+    }
+    // ...and NEVER a two-letter guess off the name: haem names four nitrogens
+    // NA, NB, NC, ND, and a guess turns one of them into sodium
+    if (el({ element: '', atomName: 'NA' }) !== 'N') {
+        throw new Error('a name was read as a two-letter element - that is a'
+            + " haem nitrogen in every file that has no element column");
+    }
+    if (el({ element: '', atomName: '' }) !== '') {
+        throw new Error('an element was invented out of nothing');
+    }
+});
+
+t('a ligand bond takes its colours from the elements it joins', () => {
+    // no side chains anywhere: this is the path that did not exist before, and
+    // the one a ligand selection is entirely made of
+    const v = new Cls();
+    v.currentObjectName = 'obj';
+    v.objectsData = { obj: {} };
+    v.positionTypes = ['L', 'L', 'L'];
+    v.positionElements = ['C', 'N', 'C'];
+    v.sidechainMap = null;
+    v.sidechains = null;
+    const h = v._segmentElementHalves({ idx1: 0, idx2: 1, origIndex: 0 });
+    if (!h) throw new Error('a carbon-nitrogen ligand bond took no element colours');
+    if (h.a) throw new Error('the carbon half was coloured - carbon follows the residue');
+    if (!h.b || h.b.b < 200) throw new Error('the nitrogen half is not the nitrogen blue');
+    if (v._segmentElementHalves({ idx1: 0, idx2: 2, origIndex: 0 })) {
+        throw new Error('an all-carbon ligand bond was given element colours');
+    }
+    // ...and the switch reaches it, atom by atom: a ligand atom owns itself
+    if (!v.hasElementsFor([1])) throw new Error('the row is not offered for a ligand atom');
+    if (v.hasElementsFor([9])) throw new Error('offered for a position that has no element');
+    if (!v.setElementsFor([1], false)) throw new Error('switching a ligand atom off did nothing');
+    if (v._segmentElementHalves({ idx1: 0, idx2: 1, origIndex: 0 })) {
+        throw new Error('the bond still takes element colours after the atom was'
+            + ' switched off');
+    }
+    v.setElementsFor([1], true);
+    if (!v._segmentElementHalves({ idx1: 0, idx2: 1, origIndex: 0 })) {
+        throw new Error('switching the ligand atom back on did nothing');
+    }
+});
+
+t('an appended side-chain atom is not its own element owner', () => {
+    // Appended atoms are type 'L' too and now carry an element in the array as
+    // well as in the map. They belong to their residue, so the switch has to
+    // stay per residue - one owner, not one per atom.
+    const v = new Cls();
+    v.positionTypes = ['P', 'L', 'L'];
+    v.positionElements = ['', 'C', 'O'];
+    v.sidechains = { pos: [0] };
+    v.sidechainMap = new Map([[1, { owner: 0, el: 'C' }], [2, { owner: 0, el: 'O' }]]);
+    const owners = v.elementOwners();
+    if (!owners.has(0)) throw new Error('the owning residue is not an element owner');
+    if (owners.has(1) || owners.has(2)) {
+        throw new Error('a side-chain atom became its own element owner - its'
+            + ' residue and its atoms would then switch separately');
+    }
+    if (v.elementOwners() !== owners) throw new Error('the owner set is rebuilt every call');
+});
+
 t('the Elements row is offered where side chains are', () => {
     const v = elViewer([4]);
     if (!v.hasElementsFor([4])) throw new Error('not offered for a residue with a side chain');
@@ -3668,7 +3809,9 @@ t('the selection toggles show all, none and mixed', () => {
         contactRow: { hidden: null }, clearAllResidues: { disabled: null },
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
-        sidechainRow: { hidden: null },
+        sidechainRow: { hidden: null,
+            querySelector: (sel) => (sel.indexOf('label') >= 0
+                ? { textContent: '' } : { hidden: null }) },
         sidechainModeSelect: modeSelectNode(),
         sidechainShowToggle: (() => {
             const label = { hidden: null };
@@ -3726,7 +3869,10 @@ t('the Elements toggle reads on until it is switched off', () => {
         contactRow: { hidden: null }, clearAllResidues: { disabled: null },
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
-        sidechainRow: { hidden: null }, basesRow: { hidden: null },
+        sidechainRow: { hidden: null, basesRow: null,
+            querySelector: (sel) => (sel.indexOf('label') >= 0
+                ? { textContent: '' } : { hidden: null }) },
+        basesRow: { hidden: null },
         elementsShowToggle: (() => {
             const label = { hidden: null };
             return { checked: false, indeterminate: false, hidden: null,
@@ -3773,7 +3919,10 @@ t('the toggles ignore a selected position that no longer exists', () => {
         contactRow: { hidden: null }, clearAllResidues: { disabled: null },
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
-        sidechainRow: { hidden: null }, basesRow: { hidden: null },
+        sidechainRow: { hidden: null, basesRow: null,
+            querySelector: (sel) => (sel.indexOf('label') >= 0
+                ? { textContent: '' } : { hidden: null }) },
+        basesRow: { hidden: null },
         elementsShowToggle: (() => {
             const label = { hidden: null };
             return { checked: false, indeterminate: false, hidden: null,
@@ -3824,7 +3973,10 @@ t('the show toggles are disabled along with the rest of the panel', () => {
         contactRow: { hidden: null }, clearAllResidues: { disabled: null },
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
-        sidechainRow: { hidden: null }, basesRow: { hidden: null },
+        sidechainRow: { hidden: null, basesRow: null,
+            querySelector: (sel) => (sel.indexOf('label') >= 0
+                ? { textContent: '' } : { hidden: null }) },
+        basesRow: { hidden: null },
         elementsShowToggle: (() => {
             const label = { hidden: null };
             return { checked: false, indeterminate: false, hidden: null,

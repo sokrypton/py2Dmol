@@ -4021,6 +4021,13 @@ function signatureOf(r, w, h, colors) {
         // went on drawing the plate from the cached mesh. By identity, like the
         // visibility mask: setBasesFor assigns a new Set every time.
         o && o.bases ? 'b' + idOf(o.bases) + ':' + o.bases.size : 'ball',
+        // ELEMENT COLOURS ARE GEOMETRY, for the reason the halves term above
+        // gives: a bond whose ends differ is CUT at its midpoint when the mesh
+        // is captured. Switching elements off uncuts it, and the halves term
+        // cannot see that - it is a length, and the array keeps its length
+        // whatever is in it. By identity, like the plates: setElementsFor
+        // assigns a new Set every time.
+        o && o.elements ? 'e' + idOf(o.elements) + ':' + o.elements.size : 'eall',
         // A HIDDEN BACKBONE IS GEOMETRY THAT IS NOT THERE. The 2D pass drops
         // those prims while it builds, and the capture takes what it builds -
         // so this only has to make the capture happen again. By identity:
