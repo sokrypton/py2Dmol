@@ -3901,6 +3901,22 @@ t('the save panel can still record a trajectory', () => {
             throw new Error('no combination source ' + combo);
         }
     }
+    // ...and the combination is what record MEANS when both are on: switching
+    // Rotate on with a trajectory loaded is a request to see it turning.
+    if (!/const preferred = sources\.find\(\(x\) => x\.id === 'frames\+turn'\)/.test(body)) {
+        throw new Error('the combination is not the default when both are on');
+    }
+    // THE COUNT IS FOR A TURN OR A DRAWING. A trajectory has frames of its
+    // own, so "Frames: 36" beside a Frames recording said something that is
+    // not true of it - it is read off the PICKED source now, not off the list.
+    if (!/const picked = srcSel \? srcSel\.value/.test(body)
+        || !/picked === 'turn' \|\| picked === 'draw'/.test(body)) {
+        throw new Error('the image count does not follow the picked source');
+    }
+    if (/num\('saveFrameCount', 'Frames'/.test(body)) {
+        throw new Error('the count is called Frames again, beside a source of'
+            + ' the same name that means something else');
+    }
     // ONE BUTTON. A row of buttons reading Rotate, Frames, Draw+Rotate is a row
     // of sentences; the choice belongs in a menu beside the other menus.
     if (!/const recBtn = button\('\\u25CF'/.test(body)) {

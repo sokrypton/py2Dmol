@@ -11487,11 +11487,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const sources = [];
             if (hasFrames) sources.push({ id: 'frames', label: 'Frames', spin: false });
             if (hasFrames && spin) {
-                sources.push({ id: 'frames+turn', label: 'Frames+Rotate', spin: true });
+                sources.push({ id: 'frames+turn', label: 'Frame+Rot', spin: true });
             }
             if (this.drawMode) sources.push({ id: 'draw', label: 'Draw', spin: false });
             if (this.drawMode && spin) {
-                sources.push({ id: 'draw+turn', label: 'Draw+Rotate', spin: true });
+                sources.push({ id: 'draw+turn', label: 'Draw+Rot', spin: true });
             }
             if (spin) sources.push({ id: 'turn', label: 'Rotate', spin: true });
             // A running animation is paused while the panel is up, so what is
@@ -11663,6 +11663,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             let vFmt = null; let secIn = null; let fpsIn = null;
             let mbpsIn = null; let sizeSel = null; let colorsSel = null;
             let framesIn = null; let colorsLab = null; let srcSel = null;
+            // ...assigned with the video row, called from the record row too:
+            // what the count control means depends on WHICH source is picked.
+            let syncVideo = () => {};
             let videoRow = null;
             if (sources.length && formats.length) {
                 rule();
@@ -11683,7 +11686,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // and no frame rate - what you want to say is how many of them
                 // - so Sec and FPS give way to one number. On the trajectory
                 // source even that is decided for you: one PNG per frame.
-                const [frL, fr] = num('saveFrameCount', 'Frames', opts.frames || 36,
+                const [frL, fr] = num('saveFrameCount', 'Count', opts.frames || 36,
                     2, 600, 'How many images to write, over one full turn');
                 vRow.appendChild(frL); vRow.appendChild(fr); framesIn = fr;
                 const [mbL, mb] = num('saveMbpsInput', 'Mbps', opts.mbps, 1, 80,
@@ -11733,7 +11736,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     + '- the line below says what it comes to in pixels.');
                     vRow.appendChild(sizeSel);
                 }
-                const syncVideo = () => {
+                syncVideo = () => {
                     const gif = vFmt.value === 'gif';
                     const zip = vFmt.value === 'zip';
                     const LIM = this.constructor.GIF_LIMITS;
@@ -11758,9 +11761,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     secIn.style.display = timed ? '' : 'none';
                     fpsL.style.display = timed ? '' : 'none';
                     fpsIn.style.display = timed ? '' : 'none';
-                    const framesOnly = zip && !sources.every((x) => x.id === 'frames');
-                    frL.style.display = framesOnly ? '' : 'none';
-                    framesIn.style.display = framesOnly ? '' : 'none';
+                    // THE COUNT IS FOR A TURN OR A DRAWING, which have no
+                    // frames of their own to follow - it says how many PNGs to
+                    // write over one revolution. A trajectory HAS frames, and
+                    // then the answer is one image per frame and there is
+                    // nothing to ask. Reading it off the picked source rather
+                    // than off the list is the difference between "Frames: 36"
+                    // sitting beside a Frames recording, saying something that
+                    // is not true of it, and not being there at all.
+                    const picked = srcSel ? srcSel.value : (sources[0] || {}).id;
+                    const counted = zip && (picked === 'turn' || picked === 'draw'
+                        || picked === 'draw+turn');
+                    frL.style.display = counted ? '' : 'none';
+                    framesIn.style.display = counted ? '' : 'none';
                     if (colorsSel) colorsSel.style.display = gif ? '' : 'none';
                     if (colorsLab) colorsLab.style.display = gif ? '' : 'none';
                     // A GIF'S LIMITS ARE APPLIED TO THE CONTROLS, not just to
@@ -11845,8 +11858,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // controls, so what to record joins them as one more menu and
                 // the button is the red dot it always wanted to be.
                 if (sources.length > 1) {
+                    // BOTH, WHEN BOTH ARE ON. Switching Rotate on with a
+                    // trajectory loaded is a request to see it turning, so the
+                    // combination is what record means unless something else
+                    // was picked.
+                    const preferred = sources.find((x) => x.id === 'frames+turn')
+                        || sources.find((x) => x.id === 'draw+turn') || sources[0];
                     const want = sources.some((x) => x.id === opts.source)
-                        ? opts.source : sources[0].id;
+                        ? opts.source : preferred.id;
                     srcSel = menu('saveVideoSource', sources.map((x) => (
                         { value: x.id, label: x.label })), want, 'What to record');
                     recRow.appendChild(srcSel);
@@ -11860,7 +11879,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     const src = pick();
                     recBtn.title = 'Record: ' + src.label;
                 };
-                if (srcSel) srcSel.addEventListener('change', syncRec);
+                if (srcSel) {
+                    srcSel.addEventListener('change', syncRec);
+                    // ...and the row follows the source: see syncVideo
+                    srcSel.addEventListener('change', () => syncVideo());
+                }
                 syncRec();
                 recBtn.addEventListener('click', (ev) => {
                     ev.preventDefault();
@@ -11936,6 +11959,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 anchorEl.setAttribute('aria-expanded', 'true');
             }
             // ...and only now, with the panel installed, can it be written to
+            syncVideo();
             this._syncCaptureButtons();
             this._describeCapture();
         }
