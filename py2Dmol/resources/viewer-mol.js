@@ -11665,15 +11665,29 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 sel.value = String(value);
                 return sel;
             };
+            // A LABEL AND ITS FIELD ARE ONE THING. The row wraps - it has to,
+            // in a 160px panel - and a bare label followed by a bare input is
+            // two wrappable items, so a line break landed between them and left
+            // "FPS" hanging at the end of one line with its box at the start of
+            // the next. Each pair goes in a nowrap group, which wraps whole.
+            const pair = (labelText, forId, control, tip) => {
+                const g = el('span', 'display:inline-flex; align-items:center;'
+                    + ' gap:5px; flex:0 0 auto; white-space:nowrap;');
+                if (labelText) {
+                    const lab = el('label', CAP, labelText);
+                    lab.setAttribute('for', forId);
+                    if (tip) lab.title = tip;
+                    g.appendChild(lab);
+                }
+                g.appendChild(control);
+                return g;
+            };
             const num = (id, label, value, min, max, tip) => {
-                const lab = el('label', CAP, label);
-                lab.setAttribute('for', id);
-                if (tip) lab.title = tip;
                 const inp = el('input', NUM);
                 inp.type = 'number'; inp.id = id; inp.min = min; inp.max = max;
                 inp.step = '1'; inp.value = value;
                 if (tip) inp.title = tip;
-                return [lab, inp];
+                return [pair(label, id, inp, tip), inp];
             };
 
             // ---- IMAGE -------------------------------------------------
@@ -11735,7 +11749,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             };
             let vFmt = null; let secIn = null; let fpsIn = null;
             let mbpsIn = null; let sizeSel = null; let colorsSel = null;
-            let framesIn = null; let colorsLab = null; let srcSel = null; let rotIn = null;
+            let framesIn = null; let colorsBox = null; let sizeBox = null;
+            let srcSel = null; let rotIn = null;
             // ...assigned with the video row, called from the record row too:
             // what the count control means depends on WHICH source is picked.
             let syncVideo = () => {};
@@ -11751,31 +11766,31 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 vRow.appendChild(vFmt);
                 const [secL, sec] = num('saveSecondsInput', 'Sec', opts.seconds, 1, 60,
                     'How long the recording runs, in seconds');
-                vRow.appendChild(secL); vRow.appendChild(sec); secIn = sec;
+                vRow.appendChild(secL); secIn = sec;
                 const [fpsL, fps] = num('saveFpsInput', 'FPS', opts.fps, 5, 60,
                     'Frames per second');
-                vRow.appendChild(fpsL); vRow.appendChild(fps); fpsIn = fps;
+                vRow.appendChild(fpsL); fpsIn = fps;
                 // IMAGES ARE COUNTED, NOT TIMED. A zip of PNGs has no duration
                 // and no frame rate - what you want to say is how many of them
                 // - so Sec and FPS give way to one number. On the trajectory
                 // source even that is decided for you: one PNG per frame.
                 const [frL, fr] = num('saveFrameCount', 'Count', opts.frames || 36,
                     2, 600, 'How many images to write, over one full turn');
-                vRow.appendChild(frL); vRow.appendChild(fr); framesIn = fr;
+                vRow.appendChild(frL); framesIn = fr;
                 // HOW MANY TURNS. One is the usual answer, but a trajectory
                 // fitted into a single revolution can be too slow to read - two
                 // or three turns over the same frames give the eye a second
                 // look at every angle.
                 const [rotL, rot] = num('saveRotations', 'Rot', opts.rotations || 1,
                     1, 10, 'How many full turns the recording makes');
-                vRow.appendChild(rotL); vRow.appendChild(rot); rotIn = rot;
+                vRow.appendChild(rotL); rotIn = rot;
                 const [mbL, mb] = num('saveMbpsInput', 'Mbps', opts.mbps, 1, 80,
                     'Bitrate: how many megabits a second of video is ALLOWED - '
                     + 'a ceiling, not a target. Flat colour and clean edges '
                     + 'compress well, so the encoder usually spends about half '
                     + 'of it; the headroom is for an upload that will be '
                     + 're-encoded on arrival.');
-                vRow.appendChild(mbL); vRow.appendChild(mb); mbpsIn = mb;
+                vRow.appendChild(mbL); mbpsIn = mb;
                 // GIF'S OWN CONTROLS, and only where GIF can be written at
                 // all: on the notebook page there is no encoder, so these are
                 // not hidden controls, they are absent ones.
@@ -11790,9 +11805,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // all say what they are in front of the value; "256 col"
                 // repeated the unit inside every option instead, which is the
                 // only control on the row that spelled itself out four times.
-                colorsLab = el('label', CAP, 'Color');
-                colorsLab.setAttribute('for', 'saveGifColors');
-                vRow.appendChild(colorsLab);
                 colorsSel = menu('saveGifColors', [
                     { value: 256, label: '256' },
                     { value: 128, label: '128' },
@@ -11801,20 +11813,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 ], opts.colors || 256,
                 'How many colours the GIF palette holds. A cartoon has few, so '
                 + '64 is usually indistinguishable and about half the size.');
-                vRow.appendChild(colorsSel);
+                colorsBox = pair('Color', 'saveGifColors', colorsSel);
+                vRow.appendChild(colorsBox);
                 }
                 if (sizes.length) {
                     // ...WITH ITS NAME IN FRONT OF IT, like Sec and FPS. "1x"
                     // on its own is a multiplier of nothing stated.
-                    const sizeLab = el('label', CAP, 'Size');
-                    sizeLab.setAttribute('for', 'saveVideoSize');
-                    vRow.appendChild(sizeLab);
                     sizeSel = menu('saveVideoSize', sizes.map((z) => (
                         { value: z.scale, label: z.label })), opts.scale,
                     'Recording size, as a multiple of the viewer. Frames are '
                     + 're-rendered at this size, not scaled up from the screen '
                     + '- the line below says what it comes to in pixels.');
-                    vRow.appendChild(sizeSel);
+                    sizeBox = pair('Size', 'saveVideoSize', sizeSel);
+                    vRow.appendChild(sizeBox);
                 }
                 syncVideo = () => {
                     const gif = vFmt.value === 'gif';
@@ -11823,22 +11834,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // IMAGES TAKE THEIR SIZE FROM THE DPI ABOVE, so the Size
                     // menu goes: two controls for one resolution is how they
                     // come to disagree. There is no bitrate in a PNG either.
-                    if (sizeSel) {
-                        sizeSel.style.display = zip ? 'none' : '';
-                        const lab = sizeSel.previousSibling;
-                        if (lab && lab.tagName === 'LABEL') lab.style.display = zip ? 'none' : '';
-                    }
+                    if (sizeBox) sizeBox.style.display = zip ? 'none' : '';
                     // ONE ROW, TWO FORMATS, and only the controls that mean
                     // something for the one that is picked. What is shared -
                     // how long, how fast, how big - stays put, so switching
                     // format does not move the rest of the row about.
                     mbL.style.display = (gif || zip) ? 'none' : '';
-                    mbpsIn.style.display = (gif || zip) ? 'none' : '';
                     // ...and the frame rate is the one control every source
                     // needs: it is how fast the file plays, whoever decided how
                     // many frames there are. Images have no rate at all.
                     fpsL.style.display = zip ? 'none' : '';
-                    fpsIn.style.display = zip ? 'none' : '';
                     // THE COUNT IS FOR A TURN OR A DRAWING, which have no
                     // frames of their own to follow - it says how many PNGs to
                     // write over one revolution. A trajectory HAS frames, and
@@ -11855,20 +11860,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // that either does nothing or silently drops frames.
                     const timed = !!src.timed;
                     secL.style.display = (timed && !zip) ? '' : 'none';
-                    secIn.style.display = (timed && !zip) ? '' : 'none';
                     // ...and a rotation count only where something rotates
                     const turns = !!src.spin;
                     rotL.style.display = turns ? '' : 'none';
-                    rotIn.style.display = turns ? '' : 'none';
                     // THE IMAGE COUNT is for a recording with no frames of its
                     // own to follow - a turn or a drawing. A trajectory has
                     // them, and then the answer is one image per frame.
                     const counted = zip && (pickedId === 'R' || pickedId === 'D'
                         || pickedId === 'DR');
                     frL.style.display = counted ? '' : 'none';
-                    framesIn.style.display = counted ? '' : 'none';
-                    if (colorsSel) colorsSel.style.display = gif ? '' : 'none';
-                    if (colorsLab) colorsLab.style.display = gif ? '' : 'none';
+                    if (colorsBox) colorsBox.style.display = gif ? '' : 'none';
                     // A GIF'S LIMITS ARE APPLIED TO THE CONTROLS, not just to
                     // the recording. The sink clamps either way, but a panel
                     // reading 30 fps and 1194x1194 over a file that came out

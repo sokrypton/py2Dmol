@@ -3555,12 +3555,16 @@ t('a GIF is always cut out, and says so once', () => {
     if (/label: '\d+ col'/.test(body)) {
         throw new Error('the colour options spell out their unit again');
     }
-    if (!/colorsLab = el\('label', CAP, 'Color'\)/.test(body)) {
+    if (!/pair\('Color', 'saveGifColors'/.test(body)) {
         throw new Error('the colour menu has no caption');
     }
-    if (!/if \(colorsLab\) colorsLab\.style\.display = gif/.test(body)) {
-        throw new Error('the caption does not hide with its menu, so "Color"'
-            + ' sits on the row over nothing');
+    // A LABEL AND ITS FIELD ARE ONE THING. The row wraps, and a bare label
+    // followed by a bare input is two wrappable items - so a break landed
+    // between them and left "FPS" at the end of one line with its box at the
+    // start of the next. Each pair is a nowrap group, which also means one
+    // thing to hide rather than two that can disagree.
+    if (!/if \(colorsBox\) colorsBox\.style\.display = gif/.test(body)) {
+        throw new Error('the colour pair does not hide as one');
     }
 });
 
@@ -3930,8 +3934,15 @@ t('the save panel can still record a trajectory', () => {
     if (!/const timed = !!src\.timed;/.test(body)) {
         throw new Error('Sec is not gated on who sets the length');
     }
-    if (!/rotIn\.style\.display = turns/.test(body)) {
+    if (!/rotL\.style\.display = turns/.test(body)) {
         throw new Error('the rotation count is not gated on something rotating');
+    }
+    // ...and every pair is built by the one helper, or one of them splits again
+    if (!/const pair = \(labelText, forId, control, tip\)/.test(body)) {
+        throw new Error('there is no label-and-field group');
+    }
+    if (/vRow\.appendChild\(\w+L\); vRow\.appendChild/.test(body)) {
+        throw new Error('a label and its field are appended separately again');
     }
     // ...and picking a source must WRITE it, or the description goes on
     // describing whichever source was last recorded - picking F still read
