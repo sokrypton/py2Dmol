@@ -499,10 +499,16 @@
     // so this cannot eat a whole strand.
     const CA_STEP_A = 3.8;
     const ARROW_LEN_A = CA_STEP_A * 0.65;
-    // Nucleic backbone half-width. Wider than a protein coil (0.42): the
+    // Nucleic backbone half-width. Wider than a protein coil (0.42) - the
     // strand has to stay legible next to 3.6 A base plates, and a duplex
-    // read as thread when it matched the coil width.
-    const NA_HALF_A = 2.0;
+    // read as thread when it matched the coil width - but NO WIDER THAN THE
+    // PROTEIN MAIN CHAIN (SS_HALF_A.H, 1.3). At 1.55 and above the rails are
+    // the fattest thing on a nucleosome and the DNA reads as the subject with
+    // the histones drawn around it; matched to the helix ribbon the two read
+    // as the same kind of object at the same scale, which is what a complex
+    // is. This is the width the Width slider used to reach only at its 2.0
+    // end, so a drawing that wanted it no longer has to spend the slider.
+    const NA_HALF_A = 1.33;
     const LOOP_TUBE_A = 0.35;              // loop tube radius
     const RIBBON_TH_A = 0.25;              // slab half-thickness (total 0.5 A)
     // NUCLEIC GEOMETRY IS THICKER THAN PROTEIN. A duplex is drawn as two thin
