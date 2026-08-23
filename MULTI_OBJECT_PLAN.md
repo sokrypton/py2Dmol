@@ -431,6 +431,40 @@ merged→local translation - a click in a merged view still has to be filed per
 object - only the duplicate state, and it would have to re-derive overlay
 mode's third index space, which has the least test coverage of anything here.
 
+## Would patching one object's slice be faster? No - measured
+
+The note above says the fix, if the merge rebuild ever matters, is to patch the
+changed object's share of the array rather than rebuild the whole thing. It was
+asked whether that would speed anything up or at least read better. Both
+halves are no, and here is why.
+
+Switching one eye, timed end to end, with the pieces inside it:
+
+| what is on screen | merge concat | array rebuild | redraw | whole toggle |
+|---|---|---|---|---|
+| 1BBH + 1EHZ, 433 positions, CPU | 0.9 ms | 3.9 ms | 41 ms | **46 ms** |
+| the same, GPU cartoon | 1.1 ms | 3.7 ms | 46 ms | **51 ms** |
+| 4UG0 + 6MRR, 17,618 positions, CPU | 8 ms | 60 ms | 260 ms | **328 ms** |
+| the same, GPU cartoon | 11 ms | 58 ms | 1,242 ms | **1,305 ms** |
+
+Patching the slice targets the FIRST column: 2% of the toggle at small sizes
+and 3% at large ones. The array is not what costs; what costs is everything
+built from it afterwards - the segments and the projection (the second column)
+and then the drawing (the third). On the GPU path at scale the drawing is a
+mesh build, and it is 1.2 seconds because the mesh is one buffer for the whole
+merged array.
+
+It would also read worse. A patch path is a second way to build the array that
+has to agree with the first, plus the index bookkeeping to place it - the exact
+shape of the bugs this file is a record of.
+
+**Where the lever actually is**, if a 1.3-second toggle on a ribosome ever
+needs fixing: give the GPU port a mesh per SOURCE and draw the ones that are
+shown, so an eye stops rebuilding geometry that did not change. That is the
+composite architecture the merge was chosen over, reintroduced for the draw
+alone - a real project, with the depth-sorting and shadowing questions that
+choice was made to avoid. Nothing smaller than that moves the number.
+
 ## The caches: what they are for, and which kind each one is
 
 Asked after the third bug in a row turned out to be a cache: *why are we using
