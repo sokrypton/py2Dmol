@@ -112,6 +112,21 @@ change to the merge, to per-object state, or to the sequence strip's indices -
 and run it over several PAIRS: two of its checks were wrong rather than the
 code, and only a pair of monomers and a pair that overlaps in space showed it.
 
+`tests/object_reload.py` checks that **loading a file leaves the objects already
+loaded alone**:
+
+    python3 tests/object_reload.py
+
+`pendingObjects` accumulates across loads and is only emptied by Clear All, so
+the loader rebuilt every object in the viewer on every load - dropping what
+each remembered: hidden backbone, side chains, bases, forced SSE, colours,
+contacts. Colour a residue, load a second file, and the colour was gone. It
+was invisible while one object was on screen at a time, because the object you
+were looking at was the one that had just been loaded.
+
+It also checks that a RE-FETCH still replaces its object, which is what the
+rebuild was there for, and that the merge survives both.
+
 `tests/python_page.py` checks the **Python API's own page** in a real browser:
 
     python3 tests/python_page.py

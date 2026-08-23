@@ -4402,6 +4402,22 @@ function applyPendingObjects() {
     for (const obj of pendingObjects) {
         if (!obj || !obj.frames || obj.frames.length === 0) continue;
 
+        // ...AND ONLY THE ONES THIS LOAD BROUGHT. `pendingObjects` accumulates
+        // across loads and is only emptied by Clear All, so this loop rebuilt
+        // EVERY object already in the viewer on every load - dropping what each
+        // one remembered: its hidden backbone, its side chains, its bases, its
+        // forced SSE, its colours, its contacts. Colour a residue, load a
+        // second file, and the colour was gone.
+        //
+        // An object already put into the renderer is left alone. A re-FETCH
+        // replaces its pending entry with a fresh one (see the splice where a
+        // batch is queued), so it is unmarked and IS rebuilt - which is what
+        // "always replace to avoid mixing data" was for.
+        if (obj._appliedToRenderer && existing.has(obj.name)) {
+            newNames.push(obj.name);
+            continue;
+        }
+
         // Always replace objects with the same name to avoid mixing data
         if (existing.has(obj.name)) {
             if (r.objectSelect) {
@@ -4420,6 +4436,7 @@ function applyPendingObjects() {
 
         // Create and feed frames (new or replaced)
         r.addObject(obj.name);
+        obj._appliedToRenderer = true;
         newNames.push(obj.name);
         for (const frame of obj.frames) {
             r.addFrame(frame, obj.name);

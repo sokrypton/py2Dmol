@@ -5227,13 +5227,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // sections say which object you are working on, and clicking
                 // in one is how you change it. The element stays because
                 // everything drives the current object through it.
+                // ...found the way the picker is: within this viewer's own
+                // container if it lives there, and from the document only when
+                // the page holds exactly one of them. Several viewers can share
+                // a document, and the first match would be another's.
                 const doc = this.objectSelect.ownerDocument || document;
-                const row = doc.getElementById('objectRow');
+                const only = (id) => {
+                    const mine = containerElement && containerElement.querySelector('#' + id);
+                    if (mine) return mine;
+                    const all = doc.querySelectorAll('#' + id);
+                    return all.length === 1 ? all[0] : null;
+                };
+                const row = only('objectRow');
                 if (row) row.style.display = (objectCount <= 1) ? 'none' : 'flex';
-                const list = doc.getElementById('objectList');
+                const list = only('objectList');
                 if (list && objectCount <= 1) {
                     list.hidden = true;
-                    const btn = doc.getElementById('objectListButton');
+                    const btn = only('objectListButton');
                     if (btn) btn.setAttribute('aria-expanded', 'false');
                 }
 
