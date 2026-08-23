@@ -277,6 +277,15 @@ that asks "is this position in that chain" now asks `chainKeyAt(i)` /
 | the 3D double-click "whole chain" | `viewer-mol.js` |
 | the silhouette's chain-break test | `viewer-mol.js` |
 | the strip: hit test, hover, label colour, drag, selection | `cellsOfChain` / `chainBoxOf` |
+| the head-to-tail test for a cyclic chain | `chainPolymerBounds` |
+| the fallback that bonds a chain's ligand atoms | `ligandIndicesByChain` |
+| both hover readouts | the object is named when several are drawn |
+
+A SEGMENT's `chainId` stays the bare id, deliberately: it is only ever compared
+between segments that SHARE A POSITION, which are in the same object by
+construction, and a key among bare ids would read as a different chain at every
+joint. The cyclic-chain set is the exception that proves it - it is keyed, and
+the rainbow that reads it is keyed too.
 
 `this.chains` stays the bare id - it is what the file said and what the panel
 prints. The key is only for questions of identity.

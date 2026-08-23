@@ -1783,7 +1783,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this._hoverIdx = i;
                 if (i < 0) { window.SEQ.setHoveredResidue(null); return; }
                 const num = this.residueNumbers && this.residueNumbers[i];
+                const own = this.ownerOf ? this.ownerOf(i) : null;
                 window.SEQ.setHoveredResidue({
+                    // ...and WHICH OBJECT, when several are drawn: chain A
+                    // residue 39 exists in both, and the readout was the same
+                    // three words for two different molecules.
+                    object: own ? own.name : this.currentObjectName,
                     chain: (this.chains && this.chains[i]) || '?',
                     resName: (this.positionNames && this.positionNames[i]) || 'UNK',
                     resSeq: (num === undefined || num === null) ? i : num,
@@ -7015,7 +7020,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 for (let i = 0; i < n; i++) {
                     if (isPolymerArr[i]) {
                         const type = this.positionTypes[i];
-                        const chainId = this.chains[i] || 'A';
+                        // PER (OBJECT, CHAIN). The first and last polymer of
+                        // "chain A" decide whether it closes head to tail; by
+                        // bare id that ran from one object's first residue to
+                        // another object's last, and the ring it tested for
+                        // spanned two structures.
+                        const chainId = this.chainKeyAt(i);
 
                         // Track first and last polymer index per chain
                         if (!chainPolymerBounds.has(chainId)) {
@@ -7058,8 +7068,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                             }
                         }
                     } else if (this.positionTypes[i] === 'L') {
-                        // Group ligand indices by chain
-                        const chainId = this.chains[i] || 'A';
+                        // Group ligand indices by chain - PER OBJECT, or the
+                        // fallback below bonds one structure's ligand atoms to
+                        // another's whenever both call the chain A.
+                        const chainId = this.chainKeyAt(i);
                         if (!ligandIndicesByChain.has(chainId)) {
                             ligandIndicesByChain.set(chainId, []);
                         }
@@ -7099,7 +7111,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                                         idx2: lastIdx,
                                         colorIndex: this.perChainIndices[firstIdx],
                                         origIndex: firstIdx,
-                                        chainId: chainId,
+                                        // the BARE id here, like every other
+                                        // segment: segInfo.chainId is only ever
+                                        // compared between segments that share
+                                        // a position, which are in the same
+                                        // object by construction, and a key
+                                        // among bare ids would read as a
+                                        // different chain at every joint.
+                                        chainId: this.chains[firstIdx] || 'A',
                                         type: type1,
                                         len: Math.sqrt(distSq)
                                     });
@@ -7304,7 +7323,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                                         idx2: idx2,
                                         colorIndex: 0,
                                         origIndex: idx1,
-                                        chainId: chainId, // Use the chainId from the map key
+                                        // the BARE id, like every other segment
+                                        // - the map key carries the object now
+                                        chainId: this.chains[idx1] || 'A',
                                         type: 'L',
                                         len: Math.sqrt(distSq)
                                     });

@@ -7522,5 +7522,69 @@ t('a selection inside one object edits only that object', () => {
     eq(seen.join(','), 'A', 'and only A was edited');
 });
 
+// THE LAST THREE PLACES THAT GROUPED BY BARE CHAIN ID, all inside setCoords
+// where two objects' positions sit in one array:
+//
+//   * chainPolymerBounds - the first and last polymer of "chain A", which is
+//     what decides whether a chain closes head to tail. By bare id that ran
+//     from one object's first residue to another object's last, and the ring
+//     it tested for spanned two structures.
+//   * ligandIndicesByChain - the fallback that bonds ligand atoms of a chain
+//     to each other by distance, which would have reached across the join.
+//   * the hover readout, which said "A GLY 39" for two different residues.
+t('nothing in the segment builder groups by a bare chain id', () => {
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = mol.indexOf('// Generate Segment Definitions ONCE');
+    const to = mol.indexOf('this.cachedSegmentIndices = this.segmentIndices.map', at);
+    const body = mol.slice(at, to);
+
+    for (const [what, probe] of [
+        ['the polymer bounds', /chainPolymerBounds\.has\(chainId\)/],
+        ['the ligand grouping', /ligandIndicesByChain\.has\(chainId\)/],
+    ]) {
+        if (!probe.test(body)) throw new Error(what + ' has moved');
+    }
+    // both take their chainId from the key, not from the array
+    const decls = body.split('\n').filter((l) => /const chainId = /.test(l));
+    const bare = decls.filter((l) => /this\.chains\[/.test(l));
+    // the ones that are ALLOWED to be bare are the segment records, which are
+    // only ever compared between segments sharing a position - same object by
+    // construction. The two that GROUP must not be.
+    const grouping = body.slice(0, body.indexOf('// === Generate ligand bonds ==='));
+    for (const line of grouping.split('\n')) {
+        if (/const chainId = this\.chains\[/.test(line)
+            && !/chainId: this\.chains\[/.test(line)) {
+            const after = grouping.slice(grouping.indexOf(line), grouping.indexOf(line) + 400);
+            if (/chainPolymerBounds|ligandIndicesByChain/.test(after)) {
+                throw new Error('a bare chain id is used to group positions: '
+                    + line.trim());
+            }
+        }
+    }
+    if (bare.length && !decls.some((l) => /chainKeyAt/.test(l))) {
+        throw new Error('nothing in the segment builder asks for the chain key');
+    }
+    // ...and a cyclic chain is recorded and read in the same terms
+    if (!/this\.cyclicChains\.add\(chainId\)/.test(body)) {
+        throw new Error('cyclic chains are no longer recorded here');
+    }
+    const rainbow = mol.slice(mol.indexOf("} else { // rainbow"));
+    if (!/const chainId = this\.chainKeyAt\(atomIndex\)/.test(rainbow.slice(0, 900))) {
+        throw new Error('the rainbow reads a bare chain id, so it cannot match'
+            + ' the cyclic set, which is keyed by object and chain');
+    }
+});
+
+t('the 3D hover readout says which object', () => {
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = mol.indexOf('window.SEQ.setHoveredResidue({');
+    if (at < 0) throw new Error('the 3D hover no longer reports a residue');
+    const call = mol.slice(at, at + 400);
+    if (!/object: own \? own\.name/.test(call)) {
+        throw new Error('the 3D hover does not name the object, so "A GLY 39"'
+            + ' is two different residues with two structures up');
+    }
+});
+
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');
 process.exit(fail?1:0);
