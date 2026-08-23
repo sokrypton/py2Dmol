@@ -4108,16 +4108,30 @@ function paramsFromRenderer(r) {
 // endpoints, weight and colour are baked into the mesh when it is built, so the
 // width slider and the colour swatch both need a rebuild to be seen. Shared by
 // both signatures rather than written twice.
-function contactKeyOf(o) {
-    if (!o || !Array.isArray(o.contacts) || !o.contacts.length) return 'none';
+/**
+ * The contacts of EVERY DRAWN OBJECT, as one key.
+ *
+ * Contacts are drawn as segments of the merged array, so a second object's
+ * contact is on screen and has to be able to force a rebuild - taking the
+ * current object's alone, editing a contact in the other one changed nothing.
+ */
+function contactKeyOf(renderer) {
+    const names = (renderer && renderer.drawnObjects) ? renderer.drawnObjects()
+        : (renderer && renderer.currentObjectName ? [renderer.currentObjectName] : []);
     let a = 0;
-    for (const c of o.contacts) {
-        for (const v of c) {
-            const t = typeof v === 'number' ? v : String(v).charCodeAt(0);
-            a = ((a * 31) + (t * 1000 | 0)) >>> 0;
+    let n = 0;
+    for (const nm of names) {
+        const o = (renderer.objectsData || {})[nm];
+        if (!o || !Array.isArray(o.contacts) || !o.contacts.length) continue;
+        n += o.contacts.length;
+        for (const c of o.contacts) {
+            for (const v of c) {
+                const t = typeof v === 'number' ? v : String(v).charCodeAt(0);
+                a = ((a * 31) + (t * 1000 | 0)) >>> 0;
+            }
         }
     }
-    return o.contacts.length + ':' + a;
+    return n ? (n + ':' + a) : 'none';
 }
 
 // WHAT FORCES A REBUILD. Deliberately generous: a signature that misses
@@ -4147,7 +4161,7 @@ function signatureOf(r, w, h, colors) {
     // slider and the colour swatch both need a rebuild to be seen. Only the
     // COUNT was visible here, through segmentIndices.length, which caught
     // adding and removing one and missed every edit to an existing one.
-    const contactKey = contactKeyOf(o);
+    const contactKey = contactKeyOf(r);
     return [
         r.currentObjectName, r.currentFrame,
         // WHICH objects are in the array, not just how many positions: a
@@ -4182,11 +4196,16 @@ function signatureOf(r, w, h, colors) {
         // either rebuilds; rainbow to chain and back still repaints.
         (r._getEffectiveColorMode ? r._getEffectiveColorMode() : r.colorMode) === 'ss',
         (function () {
-            const o = r.objectsData && r.currentObjectName
-                ? r.objectsData[r.currentObjectName] : null;
-            const c = o && o.color;
-            return !!(c && c.type === 'advanced' && c.value
-                && (c.value.position || c.value.chain));
+            // ANY DRAWN OBJECT'S per-position colours, not the current one's:
+            // the mesh is captured for the whole picture, and a second
+            // object's overrides cut its bonds just as the first one's do.
+            const names = r.drawnObjects ? r.drawnObjects() : [r.currentObjectName];
+            for (const nm of names) {
+                const c = ((r.objectsData || {})[nm] || {}).color;
+                if (c && c.type === 'advanced' && c.value
+                    && (c.value.position || c.value.chain)) return true;
+            }
+            return false;
         }()),
         // the outline is 91% of a build and is skipped when it is off, so
         // switching it on is a rebuild by construction
@@ -4750,7 +4769,7 @@ function tubeKeyOf(renderer, S) {
         renderer.sidechainMap ? renderer.sidechainMap.size : 0,
         renderer.backboneHiddenSet && renderer.backboneHiddenSet()
             ? 'nobb' + idOf(renderer.backboneHiddenSet()) : 'bb',
-        contactKeyOf(o),
+        contactKeyOf(renderer),
     ].join('|');
 }
 

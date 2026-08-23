@@ -3607,10 +3607,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     return Array.from(seen);
                 }
             }
-            // a lone atom with no bonds still belongs to its parsed group
-            const obj = this.currentObjectName
-                ? this.objectsData[this.currentObjectName] : null;
-            const groups = obj && obj.ligandGroups;
+            // a lone atom with no bonds still belongs to its parsed group -
+            // ITS object's, in merged indices, or a click on the second
+            // structure's ion is matched against the first structure's groups
+            const groups = this.mergedLigandGroups();
             if (groups && groups.size) {
                 for (const members of groups.values()) {
                     if (members.indexOf(i) >= 0) return members.slice();

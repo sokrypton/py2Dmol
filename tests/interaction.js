@@ -7651,5 +7651,36 @@ t('a PAE box lands on the object whose matrix it was drawn on', () => {
     }
 });
 
+// THE MESH CACHE KEYS WATCH EVERY DRAWN OBJECT, not the current one. The mesh
+// is captured for the whole picture, so a second object's contacts, and its
+// per-position colours, have to be able to force a rebuild - taken from the
+// current object alone, editing a contact in the other one changed nothing on
+// screen.
+t('the GPU cache keys cover every drawn object', () => {
+    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const at = gpu.indexOf('function contactKeyOf(');
+    if (at < 0) throw new Error('the contact key is gone');
+    const body = gpu.slice(at, gpu.indexOf('\n}', at));
+    // ...ASKED, not merely mentioned: the guard has to be live, and a
+    // `false ? drawnObjects() : ...` still contains the words.
+    if (!/renderer\.drawnObjects\) \? renderer\.drawnObjects\(\)/.test(body)) {
+        throw new Error('the contact key reads one object');
+    }
+    if (!/for \(const nm of names\)/.test(body)) {
+        throw new Error('the contact key does not walk the drawn objects');
+    }
+    // ...and the per-position colour flag in the mesh signature
+    const sig = gpu.slice(gpu.indexOf('function signatureOf('),
+        gpu.indexOf('function contactKeyOf(') > gpu.indexOf('function signatureOf(')
+            ? gpu.indexOf('function contactKeyOf(') : gpu.length);
+    const advanced = gpu.slice(gpu.indexOf("c.value.position || c.value.chain") - 700,
+        gpu.indexOf("c.value.position || c.value.chain") + 100);
+    if (!/drawnObjects/.test(advanced)) {
+        throw new Error("the mesh signature reads only the current object's"
+            + ' per-position colours, so a second object could recolour'
+            + ' without the mesh being cut for it');
+    }
+});
+
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');
 process.exit(fail?1:0);

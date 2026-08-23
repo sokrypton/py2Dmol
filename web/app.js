@@ -1174,8 +1174,12 @@ function setupEventListeners() {
         const elOwners = renderer.elementOwners ? renderer.elementOwners() : owners;
         const elAble = elOwners ? live.filter((i) => elOwners.has(i)) : [];
         const ligEl = !!(elOwners && live.some((i) => t[i] === 'L' && elOwners.has(i)));
+        // ...the set in MERGED indices, like the positions being tallied: read
+        // off the object it would be that object's own numbering, and every
+        // object after the first would answer for the wrong residues.
         set('elementsShowToggle', tally(elAble,
-            obj.elements instanceof Set ? obj.elements : null, true));
+            renderer.mergedObjectSet ? renderer.mergedObjectSet('elements', 'all')
+                : (obj.elements instanceof Set ? obj.elements : null), true));
         // ...and whether any of it is a nucleotide, which is the renderer's own
         // question rather than a second copy of the type test
         const hasNuc = !!(renderer.hasBasesFor && renderer.hasBasesFor(live));
@@ -1187,8 +1191,11 @@ function setupEventListeners() {
         // shown only where the whole selection agrees. One answer, two controls
         // that can show it: a switch where there are two states and a menu
         // where there are three.
-        const scSet = obj.sidechains instanceof Set ? obj.sidechains : null;
-        const bSet = obj.bases instanceof Set ? obj.bases : null;
+        // ...both in MERGED indices - see shownSidechainSet and mergedObjectSet
+        const scSet = renderer.shownSidechainSet ? renderer.shownSidechainSet()
+            : (obj.sidechains instanceof Set ? obj.sidechains : null);
+        const bSet = renderer.mergedObjectSet ? renderer.mergedObjectSet('bases', 'all')
+            : (obj.bases instanceof Set ? obj.bases : null);
         const modeOf = (i) => {
             if (scSet && scSet.has(i)) return 'full';
             const isNuc = t[i] === 'D' || t[i] === 'R';
@@ -1349,8 +1356,11 @@ function setupEventListeners() {
         if (!renderer || !obj) return;
         const t = renderer.positionTypes || [];
         const hidBB = renderer.backboneHiddenSet ? renderer.backboneHiddenSet() : null;
-        const sc = obj.sidechains instanceof Set ? obj.sidechains : null;
-        const bases = obj.bases instanceof Set ? obj.bases : null;
+        // ...in merged indices, like the positions this walks
+        const sc = renderer.shownSidechainSet ? renderer.shownSidechainSet()
+            : (obj.sidechains instanceof Set ? obj.sidechains : null);
+        const bases = renderer.mergedObjectSet ? renderer.mergedObjectSet('bases', 'all')
+            : (obj.bases instanceof Set ? obj.bases : null);
         const drawsSomething = (i) => {
             if (!hidBB || !hidBB.has(i)) return true;              // backbone drawn
             if (sc && sc.has(i)) return true;                      // real atoms
@@ -1744,8 +1754,13 @@ function setupEventListeners() {
                 const renderer = viewerApi?.renderer;
                 const lig = ligandRowPositions(positions);
                 if (lig) return mainChainColorOf(lig);
-                const obj = renderer?.objectsData?.[renderer.currentObjectName];
-                const own = obj && obj.sidechainColor && obj.sidechainColor[positions[0]];
+                // ...from the object that OWNS the residue, in its own
+                // numbering: the map is per object and the index is merged.
+                const o = renderer?.ownerOf ? renderer.ownerOf(positions[0]) : null;
+                const obj = renderer?.objectsData?.[
+                    o ? o.name : renderer.currentObjectName];
+                const at = o ? o.local : positions[0];
+                const own = obj && obj.sidechainColor && obj.sidechainColor[at];
                 return own || mainChainColorOf(positions);
             },
         });

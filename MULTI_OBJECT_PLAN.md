@@ -333,6 +333,29 @@ everything that reads or writes it knows which object each index belongs to:
 - **A canvas click** can select a residue of any drawn object, and Within finds
   neighbours across the join - which is the point of having both on screen.
 
+## The audit, file by file
+
+Every place that reads per-object state or compares chains, checked once and
+recorded so the next reader does not have to re-derive it:
+
+| file | what was wrong |
+|---|---|
+| `viewer-mol.js` | the 3D double-click's whole-chain widening; the silhouette's chain-break test; `chainPolymerBounds` (the head-to-tail test for a cyclic chain); `ligandIndicesByChain` (the fallback that bonds a chain's ligand atoms); the lone-atom ligand-group lookup; the hover readout; six entropy fills |
+| `viewer-seq.js` | the hit tester, the hover, the label's override colour, the drag, the whole-chain selection, the ligand groups, and one section's rows kept on `sequenceCanvasData` |
+| `viewer-pae.js` | a box's rows landing at raw indices, the reverse mapping, the chain set it writes, the ligand expansion |
+| `viewer-cartoon.js` | the base-plate set, the forced-SSE map, the framing extent, the colour-override fast path |
+| `viewer-cartoon-gpu.js` | the mesh signature (which objects, the extent, the base and element sets, the per-position colour flag) and the contact cache key |
+| `web/app.js` | the panel's element/side-chain/base tallies, the side-chain colour readback, the chain set written when hiding, four entropy fills, Copy/Cut/Delete reporting |
+| `viewer-msa.js` | nothing: it maps one object's alignment onto that object's own frame, and `entropyForDrawn` places the result |
+| `viewer-scatter.js` | nothing: it holds no position indices |
+
+The rule that came out of it: **anything that identifies a residue, a chain or
+a sequence across the merged array carries its object.** The exceptions are
+written down where they are - `this.chains` (the file's own id, printed by the
+panel), a segment's `chainId` (only ever compared between segments sharing a
+position), and an object's own stored sets (its own numbering, translated on
+the way in and out).
+
 ## Measured
 
 - **Rebuilding the merge** (4UG0 + 6MRR, 17,618 positions, Chrome, tab visible):
