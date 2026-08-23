@@ -10590,9 +10590,27 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 + '|sc' + (sc ? sc.size : 0);
         }
 
+        /**
+         * HOW LONG THE ARRAY IS BEFORE THE SIDE-CHAIN ATOMS. Everything keyed
+         * by residue counts up to here; the atoms live past it.
+         */
+        _baseCount() {
+            const n = this.coords ? this.coords.length : 0;
+            const map = this.sidechainMap;
+            return (map && map.size) ? Math.max(0, n - map.size) : n;
+        }
+
         /** Record what was just loaded. Called by everything that builds it. */
         _noteArrayLoaded() {
             this._loadedKey = this._arrayKey();
+            // ...AND THAT THE CAMERA HAS NOW SEEN THESE OBJECTS. Anything that
+            // has been in the array has been framed for once; switching its
+            // eye afterwards must leave the camera exactly where it is, so
+            // that things appear and disappear where they are rather than the
+            // picture rescaling under the pointer. Only a file just LOADED is
+            // new to the camera - addObject drops its name from this - and
+            // only that widens the view.
+            for (const n of this.drawnObjects()) this._framedObjects.add(n);
         }
 
         /**
@@ -10605,7 +10623,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          *
          * @returns {boolean} whether the picture changed
          */
-        setShownObjects(names, skipRender = false) {
+        setShownObjects(names, skipRender = false, opts = {}) {
             const all = this.objectsData || {};
             const before = this.drawnObjects().join(' ');
             // NULL RESETS TO THE DEFAULT - the object being edited, on its own.
@@ -10623,7 +10641,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
             const after = this.drawnObjects().join(' ');
             if (before === after) return false;
-            this._applyShownObjects(skipRender);
+            this._applyShownObjects(skipRender, opts);
             return true;
         }
 
@@ -10634,7 +10652,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * entered at all, so the ordinary single-object case cannot be slowed
          * down or subtly changed by code it never runs.
          */
-        _applyShownObjects(skipRender = false) {
+        _applyShownObjects(skipRender = false, opts = {}) {
             const names = this.drawnObjects();
             const ms = this.multiState;
 
@@ -10669,17 +10687,31 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     if (this._loadedKey === this._arrayKey()) return;
                     this._loadFrameData(this.currentFrame >= 0 ? this.currentFrame : 0,
                         skipRender);
+                    // ...AND THE MASK FROM THIS OBJECT'S OWN RECORD. The live
+                    // one describes the array that was just replaced: showing
+                    // a 68-residue structure and then a 574-residue one left
+                    // it naming positions 0..67, and two thirds of the second
+                    // structure was simply not drawn.
+                    this._applyRecordVisibility([this.currentObjectName], [0],
+                        this._baseCount(), skipRender);
                     return;
                 }
                 const carriedOut = this._selectionAsOwners();
                 this._dropMergeState();
                 this._invalidateSegmentCache();
                 this._invalidateShadowCache();
-                // ...and frame on what is left, the same re-framing that
-                // entering the merge did. A camera still set to hold two
-                // structures shows one of them small and off to a side.
-                const back = this.objectsData[this.currentObjectName];
-                if (back && back.center) {
+                // ...AND THE CAMERA HOLDS STILL, unless this object is new to
+                // it or the caller asked. Switching every eye off but one is
+                // an eye being switched, and an eye makes things appear and
+                // disappear where they are: re-framing here was the last place
+                // the picture still jumped, because dropping to one object
+                // takes this branch rather than the merge below. Leaving Multi
+                // passes reframe, and then a camera set to hold two structures
+                // does not leave the one that is left small and off to a side.
+                const one = this.currentObjectName;
+                const back = this.objectsData[one];
+                if (back && back.center
+                        && (opts.reframe || !this._framedObjects.has(one))) {
                     this.viewerState.center = { x: back.center[0], y: back.center[1],
                         z: back.center[2] };
                     this.viewerState.extent = back.maxExtent || null;
@@ -10742,7 +10774,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // new again.
             const fresh = names.filter((nm) => !this._framedObjects.has(nm));
             for (const nm of names) this._framedObjects.add(nm);
-            if (ms.stats && fresh.length) {
+            if (ms.stats && (opts.reframe || fresh.length)) {
                 this.viewerState.center = { x: ms.stats.center[0],
                     y: ms.stats.center[1], z: ms.stats.center[2] };
                 this.viewerState.extent = ms.stats.maxExtent;
@@ -10911,10 +10943,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return vis;
         }
 
-        _applyMergedVisibility(merged, skipRender = false) {
-            const n = merged.coords.length;
-            const vis = this._visibleFromObjectRecords(
-                merged.sourceNames, merged.sourceOffsets, n);
+        /**
+         * COMPOSE THE LIVE MASK FROM THE OBJECTS' OWN RECORDS, and apply it.
+         *
+         * Called whenever the coordinate array is rebuilt - by the merge, and
+         * by the ordinary single-object path, which did NOT do this and drifted
+         * for it: show a 68-residue structure alone, switch to a 574-residue
+         * one, and the live mask still named positions 0..67, so two thirds of
+         * the second structure was invisible. The mask means nothing except
+         * against the array it was built for; the records mean something
+         * against their own object, which is why they are what survives.
+         *
+         * @param {Array<string>} names the drawn objects, in array order
+         * @param {Array<number>} offsets where each starts
+         * @param {number} n the array's length BEFORE side-chain atoms
+         */
+        _applyRecordVisibility(names, offsets, n, skipRender = false) {
+            const vis = this._visibleFromObjectRecords(names, offsets, n);
             // ...AND THE SIDE-CHAIN ATOMS, which are positions too and are in
             // nobody's record: they are not residues of any object. Left out,
             // every side chain in the picture went out the moment a merge was
@@ -10935,6 +10980,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 paeBoxes: [],
                 visibilityMode: (vis.size === total) ? 'default' : 'explicit'
             }, skipRender);
+        }
+
+        /** The merge's share of that: one call, from what it just built. */
+        _applyMergedVisibility(merged, skipRender = false) {
+            this._applyRecordVisibility(merged.sourceNames, merged.sourceOffsets,
+                merged.coords.length, skipRender);
         }
 
 

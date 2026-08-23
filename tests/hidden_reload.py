@@ -94,6 +94,22 @@ window.addEventListener('load', () => {
       r.setShownObjects(['6MRR']); await wait(400); rebuild(); await wait(200);
       R.steps.push(snap(r, 'the other one'));
 
+      // A SMALL OBJECT, THEN A BIG ONE, one at a time through the eyes. The
+      // live mask describes the array it was built for; the records describe
+      // their own object. Showing the 68-residue structure and then the
+      // 748-residue one left the live mask still naming positions 0..67, and
+      // two thirds of the second structure was not drawn - "only part of it is
+      // shown, matching the length of the other one".
+      r.setShownObjects([]); await wait(300);
+      r.setShownObjects(['6MRR']); await wait(400);
+      R.smallOn = {drawn: r.drawnObjects(), n: r.coords.length,
+                   visible: r.visiblePositions ? r.visiblePositions.size : -1};
+      r.setShownObjects([]); await wait(300);
+      r.setShownObjects(['4HHB']); await wait(500); rebuild(); await wait(200);
+      R.bigOn = {drawn: r.drawnObjects(), n: r.coords.length,
+                 visible: r.visiblePositions ? r.visiblePositions.size : -1,
+                 ink: ink(r.canvas)};
+
       // A FILE LOADED WHILE SEVERAL ARE ON SCREEN joins them, and the camera
       // widens once to take it in - which is the one time it should move. An
       // eye being switched is not: see the cameraHeld check in
@@ -180,6 +196,17 @@ for s in R["steps"]:
             bad.append(f"{s['tag']}: {s['strip']['coloured']} coloured pixels"
                        f" in the strip against {baseline} for the same strip"
                        " drawn properly - the cells came back grey")
+print(f"  one at a time: {R['smallOn']['visible']}/{R['smallOn']['n']} of the"
+      f" small one visible, then {R['bigOn']['visible']}/{R['bigOn']['n']} of"
+      f" the big one ({R['bigOn']['ink']} ink)")
+if R['smallOn']['visible'] != R['smallOn']['n']:
+    bad.append(f"the small object came up {R['smallOn']['visible']} of"
+               f" {R['smallOn']['n']} visible")
+if R['bigOn']['visible'] != R['bigOn']['n']:
+    bad.append(f"after the small object, only {R['bigOn']['visible']} of the"
+               f" big one's {R['bigOn']['n']} positions are visible - the live"
+               " mask is still describing the array it was built for")
+
 last = R["steps"][-1]
 print(f"  a third file joined {last['drawn']}: extent {R.get('extentBefore')}"
       f" -> {R.get('extentAfter')}, {R.get('outside')} positions off canvas")

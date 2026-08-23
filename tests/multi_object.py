@@ -221,6 +221,58 @@ window.addEventListener('load', () => {
       }
       R.outsideAfterOrient = outside;
 
+      // ...AND ORIENT ON WHAT IS ENABLED, not on what the picker names. The
+      // coordinates it measured were taken from the array only when the array
+      // was at least as long as the PICKER'S object - so switching that object
+      // off and leaving a smaller one on failed the test and Orient swung the
+      // view onto a structure that was not on screen.
+      {
+        const centroid = (nm) => {
+          const f = r.objectsData[nm].frames[0];
+          const c = [0, 0, 0];
+          for (const p of f.coords) { c[0] += p[0]; c[1] += p[1]; c[2] += p[2]; }
+          return c.map((v) => v / f.coords.length);
+        };
+        // THE SMALLER OBJECT ALONE, WITH THE BIGGER ONE BEING EDITED. That
+        // is the case the old test failed on: it took the array's
+        // coordinates only when the array was at least as long as the
+        // PICKER'S object, so the fault is invisible unless what is drawn is
+        // shorter than what the picker names.
+        const wasEditing = r.currentObjectName;
+        const size = (nm) => r.objectsData[nm].frames[0].coords.length;
+        const ranked = names.slice().sort((a, b) => size(a) - size(b));
+        const other = ranked[0];
+        const big = ranked[ranked.length - 1];
+        if (r.currentObjectName !== big) {
+            r._switchToObject(big);
+            const sel = document.getElementById('objectSelect');
+            if (sel) sel.value = big;      // Orient reads the picker
+        }
+        r.setShownObjects([other]);
+        await new Promise((s) => setTimeout(s, 400));
+        window.applyBestViewRotation(false);
+        await new Promise((s) => setTimeout(s, 400));
+        const want = centroid(other);
+        const got = r.viewerState.center;
+        R.orientOne = {
+          object: other, edited: r.currentObjectName,
+          off: Math.round(Math.hypot(got.x - want[0], got.y - want[1],
+            got.z - want[2]) * 100) / 100,
+          // ...and how far it would be if it had oriented on the other one
+          wrongBy: Math.round(Math.hypot(...centroid(r.currentObjectName)
+            .map((v, k) => v - want[k])) * 100) / 100,
+        };
+        // ...and put back what this leg moved, or every check after it is
+        // reading a different object's world
+        if (r.currentObjectName !== wasEditing) {
+            r._switchToObject(wasEditing);
+            const sel2 = document.getElementById('objectSelect');
+            if (sel2) sel2.value = wasEditing;
+        }
+        r.setShownObjects(names);
+        await new Promise((s) => setTimeout(s, 300));
+      }
+
       // PICKING REACHES THE SECOND OBJECT. Not "the pixel over residue X
       // returns X": two structures loaded from different files overlap in
       // space, so whichever is in FRONT at that pixel is the right answer -
@@ -833,6 +885,10 @@ def main():
           f" clicking in {R.get('wantedObject')}'s section -> editing"
           f" {R.get('afterPickCurrent')}, selected a residue of"
           f" {R.get('afterPickOwner')}, drawn {R.get('afterPickDrawn')}")
+    o1 = R.get('orientOne') or {}
+    print(f"  orient on {o1.get('object')} alone (editing {o1.get('edited')}):"
+          f" centre {o1.get('off')} A from its centroid, against"
+          f" {o1.get('wrongBy')} A between the two objects")
     print(f"  orient: {R.get('orientInk')} ink,"
           f" {R.get('outsideAfterOrient')} positions off canvas;"
           f" picking reaches {R.get('pickOwner')} (of {R.get('pickTried')} tries);"
@@ -877,6 +933,20 @@ def main():
         bad.append("unhiding did not restore the picture")
     if R.get("outsideAfterOrient"):
         bad.append(f"{R['outsideAfterOrient']} positions are off canvas after Orient")
+    # ...and Orient on one object lands on THAT object. Scored against the
+    # distance between the two, so the check means something for any pair:
+    # anything but a small fraction of it is the wrong structure.
+    if o1.get("off") is None:
+        bad.append("the one-object Orient leg did not run")
+    elif o1["wrongBy"] < 1:
+        bad.append("the two objects sit on top of each other, so orienting on"
+                   " the wrong one would look identical - this pair proves"
+                   " nothing about Orient")
+    elif o1["off"] > 0.25 * o1["wrongBy"]:
+        bad.append(f"Orient with only {o1['object']} on screen centred"
+                   f" {o1['off']} A from it, with the other object"
+                   f" {o1['wrongBy']} A away - it oriented on what the picker"
+                   " names, not on what is drawn")
     if R.get("pickOwner") != R["sources"][1]:
         bad.append(f"picking never reached the second object in"
                    f" {R.get('pickTried')} tries - it reported {R.get('pickOwner')}")

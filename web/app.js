@@ -2342,7 +2342,12 @@ function toggleObjectMulti() {
     const renderer = viewerApi?.renderer;
     if (!renderer || !renderer.setShownObjects) return;
     if (objectMultiOn(renderer)) {
-        renderer.setShownObjects(null);
+        // ...AND FRAME ON WHAT IS LEFT. Switching an eye never moves the
+        // camera - things appear and disappear where they are - but leaving
+        // Multi is a mode change, and the one object that stays would
+        // otherwise sit small and off to a side in a camera set to hold
+        // several.
+        renderer.setShownObjects(null, false, { reframe: true });
     } else {
         const cur = renderer.currentObjectName;
         renderer.setShownObjects(cur ? [cur] : []);
@@ -2740,11 +2745,19 @@ function applyBestViewRotation(animate = true) {
 
     // THE LIVE COORDINATES, not the stored frame's. A shown side chain is
     // APPENDED to the renderer's array when the frame loads, so its atoms exist
-    // at indices past the end of frame.coords - and the guard below then
-    // dropped every one of them, which is the expansion above doing nothing at
-    // all. The two agree on every base position; only the tail differs.
-    const liveCoords = (renderer.coords && renderer.coords.length >= frame.coords.length)
-        ? renderer.coords : frame.coords;
+    // at indices past the end of frame.coords, and the stored frame does not
+    // have them at all.
+    //
+    // WHENEVER THERE ARE ANY, not "when there are at least as many as the
+    // picker's object has". With several objects on screen the array holds
+    // exactly what is DRAWN, which can be far SHORTER than the object the
+    // picker names - switch the picker's object off and leave a small one on,
+    // and that test failed, so Orient swung the view onto a structure that was
+    // not on screen. The array is what is drawn; the frame is the fallback for
+    // when nothing is loaded at all.
+    const liveCoords = (renderer.coords && renderer.coords.length)
+        ? renderer.coords : (frame ? frame.coords : []);
+    if (!liveCoords.length) return;
     const xyzAt = (i) => {
         const c = liveCoords[i];
         if (!c) return null;
@@ -2758,19 +2771,15 @@ function applyBestViewRotation(animate = true) {
             const c = positionIndex >= 0 ? xyzAt(positionIndex) : null;
             if (c) coordsForBestView.push(c);
         }
-    } else if (renderer.multiState && renderer.multiState.enabled) {
-        // EVERYTHING THAT IS DRAWN, not everything in the current object. With
-        // several objects merged, `frame` is one of them - orienting on it
-        // alone swings the view onto that structure and leaves the others
-        // wherever they land, which is not what Orient with nothing selected
-        // is asking for.
+    } else {
+        // EVERYTHING THAT IS DRAWN, which with nothing selected is the whole
+        // array - one object or several, and never an object that is loaded
+        // but switched off. This used to fall back to the picker's own frame,
+        // which is a different structure the moment its eye is closed.
         for (let i = 0; i < liveCoords.length; i++) {
             const c = xyzAt(i);
             if (c) coordsForBestView.push(c);
         }
-    } else {
-        // No selection or all positions selected: use all coordinates
-        coordsForBestView = frame.coords;
     }
 
     if (coordsForBestView.length === 0) {

@@ -90,13 +90,19 @@ global.OBJECT_STATE = new Function(
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','_visibleFromObjectRecords','withSidechainAtoms','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','ligandGroupsOf','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','_applyRecordVisibility','_visibleFromObjectRecords','withSidechainAtoms','_baseCount','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','ligandGroupsOf','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
  if(i<0) throw new Error('method not found: '+nm);
- // brace-match from the opening {
- let j=src.indexOf('{',i), d=0, k=j;
+ // THE BODY'S BRACE, not the first one after the name: a default argument can
+ // be an object literal (`opts = {}`), and brace-matching from there lifts the
+ // signature and nothing else. Walk the parameter list to its closing paren
+ // first.
+ let p=src.indexOf('(',i), pd=0, pk=p;
+ for(;pk<src.length;pk++){ if(src[pk]==='(')pd++; else if(src[pk]===')'){pd--; if(!pd)break;} }
+ // brace-match from the opening { of the body
+ let j=src.indexOf('{',pk), d=0, k=j;
  for(;k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){d--; if(!d)break;} }
  body[nm]=src.slice(i,k+1);
 }
@@ -7448,6 +7454,34 @@ t('the per-object fields are declared once and walked, not listed per operation'
     }
 });
 
+// ORIENT LOOKS AT WHAT IS DRAWN. It read the coordinates off the renderer's
+// array only when that array was at least as long as the object the PICKER
+// names - which is false the moment a big object's eye is closed and a small
+// one is left on, and Orient then swung the view onto a structure that was not
+// on screen. The array holds exactly what is drawn; the picker's stored frame
+// is the fallback for when nothing is loaded at all.
+t('Orient measures the drawn array, not the picker\'s object', () => {
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    const at = app.indexOf('function applyBestViewRotation(');
+    if (at < 0) throw new Error('applyBestViewRotation is gone');
+    const body = app.slice(at, app.indexOf('\nfunction ', at + 10));
+    if (/renderer\.coords\.length >= frame\.coords\.length/.test(body)) {
+        throw new Error('Orient takes the array only when it is longer than the'
+            + " picker's object - so it ignores the array whenever a smaller"
+            + ' object is the one on screen');
+    }
+    if (!/renderer\.coords && renderer\.coords\.length\)\s*\n?\s*\? renderer\.coords/
+        .test(body.replace(/\s+/g, ' ').replace(/ \? /g, '\n? '))
+        && !/const liveCoords = \(renderer\.coords && renderer\.coords\.length\)/.test(body)) {
+        throw new Error('Orient no longer prefers the live array');
+    }
+    // ...and nothing falls back to the picker's frame for the whole structure
+    if (/coordsForBestView = frame\.coords/.test(body)) {
+        throw new Error("Orient still falls back to the picker's own frame,"
+            + ' which is a different structure once its eye is closed');
+    }
+});
+
 // THE LIVE MASK AND THE OBJECTS' RECORDS NEVER DISAGREE. The mask is merged
 // indices; each object's record is its own numbering. Two directions, and both
 // have been wrong: the whole merged mask was once filed under whichever object
@@ -7586,7 +7620,7 @@ t('the array says what it holds rather than being deduced', () => {
         throw new Error('emptying the array does not clear the record, so the'
             + ' next load is skipped as unnecessary');
     }
-    const apply = src.slice(src.indexOf('_applyShownObjects(skipRender = false) {'),
+    const apply = src.slice(src.indexOf('_applyShownObjects(skipRender = false'),
         src.indexOf('drawnStats() {'));
     if (/this\.coords && this\.coords\.length\) return/.test(apply)) {
         throw new Error('the fast path is guessing from the array length again');
@@ -7643,7 +7677,7 @@ t('Multi is a mode, and the picker is what it replaces', () => {
     if (!/setShownObjects\(cur \? \[cur\] : \[\]\)/.test(body)) {
         throw new Error('Multi does not open on the object already on screen');
     }
-    if (!/setShownObjects\(null\)/.test(body)) {
+    if (!/setShownObjects\(null, false, \{ reframe: true \}\)/.test(body)) {
         throw new Error('leaving Multi trims the set instead of dropping it -'
             + ' null is the resting state, and an object loaded later has to'
             + ' become the one on screen');
@@ -7693,19 +7727,30 @@ t('Multi is a mode, and the picker is what it replaces', () => {
 // disappear", not zoom.
 t('an eye does not move the camera; an object that just arrived does', () => {
     const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
-    const at = src.indexOf('_applyShownObjects(skipRender = false) {');
+    const at = src.indexOf('_applyShownObjects(skipRender = false');
     const body = src.slice(at, src.indexOf('\n        }\n', at) + 1);
     if (/if \(ms\.stats && !sameSources\)/.test(body)) {
         throw new Error('the camera re-frames whenever the drawn set changes');
     }
+    // BOTH branches hold still: dropping to one object takes the single-object
+    // path, not the merge, and that is where the picture went on jumping after
+    // the merge had been taught not to.
     if (!/const fresh = names\.filter\(\(nm\) => !this\._framedObjects\.has\(nm\)\)/
-        .test(body) || !/if \(ms\.stats && fresh\.length\)/.test(body)) {
-        throw new Error('nothing distinguishes an object the camera has'
-            + ' already been framed for from one that just arrived');
+        .test(body) || !/if \(ms\.stats && \(opts\.reframe \|\| fresh\.length\)\)/.test(body)) {
+        throw new Error('the merge re-frames without asking whether anything'
+            + ' is new to the camera');
     }
-    if (!/for \(const nm of names\) this\._framedObjects\.add\(nm\)/.test(body)) {
-        throw new Error('objects are never recorded as framed, so every'
-            + ' rebuild counts as new');
+    if (!/opts\.reframe \|\| !this\._framedObjects\.has\(one\)/.test(body)) {
+        throw new Error('switching every eye off but one still re-frames on it');
+    }
+    // ...and what the camera has seen is everything that has been in the
+    // array, recorded where the array is recorded
+    const note = src.slice(src.indexOf('_noteArrayLoaded() {'),
+        src.indexOf('_noteArrayLoaded() {') + 900);
+    if (!/for \(const n of this\.drawnObjects\(\)\) this\._framedObjects\.add\(n\)/
+        .test(note)) {
+        throw new Error('objects are never recorded as framed, so the first'
+            + ' time an eye shows one the picture rescales');
     }
     // ...and a newly loaded object counts as new, even under an old name
     const add = src.slice(src.indexOf('addObject(name) {'),
