@@ -1131,31 +1131,37 @@ function setupEventListeners() {
     // between a state that says nothing and one that says what you are looking
     // at. Not computed for it: see assignedSseFor.
     function syncSseSelect(sel, renderer, picked) {
+        // WHAT THE SELECTED RESIDUES ARE, in one word. Helix, Sheet or Loop -
+        // and Mixed where they disagree.
+        //
+        // It used to say where the answer came from as well: "DSSP" when
+        // nothing had been forced, then "Helix (DSSP)". Both are the same
+        // mistake in different sizes - the control's other options are the
+        // answer, so anything about its provenance reads as a fourth kind of
+        // thing, and the longer form did not fit the 84px the row can spare.
+        // A structure is a structure whoever decided it; the menu is how you
+        // change it, and DSSP is the item that hands it back to the
+        // assignment.
         const forced = renderer.forcedSseFor ? renderer.forcedSseFor(picked) : 'none';
         const auto = renderer.assignedSseFor ? renderer.assignedSseFor(picked) : '';
         const NAME = { H: 'Helix', E: 'Sheet', C: 'Loop' };
         sel.value = forced === 'none' ? 'dssp' : forced;
         const dssp = sel.querySelector('option[value="dssp"]');
         if (dssp) {
-            // THE STRUCTURE FIRST, then who says so. This read "DSSP (Helix)",
-            // which puts the source of the answer where the answer goes - and
-            // on a control whose other three options are the answer itself.
-            // "Helix (DSSP)" reads as what the residues ARE, with the source in
-            // brackets, and the forced states read as the bare word: Helix is
-            // Helix because you said so, Helix (DSSP) is Helix because the
-            // assignment says so.
+            // ...on the automatic option, because that is the one selected
+            // while nothing is forced. With something forced it goes back to
+            // naming what it DOES - the assignment is read off the array the
+            // drawing uses, which has the override baked in, so it would
+            // otherwise promise the forced letter as DSSP's own answer.
             dssp.textContent = (forced === 'none' && NAME[auto])
-                ? `${NAME[auto]} (DSSP)` : 'DSSP';
+                ? NAME[auto] : 'DSSP';
         }
-        // ...and the tooltip is where forced and assigned are told apart: the
-        // menu shows one letter either way, and which of the two it is decides
-        // whether the drawing will change under you when the model does.
-        sel.title = forced === '' ? 'The selected residues have different structures'
-            : (forced === 'none'
-                ? (NAME[auto] ? `${NAME[auto]}, from the DSSP assignment`
-                    : 'Structure from the DSSP assignment')
-                : `Forced to ${NAME[forced] || forced}`);
+        const now = forced === 'none' ? auto : forced;
+        sel.title = forced === ''
+            ? 'The selected residues have different structures'
+            : (NAME[now] || 'The secondary structure of the selected residues');
     }
+
 
     /**
      * A SHOW/HIDE PAIR: one question, two buttons, and the state on their faces.

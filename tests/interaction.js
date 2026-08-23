@@ -629,7 +629,12 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
         })(),
         selSsSelect: (() => {
             const opts = { dssp: { textContent: 'DSSP' } };
+            // ...and the class that says a state was FORCED rather than
+            // assigned, which is the only difference left on the face
+            const cls = new Set();
             return { hidden: null, disabled: null, value: '', title: '', opts,
+                cls,
+                classList: { toggle: (c, on) => (on ? cls.add(c) : cls.delete(c)) },
                 querySelector: (q) => {
                     const m = /option\[value="([^"]+)"\]/.exec(q);
                     return m ? opts[m[1]] || null : null;
@@ -1007,12 +1012,13 @@ t('the SSE menu shows the state it is in, not the word SSE', () => {
         throw new Error('an unforced selection reads "' + auto.selSsSelect.value
             + '" - nothing is forced there, so DSSP is the state it is in');
     }
-    // ...and the automatic answer is IN the option, or the menu says a state
-    // without saying what it produced
-    // THE STRUCTURE FIRST, then who says so: the other three options ARE the
-    // answer, so putting the source where the answer goes read as a different
-    // kind of thing. Forced Helix is "Helix"; assigned Helix is "Helix (DSSP)".
-    if (auto.selSsSelect.opts.dssp.textContent !== 'Helix (DSSP)') {
+    // THE STRUCTURE, AND ONLY THAT. It read "DSSP" - where the answer came
+    // from rather than what it was - and then "Helix (DSSP)", which says both
+    // and does not fit the 84px the row can spare. A structure is a structure
+    // whoever decided it; nothing on the face distinguishes forced from
+    // assigned, because that distinction was three designs' worth of
+    // complication for something the drawing does not care about either.
+    if (auto.selSsSelect.opts.dssp.textContent !== 'Helix') {
         throw new Error('the DSSP option does not carry the assignment: '
             + auto.selSsSelect.opts.dssp.textContent);
     }
@@ -1026,8 +1032,16 @@ t('the SSE menu shows the state it is in, not the word SSE', () => {
         throw new Error('the DSSP option advertised an assignment that is being'
             + ' overridden - what is drawn there is the forced letter');
     }
-    if (!/Forced to Sheet/.test(forced.selSsSelect.title)) {
-        throw new Error('nothing tells forced from assigned: ' + forced.selSsSelect.title);
+    // ...and the tooltip says the structure, not its provenance
+    if (!/Sheet/.test(forced.selSsSelect.title)) {
+        throw new Error('the tooltip does not say what the structure is: '
+            + forced.selSsSelect.title);
+    }
+    // NOTHING marks forced any more - not the text, not a class. It was one
+    // more thing to read on a control whose job is one word.
+    if (/is-forced/.test(fs.readFileSync('web/app.js', 'utf8'))
+        || /is-forced/.test(fs.readFileSync('web/style.css', 'utf8'))) {
+        throw new Error('the forced/assigned distinction is back on the face');
     }
     // ...and disagreement is a state of its own, shown and not picked
     const mixed = panelRun([0, 1], new Set(), false, PROT, null, new Set(), null,

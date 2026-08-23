@@ -129,8 +129,22 @@ window.addEventListener('load', () => {
       const sseFace = () => {
         const sel = document.getElementById('selSsSelect');
         const opt = sel.options[sel.selectedIndex];
+        // ...AND IT HAS TO FIT. The face is what the row can spare - 84px -
+        // and a word that runs past it is clipped to something like "Helix (D".
+        const probe = document.createElement('span');
+        const cs = getComputedStyle(sel);
+        probe.style.cssText = `position:absolute;visibility:hidden;white-space:nowrap;`
+          + `font:${cs.font}`;
+        probe.textContent = opt ? opt.textContent : '';
+        document.body.appendChild(probe);
+        const textW = probe.getBoundingClientRect().width;
+        probe.remove();
         return {value: sel.value, text: opt ? opt.textContent : null,
-                hidden: sel.hidden};
+                hidden: sel.hidden,
+                // the arrow and the padding the select puts round its text
+                fits: textW + 34 <= sel.getBoundingClientRect().width + 0.5,
+                textW: Math.round(textW),
+                boxW: Math.round(sel.getBoundingClientRect().width)};
       };
       await select(r, [10, 11, 12]);
       R.sse.push(['picked', sseFace()]);
@@ -270,7 +284,8 @@ want('no selection', 'panel', False, 'the panel is away without a selection')
 want('selected', 'panel', True, 'the panel appears with one')
 print("  the SSE control:")
 for tag, face in (R.get("sse") or []):
-    print(f"    {tag:20s} {face['value']!r} reading {face['text']!r}")
+    print(f"    {tag:20s} {face['value']!r} reading {face['text']!r}"
+          f" ({face['textW']}px of {face['boxW']}px)")
 sse = dict((t, f) for t, f in (R.get("sse") or []))
 # THE SAME SELECTION, over and over, through the things that used to flip it.
 # 'picked again' is a DIFFERENT selection - reading differently there is the
@@ -281,12 +296,22 @@ faces = {sse[t]['text'] for t in same if t in sse}
 if len(faces) != 1:
     bad.append(f"the same selection read {faces} across actions that changed"
                " nothing about its structure")
-if not any(f and '(DSSP)' in f for f in faces):
-    bad.append(f"the unforced state never names the assignment: {faces}")
+# ...and it names the STRUCTURE, not where the answer came from. "DSSP" is
+# what the control used to read: the source, on a control whose other options
+# are the answer itself.
+if faces & {'DSSP', ''} or not faces:
+    bad.append(f"the control reads {faces} rather than the structure - in the"
+               " tube style that used to be all it could say")
 # ...and a different selection is allowed to differ, or the control is stuck
 if sse.get('picked again', {}).get('text') == sse.get('picked', {}).get('text'):
     bad.append("two selections with different structures read the same - the"
                " control is showing something other than their structure")
+# ...AND EVERY FACE FITS THE BOX. "Helix (DSSP)" did not - the select is capped
+# so the row does not wrap, and the text was clipped.
+for tag, face in (R.get("sse") or []):
+    if not face['fits']:
+        bad.append(f"the SSE control reads {face['text']!r} at {face['textW']}px"
+                   f" in a {face['boxW']}px box - it is clipped")
 if sse.get('forced helix', {}).get('text') != 'Helix':
     bad.append(f"a forced helix reads {sse.get('forced helix', {}).get('text')!r},"
                " not the bare word")

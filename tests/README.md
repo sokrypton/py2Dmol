@@ -171,8 +171,10 @@ disagrees with itself fills neither - the state a switch could only show as a
 grey smear. Contacts read Add, and once one exists the Add goes and the row
 becomes that contact's own colour, width and a bin.
 
-It also watches the **SSE control**, which reported "DSSP" after one click and
-"Helix (DSSP)" after the next with nothing about the structure having changed.
+It also watches the **SSE control**, which says the structure in one word -
+Helix, Sheet or Loop, whoever decided it - and reported "DSSP" after one click
+and something else after the next with nothing about the structure having
+changed.
 The assignment was read off the two render-time caches and given up on when
 both were absent - which is always, in the TUBE style, because only the cartoon
 pass fills them. It is asked for now (`py2dmolCartoon.secondaryFor`), computed
