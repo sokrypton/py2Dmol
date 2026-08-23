@@ -127,6 +127,25 @@ were looking at was the one that had just been loaded.
 It also checks that a RE-FETCH still replaces its object, which is what the
 rebuild was there for, and that the merge survives both.
 
+`tests/pick_empty.py` checks that **an empty canvas answers no clicks**:
+
+    python3 tests/pick_empty.py
+
+The screen positions picking reads are written once per DRAWN frame and stamped
+with `screenFrameId`. A frame that draws nothing never runs the projection
+loop, so the stamps from the last real frame stayed valid: with every object
+switched off, a click on blank canvas selected a residue and a double click
+selected a whole chain of a molecule that was not on screen. The probe sweeps
+a grid of clicks over the canvas in both styles, and clicks for real, with
+everything off and after Clear All.
+
+The nucleic BASE PLATES are a second set of screen-space outlines, filled only
+by the CPU cartoon pass - so the tube style and the GPU cartoon path inherited
+whatever the last cartoon frame left, at the rotation it was drawn at. They
+carry their frame's stamp now (`_naPickId`), and the probe checks both halves:
+nothing picks on an empty canvas, and a plate that IS on screen still picks its
+own residue.
+
 `tests/python_page.py` checks the **Python API's own page** in a real browser:
 
     python3 tests/python_page.py

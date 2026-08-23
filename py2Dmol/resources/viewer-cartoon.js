@@ -12090,6 +12090,15 @@
         }
         renderer.screenFrameId++;
         const fid = renderer.screenFrameId;
+        // THE BASE PLATES BELONG TO THIS FRAME AND NO OTHER. _naPick is a list
+        // of screen-space outlines, filled by the pass above and read by
+        // pickResidueAt; nothing else in the codebase writes it. The tube style
+        // and the GPU cartoon path never run this pass, so without a stamp the
+        // outlines from the last CPU cartoon frame simply stayed clickable -
+        // through a style change, through a rotation that moved every plate,
+        // and through switching every object off, where they were the last
+        // things on an empty canvas still answering a click.
+        renderer._naPickId = fid;
         if (renderer.screenX && renderer.screenX.length >= n) {
             // A SELECTED POSITION IS PROJECTED WHETHER OR NOT IT IS DRAWN. The
             // band over it is a UI indicator: it says where the selection is,

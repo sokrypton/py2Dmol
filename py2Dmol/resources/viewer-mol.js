@@ -3512,7 +3512,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // cartoon records one screen outline per HALF rung, each tagged
             // with its own residue, so a click selects the base it is actually
             // over rather than its partner across the pair.
-            const naPick = this._naPick;
+            // ...and only if they were drawn by the frame these screen
+            // positions came from - see _naPickId, set where they are built.
+            const naPick = (this._naPickId === fid) ? this._naPick : null;
             if (naPick && naPick.length) {
                 for (let k = 0; k < naPick.length; k++) {
                     const e = naPick[k];
@@ -4858,6 +4860,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (!this.currentObjectName) {
                 this.currentFrame = -1;
                 this.coords = [];
+                this._invalidateScreenProjection();
                 clearCanvas();
                 if (this.paeRenderer) { this.paeRenderer.setData(null); }
                 this.updateUIControls();
@@ -4871,6 +4874,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.currentFrame = -1;
                 this.viewerState.currentFrame = -1;
                 this.coords = [];
+                this._invalidateScreenProjection();
                 clearCanvas();
                 if (this.paeRenderer) { this.paeRenderer.setData(null); }
                 this.updateUIControls();
@@ -10074,6 +10078,27 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return { drawn: pick * SELECTION_HALO_RADIUS_FRAC, pick };
         }
 
+        /**
+         * THE SCREEN POSITIONS DESCRIBE A PICTURE THAT IS NO LONGER THERE.
+         *
+         * screenX/Y and friends are written once per drawn frame and stamped
+         * with screenFrameId; everything that reads them (pickResidueAt, the
+         * selection halo) checks the stamp. A frame that draws NOTHING never
+         * runs the projection loop, so the stamps from the last real frame
+         * stayed valid and the picker went on answering out of them: with every
+         * object switched off, clicking blank canvas selected a residue, and
+         * double-clicking it selected a whole chain of a molecule that was not
+         * on screen.
+         *
+         * Bumping the id is the whole invalidation - every stamp is now stale.
+         * The pending GPU projection has to go with it, or _ensurePickProjection
+         * would re-stamp the very coordinates being retired.
+         */
+        _invalidateScreenProjection() {
+            this.screenFrameId++;
+            this._pickPending = null;
+        }
+
         _projectForPicking(displayWidth, displayHeight, scale) {
             const np = this.coords.length;
             const sx = this.screenX; const sy = this.screenY;
@@ -10328,6 +10353,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this._dropMergeState();
                 this.coords = [];
                 this.segmentIndices = [];
+                this._invalidateScreenProjection();
                 this._invalidateSegmentCache();
                 this._invalidateShadowCache();
                 if (!skipRender) this.render('nothing shown');

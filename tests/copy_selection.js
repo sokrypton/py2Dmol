@@ -202,6 +202,10 @@ test('every display key the panel writes is one the copy knows about', () => {
         'visibilityState', 'ligandGroups', 'msa', 'pae', 'paeData', 'bonds',
         'name', 'colorScale', 'plddtRange', 'seqOffsets', 'chainToSequence',
         '_lastPlddtFrame', '_lastPaeFrame',
+        // the loader's own mark on a PENDING record - "this one has already
+        // been handed to the renderer, do not rebuild it". Nothing to do with
+        // an object in objectsData, and an extracted copy was never pending.
+        '_appliedToRenderer',
         // recomputed for the copy from its own coordinates
         'center',
         // the scatter panel's own configuration: not keyed by position, and

@@ -6525,6 +6525,10 @@ function shownViewer() {
         this.coords = new Array((fr && fr.coords.length) || 0).fill(0);
     };
     v._invalidateSegmentCache = function () { this.segCleared = true; };
+    v.screenFrameId = 0;
+    v._invalidateScreenProjection = function () {
+        this.screenFrameId++; this._pickPending = null;
+    };
     v._invalidateShadowCache = function () { this.shadowCleared = true; };
     v._exitOverlayMode = function () { this.exitedOverlay = true;
         this.overlayState.enabled = false; };
@@ -7271,6 +7275,57 @@ t('an object nobody has touched is drawn whole, an emptied one is not', () => {
 // allowed to ask for. The shown set therefore has three states, not two: null
 // is the default (the object being edited, alone), a non-empty set is those
 // objects, and an EMPTY set is nothing at all.
+// ...AND AN EMPTY CANVAS ANSWERS NO CLICKS. The screen positions are written
+// once per DRAWN frame and stamped with screenFrameId; a frame that draws
+// nothing never runs the projection loop, so the stamps from the last real
+// frame stayed valid and the picker went on answering out of them. With every
+// object switched off, a click on blank canvas selected a residue and a double
+// click selected a whole chain of a molecule that was not on screen.
+// tests/pick_empty.py is the same fault, clicked in a browser.
+t('an empty canvas retires the screen positions it no longer has', () => {
+    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+
+    const inv = src.indexOf('_invalidateScreenProjection() {');
+    if (inv < 0) throw new Error('the projection is never invalidated');
+    const body = src.slice(inv, src.indexOf('\n        }', inv));
+    if (!/this\.screenFrameId\+\+/.test(body)) {
+        throw new Error('invalidating does not bump the stamp, so every screen'
+            + ' position stays valid');
+    }
+    // ...or _ensurePickProjection would re-stamp the coordinates being retired
+    if (!/this\._pickPending = null/.test(body)) {
+        throw new Error('the pending GPU projection outlives the coordinates');
+    }
+
+    // every place the coordinate array is emptied says so
+    for (const [what, at] of [
+        ['switching every object off', src.indexOf('if (!names.length) {')],
+        ['no object at all', src.indexOf('if (!this.currentObjectName) {\n' +
+            '                this.currentFrame = -1;')],
+    ]) {
+        if (at < 0) throw new Error('the branch for ' + what + ' has moved');
+        if (!/_invalidateScreenProjection\(\)/.test(src.slice(at, at + 400))) {
+            throw new Error(what + ' empties the coordinates and leaves the'
+                + ' screen positions of the last frame clickable');
+        }
+    }
+
+    // THE BASE PLATES are screen-space outlines of their own, filled only by
+    // the CPU cartoon pass - so the tube style and the GPU path inherited the
+    // last cartoon frame's, at the rotation it was drawn at.
+    const pick = src.indexOf('pickResidueAt(clientX, clientY) {');
+    const pickBody = src.slice(pick, src.indexOf('\n        }', src.indexOf('_pickedContact', pick)));
+    if (!/_naPickId === fid/.test(pickBody)) {
+        throw new Error('the nucleic base plates are picked without asking'
+            + ' which frame drew them');
+    }
+    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    if (!/renderer\._naPickId = fid;/.test(cart)) {
+        throw new Error('nothing stamps the base plates, so they can never be'
+            + ' picked at all');
+    }
+});
+
 t('everything can be switched off, and the objects survive it', () => {
     const v = shownViewer();
     eq(v.drawnObjects().join(','), 'A', 'the resting state');
