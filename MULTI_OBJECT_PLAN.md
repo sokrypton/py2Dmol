@@ -458,8 +458,23 @@ It would also read worse. A patch path is a second way to build the array that
 has to agree with the first, plus the index bookkeeping to place it - the exact
 shape of the bugs this file is a record of.
 
-**Where the lever actually is**, if a 1.3-second toggle on a ribosome ever
-needs fixing: give the GPU port a mesh per SOURCE and draw the ones that are
+**What that 1.3 seconds actually was.** The style. The viewer starts big
+structures in TUBE - past a couple of thousand residues a ribbon is a tangle
+that costs several times as much to draw - but the rule read the object being
+LOADED. Load a ribosome (tube, right), load a peptide beside it (cartoon,
+right for the peptide), show both, and 17,618 positions are drawn as a ribbon
+because the last file was small. The drawn set gets the same rule now
+(`tubeByDefaultForDrawn`), counted off the live array:
+
+| 4UG0 + 6MRR, one eye toggle | before | after |
+|---|---|---|
+| GPU cartoon | 1,262 ms | **62 ms** |
+| CPU | 245 ms | **87 ms** |
+
+A pair of small structures is untouched - both stay in cartoon, ~50 ms - and a
+style picked by hand still wins over both rules.
+
+**Where the remaining lever is**, if a cartoon of that size is ever wanted: give the GPU port a mesh per SOURCE and draw the ones that are
 shown, so an eye stops rebuilding geometry that did not change. That is the
 composite architecture the merge was chosen over, reintroduced for the draw
 alone - a real project, with the depth-sorting and shadowing questions that

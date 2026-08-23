@@ -2394,6 +2394,10 @@ function renderObjectList() {
  * mode, the button and the picker follow too.
  */
 function afterShownObjectsChange() {
+    // ...AND WHAT IS DRAWN DECIDES THE STYLE, when nobody has chosen one. Two
+    // objects on screen can be an order of magnitude more structure than
+    // either of them alone.
+    tubeByDefaultForDrawn(viewerApi?.renderer);
     syncObjectColorOption();
     syncObjectListButton();
     renderObjectList();
@@ -4426,6 +4430,40 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
 // what it wants. Without that, loading a second structure would undo a choice
 // made after the first.
 const BIG_STRUCTURE_RESIDUES = 2000;
+
+/**
+ * ...AND THE SAME RULE FOR WHAT IS ON SCREEN, which is not the same question
+ * once several objects can be drawn at once.
+ *
+ * The rule below decides from the object being LOADED, because it runs while
+ * that object is being switched to and the renderer's arrays still describe
+ * the previous one. In Multi that is the wrong structure to ask about: load a
+ * ribosome (tube, correctly), load a peptide beside it (cartoon, correctly for
+ * the peptide), then show both - and 17,618 positions are drawn as a ribbon
+ * because the last thing loaded was small. Measured: an eye toggle there costs
+ * 1.2 s on the GPU path and 250 ms on the CPU one, against 50-120 ms for the
+ * same pair in tube.
+ *
+ * So the drawn set gets the same rule, counted off the LIVE array - which by
+ * this point is the merge, and is exactly what will be drawn.
+ */
+function tubeByDefaultForDrawn(r) {
+    if (!r || r.styleChosen || r.cartoonForce || !r.setStyle) return;
+    const t = r.positionTypes;
+    if (!t || !t.length) return;
+    let n = 0;
+    for (let i = 0; i < t.length; i++) {
+        if (t[i] === 'P' || t[i] === 'D' || t[i] === 'R') n++;
+    }
+    const want = n > BIG_STRUCTURE_RESIDUES ? 'tube' : 'cartoon';
+    if (r.style === want) return;
+    r.setStyle(want);
+    if (want === 'tube') {
+        styleFallbackNote = `${n.toLocaleString()} residues on screen - showing`
+            + ' tube; pick Cartoon in Style for the ribbon.';
+        setStatus('');
+    }
+}
 
 function tubeByDefaultIfBig(r, objectName) {
     // A HAND-PICKED STYLE IS STICKY AND AN AUTOMATIC ONE IS NOT. Choosing in

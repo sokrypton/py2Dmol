@@ -7733,6 +7733,39 @@ t('every write to the mask is filed under the objects it describes', () => {
     }
 });
 
+// WHAT IS ON SCREEN DECIDES THE STYLE, not the last thing loaded. Past a
+// couple of thousand residues the ribbon is a tangle at any zoom that fits it,
+// and it costs several times a tube to draw - so the viewer starts big
+// structures in tube. The rule read the object being LOADED, which in Multi is
+// the wrong structure to ask about: load a ribosome (tube), load a peptide
+// beside it (cartoon, correctly for the peptide), then show both, and 17,618
+// positions are drawn as a ribbon because the last file was small. An eye
+// toggle there cost 1.2 s on the GPU path; in tube the same toggle is 60 ms.
+t('the style follows what is drawn, not the last file loaded', () => {
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    const at = app.indexOf('function tubeByDefaultForDrawn(');
+    if (at < 0) throw new Error('nothing applies the rule to the drawn set');
+    const body = app.slice(at, app.indexOf('\nfunction ', at + 10));
+    // ...counted off the LIVE array, which is the merge by then
+    if (!/const t = r\.positionTypes/.test(body)) {
+        throw new Error('the drawn-set rule counts something other than what is'
+            + ' loaded - the merge is the thing that will be drawn');
+    }
+    if (!/BIG_STRUCTURE_RESIDUES/.test(body)) {
+        throw new Error('the two rules disagree on what counts as big');
+    }
+    // A HAND-PICKED STYLE IS STILL STICKY, in both of them.
+    if (!/r\.styleChosen \|\| r\.cartoonForce/.test(body)) {
+        throw new Error('the drawn-set rule overrides a style the user picked');
+    }
+    // ...and it runs when the drawn set changes
+    const after = app.slice(app.indexOf('function afterShownObjectsChange()'),
+        app.indexOf('function toggleObjectShown('));
+    if (!/tubeByDefaultForDrawn\(/.test(after)) {
+        throw new Error('nothing re-asks the question when an eye is clicked');
+    }
+});
+
 // A CACHE IS KEYED ON WHAT IT WAS BUILT FROM, wherever that is something the
 // code can compare. The segment cache was keyed on the frame index and the
 // object name - neither of which changes when a merge is built or a side chain
