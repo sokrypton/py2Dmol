@@ -116,13 +116,15 @@ window.addEventListener('load', () => {
       }
       R.colors = cols;
       R.autos = r.multiState ? r.multiState.sourceAutoColors : null;
-      // NO PALETTE SLOT SHARED ACROSS THE JOIN. Both structures have a chain
-      // A, and under the chain scheme that came out the same colour for both -
-      // two molecules reading as one.
-      //
-      // The SLOTS, not the rendered colours: two monomers both resolve to
-      // rainbow, and two rainbows share hues by construction - that is what
-      // "each object keeps its own scheme" means, not a clash.
+      // EVERY OBJECT NUMBERS ITS OWN CHAINS FROM ZERO, so what an object is
+      // coloured does not depend on what was loaded before it. The slots used
+      // to run in one sequence across all loaded objects, which kept two
+      // merged objects from sharing a chain colour (two molecules reading as
+      // one - the report this block was first written for) at the price of
+      // moving a structure's colours whenever it was loaded second: a ribosome
+      // opened in one set of colours alone and another set after a peptide.
+      // Stability won; in a merge, telling two objects apart is the per-object
+      // 'auto' colouring's job, which is what Multi picks anyway.
       {
         const slots = {};
         for (const [key, slot] of r.chainIndexMap.entries()) {
@@ -130,19 +132,16 @@ window.addEventListener('load', () => {
           (slots[nm] = slots[nm] || []).push(slot);
         }
         R.chainSlots = slots;
-        const seen = new Map();
-        R.sharedSlots = [];
+        R.slotsFromZero = [];
         for (const [nm, list] of Object.entries(slots)) {
-          for (const slot of list) {
-            if (seen.has(slot) && seen.get(slot) !== nm) {
-              R.sharedSlots.push(`${nm} and ${seen.get(slot)} both use slot ${slot}`);
-            }
-            seen.set(slot, nm);
+          const want = list.map((_, i) => i).join(',');
+          if (list.slice().sort((a, b) => a - b).join(',') !== want) {
+            R.slotsFromZero.push(`${nm} holds ${list.join(',')} rather than ${want}`);
           }
         }
       }
-      // ...and where both objects DO colour by chain, the drawn colours must
-      // be disjoint too - that is the case the report was about.
+      // ...and what that costs, recorded rather than asserted: where both
+      // objects colour by chain, their colours now overlap.
       const bySource = [new Set(), new Set()];
       for (let i = 0; i < r.coords.length; i++) {
         const src = g[i];
@@ -803,6 +802,26 @@ window.addEventListener('load', () => {
         R.afterLoadDrawn = r.drawnObjects();
         R.afterLoadN = r.coords.length;
       }
+      // LOADED SECOND, THE SAME COLOURS. This is the report itself: a
+      // structure opened in one set of chain colours on its own and another
+      // set when something was loaded before it. Re-loading the first file
+      // replaces its entry, which puts it LAST in the loaded order - so if
+      // anything an object gets depends on that order, its slots move here.
+      {
+        const slotsOf = (nm) => {
+          const out = [];
+          for (const [key, slot] of r.chainIndexMap.entries()) {
+            const bar = key.indexOf('|');
+            if ((bar > 0 ? key.slice(0, bar) : nm) === nm) out.push(key + '=' + slot);
+          }
+          return out.sort().join(' ');
+        };
+        const first = R.sources[0];
+        const before = slotsOf(first);
+        await load(P.get('a'));
+        await new Promise((s) => setTimeout(s, 900));
+        R.reload = {before, after: slotsOf(first)};
+      }
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});
   };
@@ -989,11 +1008,17 @@ def main():
         bad.append("the source map does not cover every position")
     if R["crossing"]:
         bad.append(f"{R['crossing']} segments join two objects")
-    if R.get("sharedSlots"):
-        bad.append(f"palette slots collide: {R['sharedSlots']}")
-    if R.get("sharedColors"):
-        bad.append(f"two objects that both colour by chain share colours"
-                   f" {R['sharedColors']}")
+    rl = R.get("reload") or {}
+    print(f"  loaded again, after the other object: "
+          f"{'same chain colours' if rl.get('before') == rl.get('after') else 'MOVED'}"
+          f" ({rl.get('after')})")
+    if rl.get("before") != rl.get("after"):
+        bad.append("re-loading an object after another one moved its chain"
+                   f" colours: {rl.get('before')} -> {rl.get('after')}")
+    if R.get("slotsFromZero"):
+        bad.append("an object's chain slots do not start at zero, so its"
+                   " colours move with what else is loaded: "
+                   + str(R["slotsFromZero"]))
     if R["hiddenOnFirst"]:
         bad.append("hiding the second object's backbone wrote onto the first")
     if R["hiddenLocal"] != 0:

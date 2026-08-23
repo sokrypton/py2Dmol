@@ -7130,7 +7130,14 @@ t('the same chain id in two objects is not the same colour', () => {
 // ...AND THE SLOTS COVER EVERY LOADED OBJECT, drawn or not: an object's
 // colours must not move when its neighbour is switched off, and the sequence
 // strip asks for the colours of the object it is showing, which may be hidden.
-t('a chain keeps its colour when other objects come and go', () => {
+//
+// EACH OBJECT NUMBERS ITS OWN CHAINS FROM ZERO. They used to run in one
+// sequence across every loaded object, so an object's colours depended on what
+// was loaded BEFORE it - a ribosome opened in one set of chain colours alone
+// and another set with a peptide loaded first. The running sequence was there
+// to keep two merged objects from sharing a chain colour; stability won (see
+// tests/multi_object.py, which records what that costs).
+t('a chain keeps its colour whatever else is loaded', () => {
     const v = new Cls();
     v.objectsData = {
         one: { frames: [{ chains: ['A', 'A', 'B'] }] },
@@ -7143,13 +7150,23 @@ t('a chain keeps its colour when other objects come and go', () => {
     const before = new Map(v.chainIndexMap);
     eq(before.get('one|A'), 0, "the first object's chains come first");
     eq(before.get('one|B'), 1, 'in order');
-    eq(before.get('two|A'), 2, "and the next object carries on where it left off");
+    eq(before.get('two|A'), 0, 'and the next object starts from zero as well');
     // ...whatever is on screen
     v.multiState = { enabled: true, sourceNames: ['two'], sourceOffsets: [0],
         sourceIdMap: [0] };
     v._buildChainIndexMap();
-    eq(v.chainIndexMap.get('two|A'), 2,
+    eq(v.chainIndexMap.get('two|A'), 0,
         'the second object kept its slot with the first one hidden');
+    // ...AND WHATEVER ORDER THEY LOADED IN. This is the report: the same object
+    // put last in the loaded order keeps the colours it had when it was first.
+    v.objectsData = {
+        two: { frames: [{ chains: ['A'] }] },
+        one: { frames: [{ chains: ['A', 'A', 'B'] }] },
+    };
+    v.multiState = null;
+    v._buildChainIndexMap();
+    eq(v.chainIndexMap.get('one|A'), 0, 'loaded second, the same first colour');
+    eq(v.chainIndexMap.get('one|B'), 1, 'and the same second');
 });
 
 // STRUCTURAL EDITS RUN ON ONE OBJECT. Copy, Cut and Delete rewrite an object's

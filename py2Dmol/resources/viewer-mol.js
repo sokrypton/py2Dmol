@@ -11429,39 +11429,59 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
-         * A PALETTE SLOT FOR EVERY CHAIN OF EVERY LOADED OBJECT, in load order,
-         * whether or not it is on screen.
+         * A PALETTE SLOT FOR EVERY CHAIN OF EVERY LOADED OBJECT, whether or
+         * not it is on screen.
          *
-         * Built over what is LOADED rather than what is drawn, for two reasons:
-         * an object's colours must not move when its neighbour is switched off,
-         * and the sequence strip asks for the colours of the object it is
-         * showing, which may be hidden.
+         * Built over what is LOADED rather than what is drawn, for two
+         * reasons: an object's colours must not move when its neighbour is
+         * switched off, and the sequence strip asks for the colours of the
+         * object it is showing, which may be hidden.
          *
-         * One object gets 0..n-1 and the next carries on from there, which is
-         * what a single file with all those chains would have got.
+         * EACH OBJECT NUMBERS ITS OWN CHAINS FROM ZERO. The slots used to run
+         * in one sequence across every loaded object, so an object's colours
+         * depended on WHAT WAS LOADED BEFORE IT: a ribosome opened in one set
+         * of chain colours on its own and a different set if a peptide was
+         * loaded first, every chain shifted by the peptide's chain count.
+         *
+         * That running sequence was there to keep two merged objects from
+         * sharing chain colours - two molecules reading as one, which is a
+         * report of its own (see tests/multi_object.py). The two cannot both
+         * hold, and stability won: a structure has to look the same every time
+         * you open it. In a merge, telling two objects apart is what the
+         * per-object 'auto' colouring does, which is what Multi picks anyway.
          */
         _buildChainIndexMap() {
             const all = this.objectsData || {};
             const names = Object.keys(all);
             const many = names.length > 1;
             const map = new Map();
-            let slot = 0;
-            const add = (key) => {
-                if (key && !map.has(key)) map.set(key, slot++);
+            // one counter per object, so nothing an object gets depends on its
+            // neighbours - not their chain count, and not the order they loaded
+            const slots = new Map();
+            const add = (owner, key) => {
+                if (!key || map.has(key)) return;
+                const at = slots.get(owner) || 0;
+                map.set(key, at);
+                slots.set(owner, at + 1);
             };
             for (const name of names) {
                 const fr = all[name] && all[name].frames && all[name].frames[0];
                 const chs = (fr && fr.chains) || [];
                 for (const c of [...new Set(chs)].sort()) {
-                    add(many ? (name + '|' + c) : c);
+                    add(name, many ? (name + '|' + c) : c);
                 }
             }
             // ...and anything the LOADED array has that frame 0 did not - a
             // later frame with an extra chain, a side chain appended under a
-            // chain of its own. Appended rather than renumbered, so nothing
-            // above moves.
+            // chain of its own. Appended after its own object's chains rather
+            // than renumbered, so nothing above moves.
             const n = this.chains ? this.chains.length : 0;
-            for (let i = 0; i < n; i++) add(this.chainKeyAt(i));
+            for (let i = 0; i < n; i++) {
+                const key = this.chainKeyAt(i);
+                if (!key) continue;
+                const bar = key.indexOf('|');
+                add(bar > 0 ? key.slice(0, bar) : this.currentObjectName, key);
+            }
             this.chainIndexMap = map;
         }
 
