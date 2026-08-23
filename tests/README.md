@@ -146,6 +146,50 @@ carry their frame's stamp now (`_naPickId`), and the probe checks both halves:
 nothing picks on an empty canvas, and a plate that IS on screen still picks its
 own residue.
 
+`tests/pae_objects.py` checks that **the PAE panel belongs to one object**:
+
+    python3 tests/pae_objects.py
+
+A PAE matrix is a square over one structure's residues - there is no such
+thing across two - but the panel was wired to whichever object was last LOADED
+and nothing re-asked when the drawn set changed. Load a structure with no PAE,
+load a prediction that has one, hide the prediction: the matrix stayed on
+screen describing residues that were not, and a box drawn on it selected the
+other object's. The rule is in `paeObjectName` (viewer-mol.js): the object
+being edited when it is drawn and has a matrix, otherwise the one drawn object
+that has one, otherwise none - two predictions on screen is a question with no
+answer, and the panel goes away rather than pick silently. The probe gives the
+second object a synthetic matrix, so it needs no network.
+
+`tests/hidden_reload.py` checks that **everything switched off is a state you
+can come back from**:
+
+    python3 tests/hidden_reload.py
+
+Two faults from one assumption - that the coordinate array always holds the
+object being edited. Switching an object back on took the "one object, and it
+is the one being edited" path, which RETURNS without loading on the grounds
+that the array already has it; the array had been emptied on purpose, so
+nothing was ever drawn again. And loading a file while everything was off left
+the shown set empty, so the file you had just asked for did not appear. The
+strip builds from the object's own frames rather than the array, so it came
+back as a full row of grey cells - measured in SATURATED pixels, since a strip
+of grey cells still has hundreds of shades in its antialiased letters.
+
+`tests/cut_ligands.py` checks what an edit leaves behind in the **ligand
+groups**:
+
+    python3 tests/cut_ligands.py
+
+Which atoms make up one ligand is computed once, in `addFrame`, as a map of
+position indices. Cut and Delete rewrite the frames in place and renumber
+everything else keyed by position - the mask, the side chains, the contacts,
+the MSA - and this was left in the old numbering: the remaining ligands drew
+as loose spheres and stopped collapsing to one token in the strip. It is
+rebuilt from the frame now (`_recomputeLigandGroups`), not renumbered. The
+probe cuts a protein chain (where the map has to survive intact, the harder
+case) and then a ligand chain (where groups have to leave).
+
 `tests/python_page.py` checks the **Python API's own page** in a real browser:
 
     python3 tests/python_page.py

@@ -536,7 +536,6 @@ const panelBody = (() => {
         return appSrc.slice(i, kk + 1);
     };
     return appSrc.slice(a, k + 1) + '\n' + lift('syncSelectionToggles')
-        + '\n' + lift('describeSelectionRanges')
         // ...and the two the toggles read: which of them is a ligand row, and
         // how much of it is drawn
         + '\n' + lift('ligandRowPositions') + '\n' + lift('visibleState')
@@ -555,7 +554,7 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
     const nodes = {
         selectionTools: { classList: { toggle(c, on) { this._on = on; } } },
         selectionPanel: { hidden: null },
-        selectionPanelCount: { textContent: null },
+        selectionPanelCount: { textContent: null, title: null },
         contactRow: { hidden: null },
         clearAllResidues: { disabled: null },
         elementsShowToggle: (() => {
@@ -729,9 +728,13 @@ t('the selection panel appears with a selection and hides without one', () => {
     }
 });
 
-t('the panel says how big the selection is, and which residues', () => {
-    // the count changes what the buttons do; the ranges say what they will do
-    // it to, which is what you check before pressing the one that deletes them
+t('the panel says how big the selection is, and nothing more', () => {
+    // The count changes what the buttons do, so it is in the head. WHICH
+    // residues is not: the ranges that used to sit beside it ("A 11-13; B 5")
+    // were set small in a 340px head, ran past its edge and were cut short,
+    // and the tooltip holding the rest is not something anybody hovers a
+    // header for. The sequence strip shows the selection where there is room
+    // to show it.
     if (panelRun([4]).selectionPanelCount.textContent !== '1 residue') {
         throw new Error('singular count is wrong: '
             + panelRun([4]).selectionPanelCount.textContent);
@@ -742,24 +745,19 @@ t('the panel says how big the selection is, and which residues', () => {
     if (panelRun(null).selectionPanelCount.textContent !== '') {
         throw new Error('a stale count survived the selection being cleared');
     }
-    // ...and the ranges themselves, scored on their own: by chain, consecutive
-    // NUMBERS run together, a gap in the numbering breaking the run
-    const ranges = new Function('viewerApi', 'return (' + (() => {
-        const src = fs.readFileSync('web/app.js', 'utf8');
-        const i = src.indexOf('\nfunction describeSelectionRanges(');
-        let j = src.indexOf('{', i), d = 0, k = j;
-        for (; k < src.length; k++) {
-            if (src[k] === '{') d++;
-            else if (src[k] === '}') { d--; if (!d) break; }
-        }
-        return src.slice(i + 1, k + 1);
-    })() + ')')({ renderer: {
-        chains: ['A', 'A', 'A', 'A', 'A', 'B', 'B'],
-        residueNumbers: [11, 12, 13, 20, 21, 5, 7],
-    } });
-    const got = ranges([0, 1, 2, 3, 4, 5, 6]);
-    if (got !== 'A 11-13, 20-21; B 5, 7') {
-        throw new Error('ranges read "' + got + '", expected "A 11-13, 20-21; B 5, 7"');
+    // ...and no residue detail creeps back in, on screen or in the tooltip
+    const three = panelRun([4, 5, 6]);
+    if (three.selectionPanelCount.textContent !== '3 residues') {
+        throw new Error('the head lists the residues again: '
+            + three.selectionPanelCount.textContent);
+    }
+    if (three.selectionPanelCount.title) {
+        throw new Error('the ranges moved into the tooltip: '
+            + three.selectionPanelCount.title);
+    }
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    if (app.includes('describeSelectionRanges')) {
+        throw new Error('describeSelectionRanges is back');
     }
 });
 
@@ -5893,7 +5891,7 @@ t('the Elements row is offered where side chains are', () => {
 t('the selection toggles show all, none and mixed', () => {
     const nodes = {
         selectionTools: { classList: { toggle() {} }, querySelectorAll: () => [] },
-        selectionPanel: { hidden: null }, selectionPanelCount: { textContent: null },
+        selectionPanel: { hidden: null }, selectionPanelCount: { textContent: null, title: null },
         contactRow: { hidden: null }, clearAllResidues: { disabled: null },
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
@@ -5964,7 +5962,7 @@ t('the selection toggles show all, none and mixed', () => {
 t('the Elements toggle reads on until it is switched off', () => {
     const nodes = {
         selectionTools: { classList: { toggle() {} }, querySelectorAll: () => [] },
-        selectionPanel: { hidden: null }, selectionPanelCount: { textContent: null },
+        selectionPanel: { hidden: null }, selectionPanelCount: { textContent: null, title: null },
         contactRow: { hidden: null }, clearAllResidues: { disabled: null },
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
@@ -6014,7 +6012,7 @@ t('the Elements toggle reads on until it is switched off', () => {
 t('the toggles ignore a selected position that no longer exists', () => {
     const nodes = {
         selectionTools: { classList: { toggle() {} }, querySelectorAll: () => [] },
-        selectionPanel: { hidden: null }, selectionPanelCount: { textContent: null },
+        selectionPanel: { hidden: null }, selectionPanelCount: { textContent: null, title: null },
         contactRow: { hidden: null }, clearAllResidues: { disabled: null },
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
@@ -6068,7 +6066,7 @@ t('the show toggles are disabled along with the rest of the panel', () => {
                 ...(/input/i.test(sel) ? toggles : []),
             ],
         },
-        selectionPanel: { hidden: null }, selectionPanelCount: { textContent: null },
+        selectionPanel: { hidden: null }, selectionPanelCount: { textContent: null, title: null },
         contactRow: { hidden: null }, clearAllResidues: { disabled: null },
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
@@ -6529,6 +6527,8 @@ function shownViewer() {
     v._invalidateScreenProjection = function () {
         this.screenFrameId++; this._pickPending = null;
     };
+    // the PAE panel is asked again whenever the drawn set changes
+    v._syncPaeToDrawn = function () { this.paeSynced = (this.paeSynced || 0) + 1; };
     v._invalidateShadowCache = function () { this.shadowCleared = true; };
     v._exitOverlayMode = function () { this.exitedOverlay = true;
         this.overlayState.enabled = false; };
@@ -7340,6 +7340,53 @@ t('everything can be switched off, and the objects survive it', () => {
     if (!v.coords.length) throw new Error('nothing was loaded for it');
 });
 
+// COMING BACK FROM NOTHING, for the object being EDITED. That is the one case
+// the ordinary single-object path claims: it returns without loading anything,
+// on the grounds that the array already holds this object. True from every
+// direction but this one - the array was emptied on purpose - so lighting the
+// eye again drew nothing at all, for good. The sequence strip builds from the
+// object's own frames rather than the array, so it came back as a full row of
+// grey cells describing a structure the renderer no longer had.
+// tests/hidden_reload.py is the same fault, clicked in a browser.
+t('the object being edited comes back from an empty canvas', () => {
+    const v = shownViewer();
+    v.setShownObjects([]);
+    eq(v.coords.length, 0, 'nothing on screen');
+    v.loaded = [];
+    eq(v.setShownObjects(['A']), true, 'the edited object, switched back on');
+    eq(v.drawnObjects().join(','), 'A', 'it is drawn');
+    if (!v.loaded.length) throw new Error('its frame was never loaded');
+    if (!v.coords.length) throw new Error('the coordinate array is still empty');
+    eq(v.multiState.enabled, false, 'and one object is not a merge');
+
+    // ...and the ordinary path is still not re-entered for nothing: with the
+    // object already loaded, switching the set to the same thing loads again
+    // is waste, and reloading on every side-chain toggle was measurable.
+    v.loaded = [];
+    v.setShownObjects(null);
+    eq(v.loaded.length, 0, 'an object already on screen is not reloaded');
+});
+
+// LOADING A FILE WITH EVERYTHING SWITCHED OFF is a request to see that file.
+// The new object joined the shown set only when the set had something in it
+// already, so a load from the empty state stayed invisible - and the strip,
+// which follows the drawn set, said there was nothing on screen while the
+// panels described the object that had just arrived.
+t('a file loaded while everything is off is the thing you see', () => {
+    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = src.indexOf('addObject(name) {');
+    if (at < 0) throw new Error('addObject is gone');
+    const head = src.slice(at, at + 1600);
+    if (/shownObjects instanceof Set && this\.shownObjects\.size/.test(head)) {
+        throw new Error('a load from the empty state leaves the shown set'
+            + ' empty, so the file that was just loaded is invisible');
+    }
+    if (!/shownObjects instanceof Set\)\s*\{\s*this\.shownObjects\.add\(name\)/
+            .test(head.replace(/\s+/g, ' '))) {
+        throw new Error('a new object does not join the shown set at all');
+    }
+});
+
 t('a single object that is not the edited one is still drawn', () => {
     const v = shownViewer();
     // A is being edited; show B and only B
@@ -7676,10 +7723,11 @@ t('nothing fills the entropy vector from a single object', () => {
 // hid the FIRST object's residues, and the chain set it wrote was bare ids.
 t('a PAE box lands on the object whose matrix it was drawn on', () => {
     const pae = fs.readFileSync('py2Dmol/resources/viewer-pae.js', 'utf8');
-    // in
-    if (!/sourceOffsetOf\(this\.mainRenderer\.currentObjectName\)/.test(pae)) {
+    // in - and the offset is the PANEL'S object, which is not the object
+    // being edited once several are on screen (see paeObjectName)
+    if (!/sourceOffsetOf\(PAE\.paeObject\(this\.mainRenderer\)\)/.test(pae)) {
         throw new Error('a PAE box is turned into positions without the'
-            + " object's offset");
+            + " offset of the object whose matrix it was drawn on");
     }
     // BOTH loops - a box has an i range and a j range, and offsetting one of
     // them puts half the selection on the wrong object
@@ -7692,6 +7740,10 @@ t('a PAE box lands on the object whose matrix it was drawn on', () => {
     const back = pae.slice(at, at + 2200).replace(/\s+/g, ' ');
     if (!/chainKeyAt\(r \+ off\)/.test(back) || !/positions\.has\(r \+ off\)/.test(back)) {
         throw new Error('the reverse mapping reads the mask at raw PAE rows');
+    }
+    if (!/sourceOffsetOf\(PAE\.paeObject\(renderer\)\)/.test(back)) {
+        throw new Error('the reverse mapping offsets by the edited object'
+            + " rather than the one the matrix belongs to");
     }
     // ...and the ligand expansion it runs on the way
     if (!/const groups = this\.mainRenderer\.mergedLigandGroups\s*\n?\s*\? this\.mainRenderer\.mergedLigandGroups\(\)/

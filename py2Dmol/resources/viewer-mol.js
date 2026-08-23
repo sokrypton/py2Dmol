@@ -3130,6 +3130,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // missing until the panel was closed and opened again.
             if (this._savePanel && !this._captureBusy) this._rebuildSavePanel();
 
+            // ...AND THE PAE PANEL, which follows the object being edited when
+            // that object is drawn. Under a merge nothing else here reloads a
+            // frame, so this is the only thing that would ask.
+            this._syncPaeToDrawn();
+
             // Note: _composeAndApplyMask will be called by setFrame after the frame data is loaded
         }
 
@@ -3138,10 +3143,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // A NEW OBJECT JOINS WHAT IS ON SCREEN. The shown set is a list of
             // names, and one that does not mention the object just loaded
             // leaves it invisible - so a fetch, a Copy or a drag-and-drop while
-            // two structures are up would appear to have done nothing. Only
-            // when a set exists at all: empty still means "just the current
-            // one", which is every single-object session.
-            if (this.shownObjects instanceof Set && this.shownObjects.size) {
+            // two structures are up would appear to have done nothing.
+            //
+            // INCLUDING FROM AN EMPTY SET. Everything switched off is a state
+            // the user can be in, and loading a file from there is a request
+            // to see that file: leaving the set empty made the load look like
+            // it had failed. Only a set at all - a null set is the resting
+            // state, where the object being edited is drawn and this one is
+            // about to become it.
+            if (this.shownObjects instanceof Set) {
                 this.shownObjects.add(name);
             }
             const objectExists = this.objectsData[name] !== undefined;
@@ -4347,6 +4357,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             object.frames = frames;
             this._recomputeObjectStats(object, false);        // ...but do not move the camera
+            // ...AND THE LIGAND GROUPS, which are position indices like
+            // everything else here and are computed nowhere but addFrame - so
+            // an edit that rewrote the frames in place left them pointing at
+            // whatever had moved into those slots. Cut one chain out of a
+            // structure with a haem in each and the ones that were left drew
+            // as loose spheres and stopped collapsing to one token in the
+            // strip. Rebuilt from the frame rather than renumbered: the map is
+            // derived from the frame in the first place, and there is one
+            // function that does it.
+            this._recomputeLigandGroups(object);
 
             // THE MASK IS POSITION INDICES TOO. Renumbered rather than reset:
             // a delete is not a reason to un-hide the chain you were hiding.
@@ -4381,6 +4401,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.setFrame(at);
             this.updateUIControls();
             return true;
+        }
+
+        /**
+         * THE LIGAND GROUPS OF AN OBJECT, from the frame it now has.
+         *
+         * Which atoms make up one ligand is derived from the frame - chain,
+         * residue number and name - so anything that rewrites the frames
+         * rebuilds this rather than trying to renumber it.
+         */
+        _recomputeLigandGroups(object) {
+            if (typeof groupLigandAtoms !== 'function') return;
+            const f = object && object.frames && object.frames[0];
+            if (!f || !f.chains || !f.position_types) return;
+            object.ligandGroups = groupLigandAtoms(f.chains, f.position_types,
+                f.residue_numbers || [], f.position_names || []);
+            this._mergedLigCache = null;
         }
 
         /**
@@ -10303,6 +10339,41 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
+         * WHOSE MATRIX THE PAE PANEL IS SHOWING, or null for none.
+         *
+         * A PAE matrix is a square over ONE structure's residues; there is no
+         * such thing across two, and a row of it means a residue only once you
+         * know which object it counts from. The panel was wired to the object
+         * last LOADED and nothing re-asked when the drawn set changed, so
+         * loading a structure with no PAE, then a prediction with one, then
+         * hiding the prediction, left its matrix on screen describing residues
+         * that were not - and a box drawn on it selected the other object's.
+         *
+         * The rule, in order:
+         *   1. the object being EDITED, when it is drawn and has a matrix -
+         *      the panels follow the edited object everywhere else too;
+         *   2. otherwise the ONE drawn object that has a matrix, if there is
+         *      exactly one - unambiguous, so there is nothing to be wrong
+         *      about;
+         *   3. otherwise none. Two predictions on screen is a question with no
+         *      answer, and the panel says so by going away rather than picking
+         *      one of them silently.
+         */
+        paeObjectName() {
+            const P = (typeof window !== 'undefined') ? window.PAE : null;
+            if (!P) return null;
+            const has = (n) => {
+                const o = this.objectsData && this.objectsData[n];
+                return !!(o && P.hasData(o));
+            };
+            const drawn = this.drawnObjects ? this.drawnObjects() : [];
+            const cur = this.currentObjectName;
+            if (cur && drawn.indexOf(cur) >= 0 && has(cur)) return cur;
+            const withPae = drawn.filter(has);
+            return withPae.length === 1 ? withPae[0] : null;
+        }
+
+        /**
          * WHICH OBJECTS ARE ON SCREEN. The list UI writes here.
          *
          * Names not loaded are ignored rather than an error - an object can be
@@ -10356,6 +10427,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this._invalidateScreenProjection();
                 this._invalidateSegmentCache();
                 this._invalidateShadowCache();
+                this._syncPaeToDrawn();
                 if (!skipRender) this.render('nothing shown');
                 return;
             }
@@ -10364,7 +10436,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // untouched. Any other single object goes through the merge, which
             // is what knows how to draw an object that is not the current one.
             if (names.length === 1 && names[0] === this.currentObjectName) {
-                if (!ms.enabled) return;
+                // ...UNLESS THERE IS NOTHING IN THE ARRAY, which is where
+                // coming back from "everything switched off" lands. Returning
+                // on the grounds that the ordinary path already holds this
+                // object was true from every other direction and false from
+                // that one: the array had been emptied on purpose, so lighting
+                // the eye again drew nothing, for good. The sequence strip
+                // meanwhile builds from the object's own frames, so it came
+                // back as a full-length row of grey cells - a strip describing
+                // a structure the renderer no longer had.
+                if (!ms.enabled && this.coords && this.coords.length) return;
+                if (!ms.enabled) {
+                    this._loadFrameData(this.currentFrame >= 0 ? this.currentFrame : 0,
+                        skipRender);
+                    return;
+                }
                 const carriedOut = this._selectionAsOwners();
                 this._dropMergeState();
                 this._invalidateSegmentCache();
@@ -10380,6 +10466,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
                 this._loadFrameData(this.currentFrame, skipRender);
                 this._restoreSelectionFromOwners(carriedOut);
+                this._syncPaeToDrawn();
                 return;
             }
 
@@ -10446,7 +10533,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const carried = sameSources ? null : this._selectionAsOwners();
             this._loadDataIntoRenderer(merged, true);
             if (carried) this._restoreSelectionFromOwners(carried);
+            this._syncPaeToDrawn();
             this._applyMergedVisibility(merged, skipRender);
+        }
+
+        /** Hand the PAE panel the matrix of whatever paeObjectName() names. */
+        _syncPaeToDrawn() {
+            if (window.PAE && window.PAE.syncToDrawn) window.PAE.syncToDrawn(this);
+        }
+
+        /**
+         * The name web/app.js has always called after loading or switching an
+         * object - and which nothing defined, so three call sites guarded with
+         * `typeof ... === 'function'` had been doing nothing for as long as
+         * they have existed. It is exactly the moment the panel needs asking
+         * again, so it is the sync.
+         */
+        updatePAEContainerVisibility() {
+            this._syncPaeToDrawn();
         }
 
         /**
@@ -15397,7 +15501,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Use requestAnimationFrame to ensure PAE renderer is initialized
                 requestAnimationFrame(() => {
                     if (window.PAE) {
-                        window.PAE.updateVisibility(renderer);
+                        window.PAE.syncToDrawn(renderer);
                     }
 
                     // Update scatter with newly loaded config
@@ -15549,7 +15653,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Update PAE container visibility once at end
             if (window.PAE) {
-                window.PAE.updateVisibility(renderer);
+                window.PAE.syncToDrawn(renderer);
             }
 
             // Update scatter plot if frames were added (may have scatter data)
