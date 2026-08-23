@@ -430,3 +430,60 @@ are the only state and the live mask is always derived. It would not remove the
 merged→local translation - a click in a merged view still has to be filed per
 object - only the duplicate state, and it would have to re-derive overlay
 mode's third index space, which has the least test coverage of anything here.
+
+## The caches: what they are for, and which kind each one is
+
+Asked after the third bug in a row turned out to be a cache: *why are we using
+caches at all, shouldn't these just be part of the object?* The answer is that
+three different things were being called a cache, and only one of them is
+state that belongs to an object.
+
+**1. What the view costs, per frame.** Screen positions, the shadow grid, the
+GPU mesh, the paper tile, the nucleic base-plate outlines. These describe a
+DRAWING, not a structure, and they are wrong the moment the camera moves.
+They are correct as caches, and the rule for them is a STAMP: whatever fills
+them records the frame id it drew, and every reader checks it. Both bugs here
+came from readers that did not - a click picked residues off a projection of a
+picture that was no longer on screen, and the base plates of a cartoon frame
+stayed clickable in the tube style at the rotation they were drawn at.
+
+**2. What the coordinates imply.** The secondary-structure assignment, the base
+pairing, the beta ladders, the segment list, which atoms make up one ligand.
+These are pure functions of the array, expensive enough to be worth keeping,
+and NOT state: nobody edits them, they are re-derived. The rule is that the key
+is what they were computed FROM, by identity where that is possible:
+
+  - ligand groups live in a `WeakMap` keyed by the frame object, so an edit -
+    which builds new frames - gets a new answer and there is nothing to
+    invalidate;
+  - the segment cache compares `this.coords` by pointer, because the frame
+    index and the object name do not change when a merge is built or a side
+    chain is appended;
+  - the SS assignment is keyed by one string built in ONE place
+    (`secCacheKey`), because it was built in two and they disagreed: the
+    colour path's key left the merged objects out, so with several on screen
+    it could never match the cache the drawing had just filled.
+
+  Explicit invalidation stays for the other direction - the array unchanged and
+  the derived thing not (a contact added, the backbone hidden) - but it is no
+  longer the only thing standing between a new code path and stale geometry.
+
+  A reader of one of these must be able to ASK for it, not scavenge. The SSE
+  control read `_cartoonSec` directly and said "DSSP" whenever it was empty,
+  which is always in the tube style; it calls `py2dmolCartoon.secondaryFor`
+  now, which computes on a miss.
+
+**3. What the user chose.** Colours, side chains, hidden backbones, forced
+letters, contacts, the mask. This IS state, it does belong to the object, and
+it is declared in one place: `OBJECT_STATE` in viewer-mol.js.
+
+**Cost, measured.** The assignment computed on demand: 1 ms cold on a
+60-residue trace, 19 ms on 1AOI (1,103 positions), 81 ms on 4UG0 (17,550) -
+about one frame's worth, once per invalidation, and free afterwards. It is not
+asked for at all in the tube style unless the SS colour mode is on, because
+nothing there draws secondary structure.
+
+**The floor.** `tests/minimal_input.py` holds the smallest input the Python API
+takes - an Nx3 array of CA coordinates, no chains, no names, no atoms - and
+checks that both styles draw it, that the assignment finds the helix in it, and
+that the panel rows with no data behind them are absent rather than broken.

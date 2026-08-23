@@ -207,6 +207,37 @@ window.addEventListener('load', () => {
         await new Promise((s) => setTimeout(s, 150));
       }
 
+      // THE SS COLOUR MODE SHARES THE DRAWING'S ASSIGNMENT rather than making
+      // its own. The two cache it under keys built in two places, and the
+      // colour path's key left the merged objects out - so with several on
+      // screen it could never match the cache the draw stage had just filled,
+      // and every frame paid for a second full SS pass. One builder now
+      // (secCacheKey), which is observable: the colour path's own slot stays
+      // empty because there is nothing left for it to compute.
+      {
+        r.setStyle('cartoon');
+        await new Promise((s) => setTimeout(s, 300));
+        colorSel.value = 'ss';
+        colorSel.dispatchEvent(new Event('change'));
+        r.render('ss colours');
+        await new Promise((s) => setTimeout(s, 400));
+        // ...asked for directly, which is what the colour path and the panel
+        // both do. The drawing has just filled its cache; anyone asking now
+        // must get THAT array back rather than computing a second one.
+        r._ssColorSec = null; r._ssColorKey = null;
+        const shared = window.py2dmolCartoon.secondaryFor(r);
+        R.ssShared = {
+          mode: r.colorMode,
+          draw: !!r._cartoonSec,
+          sameArray: shared === r._cartoonSec,
+          colourOwn: !!r._ssColorSec,
+        };
+        colorSel.value = 'auto';
+        colorSel.dispatchEvent(new Event('change'));
+        r.render('back to auto');
+        await new Promise((s) => setTimeout(s, 200));
+      }
+
       // ORIENT, PICKING AND AUTO CLIP, the three things that ask "where is the
       // structure" and used to be answered by the current object alone.
       window.applyBestViewRotation(false);
@@ -912,6 +943,19 @@ def main():
           f" clicking in {R.get('wantedObject')}'s section -> editing"
           f" {R.get('afterPickCurrent')}, selected a residue of"
           f" {R.get('afterPickOwner')}, drawn {R.get('afterPickDrawn')}")
+    ss = R.get('ssShared') or {}
+    print(f"  SS colours on a merge (mode {ss.get('mode')!r}):"
+          f" the drawing's assignment {ss.get('draw')},"
+          f" a second one for the colours {ss.get('colourOwn')}")
+    if not ss.get('draw'):
+        bad.append("the draw stage did not cache an SS assignment, so nothing"
+                   " here says whether the colour path reuses it")
+    elif ss.get('colourOwn') or not ss.get('sameArray'):
+        bad.append("asking for the assignment computed a second one beside the"
+                   " drawing's - two full passes, because the two cache keys"
+                   " were built in two places and the colour path's left the"
+                   " merged objects out")
+
     o1 = R.get('orientOne') or {}
     print(f"  orient on {o1.get('object')} alone (editing {o1.get('edited')}):"
           f" centre {o1.get('off')} A from its centroid, against"

@@ -3753,10 +3753,7 @@
         // shown-set changes keep the object name and can keep the position
         // count, and a cached assignment from the other set is a structure
         // drawn with somebody else's helices.
-        const secKey = `${renderer.currentObjectName}|${renderer.currentFrame}|${n}|${renderer.overlayState && renderer.overlayState.enabled}`
-            + `|${(renderer.multiState && renderer.multiState.enabled
-                && renderer.multiState.sourceNames) ? renderer.multiState.sourceNames.join(',') : ''}`
-            + sseKey(renderer);
+        const secKey = secCacheKey(renderer, n);
         //
         // The assignment runs over the WHOLE structure at once rather than per
         // run: sheets pair strands from different chains, and a hydrogen bond
@@ -12503,6 +12500,25 @@
     if (typeof window !== 'undefined' && window.py2dmolCartoon) {
         window.py2dmolCartoon.sseKey = sseKey;
     }
+    /**
+     * WHAT AN SS ASSIGNMENT WAS COMPUTED FOR - the object, the frame, the size,
+     * both merges, and any forced letters.
+     *
+     * ONE BUILDER, because there were two and they disagreed: the draw stage
+     * named the merged objects in its key and the colour path did not, so with
+     * several objects on screen the colour path could never match the cache
+     * the drawing had just filled and recomputed the whole assignment for
+     * itself - and its shorter key could describe two different merges of the
+     * same total length.
+     */
+    const secCacheKey = (renderer, n) => (
+        `${renderer.currentObjectName}|${renderer.currentFrame}|${n}`
+        + `|${!!(renderer.overlayState && renderer.overlayState.enabled)}`
+        + `|${(renderer.multiState && renderer.multiState.enabled
+            && renderer.multiState.sourceNames)
+            ? renderer.multiState.sourceNames.join(',') : ''}`
+        + sseKey(renderer));
+
     const applySse = (sec, renderer) => {
         const ov = sseOf(renderer);
         if (!ov || !sec) return sec;
@@ -12516,9 +12532,7 @@
     const secForColor = (renderer) => {
         const n = renderer.coords ? renderer.coords.length : 0;
         if (!n) return null;
-        const key = `${renderer.currentObjectName}|${renderer.currentFrame}|${n}`
-            + `|${renderer.overlayState && renderer.overlayState.enabled}`
-            + sseKey(renderer);
+        const key = secCacheKey(renderer, n);
         if (renderer._cartoonSec && renderer._cartoonSecKey === key) {
             return renderer._cartoonSec;
         }
