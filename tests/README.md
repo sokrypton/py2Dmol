@@ -159,6 +159,25 @@ their atoms, and every side chain went out the moment a merge was rebuilt.
 Click any object's eye and the side chains of the object you did not touch
 disappeared with it.
 
+`tests/save_multi.py` checks that **a Multi session comes back the way it was
+saved**:
+
+    python3 tests/save_multi.py
+
+Three objects with one switched off, per-object state on two of them, and a
+camera the user chose - saved through the Save button's own path, cleared, and
+loaded back. It checks the mode (the button pressed, the list open, the picker
+greyed), which eyes are on, which object is being edited, every object's own
+state, the coordinate count and the picture.
+
+The view was the one that did not survive. Objects arrive one at a time and
+each arrival rebuilds the merge of everything loaded so far, which frames on
+what it finds - every object in a restored session is new to the renderer, so
+the rule that widens the view for a newly loaded file fires for all of them.
+By the time the shown set was applied, the centre and extent from the file
+were long gone: 17.8 saved, 51.3 restored. The saved camera is re-applied
+last.
+
 `tests/nucleic_multi.py` checks that **a nucleic object keeps its atoms when
 the viewer drops out of Multi**:
 

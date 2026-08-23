@@ -8501,6 +8501,25 @@ async function loadViewerState(stateData) {
                             renderer.setShownObjects(shownSaved);
                         }
 
+                        // ...AND THE SAVED CAMERA HAS THE LAST WORD. Objects
+                        // arrive one at a time, and each arrival rebuilds the
+                        // merge of everything loaded so far - which frames on
+                        // what it finds, because every object in a restored
+                        // session is new to this renderer. By the time the
+                        // shown set is applied the centre and extent from the
+                        // file are long gone. They are cheap to put back, and
+                        // this is the one place that knows they are the answer.
+                        const savedView = stateData.viewer_state;
+                        if (savedView) {
+                            if (savedView.center) {
+                                renderer.viewerState.center = savedView.center;
+                            }
+                            if (typeof savedView.extent === 'number') {
+                                renderer.viewerState.extent = savedView.extent;
+                            }
+                            renderer.render('restored view');
+                        }
+
                         // Explicitly ensure PAE data is set if available
                         // (setFrame should handle this, but we verify here).
                         // ...through the rule about WHOSE matrix it is: taking
