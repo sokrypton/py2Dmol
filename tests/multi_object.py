@@ -464,6 +464,43 @@ window.addEventListener('load', () => {
         r.clearResidueSelection();
       }
 
+      // CHAIN MODE, the strip's other shape: a row of chain blocks rather
+      // than sequences. It goes through the same section loop and the same
+      // hit tester, so it can go wrong in the same ways.
+      {
+        const modeSel = document.getElementById('sequenceModeSelect');
+        modeSel.value = 'chain';
+        modeSel.dispatchEvent(new Event('change'));
+        await new Promise((s) => setTimeout(s, 400));
+        const lay = window.SEQ.layout();
+        R.chainModeSections = (lay.objectLabelPositions || []).map((x) => x.object);
+        R.chainModeBlocks = (lay.chainLabelPositions || [])
+          .map((x) => x.object + '/' + x.chainId);
+        // ...and a click on one block takes that object's chain, not the
+        // other object's chain of the same name
+        const cv = document.getElementById('sequenceCanvas');
+        const bx = cv.getBoundingClientRect();
+        const dpi = 200 / 96;
+        const want = lay.chainLabelPositions.find(
+          (cp) => cp.chainId === 'A' && cp.object === names[1]);
+        r.clearResidueSelection();
+        if (want) {
+          const x = bx.left + (want.x + 2) * bx.width / (cv.width / dpi);
+          const y = bx.top + (want.y + 2 - (lay.scrollTop || 0))
+            * bx.height / (cv.height / dpi);
+          cv.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: x, clientY: y }));
+          cv.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: x, clientY: y }));
+          await new Promise((s) => setTimeout(s, 300));
+        }
+        const picked = r.residueSelection ? Array.from(r.residueSelection) : [];
+        R.chainModeOwners = Array.from(new Set(picked.map((i) => (r.ownerOf(i) || {}).name)));
+        R.chainModeCount = picked.length;
+        r.clearResidueSelection();
+        modeSel.value = 'sequence';
+        modeSel.dispatchEvent(new Event('change'));
+        await new Promise((s) => setTimeout(s, 400));
+      }
+
       // NOTHING ON SCREEN, NOTHING TO READ: the strip goes quiet rather than
       // listing residues of a picture that is not there, and its tools go dead
       // with it - a click in it would select something nobody can see.
@@ -683,6 +720,9 @@ def main():
     print(f"  across objects {R.get('acrossObjects')}: Copy made"
           f" {R.get('copyMade')} ({R.get('copySizes')} residues), Delete took"
           f" {R.get('sizesBeforeDelete')} -> {R.get('sizesAfterDelete')}")
+    print(f"  chain mode: sections {R.get('chainModeSections')}, blocks"
+          f" {R.get('chainModeBlocks')}; a click took {R.get('chainModeCount')}"
+          f" residues of {R.get('chainModeOwners')}")
     print(f"  empty strip: layout {R.get('emptyStripLayout')}, note"
           f" {R.get('emptyStripNote')}, tools dead {R.get('emptyStripDisabled')};"
           f" back -> {R.get('backStripSections')}, live {R.get('backStripEnabled')}")
@@ -822,6 +862,12 @@ def main():
     lost = [b - a for a, b in zip(R.get("sizesAfterDelete", []), R.get("sizesBeforeDelete", []))]
     if lost != [1, 1]:
         bad.append(f"Delete removed {lost} residues from the two objects, not one each")
+    if R.get("chainModeSections") != R["objects"]:
+        bad.append(f"chain mode has sections {R.get('chainModeSections')}")
+    if len({b.split('/')[0] for b in R.get("chainModeBlocks", [])}) != 2:
+        bad.append(f"chain mode's blocks come from {R.get('chainModeBlocks')}")
+    if R.get("chainModeOwners") != [R["objects"][1]]:
+        bad.append(f"a chain-mode click took residues of {R.get('chainModeOwners')}")
     if R.get("emptyStripLayout") is not None:
         bad.append("the strip still laid out rows with nothing on screen")
     if not R.get("emptyStripNote"):

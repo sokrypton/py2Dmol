@@ -3652,10 +3652,11 @@ function contactApi(objectsData) {
         render() { this._rendered = (this._rendered || 0) + 1; },
     };
     // eslint-disable-next-line no-new-func
-    const f = new Function('viewerApi', 'window',
+    const f = new Function('viewerApi', 'window', 'setStatus',
         contactBody + '; return { addSelectionContact, removeSelectionContact,'
-        + ' setSelectionContactColor, setSelectionContactWidth, findContact };'
-    )({ renderer }, {});
+        + ' setSelectionContactColor, setSelectionContactWidth, findContact,'
+        + ' contactOwnerOf };'
+    )({ renderer }, {}, (msg) => { renderer._status = msg; });
     return { ...f, renderer };
 }
 
@@ -7679,6 +7680,59 @@ t('the GPU cache keys cover every drawn object', () => {
         throw new Error("the mesh signature reads only the current object's"
             + ' per-position colours, so a second object could recolour'
             + ' without the mesh being cut for it');
+    }
+});
+
+// A CONTACT JOINS TWO RESIDUES OF ONE STRUCTURE. It is stored on an object as
+// a pair of chain+residue references and resolved among THAT object's
+// positions, so a pair with one end in each of two structures has nowhere to
+// live: stored on either one, the other end resolves to nothing and the line
+// never appears. And the pair must be stored on the object that OWNS it, not
+// on whichever happens to be current.
+t('a contact belongs to the object that owns both its ends', () => {
+    const objectsData = { one: {}, two: {} };
+    const api = contactApi(objectsData);
+    const r = api.renderer;
+    r.objectsData = objectsData;
+    r.currentObjectName = 'one';
+    // positions 0..2 belong to `one`, 3..4 to `two`
+    r.ownerOf = (i) => (i < 3 ? { name: 'one', local: i } : { name: 'two', local: i - 3 });
+
+    eq(api.contactOwnerOf([0, 1]), 'one', 'both ends in the first object');
+    eq(api.contactOwnerOf([3, 4]), 'two', 'both ends in the second');
+    eq(api.contactOwnerOf([0, 4]), null, 'a pair that spans two objects');
+
+    // ...and it is filed on the owner, even when another object is current
+    api.addSelectionContact([3, 4]);
+    if (objectsData.one.contacts) {
+        throw new Error('the contact was filed on the current object instead of'
+            + ' the one whose residues it joins');
+    }
+    if (!objectsData.two.contacts || objectsData.two.contacts.length !== 1) {
+        throw new Error('the contact was not filed on the object that owns it');
+    }
+    // ...and found again from the same pair
+    if (!api.findContact([3, 4])) throw new Error('the contact cannot be found again');
+
+    // ...AND THE INDEX FORM, which a contacts file can be written in: the
+    // stored numbers are that object's own, and comparing them against merged
+    // positions finds nothing (or somebody else's pair).
+    objectsData.two.contacts = [[0, 1, 1.0]];     // two's residues 0 and 1
+    if (!api.findContact([3, 4])) {
+        throw new Error('an index-form contact of the second object was not'
+            + " found - its numbers are that object's, not the merged array's");
+    }
+    delete objectsData.two.contacts;
+    api.addSelectionContact([3, 4]);
+
+    // a pair spanning two objects is refused, not stored somewhere useless
+    const before = JSON.stringify(objectsData);
+    api.addSelectionContact([0, 4]);
+    eq(JSON.stringify(objectsData), before, 'a cross-object pair stored nothing');
+    // ...and says so, rather than appearing to work
+    if (!/different objects/.test(r._status || '')) {
+        throw new Error('a cross-object contact was refused in silence: '
+            + (r._status || 'nothing said'));
     }
 });
 

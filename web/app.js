@@ -895,6 +895,34 @@ function setupEventListeners() {
         if (!rn || rn[a] === undefined || rn[b] === undefined) return null;
         return [renderer.chains[a], rn[a], renderer.chains[b], rn[b]];
     };
+    /**
+     * WHICH OBJECT A CONTACT BELONGS TO - and null when the pair spans two.
+     *
+     * A contact is stored on an object as a pair of chain+residue references,
+     * and the renderer resolves it among THAT object's positions. A pair with
+     * one end in each of two structures has nowhere to live: stored on either
+     * one, the other end resolves to nothing and the line never appears. The
+     * panel refuses it out loud instead - see the contact row.
+     */
+    const contactOwnerOf = (positions) => {
+        const renderer = viewerApi?.renderer;
+        if (!renderer || !positions || positions.length !== 2) return null;
+        if (!renderer.ownerOf) return renderer.currentObjectName;
+        const a = renderer.ownerOf(positions[0]);
+        const b = renderer.ownerOf(positions[1]);
+        const an = a ? a.name : renderer.currentObjectName;
+        const bn = b ? b.name : renderer.currentObjectName;
+        return (an && an === bn) ? an : null;
+    };
+    /** ...and the pair in that object's own numbering, for the index form. */
+    const contactLocalPair = (positions) => {
+        const renderer = viewerApi?.renderer;
+        if (!renderer || !renderer.ownerOf) return positions;
+        return positions.map((i) => {
+            const o = renderer.ownerOf(i);
+            return o ? o.local : i;
+        });
+    };
     // Does this stored contact name that pair? Either way round: a contact has
     // no direction, and the user may have selected the two in any order.
     //
@@ -908,7 +936,10 @@ function setupEventListeners() {
         if (!Array.isArray(c) || c.length < 3) return false;
         if (typeof c[0] === 'number' && typeof c[1] === 'number') {
             if (!positions || positions.length !== 2) return false;
-            const [p1, p2] = positions;
+            // ...IN THE OBJECT'S OWN NUMBERING. The stored indices are that
+            // object's; the positions handed in are the renderer's, and with
+            // several objects merged those are not the same numbers.
+            const [p1, p2] = contactLocalPair(positions);
             return (c[0] === p1 && c[1] === p2) || (c[0] === p2 && c[1] === p1);
         }
         if (c.length < 4 || typeof c[0] !== 'string') return false;
@@ -923,7 +954,8 @@ function setupEventListeners() {
         ? { w: 2, col: 3 } : { w: 4, col: 5 });
     const findContact = (positions) => {
         const renderer = viewerApi?.renderer;
-        const obj = renderer?.objectsData?.[renderer.currentObjectName];
+        const owner = contactOwnerOf(positions);
+        const obj = owner ? renderer?.objectsData?.[owner] : null;
         const key = contactKeyOf(positions);
         if (!obj || !key || !Array.isArray(obj.contacts)) return null;
         const i = obj.contacts.findIndex((c) => contactMatches(c, key, positions));
@@ -943,7 +975,13 @@ function setupEventListeners() {
     };
     function addSelectionContact(positions) {
         const renderer = viewerApi?.renderer;
-        const obj = renderer?.objectsData?.[renderer.currentObjectName];
+        const owner = contactOwnerOf(positions);
+        if (!owner) {
+            setStatus('A contact joins two residues of ONE structure - these are'
+                + ' in different objects, and there is nowhere to store it.');
+            return;
+        }
+        const obj = renderer?.objectsData?.[owner];
         const key = contactKeyOf(positions);
         if (!obj || !key) return;
         const contacts = Array.isArray(obj.contacts) ? obj.contacts.slice() : [];
