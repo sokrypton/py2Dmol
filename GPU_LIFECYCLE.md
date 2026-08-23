@@ -56,14 +56,30 @@ week, all the same shape - two paths, one of which quietly owns shared state:
 
 ## Next: unify the lifecycle (not the geometry)
 
-1. **One signature vocabulary.** `signatureOf` (cartoon) and `tubeKeyOf` (tube)
-   each list, by hand, everything that invalidates geometry. They already
-   disagree in small ways. Factor the shared half - object, frame, array
-   identity, drawn sources, mask content, backbone-hidden set, contacts, side
-   chains - into one builder both call, and leave each path only its own
-   additions (the cartoon's outline and Richardson parameters, the tube's line
-   width). The SS-key duplication cost a second a frame before anyone noticed;
-   this is the same trap with two more copies.
+1. ~~**One signature vocabulary.**~~ DONE. `sharedGeometryKey(r)` holds the
+   half neither path owns - object, what the coordinate array HOLDS, a content
+   probe over it, segment count, mask content, line width, side chains, hidden
+   backbone, contacts - and `signatureOf`/`tubeKeyOf` each `concat` only their
+   own (the cartoon's canvas, extent, ribbon, outline, Richardson, plates,
+   bases, elements, forced SSE; the tube's colours and instance count).
+
+   Two things came out of merging the lists, both from the halves disagreeing:
+
+   * The tube kept the coordinate array **by identity** and the cartoon kept
+     only its **length**. Identity is the wrong answer - the merge is rebuilt
+     from scratch whenever the drawn set changes, so an eye toggle brings back
+     the same picture in a new array. Taking the tube's half made every toggle
+     rebuild (70-80 ms). Both now ask `_arrayKey()`, the statement viewer-mol.js
+     already keeps of what the array holds, and the toggles fell to **3-8 ms**
+     from the 50-80 ms the spare slot had got them to.
+   * Neither half could see coordinates MOVE inside a frame - same objects,
+     same frame, same length - which is what an alignment does. Three samples
+     (`coordsProbe`) stand in for the content. `gpu_mesh_reuse.py` now moves
+     half the positions and insists the mesh rebuilds; with the probe replaced
+     by the old length term it draws the old shape and the check fails.
+   * The cartoon's hidden-backbone term read `hiddenBackbone` off the CURRENT
+     object, so a second merged object's hidden backbone would not have
+     rebuilt anything. The shared term asks `backboneHiddenSet()`, which merges.
 
 2. **One mesh value for the tube too.** The tube path keeps `bufTube`,
    `tubeSig` and `tubeCount` as three hand-maintained module variables, with no

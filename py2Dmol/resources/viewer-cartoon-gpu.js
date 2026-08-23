@@ -4166,6 +4166,82 @@ function contactKeyOf(renderer) {
     return n ? (n + ':' + a) : 'none';
 }
 
+/* WHAT BOTH GEOMETRY KEYS HAVE TO SAY.
+ *
+ * The cartoon's mesh and the tube's instance buffer are different models built
+ * by different code, but the question "is this still the same picture?" has one
+ * answer for the part of it neither of them owns: which object, which frame,
+ * which coordinate array, which segments, which of them are drawn, which are
+ * masked off, how wide the line is, what side chains and contacts were added,
+ * what backbone is hidden. Each path used to list those by hand, and the two
+ * lists had already drifted - the tube kept the coordinate array by identity
+ * while the cartoon kept only its LENGTH, and the cartoon kept the merged
+ * source names while the tube kept none. Identity was the WRONG half of that
+ * disagreement (see below); both were one edit away from a stale picture.
+ *
+ * So: one builder, the STRONGER of the two everywhere they disagreed, and each
+ * path appends only what is genuinely its own (the cartoon's outline, ribbon
+ * and Richardson settings; the tube's colours and instance count).
+ *
+ * The hidden backbone comes from `backboneHiddenSet()`, which merges every
+ * drawn object's set - where the cartoon's own term read `hiddenBackbone` off
+ * the CURRENT object alone and would not have noticed a second merged object's
+ * backbone being hidden.
+ */
+function sharedGeometryKey(r) {
+    const o = (r.objectsData || {})[r.currentObjectName];
+    const bb = r.backboneHiddenSet ? r.backboneHiddenSet()
+        : ((o && o.hiddenBackbone) || null);
+    return [
+        r.currentObjectName,
+        // WHAT THE COORDINATE ARRAY HOLDS, in the renderer's own words: every
+        // drawn object with the frame it is showing, and how many side-chain
+        // atoms are appended. Not the array's IDENTITY - the merge is rebuilt
+        // from scratch whenever the drawn set changes, so switching an object
+        // off and back on yields the same picture in a new array and identity
+        // rebuilt the mesh for nothing (measured: every eye toggle, 70-80 ms
+        // that should have been 0). This is the same statement viewer-mol.js
+        // itself uses to decide whether the array needs reloading.
+        r._arrayKey ? r._arrayKey()
+            : (r.currentFrame + '|' + ((r.multiState && r.multiState.enabled
+                && r.multiState.sourceNames) ? r.multiState.sourceNames.join(',') : '')),
+        // ...and what is IN it, cheaply. The statement above names the frames
+        // but cannot see coordinates MOVE inside one - an alignment does
+        // exactly that, same objects, same frame index, same length - so three
+        // samples stand in for the content. O(1), unlike hashing 300,000
+        // positions on every frame.
+        coordsProbe(r.coords),
+        r.segmentIndices && r.segmentIndices.length,
+        // THE MASK BY WHAT IS IN IT. It is rebuilt from the objects' own
+        // records whenever the drawn set changes, so an identical picture
+        // arrives as a different Set - and by identity that rebuilt everything
+        // for nothing on every eye toggle.
+        visKeyOf(r.visiblePositions),
+        r.lineWidth,
+        // per-residue side chains change the segment list
+        r.sidechainMap ? r.sidechainMap.size : 0,
+        (bb && bb.size) ? 'nobb' + idOf(bb) + ':' + bb.size : 'bb',
+        // CONTACTS ARE GEOMETRY. Their endpoints, weight and colour are all
+        // baked in when the mesh is built - a contact's width is CONTACT_WIDTH
+        // times its own stored weight, in Angstrom - so the width slider and
+        // the colour swatch both need a rebuild to be seen.
+        contactKeyOf(r),
+    ];
+}
+
+// THREE SAMPLES OF A COORDINATE ARRAY. Enough to notice that the geometry
+// moved - an alignment moves everything - and cheap enough to ask every frame.
+function coordsProbe(co) {
+    if (!co || !co.length) return '0';
+    const n = co.length;
+    let s = '';
+    for (const i of [0, n >> 1, n - 1]) {
+        const p = co[i];
+        if (p) s += (((p.x + p.y * 3 + p.z * 7) * 1000) | 0) + ',';
+    }
+    return n + ':' + s;
+}
+
 // WHAT FORCES A REBUILD. Deliberately generous: a signature that misses
 // something shows up as a stale picture, which is far worse than a rebuild that
 // was not strictly needed. Colour is the one thing kept OUT of it, because the
@@ -4173,39 +4249,11 @@ function contactKeyOf(renderer) {
 // moves.
 function signatureOf(r, w, h, colors) {
     const o = r.objectsData && r.objectsData[r.currentObjectName];
-    // THE MASK, BY IDENTITY. It used to be hashed member by member, which is a
-    // pass over the whole selection on every frame that has one - so the cost
-    // arrived exactly when the user was interacting.
-    //
-    // viewer-mol.js only ever ASSIGNS visiblePositions: null, a new Set, or a
-    // freshly combined one. There is no .add/.delete/.clear on the live mask
-    // anywhere. So a changed pointer is a changed mask and an unchanged pointer
-    // is an unchanged mask, exactly.
-    //
-    // (The hash it replaces was itself the fix for indexing the Set like an
-    // array, which made every mask hash to the same constant and stopped
-    // hiding a residue from ever rebuilding. Identity cannot make that mistake:
-    // there is nothing to index.)
-    const visKey = visKeyOf(r.visiblePositions);
-    // CONTACTS ARE GEOMETRY. Their endpoints, weight and colour are all baked
-    // into the ink instances when the mesh is built - a contact's width is
-    // CONTACT_WIDTH times its own stored weight, in Angstrom - so the width
-    // slider and the colour swatch both need a rebuild to be seen. Only the
-    // COUNT was visible here, through segmentIndices.length, which caught
-    // adding and removing one and missed every edit to an existing one.
-    const contactKey = contactKeyOf(r);
-    return [
-        r.currentObjectName, r.currentFrame,
-        // WHICH objects are in the array, not just how many positions: a
-        // different shown set can come to the same count, and the mesh would
-        // be reused for a different structure.
-        (r.multiState && r.multiState.enabled && r.multiState.sourceNames
-            ? r.multiState.sourceNames.join(',') : ''),
-        r.coords && r.coords.length, r.segmentIndices && r.segmentIndices.length,
+    return sharedGeometryKey(r).concat([
         // the extent of what is DRAWN - the merge has its own, and the camera
         // scale is built from it
-        ((r.drawnStats && r.drawnStats()) || o || {}).maxExtent, visKey, w, h,
-        r.lineWidth, r.cartoonThickness, r.cartoonSheetFlat, r.cartoonDetail,
+        ((r.drawnStats && r.drawnStats()) || o || {}).maxExtent, w, h,
+        r.cartoonThickness, r.cartoonSheetFlat, r.cartoonDetail,
         // the thickness floors are geometry, so tuning either rebuilds
         r.cartoonGpuRibbonThick, r.cartoonGpuHelixTh,
         r.cartoonArrows, r.cartoonRichardson, r.cartoonStyle,
@@ -4248,8 +4296,6 @@ function signatureOf(r, w, h, colors) {
         // colour. The 2D pass folds the same digest into its own secKey.
         (window.py2dmolCartoon && window.py2dmolCartoon.sseKey
             ? window.py2dmolCartoon.sseKey(r) : ''),
-        // per-residue side chains and contacts change the segment list
-        r.sidechainMap ? r.sidechainMap.size : 0,
         // A BASE PLATE IS GEOMETRY, and which residues have one is a per-object
         // set the 2D pass reads while it builds them (baseShown). Nothing else
         // here moves when it changes - a plate is drawn from the ribbon frame,
@@ -4270,14 +4316,8 @@ function signatureOf(r, w, h, colors) {
         // plates and the rungs together (see smoothNucleicTrace), so switching
         // it rebuilds rather than repaints.
         r.naSmooth === false ? 'naraw' : 'nasmooth',
-        // A HIDDEN BACKBONE IS GEOMETRY THAT IS NOT THERE. The 2D pass drops
-        // those prims while it builds, and the capture takes what it builds -
-        // so this only has to make the capture happen again. By identity:
-        // setBackboneHiddenFor assigns a new Set every time.
-        o && o.hiddenBackbone ? 'nb' + idOf(o.hiddenBackbone) + ':' + o.hiddenBackbone.size : 'allbb',
         r.cartoonBasePlates === false ? 'noplates' : 'plates',
-        contactKey,
-    ].join('|');
+    ]).join('|');
 }
 
 // ONE 2D RENDER WITH THE PAINTER SWITCHED OFF. The three hooks are set and
@@ -4934,23 +4974,17 @@ function visKeyOf(set) {
 let tubeShadowTick = 0;
 function tubeKeyOf(renderer, S) {
     if (S.renderShadows) return 'shaded:' + (++tubeShadowTick);
-    const o = renderer.objectsData && renderer.objectsData[renderer.currentObjectName];
-    return [
-        renderer.currentObjectName, renderer.currentFrame,
-        idOf(renderer.coords), renderer.coords && renderer.coords.length,
-        idOf(renderer.segmentIndices), S.count,
-        // ...THE MASK BY WHAT IS IN IT, like the cartoon's key: the mask is
-        // rebuilt from the objects' own records whenever the drawn set
-        // changes, so an identical picture arrives as a different object and
-        // rebuilt the instance buffer for nothing. The other entries here are
-        // identity on purpose - a new coordinate array IS new geometry.
-        idOf(S.colors), visKeyOf(renderer.visiblePositions),
-        renderer.lineWidth,
-        renderer.sidechainMap ? renderer.sidechainMap.size : 0,
-        renderer.backboneHiddenSet && renderer.backboneHiddenSet()
-            ? 'nobb' + idOf(renderer.backboneHiddenSet()) : 'bb',
-        contactKeyOf(renderer),
-    ].join('|');
+    return sharedGeometryKey(renderer).concat([
+        // COLOUR IS GEOMETRY HERE, unlike the cartoon: an instance carries its
+        // own colour, so a recolour is a rebuilt buffer either way and there is
+        // no palette texture to repaint instead. By identity - `colors` is
+        // always a fresh array out of _calculateSegmentColors, never edited in
+        // place - because hashing it was ~9 ms of a ~20 ms frame at 320,000
+        // positions, spent proving nothing had changed.
+        idOf(S.colors),
+        // how many of the ordered segments are actually drawn
+        S.count,
+    ]).join('|');
 }
 
 const TUBE_FLOATS = 15;      // ...the last two are the ends' ball colours

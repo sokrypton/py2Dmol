@@ -157,6 +157,20 @@ window.addEventListener('load', () => {
       }
       R.spare = window.__spareMesh ? window.__spareMesh.bytes : null;
 
+      // MOVED GEOMETRY, SAME STATEMENT ABOUT IT. An alignment shifts
+      // coordinates without changing which objects are drawn, which frame each
+      // shows, or how many positions there are - every term the key is built
+      // from except the content probe. Half the positions move here so the
+      // SHAPE changes and not just the centre, which the camera would undo.
+      {
+        const before = shot();
+        const t0m = rebuiltAt();
+        const co = r.coords || [];
+        for (let i = 0; i < (co.length >> 1); i++) co[i].x += 8;
+        r.render('moved'); await wait(1200);
+        R.moved = {rebuilt: rebuiltAt() !== t0m, changed: shot() !== before};
+      }
+
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});
   };
@@ -220,6 +234,13 @@ for i, t in enumerate(R["toggles"]):
 # forced rebuilds, which throw the spare away); every one after that must come
 # out of the slot
 later = R["toggles"][2:]
+mv = R.get("moved") or {}
+print(f"  coordinates moved in place: rebuilt={mv.get('rebuilt')},"
+      f" picture changed={mv.get('changed')}")
+if not mv.get("rebuilt") or not mv.get("changed"):
+    bad.append("moving the coordinates without changing which objects or frames"
+               " are drawn left the old mesh on screen: " + str(mv))
+
 if any(t['rebuilt'] for t in later):
     bad.append("a toggle back to a mesh already built rebuilt it anyway: "
                + str([t['rebuilt'] for t in R["toggles"]]))

@@ -2962,11 +2962,18 @@ t('the backbone hides per selection, and the side chains keep their CA', () => {
     }
     // the GPU cartoon needs no shader for it - the capture takes what the 2D
     // pass builds - but the signature has to notice
-    if (!/o && o\.hiddenBackbone \? 'nb' \+ idOf\(o\.hiddenBackbone\)/.test(gpu)) {
-        throw new Error('the cartoon mesh signature does not name the hidden set');
+    // ...and it says so ONCE, in the half of the key both paths share: the
+    // cartoon's own copy read `hiddenBackbone` off the CURRENT object and would
+    // not have noticed a second merged object's backbone being hidden.
+    if (!/backboneHiddenSet \? r\.backboneHiddenSet\(\)/.test(gpu)
+        || !/\(bb && bb\.size\) \? 'nobb'/.test(gpu)) {
+        throw new Error('the shared geometry key does not name the hidden set');
     }
-    if (!/backboneHiddenSet\(\)\s*\n?\s*\? 'nobb'/.test(gpu)) {
-        throw new Error('the tube mesh signature does not name the hidden set');
+    for (const fn of ['function signatureOf', 'function tubeKeyOf']) {
+        const body = gpu.slice(gpu.indexOf(fn), gpu.indexOf('\n}', gpu.indexOf(fn)));
+        if (!/sharedGeometryKey\(r(enderer)?\)\.concat\(/.test(body)) {
+            throw new Error(fn + ' lists the shared terms by hand again');
+        }
     }
     // and it lives on the selection panel, travels with a Copy, and is saved
     const html = fs.readFileSync('index.html', 'utf8');
