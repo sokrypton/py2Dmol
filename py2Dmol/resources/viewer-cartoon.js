@@ -12536,6 +12536,18 @@
         renderer._ssColorKey = key;
         return sec;
     };
+    // ...AND ANYONE ELSE WHO NEEDS THE ASSIGNMENT CAN ASK FOR IT.
+    //
+    // The selection panel used to read renderer._cartoonSec directly and give
+    // up when it was absent - which is most of the time, because it is a
+    // render-time cache that _invalidateSegmentCache clears, and adding a
+    // contact or a side chain clears it. So the panel's SSE control said
+    // "Helix" after one click and "DSSP" after the next, with nothing about
+    // the structure having changed. It computes on a miss and caches the same
+    // way the colour path does.
+    if (typeof window !== 'undefined' && window.py2dmolCartoon) {
+        window.py2dmolCartoon.secondaryFor = secForColor;
+    }
     // Registered by writing the table directly: the register helper is module
     // scoped in viewer-mol.js and not exposed on window.
     if (!window.py2dmol_customColors) window.py2dmol_customColors = {};

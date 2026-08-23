@@ -8616,12 +8616,32 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * whole SS pipeline behind a panel refresh, and on a capsid that is a
          * second of it for a word in a menu.
          */
+        /**
+         * WHAT THE ASSIGNMENT SAYS these residues are - one letter, or '' when
+         * they disagree or nothing can be said.
+         *
+         * ASKED FOR, not scavenged. This used to read the two SS caches and
+         * give up when both were absent, which is most of the time: they are
+         * built during a render and _invalidateSegmentCache drops them, so
+         * adding a contact or showing a side chain emptied them. The panel's
+         * control then said "Helix" after one click and "DSSP" after the next
+         * with nothing about the structure having changed - the instability
+         * was in the question, not the answer. The cartoon module computes it
+         * on a miss and caches it the same way the colour path does.
+         */
         assignedSseFor(positions) {
             const n = this.coords ? this.coords.length : 0;
-            const sec = (this._cartoonSec && this._cartoonSec.length === n)
+            let sec = (this._cartoonSec && this._cartoonSec.length === n)
                 ? this._cartoonSec
                 : ((this._ssColorSec && this._ssColorSec.length === n)
                     ? this._ssColorSec : null);
+            if (!sec) {
+                const C = (typeof window !== 'undefined') ? window.py2dmolCartoon : null;
+                if (C && C.secondaryFor && n) {
+                    const built = C.secondaryFor(this);
+                    if (built && built.length === n) sec = built;
+                }
+            }
             if (!sec) return '';
             const t = this.positionTypes || [];
             let seen = null;

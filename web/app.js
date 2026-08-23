@@ -1137,8 +1137,15 @@ function setupEventListeners() {
         sel.value = forced === 'none' ? 'dssp' : forced;
         const dssp = sel.querySelector('option[value="dssp"]');
         if (dssp) {
+            // THE STRUCTURE FIRST, then who says so. This read "DSSP (Helix)",
+            // which puts the source of the answer where the answer goes - and
+            // on a control whose other three options are the answer itself.
+            // "Helix (DSSP)" reads as what the residues ARE, with the source in
+            // brackets, and the forced states read as the bare word: Helix is
+            // Helix because you said so, Helix (DSSP) is Helix because the
+            // assignment says so.
             dssp.textContent = (forced === 'none' && NAME[auto])
-                ? `DSSP (${NAME[auto]})` : 'DSSP';
+                ? `${NAME[auto]} (DSSP)` : 'DSSP';
         }
         // ...and the tooltip is where forced and assigned are told apart: the
         // menu shows one letter either way, and which of the two it is decides

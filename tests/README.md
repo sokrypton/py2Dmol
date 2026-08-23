@@ -171,8 +171,17 @@ disagrees with itself fills neither - the state a switch could only show as a
 grey smear. Contacts read Add, and once one exists the Add goes and the row
 becomes that contact's own colour, width and a bin.
 
-The node tests score this against a stub DOM; this presses the real buttons
-and looks at the real structure. It also measures the ROWS: a pair is half as
+It also watches the **SSE control**, which reported "DSSP" after one click and
+"Helix (DSSP)" after the next with nothing about the structure having changed.
+The assignment was read off the two render-time caches and given up on when
+both were absent - which is always, in the TUBE style, because only the cartoon
+pass fills them. It is asked for now (`py2dmolCartoon.secondaryFor`), computed
+on a miss and cached the way the colour path caches it. The probe reads the
+control through the same selection in cartoon, in tube and on the GPU path, and
+after the actions that drop the caches.
+
+The node tests score the panel against a stub DOM; this presses the real
+buttons and looks at the real structure. It also measures the ROWS: a pair is half as
 wide again as the switch it replaced, and the main-chain row wrapped onto two
 lines until the SSE select was capped. A wrapped row is the confusion this was
 meant to remove, so it is a test rather than a look.

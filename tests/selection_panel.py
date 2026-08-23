@@ -120,6 +120,60 @@ window.addEventListener('load', () => {
       }
       await press('contactDeleteButton');
       R.steps.push(st(r, 'removed'));
+      // THE SSE CONTROL SAYS THE SAME THING EVERY TIME. It read the
+      // assignment off a render-time cache and gave up when it was absent - so
+      // it said "Helix (DSSP)" after one click and "DSSP" after the next, with
+      // nothing about the structure having changed. Adding a contact was
+      // enough to flip it, because that drops the cache.
+      R.sse = [];
+      const sseFace = () => {
+        const sel = document.getElementById('selSsSelect');
+        const opt = sel.options[sel.selectedIndex];
+        return {value: sel.value, text: opt ? opt.textContent : null,
+                hidden: sel.hidden};
+      };
+      await select(r, [10, 11, 12]);
+      R.sse.push(['picked', sseFace()]);
+      await select(r, [20, 21]);
+      R.sse.push(['picked again', sseFace()]);
+      await select(r, [10, 11, 12]);
+      R.sse.push(['back', sseFace()]);
+      // ...the things that drop the cache
+      await press('sidechainShowButton');
+      R.sse.push(['after side chains', sseFace()]);
+      await select(r, [10, 40]);
+      await press('contactAddButton');
+      await select(r, [10, 11, 12]);
+      R.sse.push(['after a contact', sseFace()]);
+      await select(r, [10, 40]);
+      await press('contactDeleteButton');
+      await select(r, [10, 11, 12]);
+      R.sse.push(['after removing it', sseFace()]);
+      // ...AND IN EVERY STYLE. The assignment caches are filled by the CPU
+      // cartoon pass; the tube style never runs it and the GPU cartoon path
+      // builds its own mesh instead, so a panel that reads those caches has
+      // nothing to read there - the control said "DSSP" with no structure
+      // named, in a viewer that knew perfectly well what the structure was.
+      r.setStyle('tube'); await wait(600);
+      await select(r, [10, 11, 12]);
+      R.sse.push(['tube', sseFace()]);
+      r.setStyle('cartoon'); r.useGPU = true; await wait(700);
+      await select(r, [20, 21]);
+      await select(r, [10, 11, 12]);
+      R.sse.push(['gpu cartoon', sseFace()]);
+      r.useGPU = false; await wait(500);
+      await select(r, [10, 11, 12]);
+
+      // ...and a forced state reads as the bare word
+      const sel = document.getElementById('selSsSelect');
+      sel.value = 'H'; sel.dispatchEvent(new Event('change', {bubbles: true}));
+      await wait(500);
+      R.sse.push(['forced helix', sseFace()]);
+      sel.value = 'dssp'; sel.dispatchEvent(new Event('change', {bubbles: true}));
+      await wait(500);
+      R.sse.push(['back to auto', sseFace()]);
+      await press('sidechainHideButton');
+
       // THE ROW STILL FITS. A pair is wider than the switch it replaced, and
       // the side-chain row carries a swatch, the pair, Plate and Elements in a
       // 340px panel - a row that wraps to a second line is the confusion this
@@ -214,6 +268,31 @@ if step['removed']['contacts']:
     bad.append(f"the bin left {step['removed']['contacts']} contacts")
 want('no selection', 'panel', False, 'the panel is away without a selection')
 want('selected', 'panel', True, 'the panel appears with one')
+print("  the SSE control:")
+for tag, face in (R.get("sse") or []):
+    print(f"    {tag:20s} {face['value']!r} reading {face['text']!r}")
+sse = dict((t, f) for t, f in (R.get("sse") or []))
+# THE SAME SELECTION, over and over, through the things that used to flip it.
+# 'picked again' is a DIFFERENT selection - reading differently there is the
+# control working, not wobbling.
+same = ['picked', 'back', 'after side chains', 'after a contact',
+        'after removing it', 'tube', 'gpu cartoon', 'back to auto']
+faces = {sse[t]['text'] for t in same if t in sse}
+if len(faces) != 1:
+    bad.append(f"the same selection read {faces} across actions that changed"
+               " nothing about its structure")
+if not any(f and '(DSSP)' in f for f in faces):
+    bad.append(f"the unforced state never names the assignment: {faces}")
+# ...and a different selection is allowed to differ, or the control is stuck
+if sse.get('picked again', {}).get('text') == sse.get('picked', {}).get('text'):
+    bad.append("two selections with different structures read the same - the"
+               " control is showing something other than their structure")
+if sse.get('forced helix', {}).get('text') != 'Helix':
+    bad.append(f"a forced helix reads {sse.get('forced helix', {}).get('text')!r},"
+               " not the bare word")
+if sse.get('back to auto', {}).get('value') != 'dssp':
+    bad.append("going back to DSSP did not stick")
+
 bin = R.get("bin") or {}
 print(f"  the bin: {bin.get('width')}x{bin.get('height')}px,"
       f" glyph {bin.get('content')} in {bin.get('font')}")

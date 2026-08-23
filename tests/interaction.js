@@ -948,17 +948,50 @@ t('the SSE state is read off the structure, forced and assigned apart', () => {
     if (v.forcedSseFor([0, 1, 3]) !== 'H') {
         throw new Error('a nucleotide in the selection made it read as mixed');
     }
-    // ...and the assignment, from the cache the drawing fills
-    if (v.assignedSseFor([0, 1]) !== '') {
-        throw new Error('an assignment was reported with no cache to read - the'
-            + ' only other way to get one is to run the whole SS pipeline here');
+    // ...and the assignment. With no cache AND no cartoon module to ask, there
+    // is nothing to report - but in the app there always is a module, and the
+    // caches are render-time things that _invalidateSegmentCache drops, so the
+    // panel used to lose the answer whenever a contact or a side chain was
+    // touched. See the fallback in assignedSseFor.
+    {
+        const realC = global.window.py2dmolCartoon;
+        let asked = 0;
+        global.window.py2dmolCartoon = {
+            secondaryFor: () => { asked++; return ['H', 'H', 'E', 'C']; },
+        };
+        const got = v.assignedSseFor([0, 1]);
+        global.window.py2dmolCartoon = realC;
+        if (!asked) {
+            throw new Error('the panel gives up when the caches are empty rather'
+                + ' than asking for the assignment - which is most of the time,'
+                + ' because a render fills those caches and any edit drops them');
+        }
+        if (got !== 'H') throw new Error('the computed assignment was not read');
+    }
+    // ...and with neither a cache nor a module there is nothing to say
+    {
+        const realC = global.window.py2dmolCartoon;
+        global.window.py2dmolCartoon = null;
+        const got = v.assignedSseFor([0, 1]);
+        global.window.py2dmolCartoon = realC;
+        if (got !== '') throw new Error('an assignment appeared out of nowhere');
     }
     v._cartoonSec = ['H', 'H', 'E', 'C'];
     if (v.assignedSseFor([0, 1]) !== 'H') throw new Error('the cached assignment was not read');
     if (v.assignedSseFor([0, 2]) !== '') throw new Error('helix and sheet agreed');
-    v._cartoonSec = ['H', 'H'];            // stale: shorter than the coordinates
-    if (v.assignedSseFor([0, 1]) !== '') {
-        throw new Error('a cache from another structure was read as this one');
+    // A CACHE FROM ANOTHER STRUCTURE IS NOT READ AS THIS ONE - it is shorter
+    // than the coordinates, so it describes something else. The module is
+    // asked instead, which is the whole point of having somewhere to ask.
+    v._cartoonSec = ['H', 'H'];
+    {
+        const realC = global.window.py2dmolCartoon;
+        global.window.py2dmolCartoon = { secondaryFor: () => ['E', 'E', 'E', 'C'] };
+        const got = v.assignedSseFor([0, 1]);
+        global.window.py2dmolCartoon = realC;
+        if (got === 'H') throw new Error('a cache from another structure was read'
+            + ' as this one');
+        if (got !== 'E') throw new Error('the stale cache was rejected and nothing'
+            + ' was asked in its place: ' + JSON.stringify(got));
     }
 });
 
@@ -976,7 +1009,10 @@ t('the SSE menu shows the state it is in, not the word SSE', () => {
     }
     // ...and the automatic answer is IN the option, or the menu says a state
     // without saying what it produced
-    if (auto.selSsSelect.opts.dssp.textContent !== 'DSSP (Helix)') {
+    // THE STRUCTURE FIRST, then who says so: the other three options ARE the
+    // answer, so putting the source where the answer goes read as a different
+    // kind of thing. Forced Helix is "Helix"; assigned Helix is "Helix (DSSP)".
+    if (auto.selSsSelect.opts.dssp.textContent !== 'Helix (DSSP)') {
         throw new Error('the DSSP option does not carry the assignment: '
             + auto.selSsSelect.opts.dssp.textContent);
     }
