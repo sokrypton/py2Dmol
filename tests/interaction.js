@@ -72,7 +72,7 @@ for (const name of ['selectionBandFor']) {
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_editOneObject','addObject',];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -6589,7 +6589,9 @@ t('showing two objects merges them and records where each starts', () => {
     // second object is hidden entirely because the mask never mentions it.
     eq(v.mask.positions.size, 5, 'both objects are visible');
     eq(v.mask.visibilityMode, 'default', 'nothing is hidden, so nothing is explicit');
-    eq(v.selectionCleared, true, 'the selection was made against the old array');
+    // ...and the selection is CARRIED, not cleared: a residue keeps its place
+    // whichever array it lands in - see _selectionAsOwners.
+    eq(!!v.selectionCleared, false, 'the selection was thrown away');
     eq(v.segCleared && v.shadowCleared, true, 'the caches for both were dropped');
     // THE CAMERA HAS TO FRAME THE LOT. Left on the current object, the second
     // one is simply out of shot - measured in the browser as two structures
@@ -7066,10 +7068,12 @@ t('rebuilding the merge keeps what was hidden and what was selected', () => {
     eq(v.residueSelection ? Array.from(v.residueSelection).join(',') : 'null', '4',
         'and the selection survived a rebuild that changed no objects');
 
-    // ...whereas changing the objects does drop the selection, which was made
-    // against an array that no longer exists
+    // ...and switching an object OFF keeps what belongs to the one still on
+    // screen. Position 4 is B's, so it goes; nothing of A was selected.
+    v.residueSelection = new Set([1, 4]);
     v.setShownObjects(['A']);
-    eq(v.selectionCleared, true, 'a different set of objects clears it');
+    eq(v.residueSelection ? Array.from(v.residueSelection).join(',') : 'null', '1',
+        "A's residue stayed selected and B's went with B");
 });
 
 t('a hidden residue of the second object is not read as the first object\'s', () => {
@@ -7429,6 +7433,93 @@ t('the strip looks a chain up by object and chain, never by chain alone', () => 
         throw new Error("one section's chain boundaries are stored on the canvas"
             + ' data, where anything can answer the wrong object with them');
     }
+});
+
+// A SELECTION FOLLOWS ITS RESIDUES when what is on screen changes. It is a set
+// of indices into the array being replaced, so it is carried across as
+// (object, local index) pairs - hiding one object used to throw away a
+// selection made on the one still showing.
+t('the selection survives objects coming and going', () => {
+    const v = mergedViewer();
+    // A is current on frame 0; B is parked on its own frame. A's residues are
+    // 0..2 of the merged array, B's are 3..4.
+
+    v.residueSelection = new Set([1, 2, 4]);
+    // ...B goes
+    v.setShownObjects(['A']);
+    eq(Array.from(v.residueSelection).sort().join(','), '1,2',
+        "A's residues kept their places, B's went with B");
+    // ...and comes back, where the same residues are at the same indices
+    v.setShownObjects(['A', 'B']);
+    eq(Array.from(v.residueSelection).sort().join(','), '1,2',
+        'and nothing was invented on the way back');
+
+    // A SELECTION ENTIRELY INSIDE THE OBJECT THAT GOES leaves nothing behind -
+    // and must not land on whatever now occupies those indices, which is the
+    // failure a same-length neighbour would hide.
+    v.residueSelection = new Set([4]);          // B's second residue
+    v.setShownObjects(['A']);
+    eq(v.residueSelection, null,
+        "B's residue came back as somebody else's when B left the screen");
+});
+
+t('a residue keeps its place when the array grows in front of it', () => {
+    const v = shownViewer();
+    // A alone: its residue 1 is index 1
+    v.residueSelection = new Set([1]);
+    // B joins in FRONT of nothing - A is first - so A's index does not move
+    v.setShownObjects(['A', 'B']);
+    eq(Array.from(v.residueSelection).join(','), '1', 'A stayed put');
+    // ...now select B's first residue and drop A: B moves to the front
+    v.currentFrame = 1;
+    v.residueSelection = new Set([3]);
+    v.currentObjectName = 'B';
+    v.setShownObjects(['B']);
+    eq(Array.from(v.residueSelection).join(','), '0',
+        "B's residue followed B to the front of the array");
+});
+
+// COPY, CUT AND DELETE ACT ON THE WHOLE SELECTION, however many objects it
+// reaches. Each of them rewrites ONE object's frames, so each runs once per
+// object - silently taking the edited object's share was the alternative, and
+// a Cut that leaves half the selection behind is worse than one that refuses.
+t('an edit runs once for every object the selection reaches', () => {
+    const v = mergedViewer();
+    // A's residues 0..2, B's 3..4 - one from each
+    v.residueSelection = new Set([1, 4]);
+    eq(v.objectsInSelection().join(','), 'A,B', 'the selection reaches both');
+
+    const seen = [];
+    v._perObjectEdit(() => {
+        seen.push([v.currentObjectName,
+            v.residueSelection ? Array.from(v.residueSelection).join(',') : '']);
+        return v.currentObjectName;
+    });
+    eq(seen.length, 2, 'the edit ran once per object');
+    eq(seen[0].join(':'), 'A:1', "A saw its own residue, in A's numbering");
+    eq(seen[1].join(':'), 'B:1', "B saw its own residue, in B's numbering");
+});
+
+t('the second object is not handed what the first one finished with', () => {
+    const v = mergedViewer();
+    v.residueSelection = new Set([1, 4]);
+    const seen = [];
+    v._perObjectEdit(() => {
+        seen.push(v.residueSelection ? Array.from(v.residueSelection).join(',') : 'null');
+        // what Copy does: leaves its own selection behind
+        v.residueSelection = new Set([0]);
+        return true;
+    });
+    eq(seen[1], '1', "B still got its own share, not the first edit's leavings");
+});
+
+t('a selection inside one object edits only that object', () => {
+    const v = mergedViewer();
+    v.residueSelection = new Set([1, 2]);
+    eq(v.objectsInSelection().join(','), 'A', 'only A');
+    const seen = [];
+    v._perObjectEdit(() => { seen.push(v.currentObjectName); return true; });
+    eq(seen.join(','), 'A', 'and only A was edited');
 });
 
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');

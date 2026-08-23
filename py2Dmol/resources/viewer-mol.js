@@ -10307,6 +10307,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // is what knows how to draw an object that is not the current one.
             if (names.length === 1 && names[0] === this.currentObjectName) {
                 if (!ms.enabled) return;
+                const carriedOut = this._selectionAsOwners();
                 this._dropMergeState();
                 this._invalidateSegmentCache();
                 this._invalidateShadowCache();
@@ -10320,6 +10321,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     this.viewerState.extent = back.maxExtent || null;
                 }
                 this._loadFrameData(this.currentFrame, skipRender);
+                this._restoreSelectionFromOwners(carriedOut);
                 return;
             }
 
@@ -10376,13 +10378,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._invalidateSegmentCache();
             this._invalidateShadowCache();
             this.lastShadowRotationMatrix = null;
-            // A selection is a set of position indices against the array it
-            // was made on - meaningless once the SOURCES change. A rebuild for
-            // a frame step or a side chain keeps the same objects at the same
-            // offsets, and clearing there would empty the selection every time
-            // the frame slider moved.
-            if (!sameSources) this.clearResidueSelection();
+            // THE SELECTION FOLLOWS ITS RESIDUES. It is a set of indices into
+            // the array being replaced, so it is carried across as (object,
+            // local index) pairs and put back where those residues have landed
+            // - anything belonging to an object that is no longer drawn is
+            // dropped, and nothing else is. Clearing outright meant that
+            // switching one object off threw away a selection made on the one
+            // still on screen.
+            const carried = sameSources ? null : this._selectionAsOwners();
             this._loadDataIntoRenderer(merged, true);
+            if (carried) this._restoreSelectionFromOwners(carried);
             this._applyMergedVisibility(merged, skipRender);
         }
 
@@ -10494,15 +10499,60 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
 
 
-        // COPY, CUT AND DELETE ALWAYS RUN ON ONE OBJECT - see _editOneObject.
-        // Wrapped rather than taught the merge: each of them renumbers half a
-        // dozen things keyed by position index, and every one of those was
-        // written against a single object's array.
-        extractSelection() { return this._editOneObject(() => this._extractSelection()); }
+        // COPY, CUT AND DELETE RUN ON ONE OBJECT AT A TIME - see
+        // _editOneObject - but a SELECTION can reach several, so each of them
+        // runs once per object the selection touches. Silently taking only the
+        // edited object's share was the alternative, and a Cut that quietly
+        // leaves half the selection behind is worse than one that refuses.
+        //
+        // Wrapped rather than taught the merge: each renumbers half a dozen
+        // things keyed by position index, all written against a single
+        // object's array.
+        //
+        // @returns {Array} what each object gave back, in drawing order
+        _perObjectEdit(fn) {
+            const names = this.objectsInSelection();
+            if (names.length <= 1) {
+                return [this._editOneObject(() => fn(), names[0])];
+            }
+            // THE SELECTION IS PUT BACK BEFORE EACH ONE. An edit consumes it -
+            // it is narrowed to that object's share, and Copy leaves its own
+            // behind - so the second object would be handed whatever the first
+            // one finished with, and get nothing of its own.
+            const carried = this._selectionAsOwners();
+            const out = [];
+            for (const name of names) {
+                this._restoreSelectionFromOwners(carried);
+                out.push(this._editOneObject(() => fn(), name));
+            }
+            return out;
+        }
 
-        deleteSelection() { return this._editOneObject(() => this._deleteSelection()); }
+        extractSelection() {
+            const made = this._perObjectEdit(() => this._extractSelection())
+                .filter(Boolean);
+            // ONE NAME BACK for one object, so nothing that called this before
+            // has to change; the list is there for a caller that wants to
+            // report all of them.
+            return made.length > 1 ? made : (made[0] || null);
+        }
 
-        cutSelection() { return this._editOneObject(() => this._cutSelection()); }
+        deleteSelection() {
+            return this._perObjectEdit(() => this._deleteSelection())
+                .some(Boolean);
+        }
+
+        cutSelection() {
+            const made = this._perObjectEdit(() => this._cutSelection())
+                .filter(Boolean);
+            if (!made.length) return null;
+            if (made.length === 1) return made[0];
+            return {
+                name: made.map((m) => m.name).join(', '),
+                names: made.map((m) => m.name),
+                removed: made.reduce((n, m) => n + (m.removed || 0), 0)
+            };
+        }
 
         /**
          * IS THERE MORE THAN ONE OBJECT TO DRAW? The merge is not a mode the
@@ -10579,6 +10629,39 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
+         * THE SELECTION AS (OBJECT, LOCAL INDEX) PAIRS, which survive a change
+         * of array; merged indices do not.
+         */
+        _selectionAsOwners() {
+            const sel = this.residueSelection;
+            if (!sel || !sel.size) return null;
+            const out = [];
+            for (const i of sel) {
+                const o = this.ownerOf(i);
+                out.push(o ? [o.name, o.local] : [this.currentObjectName, i]);
+            }
+            return out;
+        }
+
+        /**
+         * ...and back, into whatever array is loaded now. A residue whose
+         * object is no longer drawn has no index to come back to and is
+         * dropped; everything else lands where it now lives.
+         */
+        _restoreSelectionFromOwners(pairs) {
+            if (!pairs) return;
+            const out = new Set();
+            for (const [name, local] of pairs) {
+                const off = this.sourceOffsetOf(name);
+                const drawn = this.drawnObjects();
+                if (drawn.indexOf(name) < 0) continue;
+                const at = off + local;
+                if (at >= 0 && at < this.coords.length) out.add(at);
+            }
+            this.residueSelection = out.size ? out : null;
+        }
+
+        /**
          * The selection, restricted to one object and in ITS numbering.
          *
          * `residueSelection` is a set of merged indices; an edit rewrites one
@@ -10619,6 +10702,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
+         * WHICH OBJECTS A SELECTION REACHES, in drawing order.
+         *
+         * Copy, Cut and Delete are per object - each rewrites one object's
+         * frames - but a selection is not: with several structures on screen a
+         * drag, a Within, or two clicks reach into more than one of them.
+         */
+        objectsInSelection() {
+            const sel = this.residueSelection;
+            if (!sel || !sel.size) return [];
+            const seen = new Set();
+            for (const i of sel) {
+                const o = this.ownerOf(i);
+                seen.add(o ? o.name : this.currentObjectName);
+            }
+            return this.drawnObjects().filter((n) => seen.has(n));
+        }
+
+        /**
          * RUN A STRUCTURAL EDIT ON THE CURRENT OBJECT ALONE.
          *
          * Copy, Cut and Delete rewrite an object's frames and renumber
@@ -10634,14 +10735,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * including the object a Copy just made, which is the one thing the
          * user will be looking for.
          */
-        _editOneObject(fn) {
+        _editOneObject(fn, name) {
             const ms = this.multiState;
-            if (!ms || !ms.enabled) return fn();
-            const shown = Array.from(this.shownObjects);
-            const editing = this.currentObjectName;
+            const editing = name || this.currentObjectName;
+            if (!ms || !ms.enabled) {
+                if (editing === this.currentObjectName) return fn();
+                // ...an object that is not the current one still has to BE the
+                // current one for the duration: every one of these paths reads
+                // currentObjectName to find the frames it rewrites.
+                const was = this.currentObjectName;
+                this.currentObjectName = editing;
+                try { return fn(); } finally { this.currentObjectName = was; }
+            }
+            const shown = this.shownObjects ? Array.from(this.shownObjects) : [];
             const sel = this.selectionForObject(editing);
             const mask = this._maskForObject(editing);
 
+            const wasCurrent = this.currentObjectName;
+            this.currentObjectName = editing;
             this.setShownObjects([editing], true);
             this.residueSelection = (sel && sel.size) ? sel : null;
             if (this.visibilityModel) {
@@ -10655,11 +10766,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // ...and back, minus anything the edit removed, plus whatever
                 // it made: a Copy that lands off screen looks like a Copy that
                 // did not happen.
-                const back = shown.filter((n) => this.objectsData[n]);
-                if (this.currentObjectName && !back.includes(this.currentObjectName)) {
-                    back.push(this.currentObjectName);
+                const made = this.currentObjectName;
+                if (wasCurrent && this.objectsData[wasCurrent]) {
+                    this.currentObjectName = wasCurrent;
                 }
-                if (back.length > 1) this.setShownObjects(back);
+                const back = shown.filter((n) => this.objectsData[n]);
+                if (made && this.objectsData[made] && !back.includes(made)) {
+                    back.push(made);
+                }
+                if (back.length) this.setShownObjects(back);
             }
             return out;
         }

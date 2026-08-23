@@ -550,14 +550,21 @@ function setupEventListeners() {
     const copySelectionButton = document.getElementById('copySelectionButton');
     if (copySelectionButton) {
         copySelectionButton.addEventListener('click', () => {
-            if (viewerApi && viewerApi.renderer && viewerApi.renderer.extractSelection) {
-                viewerApi.renderer.extractSelection();
-
-                // Also apply selection to MSA viewer
-                applySelectionToMSA();
-            } else {
+            const r = viewerApi?.renderer;
+            if (!r || !r.extractSelection) {
                 console.warn("Copy selection feature not available");
+                return;
             }
+            // A SELECTION CAN REACH SEVERAL OBJECTS, and Copy makes one new
+            // object per object it touched - so it says which, rather than
+            // leaving the user to find out that two appeared.
+            const made = r.extractSelection();
+            const names = Array.isArray(made) ? made : (made ? [made] : []);
+            if (names.length > 1) {
+                setStatus(`Copied into ${names.join(' and ')}`
+                    + ' - one object per structure the selection reached.');
+            }
+            applySelectionToMSA();
         });
     }
 
@@ -575,6 +582,7 @@ function setupEventListeners() {
                 setStatus('Select something first, then Cut moves it into a new object.');
                 return;
             }
+            // ...one new object per structure the selection reached, named
             setStatus(`Cut ${made.removed} residue${made.removed === 1 ? '' : 's'}`
                 + ` into ${made.name}. Reload the file to get them back.`);
             if (window.SEQ?.buildViewDeferred || window.SEQ?.buildView) {
@@ -593,9 +601,13 @@ function setupEventListeners() {
             const r = viewerApi?.renderer;
             if (!r || !r.deleteSelection) return;
             const gone = r.residueSelection ? r.residueSelection.size : 0;
+            // ...from every object the selection reached, which the count
+            // already covers and the message says when it is more than one
+            const across = r.objectsInSelection ? r.objectsInSelection() : [];
             if (r.deleteSelection()) {
-                setStatus(`Deleted ${gone} residue${gone === 1 ? '' : 's'}. `
-                    + `Reload the file to get them back.`);
+                setStatus(`Deleted ${gone} residue${gone === 1 ? '' : 's'}`
+                    + (across.length > 1 ? ` from ${across.join(' and ')}` : '')
+                    + '. Reload the file to get them back.');
                 if (window.SEQ?.buildViewDeferred || window.SEQ?.buildView) {
                     (window.SEQ.buildViewDeferred || window.SEQ.buildView)();
                 }
@@ -1486,7 +1498,14 @@ function setupEventListeners() {
                 count.title = '';
             } else {
                 const ranges = describeSelectionRanges(picked);
-                const n = `${picked.length} residue${picked.length === 1 ? '' : 's'}`;
+                // HOW MANY, AND ACROSS HOW MANY OBJECTS. The ranges name them
+                // one by one; the count said "12 residues" whether they came
+                // from one structure or two, and the tools below act on all of
+                // them.
+                const r = viewerApi?.renderer;
+                const across = (r && r.objectsInSelection) ? r.objectsInSelection() : [];
+                const n = `${picked.length} residue${picked.length === 1 ? '' : 's'}`
+                    + (across.length > 1 ? ` in ${across.length} objects` : '');
                 count.textContent = ranges ? `${n} · ${ranges}` : n;
                 count.title = ranges || '';
             }

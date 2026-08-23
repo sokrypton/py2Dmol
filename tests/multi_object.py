@@ -490,6 +490,33 @@ window.addEventListener('load', () => {
       if (P.get('png') === '1') R.png = r.canvas.toDataURL('image/png');
       r.useGPU = false;
       r.render('back');
+      // A SELECTION THAT REACHES BOTH OBJECTS, and the three edits that used
+      // to take only the edited object's share of it - silently.
+      {
+        r.setShownObjects(names);
+        window.SEQ.buildView();
+        await new Promise((s) => setTimeout(s, 300));
+        const offs = r.multiState.sourceOffsets;
+        const across = new Set([offs[0] + 1, offs[0] + 2, offs[1] + 1, offs[1] + 2]);
+        r.setResidueSelection(across);
+        R.acrossObjects = r.objectsInSelection();
+        const before = names.map((n) => r.objectsData[n].frames[0].coords.length);
+
+        // COPY: one new object per structure the selection reached
+        const madeBefore = Object.keys(r.objectsData).length;
+        const made = r.extractSelection();
+        R.copyMade = Array.isArray(made) ? made : [made];
+        R.copyNewObjects = Object.keys(r.objectsData).length - madeBefore;
+        R.copySizes = R.copyMade.map(
+          (n) => (r.objectsData[n] ? r.objectsData[n].frames[0].coords.length : -1));
+
+        // DELETE: from every object it reached
+        r.setShownObjects(names);
+        r.setResidueSelection(new Set([offs[0] + 1, offs[1] + 1]));
+        R.deleted = r.deleteSelection();
+        R.sizesAfterDelete = names.map((n) => r.objectsData[n].frames[0].coords.length);
+        R.sizesBeforeDelete = before;
+      }
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});
   };
@@ -608,6 +635,9 @@ def main():
               f" {c.get('size')}, from {c.get('owners')}"
               f" (scrollTop {c.get('scrollTop')}, clicked y {c.get('y')})")
     print(f"  ligand tokens: {R.get('ligandTokens')}")
+    print(f"  across objects {R.get('acrossObjects')}: Copy made"
+          f" {R.get('copyMade')} ({R.get('copySizes')} residues), Delete took"
+          f" {R.get('sizesBeforeDelete')} -> {R.get('sizesAfterDelete')}")
     print(f"  empty strip: layout {R.get('emptyStripLayout')}, note"
           f" {R.get('emptyStripNote')}, tools dead {R.get('emptyStripDisabled')};"
           f" back -> {R.get('backStripSections')}, live {R.get('backStripEnabled')}")
@@ -731,6 +761,18 @@ def main():
         if lig["groups"] and lig["tokens"] != lig["groups"]:
             bad.append(f"{nm} drew {lig['tokens']} ligand tokens for"
                        f" {lig['groups']} ligands - they are not collapsing")
+    if len(R.get("acrossObjects", [])) != 2:
+        bad.append(f"the test selection did not reach both objects: {R.get('acrossObjects')}")
+    if R.get("copyNewObjects") != 2:
+        bad.append(f"Copy made {R.get('copyNewObjects')} objects from a selection"
+                   " that reached two - it used to take one object's share only")
+    if sorted(R.get("copySizes", [])) != [2, 2]:
+        bad.append(f"the copies came out {R.get('copySizes')}, not two residues each")
+    if not R.get("deleted"):
+        bad.append("Delete across two objects reported nothing")
+    lost = [b - a for a, b in zip(R.get("sizesAfterDelete", []), R.get("sizesBeforeDelete", []))]
+    if lost != [1, 1]:
+        bad.append(f"Delete removed {lost} residues from the two objects, not one each")
     if R.get("emptyStripLayout") is not None:
         bad.append("the strip still laid out rows with nothing on screen")
     if not R.get("emptyStripNote"):

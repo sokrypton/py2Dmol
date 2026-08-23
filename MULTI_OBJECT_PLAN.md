@@ -301,33 +301,28 @@ Nothing keeps one section's rows around any more: `chainBoundaries` and
 `sortedPositionEntries` are gone from `sequenceCanvasData`, because anything
 holding them can answer the wrong object with them.
 
-## What the selection still does not do
+## The selection, across objects
 
-Reported: *"the selection mechanism doesn't seem wired up to handle multiple
-objects"*. Where it stands:
+`residueSelection` is a flat set of MERGED indices, so it can span objects, and
+everything that reads or writes it knows which object each index belongs to:
 
-- `residueSelection` is a flat set of MERGED indices, so a selection **can**
-  span two objects, and everything that WRITES from it already splits per
-  owning object (`writeGroups`): colours, side chains, SSE, bases, elements.
-  Nothing lands on the wrong residue.
-- `describeSelectionRanges` names the object when more than one is drawn, so
-  the panel reads `1BBH/A 12-30, 1HVR/A 4-9`.
-- A canvas click can select a residue of any drawn object, and Within finds
+- **Writes** are split per owning object (`writeGroups`): colours, side chains,
+  SSE, bases, elements. Nothing lands on the wrong residue.
+- **Copy, Cut and Delete** run once per object the selection reaches
+  (`objectsInSelection`, `_perObjectEdit`). Copy makes one new object per
+  structure it touched and the status line names them; Delete removes from each
+  and says so. Taking the edited object's share silently was the alternative,
+  and a Cut that leaves half the selection behind is worse than one that
+  refuses. The selection is put back before each object's turn - an edit
+  consumes it, and the second object was being handed the first one's leavings.
+- **The panel** reads `1BBH/A 12-30, 1HVR/A 4-9`, and the count says "in 2
+  objects" when it is.
+- **A change to what is on screen carries the selection**, as (object, local
+  index) pairs: residues of an object that is switched off are dropped, and
+  everything else lands where it now lives. Clearing outright meant hiding one
+  object threw away a selection made on the one still showing.
+- **A canvas click** can select a residue of any drawn object, and Within finds
   neighbours across the join - which is the point of having both on screen.
-
-What is missing:
-
-- **Copy, Cut and Delete take the current object's share only** - see
-  `_editOneObject`, which is honest but silent: cutting a selection that spans
-  two objects quietly cuts half of it. It should say so, or copy the lot into
-  one new object.
-- **The selection panel's tallies** count merged positions, so "12 residues,
-  3 with side chains" mixes objects without saying so.
-- **A ligand token spanning objects** cannot happen (groups are per object),
-  but a SELECTION spanning them can, and Cut takes only the edited object's
-  share - see `_editOneObject`.
-- **The selection is dropped when the shown set changes.** Hiding an object
-  clears a selection made on the one still visible, which it should not.
 
 ## Measured
 
