@@ -7736,5 +7736,31 @@ t('a contact belongs to the object that owns both its ends', () => {
     }
 });
 
+// THE STRIP ASKS THE OWNING OBJECT, never the edited one, for anything about a
+// position. Two places still did: the chain of a clicked item, read out of the
+// current object's frame at an index that means nothing there; and the guard
+// on whether there is anything to select in, which refused a selection in
+// another object's section whenever the edited object had no frames - a state
+// a Copy passes through.
+t('the strip reads a position from the object that owns it', () => {
+    const seq = fs.readFileSync('py2Dmol/resources/viewer-seq.js', 'utf8');
+    const at = seq.indexOf('const chainIdOfItem = ');
+    if (at < 0) throw new Error('chainIdOfItem is gone');
+    const body = seq.slice(at, seq.indexOf('\n        };', at));
+    if (!/renderer\.ownerOf\(first\)/.test(body)) {
+        throw new Error("a clicked item's chain is read from the edited object's"
+            + ' frame, not from the object that owns the position');
+    }
+    const app = seq.indexOf('const applyResidueSelection = ');
+    const guard = seq.slice(app, app + 500);
+    if (/objectsData\[objectName\]/.test(guard)) {
+        throw new Error('a selection is refused on the edited object having no'
+            + ' frames, which says nothing about the section clicked in');
+    }
+    if (!/renderer\.coords \|\| !renderer\.coords\.length/.test(guard)) {
+        throw new Error('nothing checks that there is anything loaded to select');
+    }
+});
+
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');
 process.exit(fail?1:0);

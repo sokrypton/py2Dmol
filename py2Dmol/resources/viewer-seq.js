@@ -1781,10 +1781,11 @@ function positionLetter(position, chainType) {
 
         // Helper: Apply selection to renderer
         const applyResidueSelection = (positions) => {
-            const objectName = renderer.currentObjectName;
-            const obj = renderer.objectsData[objectName];
-            const frame = obj?.frames?.[0];
-            if (!frame) return;
+            // ...and there IS something loaded to select in. Asked of the
+            // current object's frames, a selection in another object's section
+            // would be refused whenever the edited object happened to have
+            // none - which is a state a Copy passes through.
+            if (!renderer.coords || !renderer.coords.length) return;
 
             // WHERE YOU SELECT IS WHAT YOU ARE WORKING ON. The strip shows a
             // section per object on screen, so a click already says which one -
@@ -2067,14 +2068,17 @@ function positionLetter(position, chainType) {
             if (item.type === 'chain') return item.chainId;
             const rd = item.residueData;
             if (rd && rd.chain) return rd.chain;
-            const obj = renderer.objectsData[renderer.currentObjectName];
-            const frame = obj?.frames?.[0];
-            const off = renderer.sourceOffsetOf
-                ? renderer.sourceOffsetOf(renderer.currentObjectName) : 0;
+            // ...FROM THE OBJECT THAT OWNS the position, not the one being
+            // edited: an item of the second object read the first object's
+            // frame, and at an index that meant nothing there.
             const first = item.positionIndices && item.positionIndices[0];
-            // positionIndices are the renderer's; frame.chains is the object's
-            return (frame?.chains && first !== undefined)
-                ? frame.chains[first - off] : null;
+            if (first === undefined) return null;
+            const own = renderer.ownerOf ? renderer.ownerOf(first) : null;
+            const name = own ? own.name : renderer.currentObjectName;
+            const frame = renderer.objectsData[name]?.frames?.[0];
+            const local = own ? own.local
+                : first - (renderer.sourceOffsetOf ? renderer.sourceOffsetOf(name) : 0);
+            return frame?.chains ? frame.chains[local] : null;
         };
 
         const selectWholeChain = (item, additive) => {
