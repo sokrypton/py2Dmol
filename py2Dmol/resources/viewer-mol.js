@@ -5742,7 +5742,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 position_atoms: mergedPositionAtoms,
                 position_elements: mergedPositionElements,
                 residue_numbers: mergedResidueNumbers,
-                pae: this.pae || null,
+                // NO PAE ACROSS FRAMES. A matrix is a square over one
+                // structure's residues, and an overlay holds several frames of
+                // it at once; there is no such thing over the lot. This read
+                // `this.pae`, which nothing has ever assigned - a dead
+                // reference that reads as if the renderer kept one.
+                pae: null,
                 bonds: mergedBonds.length > 0 ? mergedBonds : null,
                 frameIdMap: frameIdMap,
                 autoColor: autoColor,
@@ -7126,88 +7131,58 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // No longer need polymerPositionIndices - all positions are treated the same
             // (One position = one position, no distinction between polymer/ligand)
 
-            // Pre-calculate per-chain indices for rainbow coloring (N-to-C)
-            // Include ligands in ligand-only chains for rainbow coloring
-            this.perChainIndices = new Array(n);
-            const chainIndices = {}; // Temporary tracker
-            let lastFrame = -1; // the source the walk is currently inside
-            const chainIndexGroups = this.sourceGroups();
-
-            for (let i = 0; i < n; i++) {
-                const type = this.positionTypes[i];
-                const chainId = this.chainKeyAt(i);
-                const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
-
-                // Chain A of the second source is not a continuation of
-                // chain A of the first, so the count along it starts again.
-                if (chainIndexGroups) {
-                    const src = chainIndexGroups[i];
-                    if (src !== lastFrame) {
-                        for (const key in chainIndices) {
-                            chainIndices[key] = 0;
-                        }
-                        lastFrame = src;
-                    }
-                }
-
-                if (type === 'P' || type === 'D' || type === 'R' || (type === 'L' && isLigandOnlyChain)) {
-                    if (chainIndices[chainId] === undefined) {
-                        chainIndices[chainId] = 0;
-                    }
-                    this.perChainIndices[i] = chainIndices[chainId];
-                    chainIndices[chainId]++;
-                } else {
-                    this.perChainIndices[i] = 0; // Default for ligands in mixed chains
-                }
-            }
-
-            // Pre-calculate rainbow scales.
+            // WHERE EACH RESIDUE SITS ALONG ITS CHAIN, and how long that
+            // chain is - one walk, because the second answer falls out of the
+            // first. The index counts 0, 1, 2... along each chain, so the
+            // rainbow's range for that chain is 0 to the last index it handed
+            // out; it was recomputed by a second pass over every position that
+            // could only ever arrive at the same two numbers, and both passes
+            // built a chain key per position to do it.
+            //
             // A MERGED VIEW RAMPS EACH SOURCE ON ITS OWN - each frame of a
             // trajectory, or each object, running its own blue-to-red rather
             // than taking a slice of one ramp spread over the lot. Two copies
-            // of the same protein should look like two copies of it.
-            const rainbowGroups = this.sourceGroups();
-            if (rainbowGroups) {
-                this.sourceRainbowScales = {};
-                for (let i = 0; i < this.positionTypes.length; i++) {
-                    const type = this.positionTypes[i];
-                    const chainId = this.chainKeyAt(i);
-                    const src = rainbowGroups[i];
-                    const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
-
-                    if (type === 'P' || type === 'D' || type === 'R' || (type === 'L' && isLigandOnlyChain)) {
-                        if (!this.sourceRainbowScales[src]) {
-                            this.sourceRainbowScales[src] = {};
-                        }
-                        if (!this.sourceRainbowScales[src][chainId]) {
-                            this.sourceRainbowScales[src][chainId] = { min: Infinity, max: -Infinity };
-                        }
-                        const colorIndex = this.perChainIndices[i];
-                        const scale = this.sourceRainbowScales[src][chainId];
-                        scale.min = Math.min(scale.min, colorIndex);
-                        scale.max = Math.max(scale.max, colorIndex);
-                    }
+            // of the same protein should look like two copies of it. So the
+            // count along a chain restarts at each source, and the scales are
+            // kept per source; with one source they are kept per chain, and
+            // the other table is left null so nothing reads the wrong one.
+            this.perChainIndices = new Array(n);
+            const chainIndices = {};        // running count, per chain
+            const groups = this.sourceGroups();
+            let lastFrame = -1;             // the source the walk is inside
+            const scales = {};              // src -> chain -> {min, max}
+            this.sourceRainbowScales = groups ? scales : null;
+            this.chainRainbowScales = groups ? null : {};
+            const scaleFor = (src, chainId) => {
+                if (groups) {
+                    const bySrc = scales[src] || (scales[src] = {});
+                    return bySrc[chainId]
+                        || (bySrc[chainId] = { min: 0, max: 0 });
                 }
-                // Keep chainRainbowScales as null in a merged view to avoid confusion
-                this.chainRainbowScales = null;
-            } else {
-                // Global rainbow scales (normal mode)
-                this.chainRainbowScales = {};
-                for (let i = 0; i < this.positionTypes.length; i++) {
-                    const type = this.positionTypes[i];
-                    const chainId = this.chainKeyAt(i);
-                    const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
-
-                    if (type === 'P' || type === 'D' || type === 'R' || (type === 'L' && isLigandOnlyChain)) {
-                        if (!this.chainRainbowScales[chainId]) {
-                            this.chainRainbowScales[chainId] = { min: Infinity, max: -Infinity };
-                        }
-                        const colorIndex = this.perChainIndices[i];
-                        const scale = this.chainRainbowScales[chainId];
-                        scale.min = Math.min(scale.min, colorIndex);
-                        scale.max = Math.max(scale.max, colorIndex);
-                    }
+                return this.chainRainbowScales[chainId]
+                    || (this.chainRainbowScales[chainId] = { min: 0, max: 0 });
+            };
+            for (let i = 0; i < n; i++) {
+                const type = this.positionTypes[i];
+                const chainId = this.chainKeyAt(i);
+                const src = groups ? groups[i] : 0;
+                // Chain A of the second source is not a continuation of
+                // chain A of the first, so the count along it starts again.
+                if (groups && src !== lastFrame) {
+                    for (const key in chainIndices) chainIndices[key] = 0;
+                    lastFrame = src;
                 }
+                const counts = (type === 'P' || type === 'D' || type === 'R'
+                    || (type === 'L' && this.ligandOnlyChains.has(chainId)));
+                if (!counts) {
+                    this.perChainIndices[i] = 0;   // a ligand in a mixed chain
+                    continue;
+                }
+                if (chainIndices[chainId] === undefined) chainIndices[chainId] = 0;
+                const at = chainIndices[chainId]++;
+                this.perChainIndices[i] = at;
+                const scale = scaleFor(src, chainId);
+                if (at > scale.max) scale.max = at;
             }
 
             // Pre-allocate rotatedCoords array
