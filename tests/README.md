@@ -112,6 +112,25 @@ change to the merge, to per-object state, or to the sequence strip's indices -
 and run it over several PAIRS: two of its checks were wrong rather than the
 code, and only a pair of monomers and a pair that overlaps in space showed it.
 
+`tests/python_page.py` checks the **Python API's own page** in a real browser:
+
+    python3 tests/python_page.py
+
+It builds a two-object viewer through `view.add_pdb`, `set_color`, `set_sse`
+and `add_contacts`, renders the page `_display_viewer` produces, and asks the
+renderer what it made of it. The Python path loads viewer-mol.js and the
+cartoon plugin and nothing else - no object list, no sequence strip - so what
+this covers is the RENDERER's multi-object handling reached through Python
+state: one object drawn to begin with, each object's per-position colour on its
+own residue, forced SSE on the object that was given it, and a contact naming
+"chain A 10 to 20" in EACH object resolving inside its own window rather than
+both landing on the first object's residues.
+
+IT LOADS THE MINIFIED BUNDLE, like every Python page. Editing the source and
+running this proves nothing until `npx terser` has run - which is worth
+remembering, because a mutation test against it silently passed for that
+reason.
+
 `copy_selection.js` covers what **Copy** carries onto the new object. A frame
 is extracted position by position and has its own coverage; this is the
 per-object display state beside it — which positions show a side chain or a

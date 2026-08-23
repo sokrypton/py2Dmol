@@ -348,6 +348,7 @@ recorded so the next reader does not have to re-derive it:
 | `web/app.js` | the panel's element/side-chain/base tallies, the side-chain colour readback, the chain set written when hiding, four entropy fills, Copy/Cut/Delete reporting, and CONTACTS - filed on whichever object was current, found the same way, and matched in the index form at merged indices |
 | `viewer-msa.js` | nothing: it maps one object's alignment onto that object's own frame, and `entropyForDrawn` places the result |
 | `viewer-scatter.js` | nothing: it holds no position indices |
+| `py2Dmol/viewer.py` | nothing: it writes per-object state in each object's own numbering - a colour map, an sse map, chain+residue contacts - which is exactly what the merged reader translates. Checked in a browser by `tests/python_page.py` |
 
 **A contact between two objects is refused**, out loud. It is stored on an
 object as a pair of chain+residue references and resolved among that object's
