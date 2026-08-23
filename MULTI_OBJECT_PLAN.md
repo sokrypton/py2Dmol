@@ -376,3 +376,57 @@ the way in and out).
   125,000 elements. Both merges concatenate whole per-position arrays and both
   are reachable at that size - a capsid overlaid on itself was already able to
   hit it - so both append element by element now.
+
+## What the bugs had in common, and what now prevents each
+
+Ten bugs came out of the first weeks of multi-object work. Sorting them by
+root cause is more useful than listing them, because they were three causes,
+not ten - and each has a structural answer now, added as four staged
+refactors (commits `stage 1`..`stage 4`).
+
+**Derived data that was stored and hand-invalidated** (4 of 10). Ligand groups
+and the object-level bond list were computed once at load and stored, so every
+path that rewrote the frames had to remember to refresh them; Delete
+remembered neither, and the ligands that were left drew as loose spheres with
+their sticks gone. Screen positions and the nucleic base-plate outlines were
+written by the drawn frame and read long after it.
+
+> **Now**: which atoms make up one ligand is a function of a FRAME, cached
+> against it in a WeakMap (`ligandGroupsForFrame`) - an edit builds new frame
+> objects, so it gets a new answer for free and there is nothing to invalidate.
+> The bond write-back from `setCoords` is gone: the object's list is declared,
+> not cached. Screen positions and the base plates carry the frame id they were
+> drawn for, and readers check it.
+
+**An implicit state machine around the coordinate array** (4 of 10).
+`coords` / `multiState` / `shownObjects` / `currentObjectName` / `overlayState`
+can be in many combinations, and each branch assumed something about the
+others. The comment on the branch that broke read *"the array already holds
+this object"* - true from every direction but the one where it had just been
+emptied on purpose.
+
+> **Now**: `_arrayKey()` states what the array is supposed to hold; every path
+> that builds it records that (`_noteArrayLoaded`), every path that empties it
+> clears the record. Skipping work is a comparison, not an argument.
+
+**Three index spaces sharing one integer type** (2 of 10): local to an object,
+merged, and merged-plus-appended-side-chain-atoms. The side-chain mask bug was
+the third space; the PAE box offset was the second.
+
+> **Now**: one rule for the atoms (`withSidechainAtoms`, three callers where
+> there were three copies and one absence), and the mask's two directions are
+> two named functions sitting next to each other (`_saveVisibilityToObjects`
+> down, `_visibleFromObjectRecords` up). A test enumerates every writer of the
+> live mask and fails on a fifth.
+
+**And the thing that made all three recur**: each per-object field was written
+out by hand in each of six lifecycle operations. `OBJECT_STATE` is that list,
+once; the renumbering, the session save and the session restore are each a
+loop over it, and `tests/copy_selection.js` fails until a new field is either
+registered or explicitly named as something else.
+
+What is deliberately **not** done: inverting the mask so the per-object records
+are the only state and the live mask is always derived. It would not remove the
+merged→local translation - a click in a merged view still has to be filed per
+object - only the duplicate state, and it would have to re-derive overlay
+mode's third index space, which has the least test coverage of anything here.
