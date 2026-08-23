@@ -146,6 +146,19 @@ carry their frame's stamp now (`_naPickId`), and the probe checks both halves:
 nothing picks on an empty canvas, and a plate that IS on screen still picks its
 own residue.
 
+`tests/sidechain_toggle.py` checks that **an eye does not strip another
+object's side chains**:
+
+    python3 tests/sidechain_toggle.py
+
+A shown side chain is a set of ATOMS APPENDED to the coordinate array, past
+everything the merge itself holds. The merged visibility mask was built by
+walking each object's stored record - which lists residues and knows nothing
+about the atoms hanging off them - so the mask named every residue and none of
+their atoms, and every side chain went out the moment a merge was rebuilt.
+Click any object's eye and the side chains of the object you did not touch
+disappeared with it.
+
 `tests/pae_objects.py` checks that **the PAE panel belongs to one object**:
 
     python3 tests/pae_objects.py
@@ -155,11 +168,11 @@ thing across two - but the panel was wired to whichever object was last LOADED
 and nothing re-asked when the drawn set changed. Load a structure with no PAE,
 load a prediction that has one, hide the prediction: the matrix stayed on
 screen describing residues that were not, and a box drawn on it selected the
-other object's. The rule is in `paeObjectName` (viewer-mol.js): the object
-being edited when it is drawn and has a matrix, otherwise the one drawn object
-that has one, otherwise none - two predictions on screen is a question with no
-answer, and the panel goes away rather than pick silently. The probe gives the
-second object a synthetic matrix, so it needs no network.
+other object's. The rule is in `paeObjectName` (viewer-mol.js): **in Multi
+there is no panel at all** - the matrix belongs to one structure and Multi is
+the mode for looking at several - and outside Multi it is the object on
+screen, when that object has a matrix. The probe gives the second object a
+synthetic matrix, so it needs no network.
 
 `tests/hidden_reload.py` checks that **everything switched off is a state you
 can come back from**:

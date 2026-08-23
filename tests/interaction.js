@@ -6523,6 +6523,7 @@ function shownViewer() {
         this.coords = new Array((fr && fr.coords.length) || 0).fill(0);
     };
     v._invalidateSegmentCache = function () { this.segCleared = true; };
+    v._framedObjects = new Set();
     v.screenFrameId = 0;
     v._invalidateScreenProjection = function () {
         this.screenFrameId++; this._pickPending = null;
@@ -7365,6 +7366,148 @@ t('the object being edited comes back from an empty canvas', () => {
     v.loaded = [];
     v.setShownObjects(null);
     eq(v.loaded.length, 0, 'an object already on screen is not reloaded');
+});
+
+// ONE OBJECT AT A TIME IS THE ORDINARY MODE, and Multi is the other one. The
+// picker beside the button chooses the object - on screen and being edited,
+// the same object - and Multi greys it out, opens the list and hands the
+// question to the eyes. There is no All row: the eyes are the whole control.
+t('Multi is a mode, and the picker is what it replaces', () => {
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    const html = fs.readFileSync('index.html', 'utf8');
+
+    // THE MODE IS THE RENDERER'S SHOWN SET and nothing else, so it cannot
+    // disagree with the picture or be lost on a restore.
+    if (!/shownObjects instanceof Set/.test(app)) {
+        throw new Error('the app keeps its own idea of whether Multi is on');
+    }
+    const at = app.indexOf('function toggleObjectMulti(');
+    if (at < 0) throw new Error('the Multi button toggles nothing');
+    const body = app.slice(at, app.indexOf('\n}', at)).replace(/\s+/g, ' ');
+    // ON opens on exactly what was already there; OFF drops the set entirely
+    if (!/setShownObjects\(cur \? \[cur\] : \[\]\)/.test(body)) {
+        throw new Error('Multi does not open on the object already on screen');
+    }
+    if (!/setShownObjects\(null\)/.test(body)) {
+        throw new Error('leaving Multi trims the set instead of dropping it -'
+            + ' null is the resting state, and an object loaded later has to'
+            + ' become the one on screen');
+    }
+
+    // the list is Multi's, and the picker is the other mode's
+    const sync = app.slice(app.indexOf('function syncObjectListButton('),
+        app.indexOf('function renderObjectList(')).replace(/\s+/g, ' ');
+    if (!/list\.hidden = !on/.test(sync)) {
+        throw new Error('the object list is not tied to the mode');
+    }
+    if (!/select\.disabled = on/.test(sync)) {
+        throw new Error('the picker is not greyed in Multi, where the eyes'
+            + ' decide what is drawn');
+    }
+    // ...and no All row, in the code or the styles
+    if (/object-list-all/.test(app) || /'All'/.test(app.slice(
+        app.indexOf('function renderObjectList('),
+        app.indexOf('function afterShownObjectsChange(')))) {
+        throw new Error('the All row is back');
+    }
+    // ONLY THE EYE SWITCHES A ROW: the name is a name
+    const rows = app.slice(app.indexOf('function renderObjectList('),
+        app.indexOf('function afterShownObjectsChange(')).replace(/\s+/g, ' ');
+    if (/row\.addEventListener\('click'/.test(rows)) {
+        throw new Error('the whole row is still a switch - one stray click'
+            + ' from taking a structure off the screen');
+    }
+    if (!/eye\.addEventListener\('click'/.test(rows)) {
+        throw new Error('the eye does not switch anything');
+    }
+    // the picker sits beside the button, not in the sequence header
+    const rowAt = html.indexOf('id="objectRow"');
+    const rowEnd = html.indexOf('</div>', html.indexOf('id="objectSelect"'));
+    if (!(html.indexOf('id="objectSelect"') > rowAt
+        && html.indexOf('id="objectSelect"') < rowEnd)) {
+        throw new Error('the picker is not in the Objects row');
+    }
+    if (/<select id="objectSelect" hidden/.test(html)) {
+        throw new Error('the picker is hidden again');
+    }
+});
+
+// THE CAMERA MOVES FOR SOMETHING NEW AND HOLDS STILL FOR AN EYE. Re-framing on
+// every change to the drawn set meant the picture jumped and rescaled each
+// time an object was switched off and on - "I want to see things appear and
+// disappear", not zoom.
+t('an eye does not move the camera; an object that just arrived does', () => {
+    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = src.indexOf('_applyShownObjects(skipRender = false) {');
+    const body = src.slice(at, src.indexOf('\n        }\n', at) + 1);
+    if (/if \(ms\.stats && !sameSources\)/.test(body)) {
+        throw new Error('the camera re-frames whenever the drawn set changes');
+    }
+    if (!/const fresh = names\.filter\(\(nm\) => !this\._framedObjects\.has\(nm\)\)/
+        .test(body) || !/if \(ms\.stats && fresh\.length\)/.test(body)) {
+        throw new Error('nothing distinguishes an object the camera has'
+            + ' already been framed for from one that just arrived');
+    }
+    if (!/for \(const nm of names\) this\._framedObjects\.add\(nm\)/.test(body)) {
+        throw new Error('objects are never recorded as framed, so every'
+            + ' rebuild counts as new');
+    }
+    // ...and a newly loaded object counts as new, even under an old name
+    const add = src.slice(src.indexOf('addObject(name) {'),
+        src.indexOf('addObject(name) {') + 1600);
+    if (!/_framedObjects\.delete\(name\)/.test(add)) {
+        throw new Error('a file loaded into an existing name never widens the'
+            + ' view, however far away the new structure is');
+    }
+});
+
+// AN OBJECT KEEPS THE COORDINATES ITS FILE GAVE IT. Every frame used to be
+// moved so its first chain's centroid sat at the origin, which is an alignment
+// by another name: two structures loaded as two objects came up stacked on
+// each other whatever their coordinates said. Align Frames is for FRAMES.
+t('loading an object does not move it to the origin', () => {
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    const at = app.indexOf('const alignedTogether = isTrajectory && shouldAlign;');
+    if (at < 0) throw new Error('the centring block moved');
+    const body = app.slice(at, app.indexOf('STEP 4', at)).replace(/\s+/g, ' ');
+    if (/sharedOffset = targetObject\.frames\.length > 0 \? \[0, 0, 0\] : center/
+        .test(body)) {
+        throw new Error('an aligned batch is still moved to the origin');
+    }
+    if (!/referenceCentre/.test(body)) {
+        throw new Error('frames are centred absolutely rather than against the'
+            + " object's own first frame, so a new object lands on the origin");
+    }
+    if (!/center = \[center\[0\] - referenceCentre\[0\]/.test(body)) {
+        throw new Error('the offset is not relative to the reference frame');
+    }
+});
+
+// BONDS ARE POSITION INDICES, and there are two lists of them: the frame's own
+// and the object's. _resolvedFrame asked the OBJECT and nothing else, so the
+// frame's list - the one _subsetFrames renumbers when a Cut or a Delete
+// rewrites the positions - was never read at all. After cutting a chain out,
+// the ligands that were left drew as loose atoms with their sticks gone.
+// The object's list stays as the fallback for frames carrying none of their
+// own, and an edit renumbers it (tests/cut_ligands.py covers that half; this
+// covers the precedence, which no fixture in the repo has per-frame bonds to
+// show).
+t('a frame with its own bonds is not overruled by the object', () => {
+    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = src.indexOf('_resolvedFrame(object, frameIndex) {');
+    if (at < 0) throw new Error('_resolvedFrame is gone');
+    const body = src.slice(at, src.indexOf('\n        }', at)).replace(/\s+/g, ' ');
+    if (/bonds: object\.bonds \|\| null/.test(body)) {
+        throw new Error("the frame's own bonds are ignored in favour of the"
+            + " object's, which an edit leaves in the old numbering");
+    }
+    if (!/bonds: \(data\.bonds && data\.bonds\.length\) \? data\.bonds/.test(body)) {
+        throw new Error('the frame is no longer asked for its bonds first');
+    }
+    if (!/object\.bonds \|\| null/.test(body)) {
+        throw new Error('the object is no longer the fallback, so a frame'
+            + ' without bonds of its own has none at all');
+    }
 });
 
 // LOADING A FILE WITH EVERYTHING SWITCHED OFF is a request to see that file.

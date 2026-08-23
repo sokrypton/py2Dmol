@@ -35,10 +35,17 @@ window.addEventListener('load', () => {
     await window.processFiles([{name: f, readAsync: () => Promise.resolve(txt)}], false);
   };
   // ink: how many pixels are not the background, so "did the picture change"
+  // MULTI IS THE MODE THE LIST LIVES IN: the button is a toggle, not a
+  // disclosure, so anything that wants rows asks for the mode.
   const renderObjectListIfAny = () => {
     const b = document.getElementById('objectListButton');
-    if (b && document.getElementById('objectList').hidden) b.click();
+    if (b && b.getAttribute('aria-pressed') !== 'true') b.click();
   };
+  const eyes = () => Array.from(document.querySelectorAll('#objectList .object-list-eye'));
+  const rowNames = () => Array.from(document.querySelectorAll('#objectList .object-list-name'))
+      .map((x) => x.textContent);
+  const rowOn = (i) => !Array.from(document.querySelectorAll('#objectList .object-list-row'))[i]
+      .classList.contains('is-hidden');
   const ink = (r) => {
     const c = r.canvas, x = c.getContext('2d');
     if (!x) return -1;
@@ -275,54 +282,84 @@ window.addEventListener('load', () => {
       r.render('back to cartoon');
       await new Promise((s) => setTimeout(s, 250));
 
-      // THE LIST UI, driven as a user drives it: press the button, click a
-      // row. ONE object is on screen to begin with; All is the row that puts
-      // the rest up, and pressing it again takes everything off.
+      // THE UI, DRIVEN AS A USER DRIVES IT. The picker is the ordinary
+      // control - one object on screen, the one being edited - and Multi is
+      // the other mode: the picker greys out, every object gets a row, and
+      // only the eyes decide what is drawn.
       r.setShownObjects(null);          // the resting state: just the edited one
       r.render('resting');
       await new Promise((s) => setTimeout(s, 200));
       const btn = document.getElementById('objectListButton');
-      R.btnOne = btn.textContent;
-      btn.click();
-      const rows0 = Array.from(document.querySelectorAll('.object-list-row'));
-      R.rows = rows0.map((x) => x.querySelector('.object-list-name').textContent);
+      const picker = document.getElementById('objectSelect');
+      R.btnOne = btn.textContent.trim();
+      R.multiBefore = btn.getAttribute('aria-pressed');
+      R.listHiddenBefore = document.getElementById('objectList').hidden;
+      R.pickerBefore = picker.disabled;
+      R.pickerValue = picker.value;
+
+      btn.click();                      // MULTI ON
+      await new Promise((s) => setTimeout(s, 300));
+      R.multiAfter = btn.getAttribute('aria-pressed');
+      R.pickerAfter = picker.disabled;
+      R.rows = rowNames();
       R.swatches = document.querySelectorAll('.object-list-swatch').length;
       R.oneObjectInk = ink(r);
       R.oneObjectDrawn = r.drawnObjects();
+      // ...and it opened on exactly what was already there
+      R.multiOpensOnEdited = r.drawnObjects().join(',') === r.currentObjectName;
+      R.eyesOnAtOpen = R.rows.map((_, k) => rowOn(k));
 
-      rows0[0].click();                 // All on
-      await new Promise((s) => setTimeout(s, 300));
+      // EVERY EYE ON
+      for (let k = 0; k < R.rows.length; k++) if (!rowOn(k)) {
+        eyes()[k].click();
+        await new Promise((s) => setTimeout(s, 250));
+      }
       R.afterAllDrawn = r.drawnObjects();
       R.afterAllInk = ink(r);
-      R.btnAll = document.getElementById('objectListButton').textContent;
 
-      const rowsA = Array.from(document.querySelectorAll('.object-list-row'));
-      rowsA[0].click();                 // All off - every object, an empty canvas
-      await new Promise((s) => setTimeout(s, 300));
+      // ...AND EVERY EYE OFF, which is an empty canvas and not a fallback to
+      // one object: the objects are all still there to be switched back on.
+      for (let k = 0; k < R.rows.length; k++) if (rowOn(k)) {
+        eyes()[k].click();
+        await new Promise((s) => setTimeout(s, 250));
+      }
       R.noneDrawn = r.drawnObjects().length;
       R.noneInk = ink(r);
       R.noneObjectsKept = Object.keys(r.objectsData).length;
-      R.btnNone = document.getElementById('objectListButton').textContent;
 
       // ONE OBJECT'S OWN EYE, from an empty canvas: it comes back on its own,
       // and it is NOT the object being edited - which the merge path draws
       // just as well as the plain one.
-      const rowsB = Array.from(document.querySelectorAll('.object-list-row'));
-      rowsB[1].click();
+      const otherIdx = rowNames().findIndex((n) => n !== r.currentObjectName);
+      eyes()[otherIdx].click();
       await new Promise((s) => setTimeout(s, 300));
       R.oneBackDrawn = r.drawnObjects();
       R.oneBackInk = ink(r);
       R.oneBackIsEdited = r.drawnObjects()[0] === r.currentObjectName;
+      // THE CAMERA HOLDS STILL for an object it has already framed - an eye
+      // makes things appear and disappear, it does not zoom.
+      const camA = JSON.stringify([r.viewerState.extent, r.viewerState.center]);
 
       // ...and the other joins it rather than replacing it, which is the
       // complaint that started all of this
-      const rowsC = Array.from(document.querySelectorAll('.object-list-row'));
-      rowsC[2].click();
+      eyes()[rowNames().findIndex((n) => n === r.currentObjectName)].click();
       await new Promise((s) => setTimeout(s, 300));
       R.afterJoinDrawn = r.drawnObjects();
       R.afterJoinInk = ink(r);
       R.afterJoinMulti = !!(r.multiState && r.multiState.enabled);
-      R.btnSome = document.getElementById('objectListButton').textContent;
+      R.cameraHeld = camA === JSON.stringify([r.viewerState.extent, r.viewerState.center]);
+
+      // BACK TO ONE OBJECT AT A TIME: the picker comes back, and what it names
+      // is what is on screen.
+      btn.click();
+      await new Promise((s) => setTimeout(s, 300));
+      R.offMulti = btn.getAttribute('aria-pressed');
+      R.offPicker = picker.disabled;
+      R.offDrawn = r.drawnObjects();
+      R.offListHidden = document.getElementById('objectList').hidden;
+      R.offShown = r.shownObjects === null;
+      btn.click();                      // ...and back into Multi for the rest
+      await new Promise((s) => setTimeout(s, 250));
 
       r.setShownObjects(names);
       r.render('all again');
@@ -378,15 +415,17 @@ window.addEventListener('load', () => {
       // invisible there.
       // ...driven the way a user drives it, so the strip has to follow the
       // LIST and not only an explicit rebuild
-      const listRows = Array.from(document.querySelectorAll('.object-list-row'));
-      const allRow = listRows[0];
       r.setShownObjects([names[0]]);
       if (window.SEQ && window.SEQ.buildView) window.SEQ.buildView();
       await new Promise((s) => setTimeout(s, 200));
       renderObjectListIfAny();
-      const rowsS = Array.from(document.querySelectorAll('.object-list-row'));
-      rowsS[0].click();                  // All, through the UI
-      await new Promise((s) => setTimeout(s, 500));
+      // ...the other object's eye, through the UI - the strip has to follow
+      // the LIST and not only an explicit rebuild
+      for (let k = 0; k < rowNames().length; k++) if (!rowOn(k)) {
+        eyes()[k].click();
+        await new Promise((s) => setTimeout(s, 250));
+      }
+      await new Promise((s) => setTimeout(s, 300));
       R.stripSections = (window.SEQ.layout() && window.SEQ.layout().objectLabelPositions
         ? window.SEQ.layout().objectLabelPositions.map((x) => x.object) : null);
       R.stripChains = (window.SEQ.layout() && window.SEQ.layout().chainLabelPositions
@@ -518,10 +557,11 @@ window.addEventListener('load', () => {
         ? window.SEQ.layout().objectLabelPositions.map((x) => x.object) : null;
       R.backStripEnabled = !document.getElementById('selectAllResidues').disabled;
 
-      // NO PICKER: the strip's sections say which object you are working on,
-      // and clicking in one is how you change it.
-      const picker = document.getElementById('objectSelect');
+      // THE PICKER IS ON SCREEN AND GREYED, because Multi is on: what is
+      // drawn is the eyes' business here, and which object you are EDITING is
+      // said by the strip's sections - clicking in one is how you change it.
       R.pickerVisible = !!(picker && picker.offsetParent !== null);
+      R.pickerGreyed = !!(picker && picker.disabled);
       R.pickerOptions = picker
         ? Array.from(picker.options).map((o) => o.value) : null;
 
@@ -737,7 +777,10 @@ def main():
           f" back to {R['restoredInk']}; first object touched:"
           f" {R['hiddenOnFirst']}, second object's lowest index {R['hiddenLocal']}")
     print(f"  list: rows {R.get('rows')}, swatches {R.get('swatches')};"
-          f" button {R.get('btnOne')!r} -> {R.get('btnAll')!r} -> {R.get('btnNone')!r}")
+          f" button {R.get('btnOne')!r}, pressed {R.get('multiBefore')} ->"
+          f" {R.get('multiAfter')} -> {R.get('offMulti')}; picker off in multi:"
+          f" {R.get('pickerAfter')}, back on after: {not R.get('offPicker')}")
+
     print(f"  All: {R.get('oneObjectDrawn')} ({R.get('oneObjectInk')} ink) ->"
           f" {R.get('afterAllDrawn')} ({R.get('afterAllInk')}) -> nothing"
           f" ({R.get('noneInk')} ink, {R.get('noneObjectsKept')} objects kept)")
@@ -766,7 +809,8 @@ def main():
     print(f"  empty strip: layout {R.get('emptyStripLayout')}, note"
           f" {R.get('emptyStripNote')}, tools dead {R.get('emptyStripDisabled')};"
           f" back -> {R.get('backStripSections')}, live {R.get('backStripEnabled')}")
-    print(f"  no picker on screen: {not R.get('pickerVisible')};"
+    print(f"  picker on screen: {R.get('pickerVisible')}, greyed in multi:"
+          f" {R.get('pickerGreyed')};"
           f" clicking in {R.get('wantedObject')}'s section -> editing"
           f" {R.get('afterPickCurrent')}, selected a residue of"
           f" {R.get('afterPickOwner')}, drawn {R.get('afterPickDrawn')}")
@@ -819,18 +863,39 @@ def main():
                    f" {R.get('pickTried')} tries - it reported {R.get('pickOwner')}")
     if not (0 < R.get("clipInk", 0) < R["bothInk"]):
         bad.append(f"auto clip on one object left {R.get('clipInk')} ink")
-    if R.get("rows") != ["All"] + R["objects"]:
-        bad.append(f"the list reads {R.get('rows')} - All first, then the objects")
+    if R.get("rows") != R["objects"]:
+        bad.append(f"the list reads {R.get('rows')} - one row per object, no All")
+    if R.get("btnOne") != "Multi":
+        bad.append(f"the button reads {R.get('btnOne')!r}")
+    if R.get("multiBefore") != "false" or R.get("multiAfter") != "true" \
+            or R.get("offMulti") != "false":
+        bad.append(f"Multi does not toggle: {R.get('multiBefore')} ->"
+                   f" {R.get('multiAfter')} -> {R.get('offMulti')}")
+    if not R.get("listHiddenBefore") or not R.get("offListHidden"):
+        bad.append("the object list is showing outside Multi")
+    if R.get("pickerBefore") or not R.get("pickerAfter") or R.get("offPicker"):
+        bad.append("the picker is not greyed in Multi and live outside it:"
+                   f" {R.get('pickerBefore')} -> {R.get('pickerAfter')} ->"
+                   f" {R.get('offPicker')}")
+    if not R.get("multiOpensOnEdited"):
+        bad.append(f"Multi opened on {R.get('oneObjectDrawn')} rather than the"
+                   " object that was already on screen")
+    if R.get("eyesOnAtOpen") != [i == R["objects"].index(R.get("pickerValue"))
+                                 for i in range(len(R["objects"]))]:
+        bad.append(f"the eyes opened as {R.get('eyesOnAtOpen')} - only the"
+                   " object being shown should have one")
+    if not R.get("offShown") or R.get("offDrawn") != [R.get("pickerValue")]:
+        bad.append(f"leaving Multi left {R.get('offDrawn')} on screen rather"
+                   f" than the picker's {R.get('pickerValue')!r}")
+    if not R.get("cameraHeld"):
+        bad.append("switching an eye moved the camera - an object already"
+                   " framed should appear and disappear where it is")
     if R.get("swatches"):
         bad.append("the rows still carry colour swatches")
     if R.get("oneObjectDrawn") != [R["objects"][1]]:
         bad.append(f"the resting state drew {R.get('oneObjectDrawn')}")
-    if R.get("btnOne") != "1/2":
-        bad.append(f"the button reads {R.get('btnOne')!r} with one object on screen")
     if R.get("afterAllDrawn") != R["objects"]:
         bad.append(f"All left {R.get('afterAllDrawn')} on screen")
-    if R.get("btnAll") != "All":
-        bad.append(f"the button reads {R.get('btnAll')!r} after All")
     # NOT "more ink than one object". The camera frames on everything drawn,
     # so a second structure joining zooms BOTH out: 4HHB alone inks 99,439
     # against 71,132 for 4HHB beside 1TIM, and the merge is perfectly correct.
@@ -845,8 +910,6 @@ def main():
         bad.append(f"an empty canvas has {R.get('noneInk')} ink on it")
     if R.get("noneObjectsKept") != len(R["objects"]):
         bad.append("switching objects off unloaded them")
-    if R.get("btnNone") != "0/2":
-        bad.append(f"the button reads {R.get('btnNone')!r} with nothing on screen")
     if R.get("oneBackDrawn") != [R["objects"][0]]:
         bad.append(f"one eye from an empty canvas drew {R.get('oneBackDrawn')}")
     if R.get("oneBackIsEdited"):
@@ -864,8 +927,6 @@ def main():
     # moment the framing can change; the drawn list and the merge are.
     if not R.get("afterJoinInk"):
         bad.append("two objects on screen drew nothing")
-    if R.get("btnSome") != "All":
-        bad.append(f"the button reads {R.get('btnSome')!r} with both on screen")
     if R.get("colBoth") != R.get("colAlone"):
         bad.append(f"the first object is drawn {R.get('colBoth')} beside another"
                    f" and {R.get('colAlone')} on its own")
@@ -927,11 +988,13 @@ def main():
         bad.append(f"switching objects back on left the strip {R.get('backStripSections')}")
     if not R.get("backStripEnabled"):
         bad.append("the strip's tools stayed dead after objects came back")
-    if R.get("pickerVisible"):
-        bad.append("the object picker is still on screen - the strip's sections"
-                   " answer that question now")
+    if not R.get("pickerVisible"):
+        bad.append("the object picker is not on screen - it is the ordinary"
+                   " way to choose one object")
+    if not R.get("pickerGreyed"):
+        bad.append("the picker is live in Multi, where the eyes decide")
     if R.get("pickerOptions") != R["objects"]:
-        bad.append(f"the hidden select no longer tracks the objects:"
+        bad.append(f"the select no longer tracks the objects:"
                    f" {R.get('pickerOptions')}")
     if R.get("afterPickCurrent") != R.get("wantedObject"):
         bad.append(f"clicking in {R.get('wantedObject')}'s section left"

@@ -93,6 +93,24 @@ window.addEventListener('load', () => {
       r.setShownObjects([]); await wait(250);
       r.setShownObjects(['6MRR']); await wait(400); rebuild(); await wait(200);
       R.steps.push(snap(r, 'the other one'));
+
+      // A FILE LOADED WHILE SEVERAL ARE ON SCREEN joins them, and the camera
+      // widens once to take it in - which is the one time it should move. An
+      // eye being switched is not: see the cameraHeld check in
+      // tests/multi_object.py.
+      R.extentBefore = r.viewerState.extent;
+      await load('1UBQ.cif'); await wait(900); rebuild(); await wait(200);
+      R.steps.push(snap(r, 'third loaded'));
+      R.extentAfter = r.viewerState.extent;
+      // ...and everything drawn is really inside the canvas
+      const rect = r.canvas.getBoundingClientRect();
+      let outside = 0;
+      for (let i = 0; i < r.coords.length; i++) {
+        if (r.screenValid && r.screenValid[i] !== r.screenFrameId) continue;
+        const x = r.screenX[i]; const y = r.screenY[i];
+        if (x < 0 || y < 0 || x > r.displayWidth || y > r.displayHeight) outside++;
+      }
+      R.outside = outside;
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});
   };
@@ -162,5 +180,18 @@ for s in R["steps"]:
             bad.append(f"{s['tag']}: {s['strip']['coloured']} coloured pixels"
                        f" in the strip against {baseline} for the same strip"
                        " drawn properly - the cells came back grey")
+last = R["steps"][-1]
+print(f"  a third file joined {last['drawn']}: extent {R.get('extentBefore')}"
+      f" -> {R.get('extentAfter')}, {R.get('outside')} positions off canvas")
+if len(last['drawn']) < 2:
+    bad.append(f"loading a third file while two were on screen left"
+               f" {last['drawn']} drawn")
+if not (R.get("extentAfter") and R.get("extentBefore")
+        and R["extentAfter"] > R["extentBefore"]):
+    bad.append(f"the camera did not widen for the object that just arrived:"
+               f" {R.get('extentBefore')} -> {R.get('extentAfter')}")
+if R.get("outside"):
+    bad.append(f"{R.get('outside')} positions are off the canvas after the load")
+
 for m in bad: print("FAIL:", m)
 sys.exit(1 if bad else 0)

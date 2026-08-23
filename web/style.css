@@ -1762,9 +1762,10 @@ table.layout-table td {
 }
 
 /* THE OBJECT LIST - what is on screen, and only that. The button opens into a
-   row per object, each an eye and a name, and the whole row is the switch.
+   row per object, each an eye and a name, and only the eye is the switch.
    Which object is being EDITED is asked for separately, by the picker in the
-   sequence header. */
+   sequence header - which is the whole control in the ordinary mode, and
+   greyed out in Multi. */
 .object-row {
     display: flex;
     align-items: center;
@@ -1786,8 +1787,10 @@ table.layout-table td {
 
 .object-list-btn:hover { background: var(--color-gray-100); }
 
-/* OPEN IS A STATE, so it fills - the same way the GPU switch reads on. */
-.object-list-btn[aria-expanded="true"] {
+/* MULTI IS A MODE, so the button fills while it is on - the same way the GPU
+   switch reads on. */
+.object-list-btn.is-on,
+.object-list-btn[aria-pressed="true"] {
     color: var(--color-primary);
     background: rgba(59, 130, 246, 0.10);
 }
@@ -1812,13 +1815,29 @@ table.layout-table td {
 
 .object-list-row + .object-list-row { border-top: 1px solid #f3f4f6; }
 
-/* ALL sits above the objects and is not one of them, so it is ruled off rather
-   than listed with them. */
-.object-list-all {
-    border-bottom: 1px solid #e5e7eb;
-    font-weight: 600;
-}
 .object-list-row:hover { background: var(--color-gray-100); }
+
+/* ONLY THE EYE IS THE SWITCH, so only the eye offers itself as one. */
+.object-list-eye { cursor: pointer; }
+.object-list-name { cursor: default; }
+
+/* THE PICKER sits beside the Multi button, because the two are one control
+   between them: which object, or several. Greyed in Multi - what is on screen
+   is the eyes' business there, and what is being EDITED is answered by
+   clicking in the sequence strip. */
+.object-picker {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--color-gray-300);
+    border-radius: var(--btn-radius);
+    background: #fff;
+    color: var(--color-gray-700);
+}
+
+.object-picker:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
 
 .object-list-eye {
     width: 20px;

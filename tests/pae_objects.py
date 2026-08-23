@@ -1,21 +1,19 @@
-"""The PAE panel belongs to ONE object; several can be on screen.
+"""The PAE panel belongs to one object, and Multi has no panel at all.
 
     python3 tests/pae_objects.py
 
 A PAE matrix is a square over one structure's residues - there is no such
-thing across two - but the panel was wired to whichever object was last
-LOADED, and nothing re-asked when the drawn set changed. Load a structure with
-no PAE, load a prediction that has one, then hide the prediction and show the
-first: the matrix stayed on screen, describing residues that were not, and a
-box drawn on it selected the other object's.
+thing across two - but the panel was wired to whichever object was last LOADED
+and nothing re-asked when the drawn set changed. Load a structure with no PAE,
+load a prediction that has one, then hide the prediction: the matrix stayed on
+screen describing residues that were not, and a box drawn on it selected the
+other object's.
 
-What this checks, with a synthetic matrix on the second object:
-
-  * the matrix shows while its object is drawn, merged or alone;
-  * it goes away when its object does;
-  * it comes back, and a box drawn on it selects ITS residues, at the offset
-    the object sits at in the merged array;
-  * a single object with PAE is still exactly what it always was.
+The rule (paeObjectName in viewer-mol.js): in Multi there is no panel, because
+the matrix belongs to one structure and Multi is the mode for looking at
+several; outside Multi it is the object on screen, when that object has a
+matrix. The probe gives the second object a synthetic matrix, so it needs no
+network.
 """
 import http.server, json, os, re, shutil, socketserver, subprocess, threading, time, sys
 ROOT="/Users/mini/Documents/GitHub/py2Dmol"
@@ -58,22 +56,36 @@ window.addEventListener('load', () => {
       o.frames[0].pae = m;
       o._lastPaeFrame = 0;
       R.paeN = n;
-      window.PAE.updateFrame(r, o, 0);
-      await wait(200);
+      window.PAE.syncToDrawn(r);
+      await new Promise((s) => setTimeout(s, 200));
       R.alone = panel(r);           // the prediction, on its own: the old world
 
-      // BOTH ON SCREEN
+      // MULTI, with both on screen: no panel.
       r.setShownObjects([noPae, withPae]);
       await wait(400);
       R.merged = panel(r);
       R.mergedDrawn = r.drawnObjects();
       R.offset = r.sourceOffsetOf(withPae);
 
-      // ...AND A BOX DRAWN ON IT hides everything outside ITS residues. The
-      // rows are the prediction's, and the mask speaks merged indices - so
-      // this is where an offset taken from the wrong object shows: the box
-      // would hide the OTHER structure's residues instead.
-      r.currentObjectName = noPae;      // the panel's object is not the edited one
+      // ...and Multi with ONLY the prediction on screen: still no panel. One
+      // object drawn is not the same as one object loaded, and a square that
+      // comes and goes with an eye is the confusion this rule removes.
+      r.setShownObjects([withPae]);
+      await wait(400);
+      R.multiOne = panel(r);
+
+      // EVERYTHING OFF
+      r.setShownObjects([]);
+      await wait(300);
+      R.off = panel(r);
+
+      // BACK OUT OF MULTI: the picker's object, and its matrix with it.
+      r.setShownObjects(null);
+      await wait(400);
+      R.back = panel(r);
+      R.backDrawn = r.drawnObjects();
+
+      // ...AND A BOX DRAWN ON IT hides everything outside its own residues.
       const pc = r.paeRenderer.canvas;
       const pr = pc.getBoundingClientRect();
       const cell = (k) => (k + 0.5) * pr.width / r.paeRenderer.n;
@@ -84,36 +96,19 @@ window.addEventListener('load', () => {
       window.dispatchEvent(new MouseEvent('mouseup', at(8)));
       await wait(300);
       const sel = Array.from(r.getVisibility().positions || []).sort((a, b) => a - b);
+      // ownerOf answers for a MERGE; outside one every position belongs to
+      // the object on screen
+      const own = (sel.length && r.ownerOf) ? r.ownerOf(sel[0]) : null;
       R.box = {n: sel.length, lo: sel[0], hi: sel[sel.length - 1],
-               offset: r.sourceOffsetOf(withPae),
-               objects: Array.from(new Set(sel.map((i) => r.ownerOf(i).name)))};
+               object: own ? own.name : (sel.length ? r.currentObjectName : null)};
       r.setVisibility({paeBoxes: [], positions: new Set(), chains: new Set(),
                        visibilityMode: 'default'}, true);
-      r.currentObjectName = withPae;
 
-      // THE PREDICTION GOES AWAY, the other object stays
-      r.setShownObjects([noPae]);
-      await wait(400);
-      R.hidden = panel(r);
-      R.hiddenDrawn = r.drawnObjects();
-
-      // ...and comes back
-      r.setShownObjects([noPae, withPae]);
-      await wait(400);
-      R.back = panel(r);
-
-      // EVERYTHING OFF
-      r.setShownObjects([]);
-      await wait(300);
-      R.off = panel(r);
-
-      // THE PREDICTION ALONE, WHILE THE OTHER IS THE ONE BEING EDITED: only
-      // one candidate, so the panel is not ambiguous and shows it.
-      r.setShownObjects([withPae]);
-      r.currentObjectName = noPae;
-      if (window.PAE.syncToDrawn) window.PAE.syncToDrawn(r);
-      await wait(300);
-      R.otherEdited = panel(r);
+      // THE OBJECT WITH NO MATRIX, picked: the panel goes away.
+      r._switchToObject(noPae);
+      r.setFrame(0);
+      await wait(500);
+      R.otherPicked = panel(r);
       R.paeObject = r.paeObjectName ? r.paeObjectName() : null;
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});
@@ -145,36 +140,32 @@ R = box[0] if box else {"error": "no result posted"}
 if R.get("error"): sys.exit("page error: " + R["error"])
 
 print(f"objects {R['names']}, the second given a {R['paeN']}x{R['paeN']} matrix")
-for k in ('alone','merged','hidden','back','off','otherEdited'):
+for k in ('alone', 'merged', 'multiOne', 'off', 'back', 'otherPicked'):
     print(f"  {k:12s} {R.get(k)}")
-print(f"  drawn merged {R.get('mergedDrawn')} (offset {R.get('offset')}),"
-      f" hidden {R.get('hiddenDrawn')}, pae object now {R.get('paeObject')}")
+print(f"  drawn in multi {R.get('mergedDrawn')} (offset {R.get('offset')}),"
+      f" back out of multi {R.get('backDrawn')}, pae object now {R.get('paeObject')}")
+b = R.get("box") or {}
+print(f"  a box on rows 2-8: {b.get('n')} positions, {b.get('lo')}..{b.get('hi')}"
+      f" of {b.get('object')}")
 
-bad=[]
+bad = []
 if not (R['alone']['shown'] and R['alone']['n'] == R['paeN']):
     bad.append(f"the prediction's own matrix does not show on its own: {R['alone']}")
-if not (R['merged']['shown'] and R['merged']['n'] == R['paeN']):
-    bad.append(f"merged with another object, the matrix went missing: {R['merged']}")
-if R['hidden']['shown'] or R['hidden']['has']:
-    bad.append(f"the matrix outlived the object it describes: {R['hidden']}")
+for k, what in (('merged', 'with both objects in Multi'),
+                ('multiOne', 'in Multi with only the prediction on screen'),
+                ('off', 'with everything switched off')):
+    if R[k]['shown'] or R[k]['has']:
+        bad.append(f"the matrix is still there {what}: {R[k]}")
 if not (R['back']['shown'] and R['back']['n'] == R['paeN']):
-    bad.append(f"the matrix did not come back with its object: {R['back']}")
-if R['off']['shown'] or R['off']['has']:
-    bad.append(f"everything switched off still shows a matrix: {R['off']}")
-if not (R['otherEdited']['shown'] and R['otherEdited']['n'] == R['paeN']):
-    bad.append("the one drawn object with a matrix does not show it while"
-               f" another is being edited: {R['otherEdited']}")
-if R.get('paeObject') != R['names'][1]:
+    bad.append(f"leaving Multi did not bring the matrix back: {R['back']}")
+if R['otherPicked']['shown'] or R['otherPicked']['has']:
+    bad.append("picking the object with no matrix left the other one's on"
+               f" screen: {R['otherPicked']}")
+if R.get('paeObject') is not None:
     bad.append(f"the panel thinks it belongs to {R.get('paeObject')}")
-b = R.get("box") or {}
-print(f"  a box on rows 2-8 of the matrix: {b.get('n')} positions,"
-      f" {b.get('lo')}..{b.get('hi')} (the object sits at {b.get('offset')}),"
-      f" belonging to {b.get('objects')}")
-if b.get("objects") != [R["names"][1]]:
-    bad.append(f"a box drawn on the prediction's matrix selected {b.get('objects')}")
-elif b.get("lo") != b.get("offset") + 2 or b.get("hi") != b.get("offset") + 8:
-    bad.append(f"the box landed on {b.get('lo')}..{b.get('hi')}, not"
-               f" {b.get('offset') + 2}..{b.get('offset') + 8}")
+if b.get('object') != R['names'][1] or b.get('lo') != 2 or b.get('hi') != 8:
+    bad.append(f"a box on rows 2-8 selected {b.get('lo')}..{b.get('hi')} of"
+               f" {b.get('object')}")
 
 for m in bad: print("FAIL:", m)
 sys.exit(1 if bad else 0)

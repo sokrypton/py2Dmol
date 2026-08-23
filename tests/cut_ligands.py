@@ -53,7 +53,28 @@ window.addEventListener('load', () => {
     const inGroup = new Set();
     for (const [, idxs] of groups) for (const i of idxs) inGroup.add(i);
     for (let i = 0; i < n; i++) if (types[i] === 'L' && !inGroup.has(i)) loose++;
-    return {groups: groups.size, atoms, loose, bad: bad.slice(0, 6), n};
+    // ...AND THE BONDS THAT HOLD EACH LIGAND TOGETHER. They are position
+    // indices like everything else, and the renderer reads them from the
+    // OBJECT (see _resolvedFrame), not from the frame - so an edit that
+    // renumbers the frames leaves them pointing anywhere. A ligand with no
+    // bonds left is a handful of loose atoms drawn as spheres.
+    const bonds = o.bonds || f.bonds || [];
+    let outOfRange = 0;
+    let crossResidue = 0;
+    const perGroup = {};
+    const groupOf = new Map();
+    for (const [key, idxs] of groups) for (const i of idxs) groupOf.set(i, key);
+    for (const b of bonds) {
+      const [i, j] = b;
+      if (i < 0 || j < 0 || i >= n || j >= n) { outOfRange++; continue; }
+      const gi = groupOf.get(i);
+      const gj = groupOf.get(j);
+      if (gi && gi === gj) perGroup[gi] = (perGroup[gi] || 0) + 1;
+      // a bond between two DIFFERENT ligands is not a thing any file says
+      else if (gi && gj && gi !== gj) crossResidue++;
+    }
+    return {groups: groups.size, atoms, loose, bad: bad.slice(0, 6), n,
+            bonds: bonds.length, outOfRange, crossResidue, perGroup};
   };
   const go = async () => {
     const R = {};
@@ -108,6 +129,31 @@ window.addEventListener('load', () => {
       await wait(700);
       R.after2 = audit(r, NAME);
       R.cutOut2 = R.made2 ? audit(r, R.made2) : null;
+
+      // ...AND AN OBJECT WHOSE FRAMES CARRY NO BONDS OF THEIR OWN, which is
+      // how the Python API loads one (obj.bonds is set at the object level)
+      // and how most frames of a trajectory arrive. The object's list is then
+      // the only answer there is, and an edit has to renumber it: nothing
+      // else will, because the write-back from setCoords only ever puts a
+      // FRAME's bonds there.
+      const o3 = r.objectsData[NAME];
+      for (const fr of o3.frames) delete fr.bonds;
+      const f3 = o3.frames[0];
+      const sel3 = new Set();
+      let lig3 = 0;
+      for (let i = 0; i < f3.chains.length; i++) {
+        if (f3.chains[i] === 'A') { sel3.add(i); if (f3.position_types[i] === 'L') lig3++; }
+      }
+      R.ligandsCut3 = lig3;
+      r.residueSelection = sel3;
+      r.cutSelection();
+      await wait(900);
+      r._showObject(NAME);
+      await wait(600);
+      R.objectOnly = audit(r, NAME);
+      R.objectOnly.rendererBonds = r.bonds ? r.bonds.length : 0;
+      R.objectOnly.frameHasBonds = !!(o3.frames[0].bonds
+        && o3.frames[0].bonds.length);
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});
   };
@@ -161,6 +207,36 @@ for tag in ('after', 'cutOut'):
     if a['loose']:
         bad.append(f"{tag}: {a['loose']} ligand atoms belong to no group - they"
                    " draw as loose spheres and the strip cannot collapse them")
+
+def bonds_line(tag):
+    a = R[tag]
+    return (f"  {tag:8s} {a['bonds']} bonds, {a['outOfRange']} out of range,"
+            f" {a['crossResidue']} between two different ligands;"
+            f" per ligand {a['perGroup']}")
+
+def check_bonds(tag):
+    a = R[tag]
+    if a['outOfRange']:
+        bad.append(f"{tag}: {a['outOfRange']} bonds point outside the frame")
+    if a['crossResidue']:
+        bad.append(f"{tag}: {a['crossResidue']} bonds join two different ligands"
+                   " - the numbering moved under them")
+
+print(bonds_line('before'))
+print(bonds_line('after'))
+check_bonds('before')
+check_bonds('after')
+check_bonds('cutOut')
+# EVERY LIGAND THAT SURVIVED KEEPS ITS OWN BONDS, one for one. This is the
+# check that fails when the bonds are read from a stale object-level copy:
+# the atoms are right, the map is right, and the sticks are gone.
+for key, cnt in (R['before']['perGroup'] or {}).items():
+    if key in (R['after']['perGroup'] or {}):
+        if R['after']['perGroup'][key] != cnt:
+            bad.append(f"{key} had {cnt} bonds before the cut and"
+                       f" {R['after']['perGroup'][key]} after")
+    elif key not in (R['cutOut']['perGroup'] or {}):
+        bad.append(f"{key} lost every one of its {cnt} bonds")
 # WHAT SHOULD BE LEFT, counted rather than assumed: chain D of 4HHB carries no
 # ligand of its own (the haems are in chains of their own), so the map has to
 # come through the renumbering intact - which is the harder case, not the
@@ -192,6 +268,33 @@ if R['after2']['atoms'] != R['after']['atoms'] - R['ligandsCut2']:
 if R['cutOut2']['atoms'] != R['ligandsCut2'] or not R['cutOut2']['groups']:
     bad.append(f"the copy of the ligand chain has {R['cutOut2']['groups']}"
                f" groups over {R['cutOut2']['atoms']} atoms")
+
+print(bonds_line('after2'))
+print(bonds_line('cutOut2'))
+check_bonds('after2')
+check_bonds('cutOut2')
+# the ligand chain that was cut takes its own bonds with it, whole
+for key, cnt in (R['after']['perGroup'] or {}).items():
+    here = (R['after2']['perGroup'] or {}).get(key)
+    gone = (R['cutOut2']['perGroup'] or {}).get(key)
+    if here is None and gone is None:
+        bad.append(f"{key} lost its {cnt} bonds in the second cut")
+    elif here is not None and here != cnt:
+        bad.append(f"{key}: {cnt} bonds before the second cut, {here} after")
+    elif gone is not None and gone != cnt:
+        bad.append(f"{key}: the copy took {gone} of its {cnt} bonds")
+
+print(f"then, with the frames carrying no bonds of their own, cut chain A"
+      f" ({R.get('ligandsCut3')} ligand atoms)")
+print(bonds_line('objectOnly') + f" [renderer holds {R['objectOnly']['rendererBonds']}]")
+check_bonds('objectOnly')
+if R['objectOnly']['perGroup'] != R['after2']['perGroup']:
+    bad.append("with only the OBJECT's bond list to go on, the ligands came"
+               f" back with {R['objectOnly']['perGroup']} against"
+               f" {R['after2']['perGroup']} before the cut - the list was left"
+               " in the old numbering")
+if not R['objectOnly']['rendererBonds']:
+    bad.append("the renderer ended up with no bonds at all")
 
 for m in bad: print("FAIL:", m)
 sys.exit(1 if bad else 0)

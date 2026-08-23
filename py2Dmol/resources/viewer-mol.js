@@ -1005,6 +1005,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Current render state
             this.coords = []; // This is now an array of Vec3 objects
+            // WHICH OBJECTS THE CAMERA HAS ALREADY BEEN FRAMED FOR. A merge
+            // re-frames for an object that is new to it and holds still for
+            // one being switched back on - see _applyShownObjects.
+            this._framedObjects = new Set();
             this.plddts = [];
             this.chains = [];
             this.positionTypes = [];
@@ -3154,6 +3158,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (this.shownObjects instanceof Set) {
                 this.shownObjects.add(name);
             }
+            // ...and it is new to the CAMERA, which will widen once to take it
+            // in. A re-fetch under the same name counts: the structure behind
+            // it can be anywhere.
+            if (this._framedObjects) this._framedObjects.delete(name);
             const objectExists = this.objectsData[name] !== undefined;
             const existingScatterConfig = objectExists
                 ? (this.objectsData[name].scatterConfig || null)
@@ -4367,6 +4375,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // derived from the frame in the first place, and there is one
             // function that does it.
             this._recomputeLigandGroups(object);
+            // ...AND THE OBJECT'S OWN BOND LIST, which is position indices
+            // too. The frames carry a renumbered copy each, but this one is
+            // what every frame without its own falls back to, and it is
+            // written back over from setCoords - left in the old numbering it
+            // comes round again on the next frame load.
+            if (Array.isArray(object.bonds) && object.bonds.length) {
+                const nb = [];
+                for (const b of object.bonds) {
+                    const i = newIndexOf.get(b[0]);
+                    const j = newIndexOf.get(b[1]);
+                    if (i === undefined || j === undefined) continue;
+                    nb.push(b.length > 2 ? [i, j, ...b.slice(2)] : [i, j]);
+                }
+                object.bonds = nb.length ? nb : null;
+            }
 
             // THE MASK IS POSITION INDICES TOO. Renumbered rather than reset:
             // a delete is not a reason to un-hide the chain you were hiding.
@@ -5605,7 +5628,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 ...data,
                 plddts: resolvedPlddt ?? data.plddts ?? null,
                 pae: resolvedPae !== null ? resolvedPae : data.pae,
-                bonds: object.bonds || null
+                // THE FRAME'S OWN BONDS COME FIRST. This asked the object
+                // and nothing else, so the frame's list - the one _subsetFrames
+                // renumbers when a Cut or a Delete rewrites the positions - was
+                // never read: after cutting a chain out, the object still held
+                // the bonds of the structure that was there before, and every
+                // ligand in what was left drew as loose atoms with its sticks
+                // either gone or joining the wrong pair. The object's list
+                // stays as the fallback for frames that carry none of their
+                // own, which is most of a trajectory.
+                bonds: (data.bonds && data.bonds.length) ? data.bonds
+                    : (object.bonds || null)
             };
         }
 
@@ -6322,6 +6355,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // that no longer exist would have the next load open into a merge
             // of one, and the merge state itself would outlive its array.
             this.shownObjects = new Set();
+            this._framedObjects = new Set();
             this.multiState.enabled = false;
             this.multiState.sourceIdMap = null;
             this.multiState.sourceNames = null;
@@ -10349,28 +10383,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * hiding the prediction, left its matrix on screen describing residues
          * that were not - and a box drawn on it selected the other object's.
          *
-         * The rule, in order:
-         *   1. the object being EDITED, when it is drawn and has a matrix -
-         *      the panels follow the edited object everywhere else too;
-         *   2. otherwise the ONE drawn object that has a matrix, if there is
-         *      exactly one - unambiguous, so there is nothing to be wrong
-         *      about;
-         *   3. otherwise none. Two predictions on screen is a question with no
-         *      answer, and the panel says so by going away rather than picking
-         *      one of them silently.
+         * IN MULTI THERE IS NO PANEL AT ALL. Not "the one object that has a
+         * matrix", which is defensible and still leaves the reader working out
+         * which structure in front of them the square belongs to. Multi is the
+         * mode for looking at several things at once; the matrix belongs to
+         * one, so it waits until the viewer is back to one.
+         *
+         * Outside Multi it is what it has always been: the object on screen,
+         * when that object has a matrix.
          */
         paeObjectName() {
             const P = (typeof window !== 'undefined') ? window.PAE : null;
             if (!P) return null;
-            const has = (n) => {
-                const o = this.objectsData && this.objectsData[n];
-                return !!(o && P.hasData(o));
-            };
-            const drawn = this.drawnObjects ? this.drawnObjects() : [];
+            // the shown set is a Set in Multi and null in the ordinary mode -
+            // see setShownObjects
+            if (this.shownObjects instanceof Set) return null;
             const cur = this.currentObjectName;
-            if (cur && drawn.indexOf(cur) >= 0 && has(cur)) return cur;
-            const withPae = drawn.filter(has);
-            return withPae.length === 1 ? withPae[0] : null;
+            const o = cur && this.objectsData ? this.objectsData[cur] : null;
+            return (o && P.hasData(o)) ? cur : null;
         }
 
         /**
@@ -10507,12 +10537,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             ms.sourceAutoColors = merged.sourceAutoColors;
             ms.autoColor = merged.autoColor;
             ms.stats = this._mergedStats(merged.coords);
-            // FRAME ON THE LOT WHEN THE LOT CHANGES, and not otherwise. The
-            // camera has to move when an object joins or leaves, or the new one
-            // is out of shot - but a rebuild for a frame step or a side chain
-            // is not a request to re-frame, and doing it there threw away every
-            // pan the user had made since the merge began.
-            if (ms.stats && !sameSources) {
+            // FRAME ON THE LOT WHEN SOMETHING NEW ARRIVES, and not otherwise.
+            //
+            // The camera has to move for an object it has never seen - a file
+            // just loaded is out of shot otherwise - but switching an eye is
+            // not that. Re-framing on every change to the drawn set meant the
+            // picture jumped and rescaled each time an object was switched off
+            // and on: "I want to see things appear and disappear", not zoom.
+            // A rebuild for a frame step or a side chain never re-framed, for
+            // the same reason.
+            //
+            // _framedObjects is what the camera has already accommodated;
+            // addObject drops a name from it, so a re-fetched object counts as
+            // new again.
+            const fresh = names.filter((nm) => !this._framedObjects.has(nm));
+            for (const nm of names) this._framedObjects.add(nm);
+            if (ms.stats && fresh.length) {
                 this.viewerState.center = { x: ms.stats.center[0],
                     y: ms.stats.center[1], z: ms.stats.center[2] };
                 this.viewerState.extent = ms.stats.maxExtent;
@@ -10647,6 +10687,31 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
+            // ...AND THE SIDE-CHAIN ATOMS, which are positions too.
+            //
+            // They are APPENDED to the coordinate array when their residue is
+            // switched on, after everything the loop above walks: `n` is the
+            // length of the merge, and the atoms live past it. Nobody's stored
+            // record mentions them - they are not residues of any object - so
+            // the mask came out naming every residue and none of their atoms,
+            // and every side chain in the picture disappeared the moment a
+            // merge was rebuilt. Toggle any object's eye and the side chains
+            // of the object you did not touch went with it.
+            //
+            // Each atom inherits its owner's visibility, which is what
+            // materialisation does when the mask is applied the other way
+            // round (see the `follow` pass in _materialiseSidechains).
+            const scMap = this.sidechainMap;
+            if (scMap && scMap.size) {
+                for (const [idx, e] of scMap) {
+                    if (e && vis.has(e.owner)) vis.add(idx);
+                }
+            }
+            // EVERYTHING MEANS EVERYTHING IN THE ARRAY, atoms included - the
+            // merge's own length is short of it by exactly those atoms, so a
+            // fully visible picture read as a partial one.
+            const total = (this.coords && this.coords.length) || n;
+
             this.setVisibility({
                 positions: vis,
                 // CHAIN IDS COLLIDE ACROSS OBJECTS - both structures have a
@@ -10655,7 +10720,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // across everything.
                 chains: new Set(),
                 paeBoxes: [],
-                visibilityMode: (vis.size === n) ? 'default' : 'explicit'
+                visibilityMode: (vis.size === total) ? 'default' : 'explicit'
             }, skipRender);
         }
 

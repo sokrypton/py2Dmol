@@ -2219,17 +2219,45 @@ function syncObjectColorOption() {
 }
 
 /**
- * The button says what is on screen: "All" while nothing is switched off, and
- * "2/3" once something is - so the state is readable without opening the list.
+ * IS THE VIEWER IN MULTI MODE? The renderer's shown set answers it: null is
+ * the resting state - one object on screen, the one the picker names, which is
+ * how this viewer has always worked - and a Set is Multi, whatever is in it.
+ * Nothing else records the mode, so it cannot disagree with the picture, and a
+ * restored session comes back in the mode it was saved in.
+ */
+function objectMultiOn(renderer) {
+    const r = renderer || viewerApi?.renderer;
+    return !!(r && r.shownObjects instanceof Set);
+}
+
+/**
+ * The button is a MODE, not a menu: pressed means Multi. The count is in the
+ * list below it, which is open whenever Multi is on, so the face stays the one
+ * word.
  */
 function syncObjectListButton() {
-    const { btn } = objectListEls();
+    const { btn, list, select } = objectListEls();
     const renderer = viewerApi?.renderer;
     if (!btn || !renderer) return;
+    const on = objectMultiOn(renderer);
     const total = Object.keys(renderer.objectsData || {}).length;
     const shown = renderer.drawnObjects ? renderer.drawnObjects().length : 1;
-    btn.textContent = (shown >= total && total > 1) ? 'All' : `${shown}/${total}`;
-    btn.title = `${shown} of ${total} objects on screen - click to choose`;
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.classList.toggle('is-on', on);
+    btn.title = on
+        ? `${shown} of ${total} objects on screen - click to go back to one`
+        : 'Show several objects at once';
+    if (list) list.hidden = !on;
+    // THE PICKER IS THE OTHER MODE'S CONTROL. With several objects on screen
+    // the eyes say what is drawn and clicking in the sequence strip says what
+    // is edited, so a picker that still named one object would be claiming a
+    // job it no longer has.
+    if (select) {
+        select.disabled = on;
+        select.title = on
+            ? 'In Multi the eyes choose what is on screen; click in the sequence to choose what you are editing'
+            : 'Which object to show and edit';
+    }
 }
 
 function renderObjectList() {
@@ -2242,34 +2270,6 @@ function renderObjectList() {
     const names = Object.keys(renderer.objectsData || {});
     const shown = shownObjectSet(renderer);
     list.innerHTML = '';
-
-    // ALL, first and separated: the one press that puts everything on screen,
-    // and the way back to one object when it is switched off again.
-    const allOn = names.length > 0 && names.every((n) => shown.has(n));
-    const allRow = document.createElement('div');
-    allRow.className = 'object-list-row object-list-all' + (allOn ? '' : ' is-hidden');
-    allRow.title = allOn
-        ? 'Take every object off the screen'
-        : 'Put every object on screen at once';
-    allRow.innerHTML = (allOn
-        ? '<span class="object-list-eye"><i class="fa-regular fa-eye"></i></span>'
-        : '<span class="object-list-eye"><i class="fa-regular fa-eye-slash"></i></span>')
-        + '<span class="object-list-name">All</span>';
-    allRow.addEventListener('click', () => {
-        // LITERAL: everything on, or everything off. Off is the empty list,
-        // which is an empty canvas - not a fallback to one object, because a
-        // control called All that leaves something behind is a lie.
-        //
-        // ASKED AT CLICK TIME, not when the row was drawn: what is on screen
-        // can change without this list being redrawn - a restored session, a
-        // Copy, the Python API - and a row deciding from a stale reading does
-        // the opposite of what it shows.
-        const on = Object.keys(renderer.objectsData || {})
-            .every((n) => shownObjectSet(renderer).has(n));
-        renderer.setShownObjects(on ? [] : Object.keys(renderer.objectsData || {}));
-        afterShownObjectsChange();
-    });
-    list.appendChild(allRow);
 
     for (const name of names) {
         const on = shown.has(name);
@@ -2287,9 +2287,13 @@ function renderObjectList() {
         label.className = 'object-list-name';
         label.textContent = name;
 
-        // THE WHOLE ROW IS THE SWITCH. One row, one thing it does - there is no
-        // second act to reserve the name for any more.
-        row.addEventListener('click', () => toggleObjectShown(name));
+        // ONLY THE EYE SWITCHES IT. The name is a name: with the picker gone
+        // from this list, a row that toggled anywhere along its length was one
+        // stray click away from taking a structure off the screen.
+        eye.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleObjectShown(name);
+        });
 
         row.appendChild(eye);
         row.appendChild(label);
@@ -2298,18 +2302,11 @@ function renderObjectList() {
 }
 
 /**
- * Show or hide one object.
- *
- * The last visible object cannot be hidden: an empty set means ALL, so the
- * picture would come back with everything in it and the eye would read as
- * broken.
- */
-/**
  * WHAT FOLLOWS A CHANGE TO WHAT IS ON SCREEN.
  *
  * The strip is one section per drawn object, so it is rebuilt - it is not a
  * repaint: the sections, their rows and their cells all change. The colour
- * mode and the button label follow too.
+ * mode, the button and the picker follow too.
  */
 function afterShownObjectsChange() {
     syncObjectColorOption();
@@ -2322,6 +2319,7 @@ function afterShownObjectsChange() {
     updateFrameNameLabel();
 }
 
+/** Show or hide one object. Only reachable in Multi, where the eyes decide. */
 function toggleObjectShown(name) {
     const renderer = viewerApi?.renderer;
     if (!renderer || !renderer.setShownObjects) return;
@@ -2334,19 +2332,31 @@ function toggleObjectShown(name) {
     afterShownObjectsChange();
 }
 
-function toggleObjectListOpen() {
-    const { btn, list } = objectListEls();
-    if (!btn || !list) return;
-    const open = list.hidden;
-    list.hidden = !open;
-    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (open) { syncObjectColorOption(); renderObjectList(); }
+/**
+ * MULTI ON AND OFF.
+ *
+ * On, it opens on exactly what was already on screen - the object the picker
+ * names - so pressing the button changes the picture not at all until an eye
+ * is clicked. Off, the shown set is dropped entirely rather than trimmed to
+ * one name: null is the resting state, and an object loaded later becomes the
+ * one on screen the way it always did.
+ */
+function toggleObjectMulti() {
+    const renderer = viewerApi?.renderer;
+    if (!renderer || !renderer.setShownObjects) return;
+    if (objectMultiOn(renderer)) {
+        renderer.setShownObjects(null);
+    } else {
+        const cur = renderer.currentObjectName;
+        renderer.setShownObjects(cur ? [cur] : []);
+    }
+    afterShownObjectsChange();
 }
 
 function attachObjectList() {
     const { btn, select } = objectListEls();
     if (!btn || !select) return;
-    btn.addEventListener('click', toggleObjectListOpen);
+    btn.addEventListener('click', toggleObjectMulti);
     // WHAT IS ON SCREEN CAN CHANGE WITHOUT A CLICK IN THIS LIST - a restored
     // session, a Copy, the Python API - and so can which object is being
     // edited. Both labels follow the renderer rather than the buttons.
@@ -4166,6 +4176,23 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
     // old per-frame centring, which is what removes their drift.
     const alignedTogether = isTrajectory && shouldAlign;
     let sharedOffset = null;
+    // WHERE THE OBJECT SITS IS THE FILE'S BUSINESS.
+    //
+    // Every frame used to be moved so that its first chain's centroid was at
+    // the origin, which is an alignment by another name: two structures loaded
+    // as two objects came up stacked on each other whatever their coordinates
+    // said, and a complex split across two files lost the one thing the files
+    // agreed on. Align Frames is for FRAMES - it says so - and adding an
+    // object is not adding a frame.
+    //
+    // What the centring is still for is DRIFT: frame 30 of a trajectory that
+    // has wandered off is put back beside frame 0. So the offsets are relative
+    // now - measured from the frame this object already holds, or from the
+    // first of the batch - and the first frame of a new object is not moved at
+    // all. The renderer frames the camera on each object's own centre
+    // (_recomputeObjectStats), so a structure far from the origin is drawn
+    // exactly as before.
+    let referenceCentre = null;
     // Determine which chain to use for centering
     let centeringChainId = null;
     if (rawFrames.length > 0 && rawFrames[0].chains && rawFrames[0].chains.length > 0) {
@@ -4177,6 +4204,23 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
                 break;
             }
         }
+    }
+
+    // The centroid of one frame over the centring chain, or over everything
+    // when there is no chain information - the same reckoning the loop below
+    // does, needed once more for the reference frame.
+    function centroidOfFrame(frame, chainId) {
+        if (!frame || !frame.coords || !frame.coords.length) return null;
+        let n = 0; const c = [0, 0, 0];
+        for (let j = 0; j < frame.coords.length; j++) {
+            if (chainId !== null && frame.chains && frame.chains[j] !== chainId) continue;
+            c[0] += frame.coords[j][0];
+            c[1] += frame.coords[j][1];
+            c[2] += frame.coords[j][2];
+            n++;
+        }
+        if (!n) return null;
+        return [c[0] / n, c[1] / n, c[2] / n];
     }
 
     for (let i = 0; i < rawFrames.length; i++) {
@@ -4209,14 +4253,24 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
             center[1] /= centeringCoords.length;
             center[2] /= centeringCoords.length;
 
+            // WHAT THIS FRAME IS MEASURED AGAINST: the object's first frame
+            // when it has one, otherwise the first frame of this batch, which
+            // therefore does not move.
+            if (referenceCentre === null) {
+                const ref = targetObject.frames.length > 0
+                    ? targetObject.frames[0] : rawFrames[0];
+                referenceCentre = centroidOfFrame(ref, centeringChainId) || center;
+            }
             if (alignedTogether) {
-                // one offset for the whole set - see the note above. Frames
-                // added to an object that already holds one are already in its
-                // space, so their offset is nothing at all.
-                if (sharedOffset === null) {
-                    sharedOffset = targetObject.frames.length > 0 ? [0, 0, 0] : center;
-                }
+                // Aligned frames are already in the reference's frame of
+                // reference - the rotation and the translation both - so there
+                // is nothing left to take off them.
+                if (sharedOffset === null) sharedOffset = [0, 0, 0];
                 center = sharedOffset;
+            } else {
+                center = [center[0] - referenceCentre[0],
+                    center[1] - referenceCentre[1],
+                    center[2] - referenceCentre[2]];
             }
 
             // Subtract center from all coordinates
