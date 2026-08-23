@@ -326,10 +326,17 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                              object the picker was showing, so pressing it
                              changes nothing until an eye is clicked. -->
                         <div id="objectRow" class="toggle-item object-row">
+                            <!-- THE LIST, EXPANDED. Three stacked lines: the one
+                                 object on screen opening into all of them. It
+                                 read "Multi", which names a mode rather than
+                                 what the button does, and spent a fifth of a
+                                 narrow row saying it. The accessible name still
+                                 says it in words. -->
                             <button id="objectListButton" type="button"
                                 class="object-list-btn" aria-pressed="false"
-                                aria-controls="objectList"
-                                title="Show several objects at once">Multi</button>
+                                aria-controls="objectList" aria-label="Expand to several objects"
+                                title="Expand: show several objects at once"><i
+                                class="fa-solid fa-bars" aria-hidden="true"></i></button>
                             <!-- WHICH OBJECT: the picker, and the ordinary way to
                                  choose one. It names the object on screen AND the one
                                  being edited, which are the same object until Multi is
@@ -531,34 +538,40 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     </div>
                                 </div>
                                 
-                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                <!-- A FLOW, NOT TWO ROWS. Each cell is half the
+                                     width and the container wraps, so a cell
+                                     that belongs to the other style collapses
+                                     and the ones that are left pair up on their
+                                     own. Hand-made rows went ragged instead:
+                                     tube hid Pencil and Ink and was left with
+                                     Shadow alone on one line and Ortho alone on
+                                     the next. -->
+                                <div class="toggle-item" style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                                    <div data-style="cartoon" style="flex: 1 1 45%; display: flex; align-items: center; gap: 4px; min-width: 0;">
                                         <label for="pencilSlider" class="font-medium text-gray-700"
                                             style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Coloured-pencil paper grain (0 = clean)">Pencil:</label>
                                         <input type="range" id="pencilSlider" min="0" max="1" value="0" step="0.05"
                                             style="flex: 1; min-width: 0; outline: none;">
                                     </div>
-                                    <div data-style="tube" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                    <div data-style="tube" style="flex: 1 1 45%; display: flex; align-items: center; gap: 4px; min-width: 0;">
                                         <label for="shadowSlider" class="font-medium text-gray-700"
                                             style="width: 50px; font-size: 12px; flex-shrink: 0;">Shadow:</label>
                                         <input type="range" id="shadowSlider" min="0" max="1" value="0.5" step="0.01"
                                             style="flex: 1; min-width: 0; outline: none;">
                                     </div>
-                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                    <div data-style="cartoon" style="flex: 1 1 45%; display: flex; align-items: center; gap: 4px; min-width: 0;">
                                         <label for="outlineTintSlider" class="font-medium text-gray-700"
                                             style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Outline colour: 0 = black, 1 = tint of the element colour (as in ribbon mode)">Ink:</label>
                                         <input type="range" id="outlineTintSlider" min="0" max="1" value="0" step="0.05"
                                             style="flex: 1; min-width: 0; outline: none;">
                                     </div>
-                                </div>
-                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                    <div data-style="cartoon" style="flex: 1 1 45%; display: flex; align-items: center; gap: 4px; min-width: 0;">
                                         <label for="detailSlider" class="font-medium text-gray-700"
                                             style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Subdivisions per residue, 2-8 (low = faceted and faster)">Detail:</label>
                                         <input type="range" id="detailSlider" min="2" max="8" value="4" step="1"
                                             style="flex: 1; min-width: 0; outline: none;">
                                     </div>
-                                    <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                    <div style="flex: 1 1 45%; display: flex; align-items: center; gap: 4px; min-width: 0;">
                                         <label for="orthoSlider" class="font-medium text-gray-700"
                                             style="width: 50px; font-size: 12px; flex-shrink: 0;">Ortho:</label>
                                         <input type="range" id="orthoSlider" min="0" max="1" value="0.5" step="0.01"
@@ -599,23 +612,44 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                         style="font-size: 12px; width: 50px; flex-shrink: 0;" title="Colour palette for the SSE mode; C coil, H helix, E strand, N nucleic, L ligand">SSE:</label>
                                     <div id="ssPaletteButtons" style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;"></div>
                                 </div>
-                                <!-- The row itself is NOT tagged data-style: Smooth and
-                                     Arrows are cartoon-only and carry the tag themselves,
-                                     but Cyclic is a question about the structure and
-                                     applies to either style. Tagging the row would take
-                                     Cyclic off the screen in tube style. -->
-                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1;"
+                                <!-- The container is NOT tagged data-style: Smooth,
+                                     Arrows and Draw are cartoon-only and carry the tag
+                                     themselves, but Colorblind, Dark and Cyclic apply to
+                                     either style. Tagging it would take all three off the
+                                     screen in tube. Their ORDER is what makes each style
+                                     read as whole lines: cartoon gets Smooth/Arrows/Draw
+                                     then Colorblind/Dark/Cyclic, and tube - which hides
+                                     the first three - gets Colorblind/Dark/Cyclic. -->
+                                <!-- ...AND THE TOGGLES, for the same reason: a
+                                     third of the width each, wrapping, so tube
+                                     (which has no Smooth, Arrows or Draw) puts
+                                     Colorblind, Dark and Cyclic on one line
+                                     instead of scattering them down three. -->
+                                <div class="toggle-item" style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1 1 30%;"
                                         data-style="cartoon"
                                         title="Smooth shading gradients (off = flat tone bands)">
                                         <input type="checkbox" id="smoothCheckbox">
                                         <span>Smooth</span>
                                     </label>
-                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1;"
+                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1 1 30%;"
                                         data-style="cartoon"
                                         title="Arrowheads on the C-terminal end of each beta strand">
                                         <input type="checkbox" id="arrowsCheckbox" checked>
                                         <span>Arrows</span>
+                                    </label>
+                                    <label class="btn-toggle btn-no-margin btn-small" data-style="cartoon" style="flex: 1 1 30%;"
+                                        title="Build the picture up by hand: pencil sketch, colour wash, then ink">
+                                        <input type="checkbox" id="drawCheckbox">
+                                        <span>Draw</span>
+                                    </label>
+                                    <label class="btn-toggle btn-no-margin btn-small" title="Colorblind-safe colors" style="flex: 1 1 30%;">
+                                        <input type="checkbox" id="colorblindCheckbox">
+                                        <span>Colorblind</span>
+                                    </label>
+                                    <label class="btn-toggle btn-no-margin btn-small" title="Black background (white ink, fade toward black)" style="flex: 1 1 30%;">
+                                        <input type="checkbox" id="darkCheckbox">
+                                        <span>Dark</span>
                                     </label>
                                     <!-- Detect Cyclic lives here rather than in the fetch
                                          panel: it is a question about the structure that
@@ -629,25 +663,10 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                          round, so the N and C termini come out the same
                                          colour. Cyclic peptides are rare enough that the
                                          user should ask. -->
-                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1;"
+                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1 1 30%;"
                                         title="Join a chain's first and last residue when they are close enough to be bonded, and wrap the rainbow ramp around the ring">
                                         <input type="checkbox" id="detectCyclicCheckbox">
                                         <span>Cyclic</span>
-                                    </label>
-                                </div>
-                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                    <label class="btn-toggle btn-no-margin btn-small" title="Colorblind-safe colors" style="flex: 1;">
-                                        <input type="checkbox" id="colorblindCheckbox">
-                                        <span>Colorblind</span>
-                                    </label>
-                                    <label class="btn-toggle btn-no-margin btn-small" title="Black background (white ink, fade toward black)" style="flex: 1;">
-                                        <input type="checkbox" id="darkCheckbox">
-                                        <span>Dark</span>
-                                    </label>
-                                    <label class="btn-toggle btn-no-margin btn-small" data-style="cartoon" style="flex: 1;"
-                                        title="Build the picture up by hand: pencil sketch, colour wash, then ink">
-                                        <input type="checkbox" id="drawCheckbox">
-                                        <span>Draw</span>
                                     </label>
                                 </div>
                             </div>

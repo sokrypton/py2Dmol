@@ -11059,8 +11059,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // a 68-residue structure and then a 574-residue one left
                     // it naming positions 0..67, and two thirds of the second
                     // structure was simply not drawn.
-                    this._applyRecordVisibility([this.currentObjectName], [0],
-                        this._baseCount(), skipRender);
+                    this._applyRecordVisibility(skipRender);
                     return;
                 }
                 const carriedOut = this._selectionAsOwners();
@@ -11096,8 +11095,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // into the merged array that has just been replaced, so a
                 // residue hidden in the merge would hide whichever residue of
                 // this object now has that number.
-                this._applyRecordVisibility([this.currentObjectName], [0],
-                    this._baseCount(), true);
+                this._applyRecordVisibility(true);
                 this._syncPaeToDrawn();
                 if (!skipRender) this.render('one object again');
                 return;
@@ -11381,9 +11379,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * @param {Array<number>} offsets where each starts
          * @param {number} n the array's length BEFORE side-chain atoms
          */
-        _applyRecordVisibility(names, offsets, n, skipRender = false) {
+        _applyRecordVisibility(skipRender = false) {
             this._composeAndApplyMask(skipRender);
-            this._syncModelToMask(names, offsets, n);
+            this._syncModelToMask();
         }
 
         /**
@@ -11400,10 +11398,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * dropping the mode to default. A box drawn on a prediction survived
          * exactly until the next eye click.
          */
-        _syncModelToMask(names, offsets, n) {
+        _syncModelToMask() {
             const vm = this.visibilityModel;
             if (!vm) return;
-            const total = (this.coords && this.coords.length) || n;
+            const total = (this.coords && this.coords.length) || 0;
             vm.positions = this.visiblePositions
                 ? new Set(this.visiblePositions)
                 : (() => { const all = new Set(); for (let i = 0; i < total; i++) all.add(i); return all; })();
@@ -11420,8 +11418,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         /** The merge's share of that: one call, from what it just built. */
         _applyMergedVisibility(merged, skipRender = false) {
-            this._applyRecordVisibility(merged.sourceNames, merged.sourceOffsets,
-                merged.coords.length, skipRender);
+            this._applyRecordVisibility(skipRender);
         }
 
 

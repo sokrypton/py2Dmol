@@ -5387,11 +5387,18 @@ t('the global Bases checkbox is gone from the style panel', () => {
 // FETCH panel, where it read as something that had to be decided before the
 // file arrived - it is not: it is a question about the structure that can be
 // asked at any time. Three cells per row is also what makes the two line up.
-t('the style toggles are grouped together, three to a row', () => {
+t('the style toggles are one flow, and each style reads as whole lines', () => {
     const html = fs.readFileSync('index.html', 'utf8');
     const at = (id) => html.indexOf('id="' + id + '"');
-    const ids = ['smoothCheckbox', 'arrowsCheckbox', 'detectCyclicCheckbox',
-        'colorblindCheckbox', 'darkCheckbox', 'drawCheckbox'];
+    // THE ORDER IS THE LAYOUT. The toggles are one wrapping container of
+    // third-width cells, so a cell belonging to the other style collapses and
+    // the rest pack themselves - which only reads as whole lines if the
+    // cartoon-only three come first: cartoon gets Smooth/Arrows/Draw then
+    // Colorblind/Dark/Cyclic, and tube - which hides those three - gets
+    // Colorblind/Dark/Cyclic on one line. Hand-made rows left tube with Cyclic
+    // alone on one line and Colorblind/Dark on the next.
+    const ids = ['smoothCheckbox', 'arrowsCheckbox', 'drawCheckbox',
+        'colorblindCheckbox', 'darkCheckbox', 'detectCyclicCheckbox'];
     const pos = ids.map(at);
     ids.forEach((id, k) => {
         if (pos[k] < 0) throw new Error(id + ' is gone from index.html');
@@ -5402,12 +5409,24 @@ t('the style toggles are grouped together, three to a row', () => {
                 + ': expected ' + ids.join(', '));
         }
     }
-    // exactly one row boundary between Cyclic and Colorblind - i.e. they are
-    // consecutive rows with nothing in between
-    const between = html.slice(pos[2], pos[3]);
-    if ((between.match(/class="toggle-item/g) || []).length !== 1) {
-        throw new Error('a control row separates the two toggle rows, so they'
-            + ' no longer read as one block');
+    // ...ONE container, not two: no row boundary anywhere among them
+    const span = html.slice(pos[0], pos[pos.length - 1]);
+    if ((span.match(/class="toggle-item/g) || []).length !== 0) {
+        throw new Error('the toggles are split across rows again, so hiding a'
+            + ' cartoon-only one leaves a gap instead of closing up');
+    }
+    if (!/flex-wrap: wrap/.test(html.slice(Math.max(0, pos[0] - 400), pos[0]))) {
+        throw new Error('the toggle container does not wrap, so the cells'
+            + ' cannot pack themselves');
+    }
+    // ...and the sliders are one flow too, which is what puts Shadow beside
+    // Ortho in tube
+    const sliders = ['pencilSlider', 'shadowSlider', 'outlineTintSlider',
+        'detailSlider', 'orthoSlider'].map(at);
+    const sspan = html.slice(sliders[0], sliders[sliders.length - 1]);
+    if ((sspan.match(/class="toggle-item/g) || []).length !== 0) {
+        throw new Error('Shadow and Ortho are in different rows, so tube shows'
+            + ' each of them alone on a line');
     }
 });
 
@@ -8186,6 +8205,56 @@ t('Multi is a mode, and the picker is what it replaces', () => {
     const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
     if (/row\.style\.display = \(objectCount <= 1\)/.test(mol)) {
         throw new Error('the object row disappears with one object loaded');
+    }
+});
+
+// A STATUS LINE IS A RECEIPT, NOT A MANUAL.
+//
+// It read: "Successfully fetched and loaded 1 object(s) (1 total frame).
+// 313,236 residues - showing tube; pick Cartoon in Style for the ribbon."
+// Four sentences - three about the machinery, one naming a menu.
+t('what a finished load says fits on one line', () => {
+    // ...the CODE, not the comments: loadSummary's own docstring quotes the
+    // line it replaced, which is the clearest way to say what it is for.
+    const app = fs.readFileSync('web/app.js', 'utf8')
+        .split('\n').filter((l) => !/^\s*(\*|\/\/)/.test(l)).join('\n');
+    for (const gone of ['Successfully fetched and loaded', 'Successfully loaded',
+        'pick Cartoon in Style', 'total frame$']) {
+        if (app.indexOf(gone) >= 0) {
+            throw new Error(`the status line still says "${gone}"`);
+        }
+    }
+    if (!/function loadSummary\(extra\)/.test(app)) {
+        throw new Error('there is no one place that builds the load line');
+    }
+    // ...and it is one clause list, not sentences
+    const body = app.slice(app.indexOf('function loadSummary(extra)'),
+        app.indexOf('function setStatus('));
+    if (!/bits\.join\(', '\)/.test(body)) {
+        throw new Error('the load line is not built as one line');
+    }
+    // ...and the note that rides along with it is not a lesson either
+    if (!/styleFallbackNote = 'showing tube'/.test(app)) {
+        throw new Error('the style note is back to explaining the menus');
+    }
+});
+
+// A REFUSED STYLE SAYS SO. The cartoon build is refused before it can kill the
+// tab, and the renderer warned to the CONSOLE and put the dropdown back -
+// which from the outside is a menu that flicks back to Tube on its own.
+t('refusing the cartoon style is not silent', () => {
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    if (!/if \(this\.onStyleRefused\) this\.onStyleRefused\(fit\)/.test(mol)) {
+        throw new Error('the renderer no longer reports a refused style');
+    }
+    if (!/renderer\.onStyleRefused = \(fit\) => \{/.test(app)) {
+        throw new Error('nothing listens for a refused style, so it is silent');
+    }
+    const hook = app.slice(app.indexOf('onStyleRefused = (fit)'),
+        app.indexOf('onStyleRefused = (fit)') + 400);
+    if (!/setStatus\(/.test(hook) || !/staying in tube/.test(hook)) {
+        throw new Error('the refusal does not reach the status line');
     }
 });
 

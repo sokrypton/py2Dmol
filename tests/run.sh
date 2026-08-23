@@ -39,13 +39,28 @@ if [[ "$LANE" == "all" || "$LANE" == "node" ]]; then
     && print "node smoke (min): ok" || { fail=1; print "NODE smoke (min): FAILED" }
 fi
 
+# A BACKSTOP KILL, at twice the probe's own deadline. Each probe caps its wait
+# and parses its page script before starting a browser, so a hang should be
+# impossible - but "should be impossible" is exactly what the 400-second stalls
+# were, and a suite that can hang is a suite nobody runs.
+CAP="${CAP:-60}"
 run_probe () {   # name, then its arguments
   local name=$1; shift
   local log=/tmp/py2dmol-test-$name.log
-  if python3 tests/$name.py "$@" >$log 2>&1; then
+  python3 tests/$name.py "$@" >$log 2>&1 &
+  local pid=$!
+  local waited=0
+  while kill -0 $pid 2>/dev/null && (( waited < CAP )); do
+    sleep 0.5; waited=$((waited + 1))
+  done
+  if kill -0 $pid 2>/dev/null; then
+    kill -9 $pid 2>/dev/null
+    print "PROBE $name: KILLED after ${CAP}s"; return 1
+  fi
+  if wait $pid; then
     print "probe $name: ok"
   else
-    print "PROBE $name: FAILED"; grep -E '^FAIL|error' $log | head -3; return 1
+    print "PROBE $name: FAILED"; grep -E '^FAIL|error|does not parse' $log | head -3; return 1
   fi
 }
 

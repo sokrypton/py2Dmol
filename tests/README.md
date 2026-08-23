@@ -57,6 +57,16 @@ minutes to 35 seconds, and two of the conversions turned up sleeps that were
 too SHORT to be safe: a restored session is still assembling itself three
 frames later, and both probes now say what they are waiting for.
 
+**A probe that cannot finish fails fast.** Its page script is parsed (`node
+--check`) BEFORE a browser is started, and the wait for a result is capped at
+30 seconds (`probe_js.DEADLINE`), with the runner killing anything still alive
+at 60. This is not theoretical: one mis-escaped newline in a JS string literal
+- `'\n'` inside a Python triple-quoted string is a real newline - meant the
+page never parsed, so the result could never arrive, and the probe sat out its
+whole 400-second deadline saying nothing more useful than "no result posted".
+That single probe was longer than the entire suite. It now says which line and
+which file, in under a second.
+
 **Fixtures are as small as the question.** selection_panel measured a panel's
 row layout with 1YNE - 19,700 atoms - where 355D's 660 lay out identically.
 

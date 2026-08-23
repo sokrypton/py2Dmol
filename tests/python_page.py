@@ -20,6 +20,8 @@ IPython is stubbed when it is absent: the module imports it at load time, and
 nothing here displays anything.
 """
 import http.server, json, os, re, shutil, socketserver, subprocess, sys, threading, types, time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from probe_js import HELPERS, DEADLINE, check_js  # noqa: E402
 
 ROOT = '/Users/mini/Documents/GitHub/py2Dmol'
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -83,29 +85,7 @@ body = v._display_viewer(static_data=v.objects)
 JS = """
 <script>
 window.addEventListener('load', () => {
-  // FRAMES AND ANSWERS, NOT MILLISECONDS. Each step here is a call and a
-  // render, and what has to happen before the next line reads the result is
-  // that the browser has painted: three animation frames say that in 50 ms
-  // where a flat 1,500 said it in 1,500. Where the work is ASYNCHRONOUS - a
-  // file parsed, a session restored - the probe waits for the answer instead,
-  // which is both faster and steadier than guessing a duration.
-  const settle = async (n = 3) => {
-    for (let k = 0; k < n; k++) {
-      await new Promise((s) => requestAnimationFrame(() => s()));
-    }
-  };
-  const until = async (cond, ms = 4000) => {
-    const t0 = performance.now();
-    while (performance.now() - t0 < ms) {
-      if (cond()) return true;
-      await settle();
-    }
-    return false;
-  };
-  const loaded = () => {
-    const v = window.py2dmol_viewers && window.py2dmol_viewers['standalone-viewer-1'];
-    return !!(v && v.renderer && v.renderer.coords && v.renderer.coords.length);
-  };
+  //HELPERS
   const go = async () => {
     const R = {};
     try {
@@ -145,6 +125,8 @@ window.addEventListener('load', () => {
 });
 </script>
 """
+JS = JS.replace("//HELPERS", HELPERS)
+check_js(JS if "PAGE_JS" not in globals() else PAGE_JS)
 page = ('<!doctype html><html><head><meta charset="utf-8"></head><body>'
         + body + JS + '</body></html>')
 # the page references the bundles by relative path from the repo root
@@ -166,7 +148,7 @@ p = subprocess.Popen([CHROME, '--headless=new', '--user-data-dir=/tmp/py2dmol-py
                       '--no-first-run', '--window-size=1000,1000',
                       'http://127.0.0.1:9601/_pypage.html'],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-end = time.time() + 90
+end = time.time() + DEADLINE
 while not box and time.time() < end: time.sleep(0.5)
 p.kill(); httpd.shutdown(); os.remove(PROBE)
 shutil.rmtree('/tmp/py2dmol-pypage', ignore_errors=True)

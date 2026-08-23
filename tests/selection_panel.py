@@ -13,6 +13,8 @@ The node tests score this against a stub DOM. This presses the real buttons
 and looks at the real structure and the real canvas.
 """
 import http.server, json, os, re, shutil, socketserver, subprocess, threading, time, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from probe_js import HELPERS, DEADLINE, check_js  # noqa: E402
 ROOT="/Users/mini/Documents/GitHub/py2Dmol"
 CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 PROBE=os.path.join(ROOT,"_selpanel.html")
@@ -23,21 +25,11 @@ window.addEventListener('load', () => {
     const txt = await (await fetch('/' + f)).text();
     await window.processFiles([{name: f, readAsync: () => Promise.resolve(txt)}], false);
   };
-  const wait = (ms) => new Promise((s) => setTimeout(s, ms));
   const on = (id) => {
     const b = document.getElementById(id);
     return b ? b.classList.contains('is-on') : null;
   };
-  // FRAMES, NOT MILLISECONDS. Every action here is a click handler and a
-  // render: what has to happen before the panel can be read is that the
-  // browser has painted, and three animation frames say that in 50 ms where a
-  // flat 500 said it in 500. Forty-five actions at 450 ms each was 20 of this
-  // probe's 23 seconds.
-  const settle = async (n = 3) => {
-    for (let k = 0; k < n; k++) {
-      await new Promise((s) => requestAnimationFrame(() => s()));
-    }
-  };
+  //HELPERS
   const press = async (id) => {
     document.getElementById(id).click();
     await settle();
@@ -82,7 +74,7 @@ window.addEventListener('load', () => {
   const go = async () => {
     const R = {steps: []};
     try {
-      await load('1UBQ.cif'); await wait(700);
+      await load('1UBQ.cif'); await until(loaded); await settle();
       const r = window.py2dmol_viewers['standalone-viewer-1'].renderer;
       r.useGPU = false;
       R.steps.push(st(r, 'no selection'));
@@ -180,7 +172,7 @@ window.addEventListener('load', () => {
       // named, in a viewer that knew perfectly well what the structure was.
       // THE TUBE DRAWS NO SECONDARY STRUCTURE, so the control is not there -
       // unless the SS colour mode is on, which paints it in any style.
-      r.setStyle('tube'); await wait(600);
+      r.setStyle('tube'); await settle();
       await select(r, [10, 11, 12]);
       R.tubeHidden = document.getElementById('selSsSelect').hidden;
       const colorSel = document.getElementById('colorSelect');
@@ -188,7 +180,7 @@ window.addEventListener('load', () => {
         colorSel.value = 'ss';
         colorSel.dispatchEvent(new Event('change', {bubbles: true}));
       }
-      await wait(600);
+      await settle();
       await select(r, [10, 11, 12]);
       R.tubeSsColour = document.getElementById('selSsSelect').hidden;
       R.sse.push(['tube', sseFace()]);
@@ -196,21 +188,21 @@ window.addEventListener('load', () => {
         colorSel.value = 'auto';
         colorSel.dispatchEvent(new Event('change', {bubbles: true}));
       }
-      await wait(400);
-      r.setStyle('cartoon'); r.useGPU = true; await wait(700);
+      await settle();
+      r.setStyle('cartoon'); r.useGPU = true; await settle();
       await select(r, [20, 21]);
       await select(r, [10, 11, 12]);
       R.sse.push(['gpu cartoon', sseFace()]);
-      r.useGPU = false; await wait(500);
+      r.useGPU = false; await settle();
       await select(r, [10, 11, 12]);
 
       // ...and a forced state reads as the bare word
       const sel = document.getElementById('selSsSelect');
       sel.value = 'H'; sel.dispatchEvent(new Event('change', {bubbles: true}));
-      await wait(500);
+      await settle();
       R.sse.push(['forced helix', sseFace()]);
       sel.value = 'dssp'; sel.dispatchEvent(new Event('change', {bubbles: true}));
-      await wait(500);
+      await settle();
       R.sse.push(['back to auto', sseFace()]);
       await press('sidechainHideButton');
 
@@ -221,10 +213,10 @@ window.addEventListener('load', () => {
       // A NUCLEIC STRUCTURE, and the smallest one that is: the row is being
       // MEASURED, not the molecule, and 1YNE's 19,700 atoms cost eight seconds
       // of the probe to draw a panel that 355D's 660 lay out identically.
-      await load('355D.cif'); await wait(700);
+      await load('355D.cif'); await until(loaded); await settle();
       await select(r, [2, 3, 4]);
       await press('sidechainShowButton');
-      await wait(400);   // ...atoms exist now, so Elements joins the row too
+      await settle();   // ...atoms exist now, so Elements joins the row too
       // (defined above its second use so the protein row can be measured too)
       R.fit = {sidechain: rowFit('sidechainRow'), mainchain: rowFit('mainchainRow'),
                contact: rowFit('contactRow'),
@@ -239,6 +231,8 @@ window.addEventListener('load', () => {
 });
 </script>
 """
+JS = JS.replace("//HELPERS", HELPERS)
+check_js(JS if "PAGE_JS" not in globals() else PAGE_JS)
 src=open(os.path.join(ROOT,"index.html")).read()
 stamp=str(int(time.time()*1000))
 src=re.sub(r'(<script src="(?!https?:)[^"]+?)(\?v=\d+)?(")', lambda m: m.group(1)+"?v="+stamp+m.group(3), src)
@@ -255,7 +249,7 @@ httpd=socketserver.ThreadingTCPServer(("127.0.0.1",9711),H); httpd.daemon_thread
 threading.Thread(target=httpd.serve_forever,daemon=True).start()
 p=subprocess.Popen([CHROME,"--headless=new","--user-data-dir=/tmp/py2dmol-selpanel","--no-first-run",
   "--window-size=1100,950","http://127.0.0.1:9711/_selpanel.html"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-end=time.time()+180
+end = time.time() + DEADLINE
 while not box and time.time()<end: time.sleep(0.5)
 p.kill(); httpd.shutdown(); os.remove(PROBE); shutil.rmtree("/tmp/py2dmol-selpanel",ignore_errors=True)
 R=box[0] if box else {"error":"no result posted"}

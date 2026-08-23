@@ -16,6 +16,8 @@ matrix. The probe gives the second object a synthetic matrix, so it needs no
 network.
 """
 import http.server, json, os, re, shutil, socketserver, subprocess, threading, time, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from probe_js import HELPERS, DEADLINE, check_js  # noqa: E402
 ROOT="/Users/mini/Documents/GitHub/py2Dmol"
 CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 PROBE=os.path.join(ROOT,"_pae_obj.html")
@@ -26,7 +28,6 @@ window.addEventListener('load', () => {
     const txt = await (await fetch('/' + f)).text();
     await window.processFiles([{name: f, readAsync: () => Promise.resolve(txt)}], false);
   };
-  const wait = (ms) => new Promise((s) => setTimeout(s, ms));
   const panel = (r) => {
     const c = r.paeContainer;
     return {
@@ -35,29 +36,7 @@ window.addEventListener('load', () => {
       has: !!(r.paeRenderer && r.paeRenderer.paeData),
     };
   };
-  // FRAMES AND ANSWERS, NOT MILLISECONDS. Each step here is a call and a
-  // render, and what has to happen before the next line reads the result is
-  // that the browser has painted: three animation frames say that in 50 ms
-  // where a flat 1,500 said it in 1,500. Where the work is ASYNCHRONOUS - a
-  // file parsed, a session restored - the probe waits for the answer instead,
-  // which is both faster and steadier than guessing a duration.
-  const settle = async (n = 3) => {
-    for (let k = 0; k < n; k++) {
-      await new Promise((s) => requestAnimationFrame(() => s()));
-    }
-  };
-  const until = async (cond, ms = 4000) => {
-    const t0 = performance.now();
-    while (performance.now() - t0 < ms) {
-      if (cond()) return true;
-      await settle();
-    }
-    return false;
-  };
-  const loaded = () => {
-    const v = window.py2dmol_viewers && window.py2dmol_viewers['standalone-viewer-1'];
-    return !!(v && v.renderer && v.renderer.coords && v.renderer.coords.length);
-  };
+  //HELPERS
   const go = async () => {
     const R = {};
     try {
@@ -140,6 +119,8 @@ window.addEventListener('load', () => {
 });
 </script>
 """
+JS = JS.replace("//HELPERS", HELPERS)
+check_js(JS if "PAGE_JS" not in globals() else PAGE_JS)
 src=open(os.path.join(ROOT,"index.html")).read()
 stamp=str(int(time.time()*1000))
 src=re.sub(r'(<script src="(?!https?:)[^"]+?)(\?v=\d+)?(")', lambda m: m.group(1)+"?v="+stamp+m.group(3), src)
@@ -156,7 +137,7 @@ httpd=socketserver.ThreadingTCPServer(("127.0.0.1",9652),H); httpd.daemon_thread
 threading.Thread(target=httpd.serve_forever,daemon=True).start()
 p=subprocess.Popen([CHROME,"--headless=new","--user-data-dir=/tmp/py2dmol-paeobj","--no-first-run",
   "--window-size=1200,1000","http://127.0.0.1:9652/_pae_obj.html"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-end=time.time()+150
+end = time.time() + DEADLINE
 while not box and time.time()<end: time.sleep(0.5)
 p.kill(); httpd.shutdown(); os.remove(PROBE); shutil.rmtree("/tmp/py2dmol-paeobj",ignore_errors=True)
 R = box[0] if box else {"error": "no result posted"}

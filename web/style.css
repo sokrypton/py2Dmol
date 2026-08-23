@@ -1842,7 +1842,15 @@ table.layout-table td {
 
 .object-list-btn {
     height: var(--btn-height-small);
-    padding: 0 10px;
+    /* AN ICON, so square: three stacked lines standing for the list this
+       opens. The word it replaced ("Multi") took 46px of a 340px row that the
+       picker beside it now has. */
+    width: var(--btn-height-small);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    padding: 0;
     font-size: 12px;
     font-weight: 600;
     color: var(--color-gray-500);

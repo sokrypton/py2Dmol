@@ -19,7 +19,9 @@ What it checks, once the merge is switched on with setShownObjects:
 Same two traps as tests/gpu_bench.py: the page POSTs its result back rather
 than being scraped, and every local script src is stamped per run.
 """
-import argparse, base64, http.server, json, os, re, shutil, socketserver
+import argparse, base64, http.server, json, os, re, shutil, socketserver, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from probe_js import HELPERS, DEADLINE, check_js  # noqa: E402
 import subprocess, sys, threading, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -56,30 +58,7 @@ window.addEventListener('load', () => {
     }
     return n;
   };
-  // FRAMES, NOT MILLISECONDS. Every step below is a click or a call and then
-  // a render, and what has to happen before the next line can read the result
-  // is that the browser has painted. Three animation frames say that in 50 ms
-  // where a flat 300 said it in 300 - and there are fifty of them here, which
-  // was sixteen of this probe's twenty-three seconds. The waits that remain
-  // are the ones waiting for something ASYNCHRONOUS: a file parsed, a PAE
-  // panel built on a timer.
-  const settle = async (n = 3) => {
-    for (let k = 0; k < n; k++) {
-      await new Promise((s) => requestAnimationFrame(() => s()));
-    }
-  };
-  // ...AND WHERE THE WORK IS ASYNCHRONOUS, wait for the ANSWER rather than for
-  // a number of milliseconds. A restored session parses its files and settles
-  // over several turns of the event loop; frames do not mean it is done, and a
-  // fixed sleep is a guess that is either slow or flaky.
-  const until = async (cond, ms = 4000) => {
-    const t0 = performance.now();
-    while (performance.now() - t0 < ms) {
-      if (cond()) return true;
-      await new Promise((s) => setTimeout(s, 40));
-    }
-    return false;
-  };
+  //HELPERS
   const go = async () => {
     const R = {};
     try {
@@ -406,7 +385,8 @@ window.addEventListener('load', () => {
       await settle();
       const btn = document.getElementById('objectListButton');
       const picker = document.getElementById('objectSelect');
-      R.btnOne = btn.textContent.trim();
+      // AN ICON HAS NO TEXT: what names it is the accessible label.
+      R.btnOne = (btn.getAttribute('aria-label') || btn.textContent).trim();
       R.multiBefore = btn.getAttribute('aria-pressed');
       R.listHiddenBefore = document.getElementById('objectList').hidden;
       R.pickerBefore = picker.disabled;
@@ -891,6 +871,8 @@ window.addEventListener('load', () => {
 });
 </script>
 """
+PAGE_JS = PAGE_JS.replace("//HELPERS", HELPERS)
+check_js(JS if "PAGE_JS" not in globals() else PAGE_JS)
 
 
 def build_probe():
@@ -945,7 +927,7 @@ def main():
         [CHROME, "--headless=new", f"--user-data-dir=/tmp/py2dmol-multi-{os.getpid()}",
          "--no-first-run", "--disable-extensions", "--window-size=1200,1200", url],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.time() + a.timeout
+    deadline = time.time() + min(a.timeout, DEADLINE)
     while not box and time.time() < deadline:
         time.sleep(0.5)
     proc.kill()
@@ -1112,7 +1094,11 @@ def main():
         bad.append(f"auto clip on one object left {R.get('clipInk')} ink")
     if R.get("rows") != R["objects"]:
         bad.append(f"the list reads {R.get('rows')} - one row per object, no All")
-    if R.get("btnOne") != "Multi":
+    # THE BUTTON IS AN ICON - three stacked lines, the list it opens - and its
+    # name is in the accessible label, which is what a screen reader and this
+    # check both read. It said "Multi", which names a mode rather than what the
+    # button does.
+    if "expand" not in (R.get("btnOne") or "").lower():
         bad.append(f"the button reads {R.get('btnOne')!r}")
     if R.get("multiBefore") != "false" or R.get("multiAfter") != "true" \
             or R.get("offMulti") != "false":

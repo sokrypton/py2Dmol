@@ -1584,6 +1584,17 @@ function setupEventListeners() {
     // else, so a click there changed a selection with no strip to show it and
     // no panel to act on it. Turned on here, where both exist.
     if (viewerApi?.renderer) viewerApi.renderer.selectionEnabled = true;
+    // A REFUSED STYLE SAYS SO. The cartoon build is refused before it can kill
+    // the tab (see _cartoonWouldFit), and the renderer warns to the console and
+    // puts the dropdown back - which from the outside is a menu that flicks
+    // back to Tube on its own. The hook exists so that whoever has a status
+    // line can use it; this is that.
+    if (viewerApi?.renderer) {
+        viewerApi.renderer.onStyleRefused = (fit) => {
+            setStatus(`Cartoon needs about ${Number(fit.needMB).toLocaleString()} MB,`
+                + ` ${Number(fit.freeMB).toLocaleString()} MB free - staying in tube`, true);
+        };
+    }
 
     function updateSelectionToolsState() {
         const tools = document.getElementById('selectionTools');
@@ -2197,7 +2208,35 @@ function endProgress(silent = false) {
     // it after this returns, so leaving "Drawing..." on screen would strand a
     // finished load looking stuck. silent is for setStatus, which is about to
     // write the real message itself.
-    if (wasShowing && !silent) setStatus('Loaded.');
+    // ...AND IT SAYS WHAT LOADED. "Loaded." with the style note appended read
+    // as a bare "showing tube", which is an answer to a question nobody asked.
+    if (wasShowing && !silent) setStatus(loadSummary());
+}
+
+
+/**
+ * WHAT A FINISHED LOAD SAYS, in one line.
+ *
+ * It used to say "Successfully fetched and loaded 1 object(s) (1 total frame).
+ * 313,236 residues - showing tube; pick Cartoon in Style for the ribbon." -
+ * four sentences, three of them about the machinery and one telling the user
+ * which menu to open. A status line is a receipt, not a manual: what arrived,
+ * how big it is, and anything the app decided on its own.
+ *
+ * @param {string} extra a few words about the MSA, or nothing
+ */
+function loadSummary(extra) {
+    const r = viewerApi?.renderer;
+    const name = r && r.currentObjectName;
+    const n = (r && r.coords && r.coords.length) || 0;
+    const frames = (r && r.objectsData && r.objectsData[name]
+        && r.objectsData[name].frames && r.objectsData[name].frames.length) || 1;
+    const bits = [];
+    if (name) bits.push(name);
+    if (n) bits.push(`${n.toLocaleString()} residues`);
+    if (frames > 1) bits.push(`${frames} frames`);
+    if (extra) bits.push(extra);
+    return bits.join(', ') || 'Loaded.';
 }
 
 
@@ -2209,7 +2248,9 @@ function setStatus(message, isError = false) {
     if (isError && typeof endProgress === 'function') endProgress(true);
     // Check if we're on msa.html (has status-message with different styling) or index.html
     if (styleFallbackNote && !isError) {
-        message = message ? `${message} ${styleFallbackNote}` : styleFallbackNote;
+        // ONE LINE, so the note joins the message rather than following it as
+        // a second sentence.
+        message = message ? `${message} - ${styleFallbackNote}` : styleFallbackNote;
     }
     const statusElement = document.getElementById('status-message');
     if (statusElement) {
@@ -2352,7 +2393,7 @@ function syncObjectListButton() {
     btn.classList.toggle('is-on', on);
     btn.title = on
         ? `${shown} of ${total} objects on screen - click to go back to one`
-        : 'Show several objects at once';
+        : 'Expand: show several objects at once';
     if (list) list.hidden = !on;
     // THE PICKER CHOOSES WHAT YOU ARE EDITING, in both modes. It used to grey
     // out in Multi, on the reasoning that with several objects on screen the
@@ -4564,8 +4605,7 @@ function tubeByDefaultForDrawn(r) {
     const cur = r.styleForObject(r.currentObjectName);
     if (cur !== r.style) r.setStyle(cur, true);
     if (big) {
-        styleFallbackNote = `${big.toLocaleString()} residues in one object -`
-            + ' showing tube; pick Cartoon in Style for the ribbon.';
+        styleFallbackNote = 'showing tube';
         setStatus('');
     }
 }
@@ -4607,8 +4647,10 @@ function tubeByDefaultIfBig(r, objectName) {
     if (r.style === want) return;
     r.setStyle(want);
     if (want === 'tube') {
-        styleFallbackNote = `${n.toLocaleString()} residues - showing tube;`
-            + ' pick Cartoon in Style for the ribbon.';
+        // A NOTE, NOT A LESSON. It used to end "; pick Cartoon in Style for
+        // the ribbon", which is the app explaining its own menus on a status
+        // line - and it rode along on every load message after it.
+        styleFallbackNote = 'showing tube';
         setStatus('');
     }
 }
@@ -4623,9 +4665,7 @@ function dropToTubeIfCartoonWontFit(r) {
     // - "Loaded.", the fetch summary, an MSA result - would each bury it. It
     // rides along on whatever the load ends up saying, and the next load clears
     // it. Silently changing what the user is looking at is not an option.
-    styleFallbackNote = `Too large for the cartoon style `
-        + `(${fit.positions.toLocaleString()} positions need about ${fit.needMB} MB); `
-        + `showing tube.`;
+    styleFallbackNote = `cartoon needs ~${fit.needMB} MB - showing tube`;
     setStatus('');
 }
 
@@ -5657,9 +5697,7 @@ async function handleFetch() {
 
                 if (Object.keys(siftsMappings).length === 0) {
                     setStatus(
-                        `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                        `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                        `Note: No UniProt mappings found for this PDB structure.`
+                        loadSummary('no UniProt mapping')
                     );
                 } else {
                     // Get the object that was just loaded
@@ -5810,36 +5848,26 @@ async function handleFetch() {
                                             loadMSADataIntoViewer(matchedMSA, firstMatchedChain, objectName);
 
                                             setStatus(
-                                                `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                                                `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                                                `MSA loaded for ${msaObj.availableChains.length} chain(s).`
+                                                loadSummary(`MSA on ${msaObj.availableChains.length} chain(s)`)
                                             );
                                         } else {
                                             setStatus(
-                                                `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                                                `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                                                `Warning: MSA sequences did not match any chains.`
+                                                loadSummary('MSA matched no chain')
                                             );
                                         }
                                     } else {
                                         setStatus(
-                                            `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                                            `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                                            `Warning: Could not match MSAs to chains.`
+                                            loadSummary('MSA matched no chain')
                                         );
                                     }
                                 } else {
                                     setStatus(
-                                        `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                                        `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                                        `Note: No MSAs available for mapped UniProt IDs.`
+                                        loadSummary('no MSA available')
                                     );
                                 }
                             } else {
                                 setStatus(
-                                    `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                                    `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                                    `Warning: Could not extract chain sequences for MSA matching.`
+                                    loadSummary('no chain sequences for MSA')
                                 );
                             }
                         }
@@ -5849,9 +5877,7 @@ async function handleFetch() {
                 // PDBe mappings or MSA download failed, but structure loaded successfully
                 console.warn("PDBe mappings/MSA download failed:", e);
                 setStatus(
-                    `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                    `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                    `Note: Could not load MSAs (${e.message}).`
+                    loadSummary(`MSA failed: ${e.message}`)
                 );
             }
         }
@@ -5951,23 +5977,17 @@ async function handleFetch() {
                                                 }
 
                                                 setStatus(
-                                                    `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                                                    `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                                                    `MSA loaded for chain ${firstMatchedChain}.`
+                                                    loadSummary(`MSA on chain ${firstMatchedChain}`)
                                                 );
                                             }
                                         } else {
                                             setStatus(
-                                                `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                                                `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                                                `Warning: MSA sequence did not match any chain.`
+                                                loadSummary('MSA matched no chain')
                                             );
                                         }
                                     } else {
                                         setStatus(
-                                            `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                                            `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                                            `Warning: Could not extract chain sequences for MSA matching.`
+                                            loadSummary('no chain sequences for MSA')
                                         );
                                     }
                                 }
@@ -5975,33 +5995,24 @@ async function handleFetch() {
                         }
                     } else {
                         setStatus(
-                            `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                            `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                            `Warning: MSA file was empty.`
+                            loadSummary('MSA file empty')
                         );
                     }
                 } else {
                     // MSA not found, but structure loaded successfully
                     setStatus(
-                        `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                        `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                        `Note: MSA not available for this structure.`
+                        loadSummary('no MSA')
                     );
                 }
             } catch (e) {
                 // MSA download failed, but structure loaded successfully
                 console.warn("MSA download failed:", e);
                 setStatus(
-                    `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                    `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                    `Note: Could not download MSA (${e.message}).`
+                    loadSummary('Note: Could not download MSA (${e.messag')
                 );
             }
         } else {
-            setStatus(
-                `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}).`
-            );
+            setStatus(loadSummary());
         }
 
     } catch (e) {
@@ -7445,10 +7456,9 @@ async function handleZipUpload(file, loadAsFrames) {
         const paeMessage = totalPaePairedCount > 0 ?
             ` (${totalPaePairedCount} PAE matrices paired)` : '';
 
-        setStatus(
-            `Successfully loaded ${totalObjectsLoaded} new object(s) from ${file.name} ` +
-            `(${totalFramesAdded} total frame${totalFramesAdded !== 1 ? 's' : ''}${paeMessage}).`
-        );
+        setStatus(loadSummary(totalObjectsLoaded > 1
+            ? `${totalObjectsLoaded} objects${paeMessage}`
+            : (paeMessage ? paeMessage.trim().replace(/[()]/g, '') : '')));
     } catch (e) {
         console.error("ZIP processing failed:", e);
         setStatus(`Error processing ZIP file: ${file.name}. ${e.message}`, true);
@@ -7509,10 +7519,9 @@ function handleFileUpload(event) {
                 const paeMessage = stats.paePairedCount > 0 ?
                     ` (${stats.paePairedCount}/${stats.structureCount} PAE matrices paired)` : '';
 
-                setStatus(
-                    `Successfully loaded ${objectsLoaded} new object(s) from ${sourceName} ` +
-                    `(${stats.framesAdded} total frame${stats.framesAdded !== 1 ? 's' : ''}${paeMessage}).`
-                );
+                setStatus(loadSummary(objectsLoaded > 1
+                    ? `${objectsLoaded} objects${paeMessage}`
+                    : (paeMessage ? paeMessage.trim().replace(/[()]/g, '') : '')));
 
                 // Process CSV files after structure files are loaded
                 if (csvFiles.length > 0) {

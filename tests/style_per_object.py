@@ -30,6 +30,8 @@ can see them, so a Richardson and a ribbon are otherwise distinguishable only
 by eye.
 """
 import http.server, json, os, re, shutil, socketserver, subprocess, sys, threading, time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from probe_js import HELPERS, DEADLINE, check_js  # noqa: E402
 
 ROOT = "/Users/mini/Documents/GitHub/py2Dmol"
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -45,31 +47,8 @@ window.addEventListener('load', () => {
     const txt = await (await fetch('/' + f)).text();
     await window.processFiles([{name: f, readAsync: () => Promise.resolve(txt)}], false);
   };
-  const wait = (ms) => new Promise((s) => setTimeout(s, ms));
   const el = (id) => document.getElementById(id);
-  // FRAMES AND ANSWERS, NOT MILLISECONDS. Each step here is a call and a
-  // render, and what has to happen before the next line reads the result is
-  // that the browser has painted: three animation frames say that in 50 ms
-  // where a flat 1,500 said it in 1,500. Where the work is ASYNCHRONOUS - a
-  // file parsed, a session restored - the probe waits for the answer instead,
-  // which is both faster and steadier than guessing a duration.
-  const settle = async (n = 3) => {
-    for (let k = 0; k < n; k++) {
-      await new Promise((s) => requestAnimationFrame(() => s()));
-    }
-  };
-  const until = async (cond, ms = 4000) => {
-    const t0 = performance.now();
-    while (performance.now() - t0 < ms) {
-      if (cond()) return true;
-      await settle();
-    }
-    return false;
-  };
-  const loaded = () => {
-    const v = window.py2dmol_viewers && window.py2dmol_viewers['standalone-viewer-1'];
-    return !!(v && v.renderer && v.renderer.coords && v.renderer.coords.length);
-  };
+  //HELPERS
   const go = async () => {
     const R = {};
     try {
@@ -124,6 +103,24 @@ window.addEventListener('load', () => {
       R.backOnCartoon = { thickness: r.cartoonThickness, detail: r.cartoonDetail,
                           outline: r.relativeOutlineWidth, style: r.style,
                           preset: r.stylePreset };
+      // ...AND A REFUSED STYLE SAYS SO. The cartoon build is refused before it
+      // can kill the tab, and that used to be a console warning and a dropdown
+      // that flicked back to Tube on its own. The heap check is stubbed here:
+      // what is being tested is that the refusal reaches the status line.
+      {
+        const realFit = r._cartoonWouldFit.bind(r);
+        r._cartoonWouldFit = () => ({ok: false, needMB: 6300, freeMB: 900,
+                                     positions: 313236});
+        await pick(names[1]);
+        await setStyle('tube');
+        el('styleSelect').value = 'cartoon';
+        el('styleSelect').dispatchEvent(new Event('change'));
+        await settle(5);
+        const msg = (document.getElementById('status-message') || {}).textContent || '';
+        R.refusal = {text: msg, lines: msg.split(String.fromCharCode(10)).length,
+                     style: r.style, dropdown: el('styleSelect').value};
+        r._cartoonWouldFit = realFit;
+      }
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});
   };
@@ -131,6 +128,8 @@ window.addEventListener('load', () => {
 });
 </script>
 """
+JS = JS.replace("//HELPERS", HELPERS)
+check_js(JS if "PAGE_JS" not in globals() else PAGE_JS)
 src = open(os.path.join(ROOT, "index.html")).read()
 stamp = str(int(time.time() * 1000))
 src = re.sub(r'(<script src="(?!https?:)[^"]+?)(\?v=\d+)?(")',
@@ -156,7 +155,7 @@ p = subprocess.Popen([CHROME, "--headless=new", "--user-data-dir=/tmp/py2dmol-st
                       "--no-first-run", "--window-size=1000,900",
                       "http://127.0.0.1:9787/_styleobj.html?files=" + ",".join(FILES)],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-end = time.time() + 400
+end = time.time() + DEADLINE
 while not box and time.time() < end:
     time.sleep(0.5)
 p.kill(); httpd.shutdown()
@@ -175,7 +174,17 @@ print(f"  tube's eye off, still editing {ae.get('editing')}: drawn {ae.get('draw
 print(f"  cartoon tweaked to 1.7/6 -> on the tube object {R.get('onTube')}")
 print(f"  ...and back: {R.get('backOnCartoon')}")
 
+rf = R.get("refusal") or {}
+print(f"  a refused cartoon says: {rf.get('text')!r}"
+      f" (style {rf.get('style')}, dropdown {rf.get('dropdown')})")
+
 bad = []
+if not rf.get("text") or "tube" not in rf.get("text", "").lower():
+    bad.append(f"refusing the cartoon style said nothing: {rf}")
+elif rf.get("lines", 1) > 1 or len(rf.get("text", "")) > 90:
+    bad.append(f"the refusal is more than one short line: {rf.get('text')!r}")
+if rf.get("style") != "tube" or rf.get("dropdown") != "tube":
+    bad.append(f"the refusal left the style or the dropdown on cartoon: {rf}")
 if R.get("pickerAlive", {}).get("disabled") or R.get("pickerInMulti"):
     bad.append("the picker is greyed - it names what the panels act on, in"
                " both modes")
