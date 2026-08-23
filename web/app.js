@@ -79,7 +79,7 @@ function initializeApp() {
 
     // OPEN ON RICHARDSON. config.rendering.style only picks the draw path; the
     // values that make a preset look like itself - thickness, tint, highlight,
-    // outline width, pencil, smooth - live in STYLE_DEFAULTS and are applied by
+    // outline width, pencil, smooth - live in LOOK_DEFAULTS and are applied by
     // setPreset. The constructor does not call it (the Python path sends those
     // values itself), and the deferred py2dmol_cartoon_loaded route does not
     // help here: the plugin is already loaded by DOMContentLoaded, so that
@@ -308,7 +308,7 @@ function initializeViewerConfig() {
             outline: "full",  // "none", "partial", or "full"
             width: 3.0,
             // The web app opens on the Richardson cartoon. The concrete slider
-            // values do not come from here - they come from STYLE_DEFAULTS, via
+            // values do not come from here - they come from LOOK_DEFAULTS, via
             // the setPreset call in initializeApp - so this names the look and
             // the table supplies it. Python still opens on tube.
             style: "cartoon",
@@ -660,7 +660,10 @@ function setupEventListeners() {
     // Note: colorSelect event listener is handled in viewer-mol.js initializePy2DmolViewer()
     // We don't need a duplicate listener here
 
-    if (objectSelect) objectSelect.addEventListener('change', handleObjectChange);
+    if (objectSelect) {
+        objectSelect.addEventListener('change', showPickedObject);
+        objectSelect.addEventListener('change', handleObjectChange);
+    }
     attachObjectList();
 
     // Attach sequence controls
@@ -1374,15 +1377,26 @@ function setupEventListeners() {
         // and a no-op.
         const mcRow = document.getElementById('mainchainRow');
         if (mcRow) mcRow.hidden = !!ligPos;
-        // The set names what is HIDDEN, so a position in it is a toggle that
-        // is off.
-        const hidBB = renderer.backboneHiddenSet ? renderer.backboneHiddenSet() : null;
+        // WHETHER THE MAIN CHAIN IS DRAWN, which two separate things can
+        // answer no to, and the control has to mean both:
+        //
+        //   the per-residue switch  (backboneHiddenSet - this row's own),
+        //   and the visibility mask (a box drawn on the PAE matrix, a chain
+        //   hidden, Hide pressed on a selection).
+        //
+        // Reading only the switch, a residue hidden by a PAE box sat there
+        // saying "Show" while nothing of it was on screen - reported exactly
+        // that way. The set names what is HIDDEN, so a position in it is a
+        // toggle that is off; the mask names what is VISIBLE, and null is
+        // everything.
         // ...over residues too: an appended atom is not a backbone position, so
         // it is never in the hidden set, and a chain whose backbone is hidden
         // read as Mixed as soon as its side chains were drawn.
-        setSelectionPair('mainchainPair', !hidBB ? true
-            : (res.every((i) => !hidBB.has(i)) ? true
-                : (res.every((i) => hidBB.has(i)) ? false : null)));
+        const hidBB = renderer.backboneHiddenSet ? renderer.backboneHiddenSet() : null;
+        const vis = renderer.visiblePositions;
+        const mcDrawn = (i) => (!hidBB || !hidBB.has(i)) && (!vis || vis.has(i));
+        setSelectionPair('mainchainPair', res.every(mcDrawn) ? true
+            : (res.every((i) => !mcDrawn(i)) ? false : null));
         // THE CONTACT ROW IS ONE CONTROL PER STATE. No contact: an Add
         // button and nothing else, because there is nothing yet to colour or
         // to size. A contact: its own colour, its own width, and a bin - and
@@ -1949,6 +1963,13 @@ function setupEventListeners() {
         onToggle('elementsShowToggle', (p2, v) => setSelectionElements(p2, v));
         onPair('mainchainPair', (p2, v) => {
             setSelectionBackbone(p2, v);
+            // SHOW MEANS SHOW, whatever was hiding it. The switch alone leaves
+            // a residue that the mask excludes - one inside a PAE box's
+            // shadow, say - exactly as invisible as it was, and the button
+            // then does nothing you can see. Hide is the other way round: the
+            // switch is all it needs, and syncSelectionVisibility takes the
+            // residue out of the mask only if nothing else of it is drawn.
+            if (v) setSelectionVisible(p2, true, false);
             syncSelectionVisibility(p2);
         });
         // FIND INTERACTIONS: one button, no settings. 5 A side chain to side
@@ -2333,14 +2354,17 @@ function syncObjectListButton() {
         ? `${shown} of ${total} objects on screen - click to go back to one`
         : 'Show several objects at once';
     if (list) list.hidden = !on;
-    // THE PICKER IS THE OTHER MODE'S CONTROL. With several objects on screen
-    // the eyes say what is drawn and clicking in the sequence strip says what
-    // is edited, so a picker that still named one object would be claiming a
-    // job it no longer has.
+    // THE PICKER CHOOSES WHAT YOU ARE EDITING, in both modes. It used to grey
+    // out in Multi, on the reasoning that with several objects on screen the
+    // eyes decide what is drawn and the picker had no job left. It has one:
+    // the style, the clip and the panels below all belong to ONE object, and
+    // the picker is how you say which. In Multi it changes nothing about the
+    // picture - the eyes still decide that - it changes what the controls act
+    // on.
     if (select) {
-        select.disabled = on;
+        select.disabled = false;
         select.title = on
-            ? 'In Multi the eyes choose what is on screen; click in the sequence to choose what you are editing'
+            ? 'Which object the controls below act on - the eyes decide what is drawn'
             : 'Which object to show and edit';
     }
 }
@@ -2372,18 +2396,81 @@ function renderObjectList() {
         label.className = 'object-list-name';
         label.textContent = name;
 
-        // ONLY THE EYE SWITCHES IT. The name is a name: with the picker gone
-        // from this list, a row that toggled anywhere along its length was one
-        // stray click away from taking a structure off the screen.
+        // ONLY THE EYE SWITCHES IT ON AND OFF. A row that toggled anywhere
+        // along its length was one stray click away from taking a structure
+        // off the screen.
         eye.addEventListener('click', (e) => {
             e.stopPropagation();
             toggleObjectShown(name);
+        });
+
+        // ...AND THE NAME SELECTS IT, which is what the picker does: the
+        // object whose style and settings the panels act on. Visibility and
+        // selection are different questions and this row answers both, one
+        // per half.
+        const editing = name === renderer.currentObjectName;
+        if (editing) row.classList.add('is-editing');
+        label.title = editing
+            ? 'The controls act on this object'
+            : 'Edit this object - its style and settings';
+        label.addEventListener('click', (e) => {
+            e.stopPropagation();
+            selectObjectForEditing(name);
         });
 
         row.appendChild(eye);
         row.appendChild(label);
         list.appendChild(row);
     }
+}
+
+/**
+ * EDIT THIS OBJECT - without changing what is on screen.
+ *
+ * Driven through the picker, like every other path that changes the current
+ * object (the renderer listens to it), so there is one way in and the two
+ * cannot disagree about which object is being edited.
+ */
+function selectObjectForEditing(name) {
+    const select = document.getElementById('objectSelect');
+    const renderer = viewerApi?.renderer;
+    if (!select || !renderer || renderer.currentObjectName === name) return;
+    if (select.value !== name) {
+        select.value = name;
+        select.dispatchEvent(new Event('change'));
+    }
+    renderObjectList();
+}
+
+/**
+ * IN MULTI, PICKING AN OBJECT SHOWS IT.
+ *
+ * The two questions the object row answers - what is DRAWN (the eyes) and what
+ * is being EDITED (the picker, or a row's name) - are deliberately separate,
+ * but only one direction of that is useful: choosing to work on something you
+ * cannot see is not a state anyone asks for. It reads as the picker being
+ * broken, because nothing happens.
+ *
+ * The other direction stays as it was: switching an eye off does NOT stop you
+ * editing that object, which is how you set its style and switch it back on to
+ * look at it.
+ *
+ * ON THE EVENT, NOT IN handleObjectChange. That function is a SYNC - the
+ * session restore calls it directly "to ensure the UI is fully updated" - and
+ * the rule there added the restored object to the shown set every time a saved
+ * session came back, which is a third object on screen that nobody asked for.
+ * A change EVENT means somebody picked.
+ */
+function showPickedObject() {
+    const renderer = viewerApi?.renderer;
+    const select = document.getElementById('objectSelect');
+    const want = select && select.value;
+    if (!renderer || !want || !objectMultiOn(renderer)) return;
+    const shown = shownObjectSet(renderer);
+    if (shown.has(want)) return;
+    shown.add(want);
+    renderer.setShownObjects(Array.from(shown));
+    afterShownObjectsChange();
 }
 
 /**
@@ -4448,19 +4535,37 @@ const BIG_STRUCTURE_RESIDUES = 2000;
  * this point is the merge, and is exactly what will be drawn.
  */
 function tubeByDefaultForDrawn(r) {
-    if (!r || r.styleChosen || r.cartoonForce || !r.setStyle) return;
+    if (!r || r.cartoonForce || !r.setStyle || !r.positionsOfObjects) return;
     const t = r.positionTypes;
     if (!t || !t.length) return;
-    let n = 0;
-    for (let i = 0; i < t.length; i++) {
-        if (t[i] === 'P' || t[i] === 'D' || t[i] === 'R') n++;
+    // PER OBJECT, because the style is per object: a ribosome is a tangle as a
+    // ribbon whatever it is standing next to, and the peptide beside it is not
+    // a tangle whatever IT is standing next to. Counted off the live array, so
+    // this is the structure that will actually be drawn.
+    let big = 0;
+    for (const nm of r.drawnObjects()) {
+        const o = r.objectsData[nm];
+        // hand-picked stays picked - for this object, or globally from a
+        // restored session, which says what it wants
+        if (!o || o.styleChosen || r.styleChosen) continue;
+        let n = 0;
+        for (const i of r.positionsOfObjects([nm])) {
+            const ty = t[i];
+            if (ty === 'P' || ty === 'D' || ty === 'R') n++;
+        }
+        if (!n) continue;
+        const want = n > BIG_STRUCTURE_RESIDUES ? 'tube' : 'cartoon';
+        if (r.styleForObject(nm) === want) continue;
+        r.setStyleForObject(nm, want);
+        if (want === 'tube') big = Math.max(big, n);
     }
-    const want = n > BIG_STRUCTURE_RESIDUES ? 'tube' : 'cartoon';
-    if (r.style === want) return;
-    r.setStyle(want);
-    if (want === 'tube') {
-        styleFallbackNote = `${n.toLocaleString()} residues on screen - showing`
-            + ' tube; pick Cartoon in Style for the ribbon.';
+    // ...and the renderer's own style follows the object being EDITED, which
+    // is what the Style panel describes and what a single-object frame draws.
+    const cur = r.styleForObject(r.currentObjectName);
+    if (cur !== r.style) r.setStyle(cur, true);
+    if (big) {
+        styleFallbackNote = `${big.toLocaleString()} residues in one object -`
+            + ' showing tube; pick Cartoon in Style for the ribbon.';
         setStatus('');
     }
 }

@@ -56,6 +56,30 @@ window.addEventListener('load', () => {
     }
     return n;
   };
+  // FRAMES, NOT MILLISECONDS. Every step below is a click or a call and then
+  // a render, and what has to happen before the next line can read the result
+  // is that the browser has painted. Three animation frames say that in 50 ms
+  // where a flat 300 said it in 300 - and there are fifty of them here, which
+  // was sixteen of this probe's twenty-three seconds. The waits that remain
+  // are the ones waiting for something ASYNCHRONOUS: a file parsed, a PAE
+  // panel built on a timer.
+  const settle = async (n = 3) => {
+    for (let k = 0; k < n; k++) {
+      await new Promise((s) => requestAnimationFrame(() => s()));
+    }
+  };
+  // ...AND WHERE THE WORK IS ASYNCHRONOUS, wait for the ANSWER rather than for
+  // a number of milliseconds. A restored session parses its files and settles
+  // over several turns of the event loop; frames do not mean it is done, and a
+  // fixed sleep is a guess that is either slow or flaky.
+  const until = async (cond, ms = 4000) => {
+    const t0 = performance.now();
+    while (performance.now() - t0 < ms) {
+      if (cond()) return true;
+      await new Promise((s) => setTimeout(s, 40));
+    }
+    return false;
+  };
   const go = async () => {
     const R = {};
     try {
@@ -81,13 +105,13 @@ window.addEventListener('load', () => {
 
       r.setShownObjects([names[0]]);
       r.render('one');
-      await new Promise((s) => setTimeout(s, 200));
+      await settle();
       R.oneInk = ink(r);
       R.oneN = r.coords.length;
 
       r.setShownObjects(names);
       r.render('both');
-      await new Promise((s) => setTimeout(s, 200));
+      await settle();
       R.bothInk = ink(r);
       if (P.get('png') === '1') R.pngCpu = r.canvas.toDataURL('image/png');
       R.bothN = r.coords.length;
@@ -174,14 +198,14 @@ window.addEventListener('load', () => {
       for (let i = off1; i < r.coords.length && i < off1 + 40; i++) hide.push(i);
       r.setBackboneHiddenFor(hide, true);
       r.render('hidden');
-      await new Promise((s) => setTimeout(s, 200));
+      await settle();
       R.hiddenInk = ink(r);
       R.hiddenOnFirst = !!(r.objectsData[R.sources[0]].hiddenBackbone);
       const hb = r.objectsData[R.sources[1]].hiddenBackbone;
       R.hiddenLocal = hb ? Math.min(...hb) : -1;
       r.setBackboneHiddenFor(hide, false);
       r.render('unhidden');
-      await new Promise((s) => setTimeout(s, 200));
+      await settle();
       R.restoredInk = ink(r);
 
       // ...and the Object colour mode, which is only offered when there is
@@ -193,7 +217,7 @@ window.addEventListener('load', () => {
         colorSel.value = 'object';
         colorSel.dispatchEvent(new Event('change'));
         r.render('object mode');
-        await new Promise((s) => setTimeout(s, 200));
+        await settle();
         const flat = {};
         for (let i = 0; i < r.coords.length; i++) {
           const c = r.getAtomColor(i, r._getEffectiveColorMode(i));
@@ -203,7 +227,7 @@ window.addEventListener('load', () => {
         colorSel.value = 'auto';
         colorSel.dispatchEvent(new Event('change'));
         r.render('back to auto');
-        await new Promise((s) => setTimeout(s, 150));
+        await settle();
       }
 
       // THE SS COLOUR MODE SHARES THE DRAWING'S ASSIGNMENT rather than making
@@ -215,11 +239,11 @@ window.addEventListener('load', () => {
       // empty because there is nothing left for it to compute.
       {
         r.setStyle('cartoon');
-        await new Promise((s) => setTimeout(s, 300));
+        await settle();
         colorSel.value = 'ss';
         colorSel.dispatchEvent(new Event('change'));
         r.render('ss colours');
-        await new Promise((s) => setTimeout(s, 400));
+        await settle();
         // ...asked for directly, which is what the colour path and the panel
         // both do. The drawing has just filled its cache; anyone asking now
         // must get THAT array back rather than computing a second one.
@@ -234,13 +258,13 @@ window.addEventListener('load', () => {
         colorSel.value = 'auto';
         colorSel.dispatchEvent(new Event('change'));
         r.render('back to auto');
-        await new Promise((s) => setTimeout(s, 200));
+        await settle();
       }
 
       // ORIENT, PICKING AND AUTO CLIP, the three things that ask "where is the
       // structure" and used to be answered by the current object alone.
       window.applyBestViewRotation(false);
-      await new Promise((s) => setTimeout(s, 300));
+      await settle();
       R.orientInk = ink(r);
       r._ensurePickProjection();
       let outside = 0;
@@ -279,9 +303,9 @@ window.addEventListener('load', () => {
             if (sel) sel.value = big;      // Orient reads the picker
         }
         r.setShownObjects([other]);
-        await new Promise((s) => setTimeout(s, 400));
+        await settle();
         window.applyBestViewRotation(false);
-        await new Promise((s) => setTimeout(s, 400));
+        await settle();
         const want = centroid(other);
         const got = r.viewerState.center;
         R.orientOne = {
@@ -300,7 +324,7 @@ window.addEventListener('load', () => {
             if (sel2) sel2.value = wasEditing;
         }
         r.setShownObjects(names);
-        await new Promise((s) => setTimeout(s, 300));
+        await settle();
       }
 
       // PICKING REACHES THE SECOND OBJECT. Not "the pixel over residue X
@@ -330,20 +354,28 @@ window.addEventListener('load', () => {
       r.setResidueSelection(new Set([probe]));
       if (r.autoClip) r.autoClip(r.residueSelection);
       r.render('clipped');
-      await new Promise((s) => setTimeout(s, 200));
+      await settle();
       R.clipInk = ink(r);
       R.clipSlab = [r.clipNear, r.clipFar];
       r.setClipSlab(null, null);
       r.clearResidueSelection();
       r.render('unclipped');
-      await new Promise((s) => setTimeout(s, 200));
+      await settle();
 
       // THE TUBE STYLE, which has a GPU program of its own (VSTUBE) and its
       // own joint handling - a merged array must be one structure to it too.
+      //
+      // EVERY DRAWN OBJECT, not just the edited one: the style belongs to the
+      // object now, so setStyle restyles the one being edited and leaves its
+      // neighbour as it was. That is a MIXED picture, which the GPU can draw
+      // and the 2D path cannot - so comparing the two here compared a
+      // half-cartoon against an all-tube and read as a broken GPU.
       const styleWas = r.style;
+      const stylesWere = r.drawnObjects().map((n) => r.styleForObject(n));
+      for (const nm of r.drawnObjects()) r.setStyleForObject(nm, 'tube');
       r.setStyle('tube');
       r.render('tube cpu');
-      await new Promise((s) => setTimeout(s, 250));
+      await settle();
       R.tubeInk = ink(r);
       R.tubeCrossing = (() => {
         const gg = r.sourceGroups();
@@ -356,13 +388,14 @@ window.addEventListener('load', () => {
       })();
       r.useGPU = true;
       r.render('tube gpu');
-      await new Promise((s) => setTimeout(s, 400));
+      await settle();
       R.tubeGpuInk = ink(r);
       R.tubeGpuTook = !!(r._tubeGPUWillTake && r._tubeGPUWillTake());
       r.useGPU = false;
+      r.drawnObjects().forEach((nm, k) => r.setStyleForObject(nm, stylesWere[k]));
       r.setStyle(styleWas);
       r.render('back to cartoon');
-      await new Promise((s) => setTimeout(s, 250));
+      await settle();
 
       // THE UI, DRIVEN AS A USER DRIVES IT. The picker is the ordinary
       // control - one object on screen, the one being edited - and Multi is
@@ -370,7 +403,7 @@ window.addEventListener('load', () => {
       // only the eyes decide what is drawn.
       r.setShownObjects(null);          // the resting state: just the edited one
       r.render('resting');
-      await new Promise((s) => setTimeout(s, 200));
+      await settle();
       const btn = document.getElementById('objectListButton');
       const picker = document.getElementById('objectSelect');
       R.btnOne = btn.textContent.trim();
@@ -380,7 +413,7 @@ window.addEventListener('load', () => {
       R.pickerValue = picker.value;
 
       btn.click();                      // MULTI ON
-      await new Promise((s) => setTimeout(s, 300));
+      await settle();
       R.multiAfter = btn.getAttribute('aria-pressed');
       R.pickerAfter = picker.disabled;
       R.rows = rowNames();
@@ -394,7 +427,7 @@ window.addEventListener('load', () => {
       // EVERY EYE ON
       for (let k = 0; k < R.rows.length; k++) if (!rowOn(k)) {
         eyes()[k].click();
-        await new Promise((s) => setTimeout(s, 250));
+        await settle();
       }
       R.afterAllDrawn = r.drawnObjects();
       R.afterAllInk = ink(r);
@@ -403,7 +436,7 @@ window.addEventListener('load', () => {
       // one object: the objects are all still there to be switched back on.
       for (let k = 0; k < R.rows.length; k++) if (rowOn(k)) {
         eyes()[k].click();
-        await new Promise((s) => setTimeout(s, 250));
+        await settle();
       }
       R.noneDrawn = r.drawnObjects().length;
       R.noneInk = ink(r);
@@ -414,7 +447,7 @@ window.addEventListener('load', () => {
       // just as well as the plain one.
       const otherIdx = rowNames().findIndex((n) => n !== r.currentObjectName);
       eyes()[otherIdx].click();
-      await new Promise((s) => setTimeout(s, 300));
+      await settle();
       R.oneBackDrawn = r.drawnObjects();
       R.oneBackInk = ink(r);
       // ...AND THE CAMERA FRAMES IT. An empty canvas has no view worth
@@ -434,7 +467,7 @@ window.addEventListener('load', () => {
       // ...and the other joins it rather than replacing it, which is the
       // complaint that started all of this
       eyes()[rowNames().findIndex((n) => n === r.currentObjectName)].click();
-      await new Promise((s) => setTimeout(s, 300));
+      await settle();
       R.afterJoinDrawn = r.drawnObjects();
       R.afterJoinInk = ink(r);
       R.afterJoinMulti = !!(r.multiState && r.multiState.enabled);
@@ -443,14 +476,14 @@ window.addEventListener('load', () => {
       // BACK TO ONE OBJECT AT A TIME: the picker comes back, and what it names
       // is what is on screen.
       btn.click();
-      await new Promise((s) => setTimeout(s, 300));
+      await settle();
       R.offMulti = btn.getAttribute('aria-pressed');
       R.offPicker = picker.disabled;
       R.offDrawn = r.drawnObjects();
       R.offListHidden = document.getElementById('objectList').hidden;
       R.offShown = r.shownObjects === null;
       btn.click();                      // ...and back into Multi for the rest
-      await new Promise((s) => setTimeout(s, 250));
+      await settle();
 
       // LEAVING MULTI KEEPS WHAT YOU WERE LOOKING AT. The two questions have
       // separate answers here - the eyes say what is drawn, the strip says
@@ -465,23 +498,23 @@ window.addEventListener('load', () => {
           const want = rowNames()[k] === other;
           if (rowOn(k) !== want) {
             eyes()[k].click();
-            await new Promise((s) => setTimeout(s, 250));
+            await settle();
           }
         }
         R.lookingAt = { drawn: r.drawnObjects(), editing: r.currentObjectName };
         btn.click();                    // Multi off
-        await new Promise((s) => setTimeout(s, 500));
+        await settle();
         R.keptOnLeaving = {
           drawn: r.drawnObjects(), editing: r.currentObjectName,
           picker: picker.value, wanted: other,
         };
         btn.click();                    // ...and back in for the rest
-        await new Promise((s) => setTimeout(s, 300));
+        await settle();
       }
 
       r.setShownObjects(names);
       r.render('all again');
-      await new Promise((s) => setTimeout(s, 200));
+      await settle();
 
       // AN OBJECT'S COLOURS DO NOT MOVE WHEN ITS NEIGHBOUR IS SWITCHED OFF.
       // Keyed by which source it happened to be, an object was source 0 alone
@@ -508,7 +541,7 @@ window.addEventListener('load', () => {
       };
       r.setShownObjects(names);
       r.render('both for colours');
-      await new Promise((s) => setTimeout(s, 250));
+      await settle();
       R.colBoth = colOf(names[0]);
       R.stripBoth = stripOf(names[0]);
       R.colBothSecond = colOf(names[1]);
@@ -516,7 +549,7 @@ window.addEventListener('load', () => {
 
       r.setShownObjects([names[0]]);
       r.render('first alone');
-      await new Promise((s) => setTimeout(s, 250));
+      await settle();
       R.colAlone = colOf(names[0]);
       R.stripAlone = stripOf(names[0]);
       // ...and the HIDDEN object's strip colours, which the strip still asks
@@ -525,7 +558,7 @@ window.addEventListener('load', () => {
 
       r.setShownObjects(names);
       r.render('both again');
-      await new Promise((s) => setTimeout(s, 250));
+      await settle();
 
       // THE STRIP IS ONE SECTION PER OBJECT ON SCREEN. It used to show the
       // object being edited and nothing else, so with two structures up it was
@@ -535,15 +568,15 @@ window.addEventListener('load', () => {
       // LIST and not only an explicit rebuild
       r.setShownObjects([names[0]]);
       if (window.SEQ && window.SEQ.buildView) window.SEQ.buildView();
-      await new Promise((s) => setTimeout(s, 200));
+      await settle();
       renderObjectListIfAny();
       // ...the other object's eye, through the UI - the strip has to follow
       // the LIST and not only an explicit rebuild
       for (let k = 0; k < rowNames().length; k++) if (!rowOn(k)) {
         eyes()[k].click();
-        await new Promise((s) => setTimeout(s, 250));
+        await settle();
       }
-      await new Promise((s) => setTimeout(s, 300));
+      await settle();
       R.stripSections = (window.SEQ.layout() && window.SEQ.layout().objectLabelPositions
         ? window.SEQ.layout().objectLabelPositions.map((x) => x.object) : null);
       R.stripChains = (window.SEQ.layout() && window.SEQ.layout().chainLabelPositions
@@ -551,14 +584,14 @@ window.addEventListener('load', () => {
 
       r.setShownObjects([names[0]]);
       if (window.SEQ && window.SEQ.buildView) window.SEQ.buildView();
-      await new Promise((s) => setTimeout(s, 400));
+      await settle();
       R.stripSectionsOne = (window.SEQ.layout() && window.SEQ.layout().objectLabelPositions
         ? window.SEQ.layout().objectLabelPositions.map((x) => x.object) : null);
       R.stripChainsOne = (window.SEQ.layout() && window.SEQ.layout().chainLabelPositions
         ? window.SEQ.layout().chainLabelPositions.map((x) => x.object + '/' + x.chainId) : null);
       r.setShownObjects(names);
       if (window.SEQ && window.SEQ.buildView) window.SEQ.buildView();
-      await new Promise((s) => setTimeout(s, 400));
+      await settle();
 
       // LIGANDS COLLAPSE TO ONE TOKEN PER LIGAND, in every section. The row
       // loop read the FIRST section's ligand groups for all of them, so no
@@ -608,7 +641,7 @@ window.addEventListener('load', () => {
             * bx.height / (cv.height / dpi);
           cv.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: x, clientY: y }));
           cv.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: x, clientY: y }));
-          await new Promise((s) => setTimeout(s, 300));
+          await settle();
           const picked = r.residueSelection ? Array.from(r.residueSelection) : [];
           const owners = Array.from(new Set(picked.map((i) => (r.ownerOf(i) || {}).name)));
           const size = lay2.residuePositions.filter(
@@ -628,7 +661,7 @@ window.addEventListener('load', () => {
         const modeSel = document.getElementById('sequenceModeSelect');
         modeSel.value = 'chain';
         modeSel.dispatchEvent(new Event('change'));
-        await new Promise((s) => setTimeout(s, 400));
+        await settle();
         const lay = window.SEQ.layout();
         R.chainModeSections = (lay.objectLabelPositions || []).map((x) => x.object);
         R.chainModeBlocks = (lay.chainLabelPositions || [])
@@ -647,7 +680,7 @@ window.addEventListener('load', () => {
             * bx.height / (cv.height / dpi);
           cv.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: x, clientY: y }));
           cv.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: x, clientY: y }));
-          await new Promise((s) => setTimeout(s, 300));
+          await settle();
         }
         const picked = r.residueSelection ? Array.from(r.residueSelection) : [];
         R.chainModeOwners = Array.from(new Set(picked.map((i) => (r.ownerOf(i) || {}).name)));
@@ -655,7 +688,7 @@ window.addEventListener('load', () => {
         r.clearResidueSelection();
         modeSel.value = 'sequence';
         modeSel.dispatchEvent(new Event('change'));
-        await new Promise((s) => setTimeout(s, 400));
+        await settle();
       }
 
       // NOTHING ON SCREEN, NOTHING TO READ: the strip goes quiet rather than
@@ -663,14 +696,14 @@ window.addEventListener('load', () => {
       // with it - a click in it would select something nobody can see.
       r.setShownObjects([]);
       if (window.SEQ && window.SEQ.buildView) window.SEQ.buildView();
-      await new Promise((s) => setTimeout(s, 300));
+      await settle();
       R.emptyStripLayout = window.SEQ.layout();
       R.emptyStripNote = !!document.querySelector('.sequence-empty-note');
       R.emptyStripDisabled = ['selectAllResidues', 'clearAllResidues',
         'invertSelection'].every((id) => (document.getElementById(id) || {}).disabled);
       r.setShownObjects(names);
       if (window.SEQ && window.SEQ.buildView) window.SEQ.buildView();
-      await new Promise((s) => setTimeout(s, 300));
+      await settle();
       R.backStripSections = (window.SEQ.layout() || {}).objectLabelPositions
         ? window.SEQ.layout().objectLabelPositions.map((x) => x.object) : null;
       R.backStripEnabled = !document.getElementById('selectAllResidues').disabled;
@@ -699,7 +732,7 @@ window.addEventListener('load', () => {
         clientX: box.left + cell.x + 2, clientY: box.top + cell.y + 2 }));
       canvas.dispatchEvent(new MouseEvent('mouseup', { bubbles: true,
         clientX: box.left + cell.x + 2, clientY: box.top + cell.y + 2 }));
-      await new Promise((s) => setTimeout(s, 400));
+      await settle();
       R.afterPickCurrent = r.currentObjectName;
       R.afterPickDrawn = r.drawnObjects();
       R.afterPickSelection = r.residueSelection ? Array.from(r.residueSelection) : [];
@@ -718,7 +751,7 @@ window.addEventListener('load', () => {
       R.cpuBeforeGpu = ink(r);
       r.useGPU = true;
       r.render('gpu');
-      await new Promise((s) => setTimeout(s, 400));
+      await settle();
       R.gpuInk = ink(r);
       R.gpuTook = !!(r._gpuWillDraw && r._gpuWillDraw());
       R.gpuError = String(window.__gpuLastError || '');
@@ -730,7 +763,7 @@ window.addEventListener('load', () => {
       {
         r.setShownObjects(names);
         window.SEQ.buildView();
-        await new Promise((s) => setTimeout(s, 300));
+        await settle();
         const offs = r.multiState.sourceOffsets;
         const across = new Set([offs[0] + 1, offs[0] + 2, offs[1] + 1, offs[1] + 2]);
         r.setResidueSelection(across);
@@ -757,7 +790,7 @@ window.addEventListener('load', () => {
       // on the right object - and the shown set with it.
       {
         r.setShownObjects(names);
-        await new Promise((s) => setTimeout(s, 250));
+        await settle();
         const o0 = r.multiState.sourceOffsets[0];
         const o1 = r.multiState.sourceOffsets[1];
         r.setBackboneHiddenFor([o1, o1 + 1], true);
@@ -804,9 +837,11 @@ window.addEventListener('load', () => {
         HTMLAnchorElement.prototype.click = realClick;
 
         r.clearAllObjects();
-        await new Promise((s) => setTimeout(s, 200));
+        await until(() => !Object.keys(r.objectsData || {}).length, 2000);
         await window.loadViewerState(JSON.parse(captured));
-        await new Promise((s) => setTimeout(s, 700));
+        R.restoreSettled = await until(
+            () => r.drawnObjects().length >= 2 && r.coords && r.coords.length > 0);
+        await settle();
         R.afterLoad = { [names[0]]: state(names[0]), [names[1]]: state(names[1]) };
         R.afterLoadDrawn = r.drawnObjects();
         R.afterLoadN = r.coords.length;
@@ -830,6 +865,24 @@ window.addEventListener('load', () => {
         await load(P.get('a'));
         await new Promise((s) => setTimeout(s, 900));
         R.reload = {before, after: slotsOf(first)};
+      }
+      // THE LAST LEG, deliberately: it changes what is drawn and what is
+      // edited, and everything above reads the state it is handed.
+      // ...AND PICKING AN OBJECT THAT IS SWITCHED OFF SWITCHES IT ON. Choosing
+      // to work on something you cannot see is not a state anyone asks for: it
+      // reads as the picker being broken, because nothing happens. (The other
+      // direction stays: an eye switched off does not stop you editing that
+      // object, which is how you restyle it before looking at it again.)
+      {
+        const wasDrawn = r.drawnObjects().slice();
+        const wasEditing = r.currentObjectName;
+        const off = rowNames().find((n) => !wasDrawn.includes(n));
+        if (!off) throw new Error('every object is already on screen');
+        const sel = document.getElementById('objectSelect');
+        sel.value = off; sel.dispatchEvent(new Event('change'));
+        await settle();
+        R.pickHidden = {picked: off, editing: r.currentObjectName,
+                        drawn: r.drawnObjects()};
       }
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});
@@ -935,8 +988,8 @@ def main():
           f" {R['hiddenOnFirst']}, second object's lowest index {R['hiddenLocal']}")
     print(f"  list: rows {R.get('rows')}, swatches {R.get('swatches')};"
           f" button {R.get('btnOne')!r}, pressed {R.get('multiBefore')} ->"
-          f" {R.get('multiAfter')} -> {R.get('offMulti')}; picker off in multi:"
-          f" {R.get('pickerAfter')}, back on after: {not R.get('offPicker')}")
+          f" {R.get('multiAfter')} -> {R.get('offMulti')}; picker live in multi:"
+          f" {not R.get('pickerAfter')}, live outside: {not R.get('offPicker')}")
 
     print(f"  All: {R.get('oneObjectDrawn')} ({R.get('oneObjectInk')} ink) ->"
           f" {R.get('afterAllDrawn')} ({R.get('afterAllInk')}) -> nothing"
@@ -966,8 +1019,8 @@ def main():
     print(f"  empty strip: layout {R.get('emptyStripLayout')}, note"
           f" {R.get('emptyStripNote')}, tools dead {R.get('emptyStripDisabled')};"
           f" back -> {R.get('backStripSections')}, live {R.get('backStripEnabled')}")
-    print(f"  picker on screen: {R.get('pickerVisible')}, greyed in multi:"
-          f" {R.get('pickerGreyed')};"
+    print(f"  picker on screen: {R.get('pickerVisible')}, live in multi:"
+          f" {not R.get('pickerGreyed')};"
           f" clicking in {R.get('wantedObject')}'s section -> editing"
           f" {R.get('afterPickCurrent')}, selected a residue of"
           f" {R.get('afterPickOwner')}, drawn {R.get('afterPickDrawn')}")
@@ -1067,10 +1120,14 @@ def main():
                    f" {R.get('multiAfter')} -> {R.get('offMulti')}")
     if not R.get("listHiddenBefore") or not R.get("offListHidden"):
         bad.append("the object list is showing outside Multi")
-    if R.get("pickerBefore") or not R.get("pickerAfter") or R.get("offPicker"):
-        bad.append("the picker is not greyed in Multi and live outside it:"
-                   f" {R.get('pickerBefore')} -> {R.get('pickerAfter')} ->"
-                   f" {R.get('offPicker')}")
+    # THE PICKER IS LIVE IN BOTH MODES. It used to grey out in Multi, on the
+    # reasoning that the eyes decide what is drawn there and the picker had
+    # nothing left to say. It has: the style, the clip and every panel under
+    # the object row act on ONE object, and the picker is how you choose it.
+    if R.get("pickerBefore") or R.get("pickerAfter") or R.get("offPicker"):
+        bad.append("the picker is greyed somewhere - it names the object the"
+                   f" panels act on, in both modes: {R.get('pickerBefore')} ->"
+                   f" {R.get('pickerAfter')} -> {R.get('offPicker')}")
     if not R.get("multiOpensOnEdited"):
         bad.append(f"Multi opened on {R.get('oneObjectDrawn')} rather than the"
                    " object that was already on screen")
@@ -1122,6 +1179,13 @@ def main():
         bad.append("this leg is meant to draw the object that is NOT being edited")
     if not R.get("oneBackInk"):
         bad.append("one eye from an empty canvas drew nothing")
+    ph = R.get("pickHidden") or {}
+    print(f"  picking {ph.get('picked')} while it was off: editing"
+          f" {ph.get('editing')}, drawn {ph.get('drawn')}")
+    if ph.get("editing") != ph.get("picked") \
+            or ph.get("picked") not in (ph.get("drawn") or []):
+        bad.append("picking an object that was switched off left it off screen:"
+                   f" {ph}")
     fr = R.get("oneBackFraming") or {}
     print(f"  ...framed at {fr.get('extent')} against its own {fr.get('own')}")
     if not fr.get("own") or not fr.get("extent") \
@@ -1204,8 +1268,9 @@ def main():
     if not R.get("pickerVisible"):
         bad.append("the object picker is not on screen - it is the ordinary"
                    " way to choose one object")
-    if not R.get("pickerGreyed"):
-        bad.append("the picker is live in Multi, where the eyes decide")
+    if R.get("pickerGreyed"):
+        bad.append("the picker is greyed in Multi - it chooses what you are"
+                   " editing there, while the eyes choose what is drawn")
     if R.get("pickerOptions") != R["objects"]:
         bad.append(f"the select no longer tracks the objects:"
                    f" {R.get('pickerOptions')}")

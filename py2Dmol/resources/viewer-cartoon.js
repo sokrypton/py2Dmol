@@ -12292,10 +12292,24 @@
     // Per-style preset values, in ONE place. viewer-mol.js applies these on a
     // style switch so every control lands on that style's default instead of
     // keeping whatever the previous style left behind.
-    const STYLE_DEFAULTS = {
-        // Every style-owned control appears here, because a style SWITCH
+    /* WHAT EACH LOOK SETS EVERY CONTROL TO.
+     *
+     * A LOOK is one of four things the drawing can be: the `tube` STYLE, or
+     * one of the cartoon style's three PRESETS - `richardson`, `ribbon`, `3d`.
+     * Those are the only names that appear as keys, and they are the names the
+     * app uses everywhere else for the same things.
+     *
+     * The plain-cartoon entry used to be keyed `cartoon`, which reads as "the
+     * cartoon STYLE" and is not: it is the ribbon preset, and setPreset had to
+     * translate ('ribbon' -> 'cartoon') on the way in. Anything that passed a
+     * style name straight through got the ribbon look and no warning - which
+     * is what silently redrew a Richardson cartoon as a plain ribbon the first
+     * time a picture held both styles at once.
+     */
+    const LOOK_DEFAULTS = {
+        // Every style-owned control appears here, because a switch of look
         // re-asserts all of them: any key left out kept whatever the previous
-        // style's slider was at - a high Outline set in cartoon silently
+        // one's slider was at - a high Outline set in cartoon silently
         // survived into richardson, whose panel hides the slider, leaving no
         // way to see or fix it.
         //
@@ -12325,7 +12339,7 @@
             // that flat banding would otherwise have to.
             smooth: true,
         },
-        cartoon: {
+        ribbon: {
             width: PRESET_WIDTH,
             outlineWidth: 2.0,
             thickness: 0,
@@ -12369,12 +12383,9 @@
             smooth: true,
         },
     };
-    // The tube style starts from the plain cartoon values. (The 'ribbon' PRESET
-    // does too, but setPreset maps it to .cartoon directly rather than needing
-    // an alias of its own.)
-    // TUBE STARTS FROM THE PLAIN CARTOON VALUES, but it is a STYLE in its own
-    // right - tube and cartoon are the two the Style control offers - so it
-    // needs its own table, not a reference to someone else's.
+    // TUBE STARTS FROM THE RIBBON VALUES, but it is a STYLE in its own right -
+    // tube and cartoon are the two the Style control offers - so it needs its
+    // own table, not a reference to someone else's.
     //
     // This used to be `STYLE_DEFAULTS.tube = STYLE_DEFAULTS.cartoon`, which
     // shares the OBJECT rather than the values: the two could never hold
@@ -12384,12 +12395,12 @@
     // A COPY OF EVERYTHING, not a lean table of the few keys tube actually
     // draws with (width and outline; the cartoon* keys belong to the plugin,
     // which only draws the cartoon style). That is the rule at the top of
-    // STYLE_DEFAULTS and it is load-bearing: _applyStyleDefaults guards the
+    // LOOK_DEFAULTS and it is load-bearing: _applyLookDefaults guards the
     // optional keys with `!== undefined`, so a key left out here is not
     // defaulted, it is SKIPPED - and the previous style's value survives into
     // this one. Spelling out only what differs keeps the two in step as the
     // table grows.
-    STYLE_DEFAULTS.tube = Object.assign({}, STYLE_DEFAULTS.cartoon, {
+    LOOK_DEFAULTS.tube = Object.assign({}, LOOK_DEFAULTS.ribbon, {
         // the heavier outline tube has always had; Ribbon is 2.0, Richardson 1.0
         outlineWidth: 3.0,
     });
@@ -12462,7 +12473,7 @@
         SHADING: { HI_KNEE, RICH_HI_KNEE, LIGHT_AMB, LIGHT_DIFF, LIGHT_HI,
             BACK_INNER_SHADE, RIBBON_INK_MUL, INK_FADE_SCALE,
             INK_W_MUL, INK_W_MIN },
-        STYLE_DEFAULTS, SS_PALETTES };
+        LOOK_DEFAULTS, SS_PALETTES };
     // Near-white, not pure white: a pure white edge disappears into the page.
     const SHEET_EDGE_RGB = { r: 244, g: 246, b: 240 };
     // PER-RESIDUE SECONDARY-STRUCTURE OVERRIDE.

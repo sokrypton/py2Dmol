@@ -52,16 +52,39 @@ window.addEventListener('load', () => {
     return {tag, per, atoms, vis, drawn: r.drawnObjects(),
             coords: r.coords.length, ink: ink(r.canvas)};
   };
+  // FRAMES AND ANSWERS, NOT MILLISECONDS. Each step here is a call and a
+  // render, and what has to happen before the next line reads the result is
+  // that the browser has painted: three animation frames say that in 50 ms
+  // where a flat 1,500 said it in 1,500. Where the work is ASYNCHRONOUS - a
+  // file parsed, a session restored - the probe waits for the answer instead,
+  // which is both faster and steadier than guessing a duration.
+  const settle = async (n = 3) => {
+    for (let k = 0; k < n; k++) {
+      await new Promise((s) => requestAnimationFrame(() => s()));
+    }
+  };
+  const until = async (cond, ms = 4000) => {
+    const t0 = performance.now();
+    while (performance.now() - t0 < ms) {
+      if (cond()) return true;
+      await settle();
+    }
+    return false;
+  };
+  const loaded = () => {
+    const v = window.py2dmol_viewers && window.py2dmol_viewers['standalone-viewer-1'];
+    return !!(v && v.renderer && v.renderer.coords && v.renderer.coords.length);
+  };
   const go = async () => {
     const R = {steps: []};
     try {
-      await load('1UBQ.cif'); await wait(500);
+      await load('1UBQ.cif'); await until(loaded); await settle();
       const r = window.py2dmol_viewers['standalone-viewer-1'].renderer;
       r.useGPU = false;
-      await load('3CHY.cif'); await wait(700);
+      await load('3CHY.cif'); await until(loaded); await settle();
       const [A, B] = Object.keys(r.objectsData);
       R.names = [A, B];
-      r.setShownObjects([A, B]); await wait(500);
+      r.setShownObjects([A, B]); await settle();
       R.inkBare = ink(r.canvas);
 
       // SIDE CHAINS ON RESIDUES OF BOTH, written the way the panel writes
@@ -74,11 +97,11 @@ window.addEventListener('load', () => {
         for (const i of g.positions) cur.add(i);
         g.object.sidechains = cur;
       }
-      r.reloadDrawn(); await wait(500);
+      r.reloadDrawn(); await settle();
       R.steps.push(state(r, 'both on'));
       for (const [tag, want] of [['B hidden', [A]], ['B back', [A, B]],
                                  ['A hidden', [B]], ['A back', [A, B]]]) {
-        r.setShownObjects(want); await wait(450);
+        r.setShownObjects(want); await settle();
         R.steps.push(state(r, tag));
       }
     } catch (e) { R.error = String((e && e.stack) || e); }

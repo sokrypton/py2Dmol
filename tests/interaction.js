@@ -90,7 +90,7 @@ global.OBJECT_STATE = new Function(
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','_applyRecordVisibility','_visibleFromObjectRecords','withSidechainAtoms','_baseCount','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','ligandGroupsOf','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyLookDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','_applyRecordVisibility','_composeAndApplyMask','_visibleForObject','_syncModelToMask','withSidechainAtoms','_baseCount','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','ligandGroupsOf','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -2986,6 +2986,25 @@ t('the backbone hides per selection, and the side chains keep their CA', () => {
         throw new Error('the global Backbone button is back');
     }
     if (!/setSelectionBackbone\(p2, v\)/.test(app)) throw new Error('the toggle is not wired');
+    // ...AND IT MEANS "IS THE MAIN CHAIN DRAWN", which two separate things can
+    // answer no to: this row's own switch, and the visibility mask (a PAE box,
+    // a hidden chain, Hide pressed on a selection). Reading only the switch,
+    // a residue inside a PAE box's shadow sat there saying Show with nothing
+    // of it on screen - reported exactly that way.
+    if (!/const mcDrawn = \(i\) => \(!hidBB \|\| !hidBB\.has\(i\)\) && \(!vis \|\| vis\.has\(i\)\)/
+        .test(app)) {
+        throw new Error('the Main chain state ignores the visibility mask, so'
+            + ' it can say Show about a residue that is not drawn');
+    }
+    // ...and Show clears BOTH, or the button does nothing you can see
+    // ...found by the HANDLER, not by the first mention: setSelectionPair
+    // ends in "onPair('mainchainPair'" too, and the slice started there.
+    const mcAt = app.indexOf("\n        onPair('mainchainPair'");
+    const mcPress = app.slice(mcAt, mcAt + 900);
+    if (!/if \(v\) setSelectionVisible\(p2, true, false\)/.test(mcPress)) {
+        throw new Error('Show switches the backbone on but leaves the residue'
+            + ' out of the mask, so nothing appears');
+    }
     // ...and a residue with no part drawn drops out of the visibility mask, so
     // Orient, the clip and picking still agree with the picture
     if (!/function syncSelectionVisibility/.test(app)
@@ -5591,21 +5610,24 @@ t('a style belongs to its object, and a width to its style', () => {
     // cartoon" was, once opening an object started switching style by itself.
     const v = new Cls();
     global.window = global.window || {};
-    const DEF = { cartoon: { width: 3, thickness: 0, outlineTint: 0, highlight: 1.8,
+    // KEYED BY LOOK: the tube style and the cartoon style's three presets.
+    // The plain-cartoon entry is 'ribbon' under its own name - it used to be
+    // keyed 'cartoon', which reads as the cartoon STYLE and is not one.
+    const DEF = { ribbon: { width: 3, thickness: 0, outlineTint: 0, highlight: 1.8,
         sheetFlat: 0, pencil: 0 }, tube: { width: 3, thickness: 0, outlineTint: 0,
         highlight: 1.8, sheetFlat: 0, pencil: 0 } };
     const had = global.window.py2dmolCartoon;
-    global.window.py2dmolCartoon = { STYLE_DEFAULTS: DEF };
+    global.window.py2dmolCartoon = { LOOK_DEFAULTS: DEF };
     try {
         v._widthByStyle = { tube: 4.5 };
         v.style = 'cartoon';
-        v._applyStyleDefaults('cartoon');
+        v._applyLookDefaults('ribbon');
         if (v.lineWidth !== 3) {
             throw new Error(`cartoon opened at width ${v.lineWidth} - the tube's`
                 + ' 4.5 followed it across');
         }
         v.style = 'tube';
-        v._applyStyleDefaults('tube');
+        v._applyLookDefaults('tube');
         if (v.lineWidth !== 4.5) {
             throw new Error('tube did not get its own width back');
         }
@@ -6738,18 +6760,36 @@ function shownViewer() {
         this.selectionCleared = true; this.residueSelection = null;
     };
     v.render = function () { this.rendered = (this.rendered || 0) + 1; };
-    // the real setVisibility applies the patch and then files it under the
-    // object(s) it describes - the second half is what the rebuild reads back
+    // EDITS WRITE, REBUILDS COMPOSE. setVisibility is the edit path: it takes
+    // the patch, files it under the object(s) it describes, and the rebuild
+    // composes the live mask back out of those records - it does NOT push a
+    // patch of its own, which is what used to erase the PAE boxes.
     v.setVisibility = function (patch) {
-        this.mask = patch;
         this.visibilityModel = {
             positions: new Set(patch.positions || []),
             chains: new Set(patch.chains || []),
-            paeBoxes: [],
+            paeBoxes: (patch.paeBoxes || []).map((b) => ({ ...b })),
             visibilityMode: patch.visibilityMode || 'default'
         };
         this._saveVisibilityToObjects();
+        this._composeAndApplyMask(true);
     };
+    v.visibilityModel = { positions: new Set(), chains: new Set(), paeBoxes: [],
+        visibilityMode: 'default' };
+    // ...and what the tests read: the composed answer, with null spelled out
+    // as "everything", which is what null means.
+    Object.defineProperty(v, 'mask', {
+        get() {
+            const total = this.coords ? this.coords.length : 0;
+            let pos = this.visiblePositions;
+            if (!pos) { pos = new Set(); for (let i = 0; i < total; i++) pos.add(i); }
+            return { positions: pos, chains: new Set(),
+                paeBoxes: (this.visibilityModel || {}).paeBoxes || [],
+                visibilityMode: this.visiblePositions ? 'explicit' : 'default' };
+        },
+        set() { /* the composed mask is derived; nothing writes it */ },
+        configurable: true,
+    });
     v.overlayState = { enabled: false, frameIdMap: null };
     v.viewerState = { zoom: 1, center: null, extent: null };
     // TWO OBJECTS ARE LOADED, and one of them is on screen - the resting
@@ -7778,9 +7818,15 @@ t('the style follows what is drawn, not the last file loaded', () => {
     if (!/BIG_STRUCTURE_RESIDUES/.test(body)) {
         throw new Error('the two rules disagree on what counts as big');
     }
-    // A HAND-PICKED STYLE IS STILL STICKY, in both of them.
-    if (!/r\.styleChosen \|\| r\.cartoonForce/.test(body)) {
+    // A HAND-PICKED STYLE IS STILL STICKY - now PER OBJECT, because the style
+    // is per object: picking Cartoon for a peptide must not stop the rule
+    // choosing tube for the ribosome beside it.
+    if (!/o\.styleChosen \|\| r\.styleChosen/.test(body)) {
         throw new Error('the drawn-set rule overrides a style the user picked');
+    }
+    if (!/r\.setStyleForObject\(nm, want\)/.test(body)) {
+        throw new Error('the size rule sets one global style for the picture'
+            + ' rather than each object\'s own');
     }
     // ...and it runs when the drawn set changes
     const after = app.slice(app.indexOf('function afterShownObjectsChange()'),
@@ -8072,9 +8118,26 @@ t('Multi is a mode, and the picker is what it replaces', () => {
     if (!/list\.hidden = !on/.test(sync)) {
         throw new Error('the object list is not tied to the mode');
     }
-    if (!/select\.disabled = on/.test(sync)) {
-        throw new Error('the picker is not greyed in Multi, where the eyes'
-            + ' decide what is drawn');
+    // THE PICKER IS LIVE IN BOTH MODES. It used to grey out in Multi - with
+    // several objects on screen the eyes say what is DRAWN, so it looked like
+    // the picker had no job. It has one, and it grew: the style, the clip and
+    // every panel below the row act on ONE object, and the picker is how you
+    // say which. In Multi it changes what you are EDITING and nothing about
+    // the picture.
+    if (!/select\.disabled = false/.test(sync)) {
+        throw new Error('the picker is greyed somewhere - it names what the'
+            + ' panels act on, in both modes');
+    }
+    const listRows = app.slice(app.indexOf('function renderObjectList('),
+        app.indexOf('function selectObjectForEditing(')).replace(/\s+/g, ' ');
+    if (!/label\.addEventListener\('click'/.test(listRows)
+        || !/selectObjectForEditing\(name\)/.test(listRows)) {
+        throw new Error('a row in the object list cannot be selected, so in'
+            + ' Multi there is no way to say which object the panels edit');
+    }
+    if (!/eye\.addEventListener\('click'/.test(listRows)
+        || !/toggleObjectShown\(name\)/.test(listRows)) {
+        throw new Error('the eye no longer switches the object on and off');
     }
     // ...and no All row, in the code or the styles
     if (/object-list-all/.test(app) || /'All'/.test(app.slice(
@@ -8082,15 +8145,19 @@ t('Multi is a mode, and the picker is what it replaces', () => {
         app.indexOf('function afterShownObjectsChange(')))) {
         throw new Error('the All row is back');
     }
-    // ONLY THE EYE SWITCHES A ROW: the name is a name
-    const rows = app.slice(app.indexOf('function renderObjectList('),
+    // A ROW HAS TWO HALVES AND NO THIRD. The eye is whether the object is
+    // drawn, the name is whether the controls act on it; the ROW itself is
+    // neither, because a row that switched anywhere along its length was one
+    // stray click from taking a structure off the screen.
+    const rowSrc = app.slice(app.indexOf('function renderObjectList('),
         app.indexOf('function afterShownObjectsChange(')).replace(/\s+/g, ' ');
-    if (/row\.addEventListener\('click'/.test(rows)) {
-        throw new Error('the whole row is still a switch - one stray click'
-            + ' from taking a structure off the screen');
+    if (/row\.addEventListener\('click'/.test(rowSrc)) {
+        throw new Error('the whole row is a switch again');
     }
-    if (!/eye\.addEventListener\('click'/.test(rows)) {
-        throw new Error('the eye does not switch anything');
+    // ...AND THE OBJECT BEING EDITED IS MARKED, or the list gives no clue
+    // which object every panel below it is acting on
+    if (!/is-editing/.test(rowSrc)) {
+        throw new Error('nothing in the list says which object is being edited');
     }
     // the picker sits beside the button, not in the sequence header
     const rowAt = html.indexOf('id="objectRow"');
@@ -8101,6 +8168,68 @@ t('Multi is a mode, and the picker is what it replaces', () => {
     }
     if (/<select id="objectSelect" hidden/.test(html)) {
         throw new Error('the picker is hidden again');
+    }
+    // ...AND IT SITS ABOVE WHAT IT ACTS ON: under the toolbar buttons, over
+    // the Style and Clip panels. Everything in those panels belongs to the
+    // object the row names, which is not guessable when the row is buried
+    // under them.
+    const tool = html.indexOf('id="navigationControls"');
+    const style = html.indexOf('id="styleAppearanceContainer"');
+    const clip = html.indexOf('id="clipPanel"');
+    if (!(tool < rowAt && rowAt < clip && rowAt < style)) {
+        throw new Error('the object row is not between the buttons and the'
+            + ` panels they act on (toolbar ${tool}, row ${rowAt},`
+            + ` clip ${clip}, style ${style})`);
+    }
+    // ...and it is there whatever is loaded: it used to appear only with a
+    // second object, which hid Multi from the one object that was open
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    if (/row\.style\.display = \(objectCount <= 1\)/.test(mol)) {
+        throw new Error('the object row disappears with one object loaded');
+    }
+});
+
+// A STYLE KEEPS ITS OWN SETTINGS. They are single fields on the renderer and
+// every style switch re-asserted all of them from LOOK_DEFAULTS, so tube's
+// numbers landed on cartoon's and back. Invisible while one object was on
+// screen and one style with it; with the style per object it reads as objects
+// interfering with each other - select a tube object and the cartoon beside it
+// is suddenly drawn with tube's thickness.
+t('each style remembers its own settings', () => {
+    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const list = src.slice(src.indexOf('static get STYLE_SETTINGS()'),
+        src.indexOf('_keepStyleSettings('));
+    if (!list) throw new Error('there is no list of what a style owns');
+    for (const k of ['cartoonThickness', 'cartoonDetail', 'relativeOutlineWidth',
+        'lineWidth', 'cartoonArrows', 'stylePreset']) {
+        if (list.indexOf(k) < 0) {
+            throw new Error(k + ' is not named as style-owned, so it leaks'
+                + ' between styles');
+        }
+    }
+    const set = src.slice(src.indexOf('        setStyle(style, quiet) {'),
+        src.indexOf('_cartoonWouldFit(nPositions)'));
+    if (!/this\._keepStyleSettings\(this\.style\)/.test(set)) {
+        throw new Error('the style being left does not keep its settings');
+    }
+    if (!/if \(this\._recallStyleSettings\(style\)\)/.test(set)) {
+        throw new Error('a style you have been in before comes back on its'
+            + ' defaults rather than as you left it');
+    }
+    // ...and each half of a mixed frame draws with its own style's settings
+    // ...to the next METHOD, not to the next mention: _mixedGPUFrame calls
+    // _tubeGPUFrame, so slicing at the name cut the block in half and the
+    // restore below it read as missing.
+    const mixed = src.slice(src.indexOf('        _mixedGPUFrame(ctx, displayWidth'),
+        src.indexOf('        _tubeGPUFrame(ctx, displayWidth'));
+    if (!/_installStyleProfile\('cartoon'\)/.test(mixed)
+        || !/_installStyleProfile\('tube'\)/.test(mixed)) {
+        throw new Error('a mixed frame paints both halves with whichever'
+            + " style's settings happen to be installed");
+    }
+    if (!/_restoreStyleProfile\(prev\)/.test(mixed)) {
+        throw new Error('a mixed frame leaves the settings where its last pass'
+            + ' left them, so the panel then describes the wrong style');
     }
 });
 
@@ -8259,23 +8388,19 @@ t('chain identity carries the object through every path that compares it', () =>
     const pae = fs.readFileSync('py2Dmol/resources/viewer-pae.js', 'utf8');
     const app = fs.readFileSync('web/app.js', 'utf8');
 
-    // the mask, both branches of it
-    const at = mol.indexOf('_composeAndApplyMask(skip3DRender');
-    const mask = mol.slice(at, mol.indexOf('\n        }\n', at + 4000));
-    if (!/allowedChains\.has\(/.test(mask)) {
-        throw new Error('the mask no longer filters by chain');
+    // THE MASK, and there is one place in it that compares a chain now: the
+    // per-object composer. It used to be three - a merged branch, an overlay
+    // branch and a plain one - and the bug was one of them reading a bare id.
+    const at = mol.indexOf('_visibleForObject(name, off, end)');
+    const mask = mol.slice(at, mol.indexOf('\n        }\n', at));
+    if (!/st\.chains\.has\(this\.chainKeyAt\(/.test(mask)) {
+        throw new Error('the mask no longer filters by chain, or does it with'
+            + ' a bare id');
     }
-    // ...and nothing inside it reads a chain id straight out of the array,
-    // which is the shape the bug had: `const ch = this.chains[i]` and then
-    // `allowedChains.has(ch)`, one line apart
     const strayChain = mask.split('\n')
         .filter((l) => /this\.chains\[/.test(l) && !/chainKeyAt/.test(l));
     if (strayChain.length) {
         throw new Error('the mask reads a bare chain id: ' + strayChain[0].trim());
-    }
-    if ((mask.match(/chainKeyAt\(/g) || []).length < 3) {
-        throw new Error('the mask asks for the chain key in fewer places than'
-            + ' it compares chains');
     }
     // ...the chain set it is compared against
     if (!/allChains\.add\(this\.chainKeyAt\(i\)\)/.test(mol)) {

@@ -181,10 +181,10 @@ showValues();
 // more than a name: richardson shades at 0.7 with pencil 1.0, 3d is a solid
 // slab with no outline, cartoon is flat-shaded.
 //
-// So the dropdown writes STYLE_DEFAULTS into the controls, and from there the
+// So the dropdown writes LOOK_DEFAULTS into the controls, and from there the
 // user's own edits override as they should.
 function loadPreset() {
-    const P = (window.py2dmolCartoon.STYLE_DEFAULTS || {})[$('preset').value] || {};
+    const P = (window.py2dmolCartoon.LOOK_DEFAULTS || {})[$('preset').value] || {};
     const num = (id, v) => { if (v !== undefined && $(id)) $(id).value = v; };
     num('width', P.width);
     num('thickness', P.thickness);

@@ -38,22 +38,44 @@ window.addEventListener('load', () => {
     await window.processFiles([{name: f, readAsync: () => Promise.resolve(txt)}], false);
   };
   const wait = (ms) => new Promise((s) => setTimeout(s, ms));
+  // FRAMES AND ANSWERS, NOT MILLISECONDS. Each step here is a call and a
+  // render, and what has to happen before the next line reads the result is
+  // that the browser has painted: three animation frames say that in 50 ms
+  // where a flat 1,500 said it in 1,500. Where the work is ASYNCHRONOUS - a
+  // file parsed, a session restored - the probe waits for the answer instead,
+  // which is both faster and steadier than guessing a duration.
+  const settle = async (n = 3) => {
+    for (let k = 0; k < n; k++) {
+      await new Promise((s) => requestAnimationFrame(() => s()));
+    }
+  };
+  const until = async (cond, ms = 4000) => {
+    const t0 = performance.now();
+    while (performance.now() - t0 < ms) {
+      if (cond()) return true;
+      await settle();
+    }
+    return false;
+  };
+  const loaded = () => {
+    const v = window.py2dmol_viewers && window.py2dmol_viewers['standalone-viewer-1'];
+    return !!(v && v.renderer && v.renderer.coords && v.renderer.coords.length);
+  };
   const go = async () => {
     const R = {modes: []};
     try {
-      await load(new URLSearchParams(location.search).get('f'));
-      await wait(2500);
+      await load(new URLSearchParams(location.search).get('f')); await until(loaded); await settle();
       const r = window.py2dmol_viewers['standalone-viewer-1'].renderer;
       r.useGPU = true;
       r.styleChosen = true;
       r.setStyle('cartoon');
-      await wait(2500);
+      await settle();
       R.n = r.coords.length;
       R.gpuDrew = r.gpuDrewLastFrame;
       const sel = document.getElementById('colorSelect');
       const setMode = async (m) => {
         sel.value = m; sel.dispatchEvent(new Event('change'));
-        await wait(700);
+        await settle();
       };
       const shot = () => r.canvas.toDataURL('image/png');
       const rebuiltAt = () => (window.__rebuild ? window.__rebuild.t0 : 0);
@@ -69,7 +91,7 @@ window.addEventListener('load', () => {
         // ...and the same mode from a mesh built for it
         window.py2dmolCartoonGPU.invalidate();
         r.render('forced rebuild');
-        await wait(700);
+        await settle();
         const fresh = shot();
         R.modes.push({mode, ms: Math.round(ms), rebuilt, same: cheap === fresh,
                       pal: window.__palComplete});
@@ -87,12 +109,12 @@ window.addEventListener('load', () => {
       o.color = {type: 'advanced', value: {position: {3: '#ff0000'}}};
       r._invalidateSegmentCache();
       r.render('override');
-      await wait(700);
+      await settle();
       R.overrideRebuilt = rebuiltAt() !== t0;
       R.overrideShot = shot();
       window.py2dmolCartoonGPU.invalidate();
       r.render('forced rebuild');
-      await wait(700);
+      await settle();
       R.overrideSame = R.overrideShot === shot();
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});

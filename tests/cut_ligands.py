@@ -78,10 +78,33 @@ window.addEventListener('load', () => {
     return {groups: groups.size, atoms, loose, bad: bad.slice(0, 6), n,
             bonds: bonds.length, outOfRange, crossResidue, perGroup};
   };
+  // FRAMES AND ANSWERS, NOT MILLISECONDS. Each step here is a call and a
+  // render, and what has to happen before the next line reads the result is
+  // that the browser has painted: three animation frames say that in 50 ms
+  // where a flat 1,500 said it in 1,500. Where the work is ASYNCHRONOUS - a
+  // file parsed, a session restored - the probe waits for the answer instead,
+  // which is both faster and steadier than guessing a duration.
+  const settle = async (n = 3) => {
+    for (let k = 0; k < n; k++) {
+      await new Promise((s) => requestAnimationFrame(() => s()));
+    }
+  };
+  const until = async (cond, ms = 4000) => {
+    const t0 = performance.now();
+    while (performance.now() - t0 < ms) {
+      if (cond()) return true;
+      await settle();
+    }
+    return false;
+  };
+  const loaded = () => {
+    const v = window.py2dmol_viewers && window.py2dmol_viewers['standalone-viewer-1'];
+    return !!(v && v.renderer && v.renderer.coords && v.renderer.coords.length);
+  };
   const go = async () => {
     const R = {};
     try {
-      await load('4HHB.cif'); await wait(700);
+      await load('4HHB.cif'); await until(loaded); await settle();
       const r = window.py2dmol_viewers['standalone-viewer-1'].renderer;
       r.useGPU = false;
       const NAME = r.currentObjectName;
@@ -101,13 +124,13 @@ window.addEventListener('load', () => {
       r.residueSelection = sel;
       const made0 = r.cutSelection();
       const made = made0 && (made0.name || made0);
-      await wait(900);
+      await settle();
       R.made = made;
       R.objects = Object.keys(r.objectsData);
 
       // back to the object that was cut FROM
       r._showObject(NAME);
-      await wait(700);
+      await settle();
       R.after = audit(r, NAME);
       R.cutOut = made ? audit(r, made) : null;
 
@@ -125,10 +148,10 @@ window.addEventListener('load', () => {
       R.ligandsCut2 = lig2;
       r.residueSelection = sel2;
       const m2 = r.cutSelection();
-      await wait(900);
+      await settle();
       R.made2 = m2 && (m2.name || m2);
       r._showObject(NAME);
-      await wait(700);
+      await settle();
       R.after2 = audit(r, NAME);
       R.cutOut2 = R.made2 ? audit(r, R.made2) : null;
 
@@ -149,9 +172,9 @@ window.addEventListener('load', () => {
       R.ligandsCut3 = lig3;
       r.residueSelection = sel3;
       r.cutSelection();
-      await wait(900);
+      await settle();
       r._showObject(NAME);
-      await wait(600);
+      await settle();
       R.objectOnly = audit(r, NAME);
       R.objectOnly.rendererBonds = r.bonds ? r.bonds.length : 0;
       R.objectOnly.frameHasBonds = !!(o3.frames[0].bonds

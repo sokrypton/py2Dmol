@@ -36,17 +36,40 @@ window.addEventListener('load', () => {
     await window.processFiles([{name: f, readAsync: () => Promise.resolve(txt)}], false);
   };
   const wait = (ms) => new Promise((s) => setTimeout(s, ms));
+  // FRAMES AND ANSWERS, NOT MILLISECONDS. Each step here is a call and a
+  // render, and what has to happen before the next line reads the result is
+  // that the browser has painted: three animation frames say that in 50 ms
+  // where a flat 1,500 said it in 1,500. Where the work is ASYNCHRONOUS - a
+  // file parsed, a session restored - the probe waits for the answer instead,
+  // which is both faster and steadier than guessing a duration.
+  const settle = async (n = 3) => {
+    for (let k = 0; k < n; k++) {
+      await new Promise((s) => requestAnimationFrame(() => s()));
+    }
+  };
+  const until = async (cond, ms = 4000) => {
+    const t0 = performance.now();
+    while (performance.now() - t0 < ms) {
+      if (cond()) return true;
+      await settle();
+    }
+    return false;
+  };
+  const loaded = () => {
+    const v = window.py2dmol_viewers && window.py2dmol_viewers['standalone-viewer-1'];
+    return !!(v && v.renderer && v.renderer.coords && v.renderer.coords.length);
+  };
   const go = async () => {
     const R = {toggles: []};
     try {
       const P = new URLSearchParams(location.search);
-      for (const f of P.get('files').split(',')) { await load(f); await wait(1200); }
-      await wait(800);
+      for (const f of P.get('files').split(',')) { await load(f); await until(loaded); await settle(); }
+      await settle();
       const r = window.py2dmol_viewers['standalone-viewer-1'].renderer;
       r.useGPU = true;
       r.styleChosen = true;
       r.setStyle('tube');
-      await wait(2000);
+      await settle();
       R.n = r.coords.length;
       R.gpuDrew = r.gpuDrewLastFrame;
       const names = Object.keys(r.objectsData);
@@ -67,14 +90,14 @@ window.addEventListener('load', () => {
       // the SECOND object alone: hiding the first shifts every position after
       // it, so a value restored with stale positions puts clicks elsewhere
       const one = [names[1]];
-      r.setShownObjects(both); await wait(1000);
-      r.setShownObjects(one); await wait(1000);
+      r.setShownObjects(both); await settle();
+      r.setShownObjects(one); await settle();
       // the references come from FORCED builds, never from a restore - a
       // restore compared against itself agrees no matter what it dropped
       const freshShot = async (want) => {
-        r.setShownObjects(want); await wait(800);
+        r.setShownObjects(want); await settle();
         window.py2dmolCartoonGPU.invalidate();
-        r.render('forced rebuild'); await wait(900);
+        r.render('forced rebuild'); await settle();
         return {png: shot(), pick: pick()};
       };
       const bothFresh = await freshShot(both);
@@ -86,7 +109,7 @@ window.addEventListener('load', () => {
         const t = performance.now();
         r.setShownObjects(want);
         const ms = performance.now() - t;
-        await wait(800);
+        await settle();
         const ref = k % 2 === 0 ? bothFresh : oneFresh;
         R.toggles.push({
           shown: want.length, ms: Math.round(ms),
@@ -110,7 +133,7 @@ window.addEventListener('load', () => {
         const before = shot();
         const d0 = digest();
         r.colorMode = 'rainbow'; r.colorsNeedUpdate = true;
-        r.render('recolour'); await wait(900);
+        r.render('recolour'); await settle();
         R.recolour = {rebuilt: builds() !== b0, changed: shot() !== before,
                       coloursChanged: digest() !== d0};
       }

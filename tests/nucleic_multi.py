@@ -52,21 +52,44 @@ window.addEventListener('load', () => {
         ? r.objectsData[k].sidechains.size : null])),
     ink: ink(r.canvas),
   });
+  // FRAMES AND ANSWERS, NOT MILLISECONDS. Each step here is a call and a
+  // render, and what has to happen before the next line reads the result is
+  // that the browser has painted: three animation frames say that in 50 ms
+  // where a flat 1,500 said it in 1,500. Where the work is ASYNCHRONOUS - a
+  // file parsed, a session restored - the probe waits for the answer instead,
+  // which is both faster and steadier than guessing a duration.
+  const settle = async (n = 3) => {
+    for (let k = 0; k < n; k++) {
+      await new Promise((s) => requestAnimationFrame(() => s()));
+    }
+  };
+  const until = async (cond, ms = 4000) => {
+    const t0 = performance.now();
+    while (performance.now() - t0 < ms) {
+      if (cond()) return true;
+      await settle();
+    }
+    return false;
+  };
+  const loaded = () => {
+    const v = window.py2dmol_viewers && window.py2dmol_viewers['standalone-viewer-1'];
+    return !!(v && v.renderer && v.renderer.coords && v.renderer.coords.length);
+  };
   const go = async () => {
     const R = {steps: []};
     try {
-      await load('6MRR.cif'); await wait(600);
+      await load('6MRR.cif'); await until(loaded); await settle();
       const r = window.py2dmol_viewers['standalone-viewer-1'].renderer;
       r.useGPU = false;
-      await load('1YNE.cif'); await wait(900);
+      await load('1YNE.cif'); await until(loaded); await settle();
       const names = Object.keys(r.objectsData);
       R.names = names;
       const na = names[1];
       R.steps.push(st(r, 'loaded'));
 
-      document.getElementById('objectListButton').click(); await wait(400);
+      document.getElementById('objectListButton').click(); await settle();
       for (let k = 0; k < rows().length; k++) {
-        if (rows()[k].classList.contains('is-hidden')) { eyes()[k].click(); await wait(400); }
+        if (rows()[k].classList.contains('is-hidden')) { eyes()[k].click(); await settle(); }
       }
       R.steps.push(st(r, 'multi both'));
 
@@ -83,11 +106,11 @@ window.addEventListener('load', () => {
       const plate = document.getElementById('plateShowToggle');
       R.plateControl = !!plate;
       if (plate) { plate.checked = false; plate.dispatchEvent(new Event('change', {bubbles: true})); }
-      await wait(900);
+      await settle();
       R.steps.push(st(r, 'full atoms'));
 
       // ...AND OUT OF MULTI
-      document.getElementById('objectListButton').click(); await wait(900);
+      document.getElementById('objectListButton').click(); await settle();
       R.steps.push(st(r, 'multi off'));
 
       // WHAT THE SWITCH DREW IS WHAT THE STATE SAYS. A repaint from the same
@@ -100,7 +123,7 @@ window.addEventListener('load', () => {
         return c.getContext('2d').getImageData(0, 0, c.width, c.height);
       };
       const before = grab();
-      r.render('probe repaint'); await wait(300);
+      r.render('probe repaint'); await settle();
       const after = grab();
       let diff = 0;
       for (let i = 0; i < before.data.length; i += 4) {
@@ -111,7 +134,7 @@ window.addEventListener('load', () => {
       R.repaintDiff = diff;
 
       // a second load must not change anything - it is what used to "fix" it
-      r.reloadDrawn(); await wait(600);
+      r.reloadDrawn(); await settle();
       R.steps.push(st(r, 'reloaded'));
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});

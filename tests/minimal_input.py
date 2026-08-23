@@ -50,6 +50,29 @@ window.addEventListener('load', () => {
     }
     return n;
   };
+  // FRAMES AND ANSWERS, NOT MILLISECONDS. Each step here is a call and a
+  // render, and what has to happen before the next line reads the result is
+  // that the browser has painted: three animation frames say that in 50 ms
+  // where a flat 1,500 said it in 1,500. Where the work is ASYNCHRONOUS - a
+  // file parsed, a session restored - the probe waits for the answer instead,
+  // which is both faster and steadier than guessing a duration.
+  const settle = async (n = 3) => {
+    for (let k = 0; k < n; k++) {
+      await new Promise((s) => requestAnimationFrame(() => s()));
+    }
+  };
+  const until = async (cond, ms = 4000) => {
+    const t0 = performance.now();
+    while (performance.now() - t0 < ms) {
+      if (cond()) return true;
+      await settle();
+    }
+    return false;
+  };
+  const loaded = () => {
+    const v = window.py2dmol_viewers && window.py2dmol_viewers['standalone-viewer-1'];
+    return !!(v && v.renderer && v.renderer.coords && v.renderer.coords.length);
+  };
   const go = async () => {
     const R = {errors: []};
     window.addEventListener('error', (e) => R.errors.push(String(e.message)));
@@ -57,13 +80,13 @@ window.addEventListener('load', () => {
       const key = Object.keys(window.py2dmol_viewers)[0];
       const r = window.py2dmol_viewers[key].renderer;
       r.useGPU = false;
-      await wait(700);
+      await settle();
       const all = [];
       for (let i = 0; i < r.coords.length; i++) all.push(i);
 
       const look = async (style) => {
         r.setStyle(style);
-        await wait(700);
+        await settle();
         // ...the assignment, the way the panel asks for it
         // ONE RESIDUE AT A TIME, and a tally: '' from a RANGE means the
         // residues disagree, which is a real answer and not a failure - the

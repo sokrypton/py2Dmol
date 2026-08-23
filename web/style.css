@@ -1885,14 +1885,24 @@ table.layout-table td {
 
 .object-list-row:hover { background: var(--color-gray-100); }
 
-/* ONLY THE EYE IS THE SWITCH, so only the eye offers itself as one. */
+/* TWO HALVES, TWO QUESTIONS. The eye is whether the object is DRAWN; the name
+   is whether it is the one the controls act on. Both offer themselves. */
 .object-list-eye { cursor: pointer; }
-.object-list-name { cursor: default; }
+.object-list-name { cursor: pointer; }
+
+/* ...AND THE ONE BEING EDITED SAYS SO. Every panel below the list - Style,
+   Clip, the settings - acts on this object and on no other, which is not
+   guessable from a list where every row looks the same. */
+.object-list-row.is-editing { background: var(--color-gray-100); }
+.object-list-row.is-editing .object-list-name {
+    font-weight: 600;
+    color: var(--color-gray-900);
+}
 
 /* THE PICKER sits beside the Multi button, because the two are one control
-   between them: which object, or several. Greyed in Multi - what is on screen
-   is the eyes' business there, and what is being EDITED is answered by
-   clicking in the sequence strip. */
+   between them: which object, or several. Live in both modes: in Multi the
+   eyes decide what is DRAWN and the picker still decides what you are
+   EDITING. */
 .object-picker {
     flex: 1;
     min-width: 0;

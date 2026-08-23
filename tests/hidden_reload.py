@@ -66,32 +66,55 @@ window.addEventListener('load', () => {
     note: !!document.querySelector('.sequence-empty-note'),
   });
   const rebuild = () => { if (window.SEQ && window.SEQ.buildView) window.SEQ.buildView(); };
+  // FRAMES AND ANSWERS, NOT MILLISECONDS. Each step here is a call and a
+  // render, and what has to happen before the next line reads the result is
+  // that the browser has painted: three animation frames say that in 50 ms
+  // where a flat 1,500 said it in 1,500. Where the work is ASYNCHRONOUS - a
+  // file parsed, a session restored - the probe waits for the answer instead,
+  // which is both faster and steadier than guessing a duration.
+  const settle = async (n = 3) => {
+    for (let k = 0; k < n; k++) {
+      await new Promise((s) => requestAnimationFrame(() => s()));
+    }
+  };
+  const until = async (cond, ms = 4000) => {
+    const t0 = performance.now();
+    while (performance.now() - t0 < ms) {
+      if (cond()) return true;
+      await settle();
+    }
+    return false;
+  };
+  const loaded = () => {
+    const v = window.py2dmol_viewers && window.py2dmol_viewers['standalone-viewer-1'];
+    return !!(v && v.renderer && v.renderer.coords && v.renderer.coords.length);
+  };
   const go = async () => {
     const R = {steps: []};
     try {
-      await load('6MRR.cif'); await wait(400);
+      await load('6MRR.cif'); await until(loaded); await settle();
       const r = window.py2dmol_viewers['standalone-viewer-1'].renderer;
       r.useGPU = false;
-      await load('4HHB.cif'); await wait(700);
-      rebuild(); await wait(200);
+      await load('4HHB.cif'); await until(loaded); await settle();
+      rebuild(); await settle();
       R.steps.push(snap(r, 'two loaded'));
 
-      r.setShownObjects([]); await wait(400); rebuild(); await wait(200);
+      r.setShownObjects([]); await settle(); rebuild(); await settle();
       R.steps.push(snap(r, 'hide all'));
 
-      await load('4HHB.cif'); await wait(900); rebuild(); await wait(200);
+      await load('4HHB.cif'); await until(loaded); await settle(); rebuild(); await settle();
       R.steps.push(snap(r, 'reload while hidden'));
 
       for (let k = 0; k < 3; k++) {
-        r.setShownObjects([]); await wait(250); rebuild(); await wait(150);
+        r.setShownObjects([]); await settle(); rebuild(); await settle();
         R.steps.push(snap(r, 'off ' + k));
-        r.setShownObjects(['4HHB']); await wait(250); rebuild(); await wait(150);
+        r.setShownObjects(['4HHB']); await settle(); rebuild(); await settle();
         R.steps.push(snap(r, 'on ' + k));
       }
 
       // ...and the OTHER object, which is not the one being edited
-      r.setShownObjects([]); await wait(250);
-      r.setShownObjects(['6MRR']); await wait(400); rebuild(); await wait(200);
+      r.setShownObjects([]); await settle();
+      r.setShownObjects(['6MRR']); await settle(); rebuild(); await settle();
       R.steps.push(snap(r, 'the other one'));
 
       // A SMALL OBJECT, THEN A BIG ONE, one at a time through the eyes. The
@@ -100,14 +123,16 @@ window.addEventListener('load', () => {
       // 748-residue one left the live mask still naming positions 0..67, and
       // two thirds of the second structure was not drawn - "only part of it is
       // shown, matching the length of the other one".
-      r.setShownObjects([]); await wait(300);
-      r.setShownObjects(['6MRR']); await wait(400);
+      r.setShownObjects([]); await settle();
+      r.setShownObjects(['6MRR']); await settle();
       R.smallOn = {drawn: r.drawnObjects(), n: r.coords.length,
-                   visible: r.visiblePositions ? r.visiblePositions.size : -1};
-      r.setShownObjects([]); await wait(300);
-      r.setShownObjects(['4HHB']); await wait(500); rebuild(); await wait(200);
+                   // NULL IS EVERY POSITION - that is what the renderer means
+                   // by no mask, and what it composes when nothing is hidden.
+                   visible: r.visiblePositions ? r.visiblePositions.size : r.coords.length};
+      r.setShownObjects([]); await settle();
+      r.setShownObjects(['4HHB']); await settle(); rebuild(); await settle();
       R.bigOn = {drawn: r.drawnObjects(), n: r.coords.length,
-                 visible: r.visiblePositions ? r.visiblePositions.size : -1,
+                 visible: r.visiblePositions ? r.visiblePositions.size : r.coords.length,
                  ink: ink(r.canvas)};
 
       // A FILE LOADED WHILE SEVERAL ARE ON SCREEN joins them, and the camera
@@ -115,7 +140,7 @@ window.addEventListener('load', () => {
       // eye being switched is not: see the cameraHeld check in
       // tests/multi_object.py.
       R.extentBefore = r.viewerState.extent;
-      await load('1UBQ.cif'); await wait(900); rebuild(); await wait(200);
+      await load('1UBQ.cif'); await until(loaded); await settle(); rebuild(); await settle();
       R.steps.push(snap(r, 'third loaded'));
       R.extentAfter = r.viewerState.extent;
       // ...and everything drawn is really inside the canvas

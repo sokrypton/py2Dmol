@@ -262,12 +262,17 @@ test('SS palettes complete', () => {
             }
         }
     }
-    // ... and STYLE_DEFAULTS must cover every style-owned control
-    const D = cartoon.STYLE_DEFAULTS;
+    // ... and LOOK_DEFAULTS must cover every style-owned control, for every
+    // LOOK: the tube style and the cartoon style's three presets
+    const D = cartoon.LOOK_DEFAULTS;
     for (const key of ['width', 'outlineWidth', 'thickness', 'outlineTint',
         'highlight', 'sheetFlat', 'pencil', 'arrows', 'detail', 'fade', 'shade', 'smooth']) {
-        for (const s of ['richardson', 'cartoon', '3d']) {
-            if (D[s][key] === undefined) throw new Error(`STYLE_DEFAULTS.${s} missing ${key}`);
+        // EVERY LOOK, tube included: it is one of the four things the drawing
+        // can be, and a key missing from it is a control that keeps the
+        // previous look's value instead of being set.
+        for (const look of ['richardson', 'ribbon', '3d', 'tube']) {
+            if (!D[look]) throw new Error(`LOOK_DEFAULTS has no ${look}`);
+            if (D[look][key] === undefined) throw new Error(`LOOK_DEFAULTS.${look} missing ${key}`);
         }
     }
 });

@@ -308,6 +308,48 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                             </div>
                         </div>
 
+
+                        <!-- WHICH OBJECT, and how many. Directly under the
+                             buttons because everything below it - Style, Clip,
+                             Capture - acts on the object named here: pick an
+                             object and the panels below describe THAT object.
+                             Multi puts every object on screen at once; the
+                             eyes decide what is drawn and the picker still
+                             decides which one you are editing. -->
+                        <!-- OBJECTS: ONE AT A TIME, OR SEVERAL.
+                             The picker in the sequence header chooses the
+                             object - one on screen, the one being edited,
+                             which is how this viewer has always worked.
+                             Multi is the other mode: the picker greys out,
+                             every object gets a row with an eye, and the
+                             eyes decide what is drawn. It opens on the
+                             object the picker was showing, so pressing it
+                             changes nothing until an eye is clicked. -->
+                        <div id="objectRow" class="toggle-item object-row">
+                            <button id="objectListButton" type="button"
+                                class="object-list-btn" aria-pressed="false"
+                                aria-controls="objectList"
+                                title="Show several objects at once">Multi</button>
+                            <!-- WHICH OBJECT: the picker, and the ordinary way to
+                                 choose one. It names the object on screen AND the one
+                                 being edited, which are the same object until Multi is
+                                 pressed - there it greys out, because with several on
+                                 screen the eyes decide what is drawn and clicking in
+                                 the strip decides what is edited (adoptObjectOfSelection).
+                                 Every other path drives the current object through this
+                                 select: the renderer's change listener, the prev/next
+                                 buttons, a restored session. -->
+                            <select id="objectSelect" class="object-picker"
+                                title="Which object to show and edit"
+                                style="min-width: 110px; height: 28px; font-size: 12px; padding: 0 8px;">
+                                <!-- Initially empty -->
+                            </select>
+                        </div>
+                        <!-- Rows are built in app.js from the objects that
+                             exist: an eye and a name, and the whole row is
+                             the switch. Only in Multi. -->
+                        <div id="objectList" class="object-list" hidden></div>
+
                         <style>
                             /* Inline display:flex on the style rows outranks the UA [hidden]
                                rule, so force it. Scoped to the style panel + its trigger. */
@@ -610,39 +652,7 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                 </div>
                             </div>
 
-                            <!-- OBJECTS: ONE AT A TIME, OR SEVERAL.
-                                 The picker in the sequence header chooses the
-                                 object - one on screen, the one being edited,
-                                 which is how this viewer has always worked.
-                                 Multi is the other mode: the picker greys out,
-                                 every object gets a row with an eye, and the
-                                 eyes decide what is drawn. It opens on the
-                                 object the picker was showing, so pressing it
-                                 changes nothing until an eye is clicked. -->
-                            <div id="objectRow" class="toggle-item object-row">
-                                <button id="objectListButton" type="button"
-                                    class="object-list-btn" aria-pressed="false"
-                                    aria-controls="objectList"
-                                    title="Show several objects at once">Multi</button>
-                                <!-- WHICH OBJECT: the picker, and the ordinary way to
-                                     choose one. It names the object on screen AND the one
-                                     being edited, which are the same object until Multi is
-                                     pressed - there it greys out, because with several on
-                                     screen the eyes decide what is drawn and clicking in
-                                     the strip decides what is edited (adoptObjectOfSelection).
-                                     Every other path drives the current object through this
-                                     select: the renderer's change listener, the prev/next
-                                     buttons, a restored session. -->
-                                <select id="objectSelect" class="object-picker"
-                                    title="Which object to show and edit"
-                                    style="min-width: 110px; height: 28px; font-size: 12px; padding: 0 8px;">
-                                    <!-- Initially empty -->
-                                </select>
-                            </div>
-                            <!-- Rows are built in app.js from the objects that
-                                 exist: an eye and a name, and the whole row is
-                                 the switch. Only in Multi. -->
-                            <div id="objectList" class="object-list" hidden></div>
+
 
                         </div>
 

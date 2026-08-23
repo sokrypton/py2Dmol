@@ -28,14 +28,24 @@ window.addEventListener('load', () => {
     const b = document.getElementById(id);
     return b ? b.classList.contains('is-on') : null;
   };
+  // FRAMES, NOT MILLISECONDS. Every action here is a click handler and a
+  // render: what has to happen before the panel can be read is that the
+  // browser has painted, and three animation frames say that in 50 ms where a
+  // flat 500 said it in 500. Forty-five actions at 450 ms each was 20 of this
+  // probe's 23 seconds.
+  const settle = async (n = 3) => {
+    for (let k = 0; k < n; k++) {
+      await new Promise((s) => requestAnimationFrame(() => s()));
+    }
+  };
   const press = async (id) => {
     document.getElementById(id).click();
-    await wait(500);
+    await settle();
   };
   const select = async (r, list) => {
     r.residueSelection = new Set(list);
     document.dispatchEvent(new CustomEvent('py2dmol-residue-selection-change'));
-    await wait(400);
+    await settle();
   };
   const st = (r, tag) => ({
     tag,
@@ -208,7 +218,10 @@ window.addEventListener('load', () => {
       // the side-chain row carries a swatch, the pair, Plate and Elements in a
       // 340px panel - a row that wraps to a second line is the confusion this
       // was meant to remove.
-      await load('1YNE.cif'); await wait(900);
+      // A NUCLEIC STRUCTURE, and the smallest one that is: the row is being
+      // MEASURED, not the molecule, and 1YNE's 19,700 atoms cost eight seconds
+      // of the probe to draw a panel that 355D's 660 lay out identically.
+      await load('355D.cif'); await wait(700);
       await select(r, [2, 3, 4]);
       await press('sidechainShowButton');
       await wait(400);   // ...atoms exist now, so Elements joins the row too

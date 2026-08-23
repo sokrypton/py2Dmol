@@ -44,6 +44,29 @@ window.addEventListener('load', () => {
         {clientX: x, clientY: y, bubbles: true, button: 0}));
     }
   };
+  // FRAMES AND ANSWERS, NOT MILLISECONDS. Each step here is a call and a
+  // render, and what has to happen before the next line reads the result is
+  // that the browser has painted: three animation frames say that in 50 ms
+  // where a flat 1,500 said it in 1,500. Where the work is ASYNCHRONOUS - a
+  // file parsed, a session restored - the probe waits for the answer instead,
+  // which is both faster and steadier than guessing a duration.
+  const settle = async (n = 3) => {
+    for (let k = 0; k < n; k++) {
+      await new Promise((s) => requestAnimationFrame(() => s()));
+    }
+  };
+  const until = async (cond, ms = 4000) => {
+    const t0 = performance.now();
+    while (performance.now() - t0 < ms) {
+      if (cond()) return true;
+      await settle();
+    }
+    return false;
+  };
+  const loaded = () => {
+    const v = window.py2dmol_viewers && window.py2dmol_viewers['standalone-viewer-1'];
+    return !!(v && v.renderer && v.renderer.coords && v.renderer.coords.length);
+  };
   const go = async () => {
     const R = {};
     try {
@@ -53,16 +76,16 @@ window.addEventListener('load', () => {
       r.useGPU = false;
       const names = Object.keys(r.objectsData);
       r.setShownObjects(names);
-      await new Promise((s) => setTimeout(s, 500));
+      await settle();
       R.drawnHits = sweep(r).length;   // ...the sweep finds things when there ARE things
 
       for (const style of ['tube', 'cartoon']) {
         r.setStyle(style);
         r.setShownObjects(names);
-        await new Promise((s) => setTimeout(s, 500));
+        await settle();
         const withInk = sweep(r).length;
         r.setShownObjects([]);
-        await new Promise((s) => setTimeout(s, 500));
+        await settle();
         R[style] = {
           drawn: r.drawnObjects(), coords: r.coords.length,
           withInk, hits: sweep(r),
@@ -70,7 +93,7 @@ window.addEventListener('load', () => {
         // ...and what a real click does
         r.clearSelection && r.clearSelection();
         clickAt(r, 0.5, 0.5);
-        await new Promise((s) => setTimeout(s, 200));
+        await settle();
         R[style].selectedAfterClick =
           r.residueSelection ? r.residueSelection.size : 0;
         // a double click, which widens to a chain
@@ -78,11 +101,11 @@ window.addEventListener('load', () => {
           {clientX: r.canvas.getBoundingClientRect().left + r.canvas.getBoundingClientRect().width / 2,
            clientY: r.canvas.getBoundingClientRect().top + r.canvas.getBoundingClientRect().height / 2,
            bubbles: true}));
-        await new Promise((s) => setTimeout(s, 200));
+        await settle();
         R[style].selectedAfterDouble =
           r.residueSelection ? r.residueSelection.size : 0;
         r.setShownObjects(names);
-        await new Promise((s) => setTimeout(s, 300));
+        await settle();
       }
 
       // ...AND THE PLATES STILL ANSWER when they really are on screen. The
@@ -91,7 +114,7 @@ window.addEventListener('load', () => {
       r.setStyle('cartoon');
       r.useGPU = false;
       r.setShownObjects([names[1]]);   // the RNA, alone
-      await new Promise((s) => setTimeout(s, 600));
+      await settle();
       const plates = r._naPick || [];
       R.plates = {n: plates.length, stamped: r._naPickId === r.screenFrameId};
       if (plates.length) {
@@ -108,14 +131,14 @@ window.addEventListener('load', () => {
 
       // ...and CLEAR ALL, which empties the same array by another door
       r.setShownObjects(names);
-      await new Promise((s) => setTimeout(s, 400));
+      await settle();
       R.clearedHitsBefore = sweep(r).length;
       r.clearAllObjects();
-      await new Promise((s) => setTimeout(s, 400));
+      await settle();
       R.clearedHits = sweep(r).length;
       r.clearSelection && r.clearSelection();
       clickAt(r, 0.5, 0.5);
-      await new Promise((s) => setTimeout(s, 200));
+      await settle();
       R.clearedSelected = r.residueSelection ? r.residueSelection.size : 0;
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});

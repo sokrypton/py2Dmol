@@ -32,6 +32,34 @@ by the packaged Python path.
 | `richardson_test.html` | Richardson preset beside the plain cartoon on four SS compositions (3CHY, 1TIM, 2POR, 1BBH). 1TIM is the control — it is the subject of the original drawing. |
 | `ribosome.html` | 4UG0, the large-structure performance case (17,789 positions). Built separately: `python tests/make_ribosome.py`. |
 
+## Running them
+
+    tests/run.sh            everything - about 35 seconds
+    tests/run.sh node       the node checks alone - 3 seconds, no browser
+    tests/run.sh ui         the browser probes that drive the app
+    tests/run.sh gpu        the GPU probes, which time themselves
+
+**Lanes, and why.** The node checks read the source and run in seconds; they
+catch most regressions in the code they read. A browser probe costs 3-4
+seconds of Chrome start before it measures anything, so the UI lane runs its
+probes IN PARALLEL - each is its own process, its own port and its own Chrome
+profile. The GPU probes run one at a time and last, because they measure TIME
+("the reused toggles are not faster than the builds") and in parallel they
+would be timing each other's contention.
+
+**Frames and answers, not milliseconds.** The probes used to sleep a flat
+300-1,500 ms after every action; multi_object alone spent 16 of its 23 seconds
+asleep. Where a step is a click and a render, three animation frames say the
+browser has painted (`settle()`); where it is asynchronous - a file parsed, a
+session restored - the probe waits for the ANSWER (`until(cond)`), which is
+both faster and steadier than guessing a duration. The suite went from four
+minutes to 35 seconds, and two of the conversions turned up sleeps that were
+too SHORT to be safe: a restored session is still assembling itself three
+frames later, and both probes now say what they are waiting for.
+
+**Fixtures are as small as the question.** selection_panel measured a panel's
+row layout with 1YNE - 19,700 atoms - where 355D's 660 lay out identically.
+
 ## Assertions — `smoke.js` / `interaction.js` / `sequence.js` / `copy_selection.js`
 
 Unlike the pages above, these assert, and need no browser:

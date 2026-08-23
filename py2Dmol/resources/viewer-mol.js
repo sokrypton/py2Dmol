@@ -1751,6 +1751,98 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             });
         }
 
+        /**
+         * WHAT ONE OBJECT SHOWS, in the merged array's numbering.
+         *
+         * THE ONE RULE, and there used to be two. A visibility record holds
+         * three contributors - residues picked in the strip, whole chains, and
+         * boxes drawn on the PAE matrix - and they combine by UNION, with the
+         * mode deciding what an EMPTY answer means: `default` shows everything
+         * (nobody has asked for anything), `explicit` shows nothing (someone
+         * asked for nothing).
+         *
+         * The rebuild path used to have its own version of this that knew
+         * about positions and chains and nothing else, and it wrote its answer
+         * back through setVisibility with `paeBoxes: []` - so every rebuild of
+         * the coordinate array (an eye, a side chain, a frame step) silently
+         * erased the boxes and dropped the mode back to default. Draw a box on
+         * a prediction, switch on a second object, and the whole structure
+         * came back: measured, 7 residues visible before and all 144 after.
+         *
+         * @returns {Set<number>|null} null means "all of this object" - not
+         *   the same as an empty set, which means none of it.
+         */
+        _visibleForObject(name, off, end) {
+            const o = this.objectsData && this.objectsData[name];
+            const st = o && o.visibilityState;
+            const hasPos = !!(st && st.positions && st.positions.size);
+            const hasChains = !!(st && st.chains && st.chains.size);
+            const boxes = (st && st.paeBoxes) || [];
+            const explicit = !!(st && st.visibilityMode === 'explicit');
+            if (!st || (!hasPos && !hasChains && !boxes.length && !explicit)) return null;
+
+            const out = new Set();
+            // ...THE FRAMES OF AN OVERLAY ARE ONE OBJECT. The record is in
+            // frame 0's numbering and the array holds every frame end to end,
+            // so a residue picked once is picked in all of them.
+            const ov = this.overlayState && this.overlayState.enabled
+                && this.overlayState.frameIdMap;
+            const spans = [];
+            if (ov) {
+                const map = this.overlayState.frameIdMap;
+                let at = 0;
+                for (let i = 1; i <= map.length; i++) {
+                    if (i === map.length || map[i] !== map[at]) {
+                        spans.push([off + at, i - at]);
+                        at = i;
+                    }
+                }
+            } else {
+                spans.push([off, end - off]);
+            }
+            const add = (local) => {
+                for (const [base, len] of spans) {
+                    if (local >= 0 && local < len) out.add(base + local);
+                }
+            };
+
+            // THE ALGEBRA, and it is not symmetric: RESIDUES AND CHAINS
+            // INTERSECT, and the PAE boxes UNION with the result.
+            //
+            // A chain set is a FILTER over the residues - "of these residues,
+            // the ones in these chains", and with no residues named, all of
+            // those chains - while a box drawn on the matrix ADDS its rows and
+            // columns to whatever is already showing. Making chains a
+            // contributor instead of a filter shows the whole structure the
+            // moment anything writes a chain set, which is most of the time.
+            if (hasPos || hasChains) {
+                const first = spans[0];
+                for (let local = 0; local < first[1]; local++) {
+                    // CHAIN IDENTITY IS (OBJECT, CHAIN) - chainKeyAt - even
+                    // though the record belongs to one object, because that is
+                    // the vocabulary everything that WRITES the set uses (the
+                    // panel, the strip). Compared as bare ids, hiding chain A
+                    // of one object hid chain A of the other.
+                    if (hasChains && !st.chains.has(this.chainKeyAt(first[0] + local))) continue;
+                    if (hasPos && !st.positions.has(local)) continue;
+                    add(local);
+                }
+            }
+            if (out.size) return out;
+            // nothing asked for: everything, or nothing, per the mode
+            return explicit ? out : null;
+        }
+
+        /**
+         * THE LIVE MASK, COMPOSED FROM THE OBJECTS' OWN RECORDS.
+         *
+         * One composer for every path that needs one: a selection made in the
+         * strip, a box drawn on the PAE matrix, an eye switched in Multi, a
+         * side chain appended, a frame step. The records are the truth and the
+         * mask is derived; the mask means nothing except against the array it
+         * was built for, which is why rebuilding it is the answer rather than
+         * translating the old one.
+         */
         _composeAndApplyMask(skip3DRender = false) {
             const n = this.coords ? this.coords.length : 0;
             if (n === 0) {
@@ -1760,220 +1852,67 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
                 return;
             }
+            const ms = this.multiState;
+            const merged = !!(ms && ms.enabled && ms.sourceNames);
+            const names = merged ? ms.sourceNames
+                : (this.currentObjectName ? [this.currentObjectName] : []);
+            const offsets = merged ? ms.sourceOffsets : [0];
+            const base = this._baseCount();
 
-            // (1) Position/Chain contribution
-            // Always compute position selection - it works together with PAE via UNION
-            // CHAIN IDENTITY IS (OBJECT, CHAIN) - see chainKeyAt. Compared as
-            // bare ids, hiding chain A of one object hid chain A of the other.
-            let allowedChains;
-            if (this.visibilityModel.chains && this.visibilityModel.chains.size > 0) {
-                allowedChains = this.visibilityModel.chains;
-            } else {
-                allowedChains = new Set();
-                for (let i = 0; i < (this.chains ? this.chains.length : 0); i++) {
-                    allowedChains.add(this.chainKeyAt(i));
+            const vis = new Set();
+            let everything = true;
+            for (let s = 0; s < names.length; s++) {
+                const off = offsets[s];
+                const end = (s + 1 < offsets.length) ? offsets[s + 1] : base;
+                const own = this._visibleForObject(names[s], off, end);
+                if (own === null) {
+                    for (let i = off; i < end; i++) vis.add(i);
+                    continue;
                 }
+                everything = false;
+                for (const i of own) vis.add(i);
             }
+            // ...AND THE SIDE-CHAIN ATOMS, which are positions too and are in
+            // nobody's record: they are not residues of any object. Left out,
+            // every side chain in the picture went out the moment the array
+            // was rebuilt - including on objects nobody had touched.
+            this.withSidechainAtoms(vis, true);
 
-            let seqPositions = null;
-            if ((this.visibilityModel.positions && this.visibilityModel.positions.size > 0) ||
-                (this.visibilityModel.chains && this.visibilityModel.chains.size > 0)) {
-                seqPositions = new Set();
-
-                // In overlay mode, selections are based on frame[0] indices but need to be expanded
-                // to include corresponding positions from all frames in the merged array
-                if (this.overlayState.enabled && this.overlayState.frameIdMap && this.visibilityModel.positions.size > 0) {
-                    // Build frame offset map: frameIdx -> starting index in merged array
-                    const frameOffsets = new Map();
-                    const frameSizes = new Map();
-                    let currentFrame = -1;
-                    let frameStart = 0;
-
-                    for (let i = 0; i < this.overlayState.frameIdMap.length; i++) {
-                        const frameIdx = this.overlayState.frameIdMap[i];
-                        if (frameIdx !== currentFrame) {
-                            if (currentFrame >= 0) {
-                                frameSizes.set(currentFrame, i - frameStart);
-                            }
-                            frameOffsets.set(frameIdx, i);
-                            frameStart = i;
-                            currentFrame = frameIdx;
-                        }
-                    }
-                    if (currentFrame >= 0) {
-                        frameSizes.set(currentFrame, this.overlayState.frameIdMap.length - frameStart);
-                    }
-
-                    // Expand selections: for each selected position (based on frame 0),
-                    // find corresponding positions in all frames
-                    const frame0Size = frameSizes.get(0) || 0;
-                    for (const selectedPos of this.visibilityModel.positions) {
-                        // Only process positions that exist in frame 0
-                        if (selectedPos >= frame0Size) continue;
-
-                        // Add this position from all frames
-                        for (const [frameIdx, offset] of frameOffsets.entries()) {
-                            const frameSize = frameSizes.get(frameIdx) || 0;
-                            // Only add if this position exists in this frame
-                            if (selectedPos < frameSize) {
-                                const mergedIdx = offset + selectedPos;
-                                const ch = this.chainKeyAt(mergedIdx);
-                                if (allowedChains.has(ch)) {
-                                    seqPositions.add(mergedIdx);
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // Normal mode or overlay with no position selection
-                    for (let i = 0; i < n; i++) {
-                        const ch = this.chainKeyAt(i);
-                        if (!allowedChains.has(ch)) continue;
-                        // If positions are explicitly selected, check if this position is in the set
-                        // If no positions selected but chains are, include all positions in allowed chains
-                        if (this.visibilityModel.positions.size === 0 || this.visibilityModel.positions.has(i)) {
-                            seqPositions.add(i);
-                        }
-                    }
-                }
-            }
-
-            // (2) PAE contribution: expand i/j ranges into position indices
-            // PAE boxes are in PAE position space (0, 1, 2, ... for PAE matrix)
-            // If PAE data exists, it maps PAE positions to position indices
-            // For now, assume PAE positions directly map to position indices (0, 1, 2, ...)
-            // PAE may only cover subset of positions (e.g., only polymer)
-            // Handled by mapping PAE positions directly to position indices
-            let paePositions = null;
-            if (this.visibilityModel.paeBoxes && this.visibilityModel.paeBoxes.length > 0) {
-                paePositions = new Set();
-
-                // In overlay mode, PAE selections should expand across all frames
-                // (same logic as sequence selections)
-                if (this.overlayState.enabled && this.overlayState.frameIdMap) {
-                    // Build frame offset map
-                    const frameOffsets = new Map();
-                    const frameSizes = new Map();
-                    let currentFrame = -1;
-                    let frameStart = 0;
-
-                    for (let i = 0; i < this.overlayState.frameIdMap.length; i++) {
-                        const frameIdx = this.overlayState.frameIdMap[i];
-                        if (frameIdx !== currentFrame) {
-                            if (currentFrame >= 0) {
-                                frameSizes.set(currentFrame, i - frameStart);
-                            }
-                            frameOffsets.set(frameIdx, i);
-                            frameStart = i;
-                            currentFrame = frameIdx;
-                        }
-                    }
-                    if (currentFrame >= 0) {
-                        frameSizes.set(currentFrame, this.overlayState.frameIdMap.length - frameStart);
-                    }
-
-                    const frame0Size = frameSizes.get(0) || 0;
-                    for (const box of this.visibilityModel.paeBoxes) {
-                        const i0 = Math.max(0, Math.min(frame0Size - 1, Math.min(box.i_start, box.i_end)));
-                        const i1 = Math.max(0, Math.min(frame0Size - 1, Math.max(box.i_start, box.i_end)));
-                        const j0 = Math.max(0, Math.min(frame0Size - 1, Math.min(box.j_start, box.j_end)));
-                        const j1 = Math.max(0, Math.min(frame0Size - 1, Math.max(box.j_start, box.j_end)));
-
-                        // Expand i and j ranges across all frames
-                        for (let r = i0; r <= i1; r++) {
-                            for (const [frameIdx, offset] of frameOffsets.entries()) {
-                                const frameSize = frameSizes.get(frameIdx) || 0;
-                                if (r < frameSize) {
-                                    paePositions.add(offset + r);
-                                }
-                            }
-                        }
-                        for (let r = j0; r <= j1; r++) {
-                            for (const [frameIdx, offset] of frameOffsets.entries()) {
-                                const frameSize = frameSizes.get(frameIdx) || 0;
-                                if (r < frameSize) {
-                                    paePositions.add(offset + r);
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // Normal mode. A PAE matrix belongs to ONE object - the
-                    // current one, which is whose matrix the panel shows - so
-                    // its rows are that object's residues and land at its
-                    // offset in a merged array.
-                    const paeOff = this.sourceOffsetOf
-                        ? this.sourceOffsetOf(this.currentObjectName) : 0;
-                    const last = n - 1 - paeOff;
-                    for (const box of this.visibilityModel.paeBoxes) {
-                        const i0 = Math.max(0, Math.min(last, Math.min(box.i_start, box.i_end)));
-                        const i1 = Math.max(0, Math.min(last, Math.max(box.i_start, box.i_end)));
-                        const j0 = Math.max(0, Math.min(last, Math.min(box.j_start, box.j_end)));
-                        const j1 = Math.max(0, Math.min(last, Math.max(box.j_start, box.j_end)));
-                        for (let r = i0; r <= i1; r++) {
-                            if (r + paeOff < n) paePositions.add(r + paeOff);
-                        }
-                        for (let r = j0; r <= j1; r++) {
-                            if (r + paeOff < n) paePositions.add(r + paeOff);
-                        }
-                    }
-                }
-            }
-
-            // (3) Combine via UNION
-            let combined = null;
-            if (seqPositions && paePositions) {
-                combined = new Set(seqPositions);
-                for (const a of paePositions) combined.add(a);
-            } else {
-                combined = seqPositions || paePositions;
-            }
-
-            // (4) Apply based on selection mode
-            const mode = this.visibilityModel.visibilityMode || 'default';
             const oldVisiblePositions = this.visiblePositions;
-            if (combined && combined.size > 0) {
-                // We have some selection - use it
-                this.visiblePositions = combined;
-            } else {
-                // No selection computed
-                if (mode === 'default') {
-                    // Default mode: empty selection means "show all"
-                    this.visiblePositions = null;
-                } else {
-                    // Explicit mode: empty selection means "show nothing"
-                    this.visiblePositions = new Set(); // Empty set = nothing visible
-                }
-            }
+            // NULL IS "EVERYTHING", and it is worth reaching: every drawing
+            // path tests the mask per position, so a mask naming every
+            // position is a hash lookup per position for an answer that is
+            // always yes.
+            this.visiblePositions = (everything || vis.size >= n) ? null : vis;
 
-            // Clear shadow cache when visibility changes (selection/deselection)
-            // Visibility changes affect which segments are visible, so shadows need recalculation
-            // Compare by reference and size (simple check - if different objects or different sizes, changed)
+            // Clear shadow cache when visibility changes: which segments are
+            // drawn decides which cast.
+            // ...and NOT-A-MASK is null OR undefined: a renderer that has
+            // never composed one has neither, and `=== null` alone read the
+            // size of undefined.
             const visibilityChanged = (
-                oldVisiblePositions !== this.visiblePositions &&
-                (oldVisiblePositions === null || this.visiblePositions === null ||
-                    oldVisiblePositions.size !== this.visiblePositions.size)
+                oldVisiblePositions !== this.visiblePositions
+                && (!oldVisiblePositions || !this.visiblePositions
+                    || oldVisiblePositions.size !== this.visiblePositions.size)
             );
             if (visibilityChanged && !skip3DRender) {
                 this._invalidateShadowCache();
-                this.lastShadowRotationMatrix = null; // Force recalculation
+                this.lastShadowRotationMatrix = null;
             }
+            if (!skip3DRender) this.render('_composeAndApplyMask');
 
-            // Only render 3D viewer if not skipping (e.g., during PAE drag)
-            if (!skip3DRender) {
-                this.render('_composeAndApplyMask');
-            }
-
-            // Always dispatch event to notify UI of selection change (sequence/PAE viewers need this)
+            // Always dispatch: the sequence strip and the PAE panel draw their
+            // own version of the selection and have no other way to hear.
             if (typeof document !== 'undefined') {
                 try {
                     document.dispatchEvent(new CustomEvent('py2dmol-visibility-change', {
                         detail: {
-                            hasSelection: this.visiblePositions !== null && this.visiblePositions.size > 0,
+                            hasSelection: this.visiblePositions !== null
+                                && this.visiblePositions.size > 0,
                             visibilityModel: {
                                 positions: Array.from(this.visibilityModel.positions),
                                 chains: Array.from(this.visibilityModel.chains),
-                                paeBoxes: this.visibilityModel.paeBoxes.map(b => ({ ...b })),
+                                paeBoxes: this.visibilityModel.paeBoxes.map((b) => ({ ...b })),
                                 visibilityMode: this.visibilityModel.visibilityMode
                             }
                         }
@@ -1983,6 +1922,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
         }
+
         // [END PATCH]
 
         // --- PAE / Visibility ---
@@ -2581,7 +2521,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // THE USER, NOT THE APP. A width the user dragged is
                     // remembered against the style it was dragged in, and a
                     // style switch restores that style's own (see
-                    // _applyStyleDefaults) - so this must only record an actual
+                    // _applyLookDefaults) - so this must only record an actual
                     // gesture.
                     //
                     // Restoring saved state sets the slider and dispatches a
@@ -2819,6 +2759,116 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          *   away a moment later. Measured on a ribosome-to-peptide switch:
          *   1,150-1,550 ms of a 2 s switch, all of it wasted.
          */
+        /**
+         * EVERYTHING A STYLE OWNS, in one list.
+         *
+         * A style switch re-asserts every one of these from LOOK_DEFAULTS
+         * (see _applyLookDefaults), which is right the first time a style is
+         * entered and wrong every time after: the settings are single fields
+         * on the renderer, so tube's defaults land on top of the cartoon
+         * numbers and the cartoon's land back on top of tube's. With one
+         * object on screen that only cost you your own adjustments. With the
+         * style per object it became visible as objects interfering with each
+         * other - select a tube object and the cartoon object beside it was
+         * suddenly drawn with tube's thickness and outline.
+         *
+         * So each style keeps its own set, remembered when you leave it and
+         * put back when you return. `_widthByStyle` did exactly this for the
+         * width slider alone, for the same reason ("a tube radius arrived in
+         * cartoon as a ribbon width"); this is that rule for the rest of them.
+         *
+         * A field added to the Style panel belongs here, or it will be the one
+         * that leaks between styles next.
+         */
+        static get STYLE_SETTINGS() {
+            return ['lineWidth', 'cartoonThickness', 'cartoonOutlineTint',
+                'cartoonHighlight', 'cartoonSheetFlat', 'cartoonPencil',
+                'cartoonSmooth', 'relativeOutlineWidth', 'outlineMode',
+                'cartoonArrows', 'cartoonDetail', 'cartoonFade', 'cartoonShade',
+                'cartoonRichardson', 'cartoonBasePlates', 'cartoonStyle',
+                'cartoonGpuRibbonThick', 'cartoonGpuHelixTh',
+                'cartoonHelixThRel', 'naSmooth'];
+            // NOT stylePreset, deliberately, and setStyle says why where it
+            // switches to tube: "tube has no preset, and clobbering it lost
+            // which cartoon preset to come back to". Listed here it became
+            // style-owned again through the back door - the tube's profile
+            // captured whatever preset happened to be current and handed it
+            // back on the way out, so a picture holding both styles would
+            // drop into Ribbon on its own.
+        }
+
+        /**
+         * INSTALL A STYLE'S SETTINGS FOR THE DURATION OF ONE PASS, and hand
+         * back what was there so the caller can put it straight.
+         *
+         * Field assignment and nothing else: no cache invalidation and no
+         * panel sync. This runs TWICE PER FRAME on a mixed picture, where
+         * dropping the segment cache would rebuild it sixty times a second and
+         * syncing the panel would have the controls flickering between two
+         * styles. What the fields affect is the geometry, and both mesh keys
+         * already carry every one of them that does.
+         */
+        _installStyleProfile(style) {
+            const keys = this.constructor.STYLE_SETTINGS;
+            const prev = {};
+            for (const k of keys) prev[k] = this[k];
+            const held = this._styleSettings && this._styleSettings[style];
+            if (held) {
+                for (const k of keys) if (held[k] !== undefined) this[k] = held[k];
+            } else {
+                // NEVER SELECTED THIS STYLE IN THIS SESSION: its profile is its
+                // defaults - the same ones setStyle would apply, arrived at the
+                // same way, so that a style first met inside a mixed frame and
+                // a style first chosen from the panel come out identical.
+                // Cartoon's defaults are the PRESET's (a preset is a whole
+                // look); tube has none, and no Richardson with it.
+                const wasQuiet = this._quietStyleDefaults;
+                this._quietStyleDefaults = true;
+                try {
+                    if (style === 'cartoon') {
+                        const preset = this.stylePreset || 'richardson';
+                        this.cartoonRichardson = (preset === 'richardson');
+                        this._applyLookDefaults(preset);
+                    } else {
+                        this.cartoonRichardson = false;
+                        this._applyLookDefaults('tube');
+                    }
+                } finally { this._quietStyleDefaults = wasQuiet; }
+                this._keepStyleSettings(style);
+            }
+            return prev;
+        }
+
+        /** ...and put back what the pass found. */
+        _restoreStyleProfile(prev) {
+            if (!prev) return;
+            for (const k of this.constructor.STYLE_SETTINGS) this[k] = prev[k];
+        }
+
+        /** Remember what this style is set to. */
+        _keepStyleSettings(style) {
+            const keys = this.constructor.STYLE_SETTINGS;
+            const out = {};
+            for (const k of keys) out[k] = this[k];
+            (this._styleSettings || (this._styleSettings = {}))[style || this.style] = out;
+        }
+
+        /**
+         * Put a style's settings back. Returns false when this style has never
+         * been visited, and then the caller applies its defaults instead.
+         */
+        _recallStyleSettings(style) {
+            const held = this._styleSettings && this._styleSettings[style];
+            if (!held) return false;
+            for (const k of this.constructor.STYLE_SETTINGS) {
+                if (held[k] !== undefined) this[k] = held[k];
+            }
+            if (this._invalidateShadowCache) this._invalidateShadowCache();
+            if (this._invalidateSegmentCache) this._invalidateSegmentCache();
+            if (this._syncStyleControls) this._syncStyleControls();
+            return true;
+        }
+
         setStyle(style, quiet) {
             // QUIET IS A FLAG ON THE RENDERER, not a parameter threaded down.
             // The draw this has to stop is not the one at the end of this
@@ -2867,11 +2917,40 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     return;
                 }
             }
+            // WHAT THE STYLE BEING LEFT IS SET TO, before anything overwrites
+            // it - and what the one being entered was left at, after.
+            this._keepStyleSettings(this.style);
             this.style = style;
+            // ...AND THE OBJECT BEING EDITED IS DRAWN IN IT. The style has
+            // always been per object; with several on screen at once it has to
+            // be recorded the moment it is picked rather than when the object
+            // is switched away from, because the painters read it every frame.
+            //
+            // A QUIET call is the restore path putting an object's own style
+            // back (see _switchToObject), so it says nothing about anyone
+            // having CHOSEN: only a call from the panel marks that, and what
+            // it marks is the size rule keeping its hands off this object.
+            if (this.currentObjectName && this.objectsData
+                    && this.objectsData[this.currentObjectName]) {
+                const cur = this.objectsData[this.currentObjectName];
+                cur.style = style;
+                if (cur.viewerState) cur.viewerState.style = style;
+                if (!this._quietStyle) cur.styleChosen = true;
+            }
             // The build-up is cartoon-only, so leaving cartoon leaves the mode
             // too - otherwise the save button goes on offering to record a
             // drawing this style cannot make.
             if (style !== 'cartoon' && this.drawMode) this.setDrawMode(false);
+            // ...AND A STYLE YOU HAVE BEEN IN BEFORE COMES BACK AS YOU LEFT IT.
+            // Only a style's FIRST visit takes the defaults below.
+            if (this._recallStyleSettings(style)) {
+                if (this.styleSelect && this.styleSelect.value !== style) {
+                    this.styleSelect.value = style;
+                }
+                if (this._syncStylePanel) this._syncStylePanel();
+                if (!quiet) this.render('setStyle');
+                return;
+            }
             if (style === 'cartoon') {
                 // Entering the cartoon path lands on its default preset, which
                 // is what actually decides the look.
@@ -2882,8 +2961,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // stylePreset is deliberately NOT touched: tube has no preset, and
             // clobbering it lost which cartoon preset to come back to, so
             // Cartoon -> Tube -> Cartoon landed somewhere else than it left.
-            this._applyPresetBackground('ribbon');   // tube is drawn on paper
-            this._applyStyleDefaults('tube');
+            this._applyLookBackground('tube');       // tube is drawn on paper
+            this._applyLookDefaults('tube');
             if (this.styleSelect && this.styleSelect.value !== style) {
                 this.styleSelect.value = style;
             }
@@ -2950,12 +3029,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          *
          * This is where richardson lives. The preset owns three things: the
          * geometry profile (cartoonRichardson), the slider values
-         * (STYLE_DEFAULTS), and the page background. A preset always implies
+         * (LOOK_DEFAULTS), and the page background. A preset always implies
          * the cartoon style, so choosing one switches to it.
          *
-         * 'ribbon' is the plain cartoon - smooth off, no slab thickness, ink on
-         * - which IS STYLE_DEFAULTS.cartoon; it exists as a named preset so
-         * there is a way back to plain cartoon after richardson or 3d.
+         * 'ribbon' is the plain cartoon - smooth off, no slab thickness, ink
+         * on - and it is LOOK_DEFAULTS.ribbon, under its own name. It exists
+         * as a named preset so there is a way back to plain cartoon after
+         * richardson or 3d.
          */
         setPreset(name) {
             if (name !== 'richardson' && name !== 'ribbon' && name !== '3d') {
@@ -2969,8 +3049,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.style = 'cartoon';
             this.stylePreset = name;
             this.cartoonRichardson = (name === 'richardson');
-            this._applyStyleDefaults(name === 'ribbon' ? 'cartoon' : name);
-            this._applyPresetBackground(name);
+            this._applyLookDefaults(name);
+            this._applyLookBackground(name);
             if (this.styleSelect && this.styleSelect.value !== 'cartoon') {
                 this.styleSelect.value = 'cartoon';
             }
@@ -2979,14 +3059,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
-         * A preset carries its page background: '3d' is solid shaded geometry
-         * and is meant to be seen on black, the other two are drawings on
-         * paper. Applied as part of the preset rather than left to the user,
-         * for the same reason the sliders are - a preset is a whole look.
-         * Still just a starting point: the Dark toggle stays live afterwards.
+         * A LOOK carries its page background: '3d' is solid shaded geometry
+         * and is meant to be seen on black; tube, ribbon and richardson are
+         * drawings on paper. Applied as part of the look rather than left to
+         * the user, for the same reason the sliders are - a look is a whole
+         * look. Still just a starting point: the Dark toggle stays live
+         * afterwards.
          */
-        _applyPresetBackground(name) {
-            const want = (name === '3d') ? '#000000' : '#ffffff';
+        _applyLookBackground(look) {
+            const want = (look === '3d') ? '#000000' : '#ffffff';
             if (this.backgroundColor === want) return;
             this.backgroundColor = want;
             const dark = this.containerElement
@@ -2997,12 +3078,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         /**
          * Set every preset-controlled value to the given style's defaults and
-         * sync the sliders. Values come from py2dmolCartoon.STYLE_DEFAULTS so
+         * sync the sliders. Values come from py2dmolCartoon.LOOK_DEFAULTS so
          * the renderer and the UI cannot disagree about what a style means.
          */
-        _applyStyleDefaults(style) {
-            const table = window.py2dmolCartoon && window.py2dmolCartoon.STYLE_DEFAULTS;
-            const d = table && (table[style] || table.cartoon);
+        /**
+         * SET EVERY CONTROL TO WHAT ONE LOOK ASKS FOR.
+         *
+         * A LOOK is the `tube` STYLE or one of the cartoon style's presets -
+         * `richardson`, `ribbon`, `3d` - and those four names are the table's
+         * keys (viewer-cartoon.js: LOOK_DEFAULTS). It used to be handed a
+         * STYLE by some callers and a PRESET by others, with the plain-cartoon
+         * entry keyed 'cartoon' so that both spellings resolved to something:
+         * 'ribbon' had to be translated on the way in, and anything passing
+         * the style name 'cartoon' got the ribbon look silently, whatever
+         * preset was selected.
+         */
+        _applyLookDefaults(look) {
+            const table = window.py2dmolCartoon && window.py2dmolCartoon.LOOK_DEFAULTS;
+            const d = table && table[look];
             if (!d) return;
             // WIDTH: this style's own, if it was ever set by hand; the
             // profile's otherwise. The latch alone made it sticky ACROSS
@@ -3040,6 +3133,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (d.detail !== undefined) this.cartoonDetail = d.detail;
             if (d.fade !== undefined) this.cartoonFade = d.fade;
             if (d.shade !== undefined) this.cartoonShade = d.shade;
+            // ...UNLESS THIS IS A PASS OF A MIXED FRAME, which installs a
+            // style's profile for the length of one draw: there is nothing to
+            // invalidate (the mesh keys carry these fields) and the panel must
+            // go on describing the object you selected, not whichever half of
+            // the picture is being painted.
+            if (this._quietStyleDefaults) return;
             if (this._invalidateShadowCache) this._invalidateShadowCache();
             if (this._invalidateSegmentCache) this._invalidateSegmentCache();
             if (this._syncStyleControls) this._syncStyleControls();
@@ -3297,11 +3396,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // setStyle, not an assignment: a style carries a whole profile of
             // defaults with it, and half-switching leaves the panel describing
             // one style while the renderer draws another.
-            // ...NOR DOES THE STYLE CHANGE UNDER A MERGE. One array is drawn
-            // one way, so taking the newly picked object's style would restyle
-            // the other structures with it - and the user asked to edit that
-            // object, not to redraw the picture.
+            // ...AND THE STYLE FOLLOWS UNDER A MERGE TOO, now that the style
+            // belongs to the object. It used to be held back here: one array
+            // was drawn one way, so adopting the newly picked object's style
+            // would have restyled every other structure with it. It no longer
+            // does - each drawn object is painted in its own style (see
+            // drawnStyleGroups) - so what this changes is only which object
+            // the Style panel is describing, which is exactly what picking an
+            // object in Multi is asking for.
             this.styleChosen = merged ? this.styleChosen : !!saved.styleChosen;
+            const ownStyle = merged
+                ? (newObject && (newObject.style
+                    || (newObject.viewerState && newObject.viewerState.style)))
+                : saved.style;
+            if (merged && ownStyle && ownStyle !== this.style && this.setStyle) {
+                // quiet: the frames are not loaded yet, and the picture does
+                // not change anyway - only the panel does
+                this.setStyle(ownStyle, true);
+            }
             if (!merged && saved.style && saved.style !== this.style && this.setStyle) {
                 // ...ASKED ABOUT THE OBJECT BEING SWITCHED TO, not the one on
                 // screen. The frames are loaded by the caller, after this, so
@@ -5425,12 +5537,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const containerElement = this.canvas ? this.canvas.closest('.py2dmol-container') ||
                 this.canvas.parentElement?.closest('#mainContainer')?.parentElement : null;
 
-            // Count number of objects
-            const objectCount = Object.keys(this.objectsData).length;
-
-            // BOTH OBJECT CONTROLS APPEAR WITH THE SECOND OBJECT, and neither
-            // before it: with one object loaded there is nothing to show or
-            // hide and nothing to pick between.
+            // THE OBJECT ROW IS ALWAYS THERE. It used to appear only with a
+            // second object, on the reasoning that there is nothing to pick
+            // between with one - but the row is now what the panels below it
+            // act on: the picker names the object whose style, clip and
+            // settings the rest of the panel is editing. A control that
+            // appears once a second file loads makes that relationship
+            // invisible until then, and Multi unavailable for the one object
+            // that IS loaded.
             if (this.objectSelect) {
                 // The picker is not shown at all any more - the strip's
                 // sections say which object you are working on, and clicking
@@ -5448,13 +5562,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     return all.length === 1 ? all[0] : null;
                 };
                 const row = only('objectRow');
-                if (row) row.style.display = (objectCount <= 1) ? 'none' : 'flex';
-                const list = only('objectList');
-                if (list && objectCount <= 1) {
-                    list.hidden = true;
-                    const btn = only('objectListButton');
-                    if (btn) btn.setAttribute('aria-expanded', 'false');
-                }
+                if (row) row.style.display = 'flex';
+                // ...the LIST still follows the mode, and the mode is the
+                // button's business: hiding it here on a count would close a
+                // list the user had opened.
 
                 // Also handle container visibility (for backward compatibility)
                 if (containerElement) {
@@ -10055,7 +10166,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * Same standing as _gpuWillDraw: a guess made before the attempt, whose
          * cost when wrong is a repaint, never a wrong picture.
          */
-        _gpuWillTake(ctx) {
+        _gpuWillTake(ctx, style) {
             if (this.useGPU !== true) return false;
             // DRAW IS A 2D EFFECT, so the frame has to be a 2D one.
             //
@@ -10075,7 +10186,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (this.drawMode) return false;
             const G = window.py2dmolCartoonGPU;
             if (!G) return false;
-            if (this.style === 'cartoon') {
+            if ((style || this.style) === 'cartoon') {
                 if (typeof G.render !== 'function' || !window.py2dmolCartoon) return false;
             } else if (typeof G.renderTube !== 'function') return false;
             // A 2D CANVAS IS A 2D CANVAS, the screen's or an export's. It used
@@ -10171,7 +10282,144 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
         }
 
-        _tubeGPUFrame(ctx, displayWidth, displayHeight, colors, object) {
+        /**
+         * THE POSITIONS ONE STYLE DRAWS, and only those: an object's own
+         * positions, intersected with whatever the visibility mask allows.
+         *
+         * CACHED, because both painters key their geometry on the mask BY
+         * IDENTITY - a fresh Set every frame is a rebuilt mesh every frame.
+         * The answer depends on the drawn set, the mask and the array, and on
+         * nothing else; all three are only ever replaced, never edited.
+         */
+        _styleMaskFor(names, slot, baseMask) {
+            const cache = this._styleMaskCache || (this._styleMaskCache = {});
+            // THE MASK THE FRAME STARTED WITH, passed in - not the live one.
+            // The live one is being SWAPPED as each painter takes its turn, so
+            // asking for the second painter's share while the first painter's
+            // is installed intersected one object's positions with another
+            // object's, and came out empty: the tube half of the frame simply
+            // did not draw.
+            const vis = baseMask === undefined ? this.visiblePositions : baseMask;
+            const key = names.join(',');
+            const hit = cache[slot];
+            if (hit && hit.vis === vis && hit.arr === this.coords && hit.key === key) {
+                return hit.out;
+            }
+            const own = this.positionsOfObjects(names);
+            let out = own;
+            if (vis) {
+                out = new Set();
+                for (const i of own) if (vis.has(i)) out.add(i);
+            }
+            cache[slot] = { vis, arr: this.coords, key, out };
+            return out;
+        }
+
+        /**
+         * TWO PAINTERS, ONE FRAME.
+         *
+         * An object carries its own style, so a merge can hold a ribosome
+         * drawn as a tube beside a peptide drawn as a ribbon. The two are
+         * different geometry models and stay different - but on the GPU they
+         * write into the same framebuffer with the same depth buffer, so
+         * interleaving them is free and exact: nearer wins, per pixel, with no
+         * sorting anywhere. (The 2D path cannot do this. Its painter resolves
+         * overlap by paint order, and two independent sorts cannot be merged
+         * without one depth-sorted stream across both models - which is the
+         * problem PAINT_ORDER.md records every attempt at.)
+         *
+         * Each painter is shown only its own objects, by swapping the
+         * visibility mask for the duration: both of them already build their
+         * geometry from that mask and key it on the mask's contents, so
+         * subsetting comes for free and each keeps its own mesh.
+         *
+         * ONE DEPTH RANGE FOR BOTH. Each model normally maps view z through
+         * its OWN bounding range, and two different ranges are two different
+         * depth scales - the picture would sort by which model a pixel came
+         * from rather than by depth. The range handed to both is the drawn
+         * extent, which contains everything either of them can draw.
+         */
+        /**
+         * THE STYLE THE PICTURE IS DRAWN IN.
+         *
+         * `this.style` is the style of the object being EDITED - what the
+         * Style panel describes and what a switch back to single-object mode
+         * restores. It is not always what is on screen: light one eye on an
+         * object you are not editing and the picture is that object's, so it
+         * is drawn the way THAT object wants to be drawn.
+         *
+         * With two styles among the drawn objects there is no single answer
+         * and the mixed path takes the frame; this returns the edited object's
+         * so that everything downstream still has one to fall back on.
+         */
+        _drawStyle() {
+            const groups = this.drawnStyleGroups();
+            if (groups.size === 1) return groups.keys().next().value;
+            return this.style;
+        }
+
+        _mixedGPUFrame(ctx, displayWidth, displayHeight, colors, object, groups) {
+            const G = window.py2dmolCartoonGPU;
+            if (!G || !G.render || !G.renderTube || !window.py2dmolCartoon) return false;
+            if (!ctx || !ctx.canvas || !ctx.drawImage || ctx.getSerializedSvg) return false;
+            const cartoonNames = groups.get('cartoon') || [];
+            const tubeNames = groups.get('tube') || [];
+            if (!cartoonNames.length || !tubeNames.length) return false;
+            const framed = this.drawnStats() || object;
+            // ...AND NO WIDER THAN IT HAS TO BE. Every depth bias in both
+            // shaders - the outline's, the tube's skirt and caps - is a
+            // constant in NDC, so widening the range makes each of them stand
+            // for a LARGER distance in Angstrom. Measured on 1TIM + 1UBQ with
+            // a range 20% too wide: the cartoon's outline lost to the tube
+            // behind it over a fifth of the pixels where the two overlap.
+            // maxExtent is already the bounding radius of what is drawn; the
+            // margin covers a capsule's bulge and a ribbon's thickness.
+            const R = ((framed && framed.maxExtent > 0) ? framed.maxExtent : 30) + 4;
+            const z = [-R, R];
+            const keep = this.visiblePositions;
+            // ...AND EACH PAINTER DRAWS WITH ITS OWN STYLE'S SETTINGS. The
+            // thickness, the outline, the detail and the rest are single
+            // fields on the renderer holding whatever the style you last
+            // SELECTED left there - so with a tube object picked, the cartoon
+            // half of the picture was drawn with tube's numbers. Each style
+            // keeps its own set (see STYLE_SETTINGS); the frame installs one
+            // for each pass and puts back what it found.
+            const keepStyle = this.style;
+            this._keepStyleSettings(keepStyle);
+            let prev = null;
+            let drew = false;
+            try {
+                this.visiblePositions = this._styleMaskFor(cartoonNames, 'cartoon', keep);
+                this.style = 'cartoon';
+                prev = this._installStyleProfile('cartoon');
+                const okC = G.render(this, ctx, displayWidth, displayHeight, colors,
+                    { keep: false, blit: false, z });
+                this.visiblePositions = this._styleMaskFor(tubeNames, 'tube', keep);
+                this.style = 'tube';
+                this._installStyleProfile('tube');
+                // ...and it only KEEPS the frame if there is one to keep
+                const okT = this._tubeGPUFrame(ctx, displayWidth, displayHeight,
+                    colors, object, { keep: !!okC, blit: true, z });
+                // the tube declining after the cartoon drew would leave the
+                // frame on the offscreen canvas and never on the page
+                if (okC && !okT) G.blit(ctx);
+                drew = !!okC || !!okT;
+                // WHICH HALF DREW, for the probes: two painters that decline
+                // silently are indistinguishable from one that drew badly.
+                if (typeof window !== 'undefined') {
+                    window.__mixedFrame = { cartoon: !!okC, tube: !!okT,
+                        nCartoon: this._styleMaskFor(cartoonNames, 'cartoon', keep).size,
+                        nTube: this._styleMaskFor(tubeNames, 'tube', keep).size };
+                }
+            } finally {
+                this.visiblePositions = keep;
+                this.style = keepStyle;
+                this._restoreStyleProfile(prev);
+            }
+            return drew;
+        }
+
+        _tubeGPUFrame(ctx, displayWidth, displayHeight, colors, object, compose) {
             const G = window.py2dmolCartoonGPU;
             if (!G || !G.renderTube) return false;
             // the same refusals renderTube makes, asked before spending
@@ -10259,6 +10507,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 order, count: cnt, segments, segData: this.segData, colors,
                 shadows: null, tints: null, renderShadows: false,
                 outlineWidthPx: this.relativeOutlineWidth * pxScale,
+                // ...one painter of a composed frame, when it is one
+                compose: compose || null,
             })) return false;
 
             // NOT PROJECTED NOW. Nothing in the picture needs screen
@@ -11035,44 +11285,86 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
-         * THE VISIBLE POSITIONS OF A MERGE, read off the objects' own records.
+         * WHICH STYLE ONE OBJECT IS DRAWN IN.
          *
-         * Each object's record is in ITS numbering and says what is hidden in
-         * it; this is the one place they are read back up into the merged
-         * array's numbering. The reverse direction - the live mask filed back
-         * down per object - is _saveVisibilityToObjects, and the two are kept
-         * next to each other on purpose: filing the whole merged mask under
-         * one object is a bug this codebase has already had.
+         * The style has always travelled with the object (see _switchToObject:
+         * "what is right for a ribosome is not right for the peptide beside
+         * it"), but only one of them could be on screen at a time, so the
+         * renderer kept a single `style` and swapped it on the way in and out.
+         * With several objects merged into one array they can be drawn in
+         * DIFFERENT styles at once, and this is the question the painters ask.
+         *
+         * `this.style` is still the answer for an object that has never been
+         * given one of its own - a freshly loaded file, before the size rule
+         * has had its say.
          */
-        _visibleFromObjectRecords(names, offsets, n) {
-            const vis = new Set();
-            for (let s = 0; s < names.length; s++) {
-                const off = offsets[s];
-                const end = (s + 1 < offsets.length) ? offsets[s + 1] : n;
-                const st = this.objectsData[names[s]]
-                    && this.objectsData[names[s]].visibilityState;
-                const hasPos = st && st.positions && st.positions.size > 0;
-                const hasChains = st && st.chains && st.chains.size > 0;
-                // NOBODY HAS ASKED, versus NOTHING IS VISIBLE. An object with
-                // no record, or an untouched one, contributes all of itself;
-                // an EMPTY record in explicit mode is Hide all, and putting
-                // that object back on screen at the next rebuild would undo it.
-                const untouched = !st || !st.positions
-                    || (!hasPos && !hasChains && st.visibilityMode !== 'explicit');
-                if (untouched) {
-                    for (let i = off; i < end; i++) vis.add(i);
-                    continue;
-                }
-                for (let i = off; i < end; i++) {
-                    const local = i - off;
-                    if ((hasPos && st.positions.has(local))
-                        || (hasChains && st.chains.has(this.chainKeyAt(i)))) {
-                        vis.add(i);
-                    }
-                }
-            }
-            return vis;
+        styleForObject(name) {
+            const o = this.objectsData && this.objectsData[name];
+            const st = o && (o.style
+                || (o.viewerState && o.viewerState.style));
+            return (st === 'cartoon' || st === 'tube') ? st : this.style;
         }
+
+        /** ...and give one object a style of its own. */
+        setStyleForObject(name, style) {
+            const o = this.objectsData && this.objectsData[name];
+            if (!o || (style !== 'cartoon' && style !== 'tube')) return false;
+            if (o.style === style) return false;
+            o.style = style;
+            // the saved view carries it too, because that is what a switch back
+            // to single-object mode reads
+            if (o.viewerState) o.viewerState.style = style;
+            this._invalidateSegmentCache();
+            return true;
+        }
+
+        /**
+         * THE DRAWN OBJECTS, GROUPED BY THE STYLE EACH IS DRAWN IN.
+         *
+         * Two groups and never more, because there are two painters. Empty
+         * lists are kept out, so `groups.length === 1` is "one style on
+         * screen" - the ordinary case, and the only one the 2D path can draw.
+         */
+        drawnStyleGroups() {
+            const by = new Map();
+            for (const n of this.drawnObjects()) {
+                const st = this.styleForObject(n);
+                if (!by.has(st)) by.set(st, []);
+                by.get(st).push(n);
+            }
+            return by;
+        }
+
+        /**
+         * THE MERGED POSITIONS THAT BELONG TO THESE OBJECTS, side-chain atoms
+         * included - they are appended past every source's range and answer for
+         * the residue they grow out of (see withSidechainAtoms).
+         *
+         * With nothing merged the array IS one object's, so the answer is
+         * everything or nothing.
+         */
+        positionsOfObjects(names) {
+            const want = new Set(names);
+            const total = this._positionCount();
+            const ms = this.multiState;
+            const out = new Set();
+            if (!ms || !ms.enabled || !ms.sourceNames) {
+                if (want.has(this.currentObjectName)) {
+                    for (let i = 0; i < total; i++) out.add(i);
+                }
+                return out;
+            }
+            const base = this._baseCount();
+            for (let s = 0; s < ms.sourceNames.length; s++) {
+                if (!want.has(ms.sourceNames[s])) continue;
+                const from = ms.sourceOffsets[s];
+                const to = (s + 1 < ms.sourceOffsets.length)
+                    ? ms.sourceOffsets[s + 1] : base;
+                for (let i = from; i < to; i++) out.add(i);
+            }
+            return this.withSidechainAtoms(out, true);
+        }
+
 
         /**
          * COMPOSE THE LIVE MASK FROM THE OBJECTS' OWN RECORDS, and apply it.
@@ -11090,27 +11382,40 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * @param {number} n the array's length BEFORE side-chain atoms
          */
         _applyRecordVisibility(names, offsets, n, skipRender = false) {
-            const vis = this._visibleFromObjectRecords(names, offsets, n);
-            // ...AND THE SIDE-CHAIN ATOMS, which are positions too and are in
-            // nobody's record: they are not residues of any object. Left out,
-            // every side chain in the picture went out the moment a merge was
-            // rebuilt - including on objects nobody had touched.
-            this.withSidechainAtoms(vis, true);
-            // EVERYTHING MEANS EVERYTHING IN THE ARRAY, atoms included - the
-            // merge's own length is short of it by exactly those atoms, so a
-            // fully visible picture read as a partial one.
-            const total = (this.coords && this.coords.length) || n;
+            this._composeAndApplyMask(skipRender);
+            this._syncModelToMask(names, offsets, n);
+        }
 
-            this.setVisibility({
-                positions: vis,
-                // CHAIN IDS COLLIDE ACROSS OBJECTS - both structures have a
-                // chain A - so the chain half of the mask is resolved into
-                // positions above and cleared here rather than re-applied
-                // across everything.
-                chains: new Set(),
-                paeBoxes: [],
-                visibilityMode: (vis.size === total) ? 'default' : 'explicit'
-            }, skipRender);
+        /**
+         * THE LIVE MODEL FOLLOWS THE MASK - it does not write it.
+         *
+         * `visibilityModel` is the editing buffer the selection panel, the
+         * sequence strip and the PAE matrix all read and write; the records
+         * are what survives a rebuild. After a rebuild the buffer has to
+         * describe the new array, and this is where it is brought up to date.
+         *
+         * IT USED TO GO THE OTHER WAY. The rebuild composed a mask from the
+         * records and pushed it back through setVisibility with `paeBoxes: []`
+         * - which saved it into every object's record, wiping the boxes and
+         * dropping the mode to default. A box drawn on a prediction survived
+         * exactly until the next eye click.
+         */
+        _syncModelToMask(names, offsets, n) {
+            const vm = this.visibilityModel;
+            if (!vm) return;
+            const total = (this.coords && this.coords.length) || n;
+            vm.positions = this.visiblePositions
+                ? new Set(this.visiblePositions)
+                : (() => { const all = new Set(); for (let i = 0; i < total; i++) all.add(i); return all; })();
+            // resolved into positions above: a chain id means one thing per
+            // object and the mask spans several
+            vm.chains = new Set();
+            // ...and the BOXES stay the current object's own, because that is
+            // whose matrix the panel is showing (see paeObjectName).
+            const own = this.objectsData && this.objectsData[this.currentObjectName];
+            vm.paeBoxes = ((own && own.visibilityState && own.visibilityState.paeBoxes) || [])
+                .map((b) => ({ ...b }));
+            vm.visibilityMode = (this.visiblePositions === null) ? 'default' : 'explicit';
         }
 
         /** The merge's share of that: one call, from what it just built. */
@@ -11868,7 +12173,52 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return out;
         }
 
+        /**
+         * THE PICTURE IS DRAWN IN THE DRAWN OBJECT'S STYLE - and with that
+         * STYLE'S SETTINGS.
+         *
+         * `this.style` belongs to the object being EDITED, which is not always
+         * the object on screen: pick a tube object, then switch ITS eye off,
+         * and what is left is a cartoon while the renderer still holds tube's
+         * numbers - thickness 0, no pencil, a 3.0 outline. The cartoon was
+         * then drawn with them, which is a plain ribbon: the drawing dropped
+         * to Ribbon while the preset dropdown still said Richardson, because
+         * the preset had not changed. Only the numbers had.
+         *
+         * The mixed path already installs a profile per pass; this is the same
+         * rule for an ordinary single-style frame, which is why both go
+         * through _installStyleProfile.
+         */
         _renderToContext(ctx, displayWidth, displayHeight) {
+            const drawStyle = this._drawStyle();
+            if (drawStyle === this.style) {
+                this._drawFrame(ctx, displayWidth, displayHeight);
+                return;
+            }
+            const styleWas = this.style;
+            const profileWas = this._installStyleProfile(drawStyle);
+            this.style = drawStyle;
+            // WHAT THE FRAME WAS ACTUALLY DRAWN WITH, for the probes: the
+            // fields are put back before anything outside can read them, so
+            // there is otherwise no way to tell a Richardson from a ribbon
+            // except by looking at the pixels.
+            if (typeof window !== 'undefined') {
+                window.__drawProfile = { style: drawStyle,
+                    thickness: this.cartoonThickness, pencil: this.cartoonPencil,
+                    sheetFlat: this.cartoonSheetFlat,
+                    outline: this.relativeOutlineWidth,
+                    richardson: this.cartoonRichardson };
+            }
+            try {
+                this._drawFrame(ctx, displayWidth, displayHeight);
+            } finally {
+                this.style = styleWas;
+                this._restoreStyleProfile(profileWas);
+            }
+        }
+
+        // Core rendering logic - can render to any context (canvas, SVG, etc.)
+        _drawFrame(ctx, displayWidth, displayHeight) {
             // Clear the full canvas in device pixels, independent of current transform
             ctx.save();
             ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -11912,7 +12262,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // A guess, like _gpuWillDraw: if the GPU then declines the frame
             // the 2D pass below needs the array after all, and both branches
             // settle up before falling through.
-            const deferRot = this._gpuWillTake(ctx);
+            // WHO IS DRAWN AND HOW. The style is per object; when the drawn
+            // objects agree the frame has one style - theirs, which is not
+            // always the edited object's - and when they do not, the mixed
+            // path below draws both.
+            const groups = this.drawnStyleGroups();
+            const drawStyle = (groups.size === 1)
+                ? groups.keys().next().value : this.style;
+            const deferRot = this._gpuWillTake(ctx, drawStyle);
             if (deferRot) this._rotPending = true; else this._rotateCoords(object, c);
             const rotated = this.rotatedCoords;
 
@@ -11953,11 +12310,28 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
+            // TWO STYLES AT ONCE, when the objects on screen disagree about
+            // which one they want and the GPU is available to draw both into
+            // one depth buffer. Everything below is the single-style path, and
+            // it stays exactly as it was: this branch either draws the frame
+            // or declines, and declining means the picture is drawn in
+            // whatever style `this.style` says, as it always was.
+            if (deferRot) {
+                if (groups.size > 1
+                    && this._mixedGPUFrame(ctx, displayWidth, displayHeight,
+                        colors, object, groups)) {
+                    this.gpuDrewLastFrame = true;
+                    this._invalidateSelectionPreview();
+                    this._paintOverlays(ctx, this._exportPxScale || 1, true);
+                    return;
+                }
+            }
+
             // STYLE DELEGATION: 'cartoon' replaces the entire draw stage below.
             // The cartoon renderer (viewer-cartoon.js) reuses the rotation and
             // per-segment colors computed above, plus this renderer's projection
             // parameters, and paints its own primitives (SS ribbons + tubes).
-            if (this.style === 'cartoon'
+            if (drawStyle === 'cartoon'
                 && window.py2dmolCartoon) {
                 // THE GPU PATH, when it is asked for and it works. It paints
                 // the same drawing from a mesh that lives on the card, so
@@ -15446,7 +15820,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // The VALUE comes down with the ceiling when the style changes. A slider
     // pinned at its maximum while the renderer holds a larger number is a
     // control that lies about the drawing, which is the same failure the
-    // STYLE_DEFAULTS table exists to prevent. Width is remembered per style
+    // LOOK_DEFAULTS table exists to prevent. Width is remembered per style
     // now (_widthByStyle), so a tube at 5 no longer walks into a cartoon whose
     // slider stops at 4.7 - this stays as the guard for a width arriving from
     // anywhere else, a restored session among them.
@@ -15504,7 +15878,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // Exposed so setStyle() can re-filter the rows when called programmatically.
     // Push renderer values onto the preset sliders. Registered here because
     // this is where the slider elements are in scope; called by
-    // _applyStyleDefaults on every style switch.
+    // _applyLookDefaults on every style switch.
     renderer._syncStyleControls = () => {
         const set = (el, v) => { if (el && v !== undefined) el.value = v; };
         set(lineWidthSlider, renderer.lineWidth);
@@ -15796,7 +16170,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     if (outlineWidthSlider) {
         // ?? not ||: an outline deliberately set to 0 is not an unset one, and
         // || turned it back on at the default. Reachable through the 3d preset,
-        // whose outlineWidth IS 0 - _applyStyleDefaults only forces outlineMode
+        // whose outlineWidth IS 0 - _applyLookDefaults only forces outlineMode
         // to 'none' when there is no mode control, so with one present the width
         // sat at 0 while this put 1.0 on the slider.
         outlineWidthSlider.value = renderer.outlineMode === 'none'

@@ -2014,6 +2014,26 @@ let tubeCentre = [0, 0, 0];
 // THE INSTANCE DATA ITSELF, kept the way the cartoon keeps its mesh: what a
 // build produced, so it can be put back without being produced again. See
 // captureTube/activateTube.
+/* A FRAME MADE OF TWO PAINTERS.
+ *
+ * Objects carry their own style, so a merge can hold a ribosome drawn as a
+ * tube beside a peptide drawn as a ribbon. They are different geometry models
+ * and stay different (see GPU_LIFECYCLE.md) - but they draw into the SAME
+ * framebuffer with the SAME depth buffer, so interleaving them correctly costs
+ * nothing: whoever is nearer wins, per pixel, with no sorting anywhere.
+ *
+ * Two things have to be arranged for that to be true:
+ *
+ *   composeKeepFrame - only the FIRST painter of a frame clears; the second
+ *     adds to what is there. (The last one blits, and the entries decide.)
+ *   composeZ - both painters map view z into the depth buffer as
+ *     1 - 2 * (z - zMin) / (zMax - zMin), each from ITS OWN model's range. Two
+ *     different ranges are two different depth scales, and the picture would
+ *     be sorted by which model a pixel came from. In a composed frame both are
+ *     given the union.
+ */
+let composeKeepFrame = false;   // do not clear: something is already drawn
+let composeZ = null;            // the shared depth range, in view space
 let tubeLive = null;            // the value currently in bufTube
 let spareTube = null;           // ...and the one an eye can come back to
 let tubeTouch = null;           // per-position count of drawn segments, reused
@@ -3765,9 +3785,11 @@ function drawResident(cv, prm, prmAO) {
     gl.viewport(0, 0, cv.width, cv.height);
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LESS);
-    clearToPaper();
-    gl.clearDepth(1.0);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    if (!composeKeepFrame) {
+        clearToPaper();
+        gl.clearDepth(1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    }
     gl.bindBuffer(gl.ARRAY_BUFFER, buf3);
     const stride = 48 * 4;
     const bound = [];
@@ -3790,8 +3812,8 @@ function drawResident(cv, prm, prmAO) {
             R[0][1], R[1][1], R[2][1], R[0][2], R[1][2], R[2][2]]));
     gl.uniform2f(gl.getUniformLocation(prog3, 'uSize'), cv.width, cv.height);
     const dzprog3 = shiftZ();
-    gl.uniform2f(gl.getUniformLocation(prog3, 'uZRange'),
-        resident.zMin + dzprog3, resident.zMax + dzprog3);
+    const zr3 = composeZ || [resident.zMin + dzprog3, resident.zMax + dzprog3];
+    gl.uniform2f(gl.getUniformLocation(prog3, 'uZRange'), zr3[0], zr3[1]);
     gl.uniform3f(gl.getUniformLocation(prog3, 'uShift'),
         viewShift[0], viewShift[1], viewShift[2]);
     const sr = shadeRange();
@@ -3928,8 +3950,8 @@ function drawInk(cv, prm) {
             R[0][1], R[1][1], R[2][1], R[0][2], R[1][2], R[2][2]]));
     gl.uniform2f(gl.getUniformLocation(progInk, 'uSize'), cv.width, cv.height);
     const dzprogInk = shiftZ();
-    gl.uniform2f(gl.getUniformLocation(progInk, 'uZRange'),
-        resident.zMin + dzprogInk, resident.zMax + dzprogInk);
+    const zrInk = composeZ || [resident.zMin + dzprogInk, resident.zMax + dzprogInk];
+    gl.uniform2f(gl.getUniformLocation(progInk, 'uZRange'), zrInk[0], zrInk[1]);
     gl.uniform3f(gl.getUniformLocation(progInk, 'uShift'),
         viewShift[0], viewShift[1], viewShift[2]);
     const srI = shadeRange();
@@ -4635,8 +4657,13 @@ function bufferFits(w, h) {
     return gl.drawingBufferWidth === w && gl.drawingBufferHeight === h;
 }
 
-function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
+function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) {
     if (!window.py2dmolCartoon || typeof document === 'undefined') return false;
+    // ONE PAINTER OF A COMPOSED FRAME, when the caller says so: do not clear
+    // what the other one drew, share its depth range, and leave the blit to
+    // whoever goes last. See composeKeepFrame.
+    composeKeepFrame = !!(compose && compose.keep);
+    composeZ = (compose && compose.z) || null;
     // ANY 2D CANVAS, AT ITS OWN SIZE - the screen's, or the one saveImage makes
     // for an export. An SVG context is still the 2D path's: there is no vector
     // to hand back from a raster. See appSizeFor for the rest of the argument.
@@ -4857,7 +4884,9 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
         // for a slab it is about half the thickness rather than a tube radius -
         // with a floor, because the ribbon preset's thickness is 0.
         const wantAO = renderer.cartoonAO === true
-            && renderer.shadowEnabled !== false;
+            && renderer.shadowEnabled !== false
+            // ...and never in a composed frame: see the tube's copy of this
+            && !(compose && compose.z);
         const aoOpts = wantAO ? {
             scale: drawScale(),
             strength: typeof renderer.shadowStrength === 'number' ? renderer.shadowStrength : 0.5,
@@ -4875,10 +4904,7 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
         projectPositions(renderer, displayWidth, displayHeight);
         // ...and onto the canvas the app owns, under whatever transform it is
         // holding, which is why this saves and restores it.
-        const prev = ctx.getTransform ? ctx.getTransform() : null;
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.drawImage(appCv, 0, 0);
-        if (prev) ctx.setTransform(prev.a, prev.b, prev.c, prev.d, prev.e, prev.f);
+        if (!compose || compose.blit !== false) blitApp(ctx);
         return true;
     } catch (err) {
         // A FAILURE HERE FALLS BACK, it does not break the viewer. The 2D path
@@ -5325,9 +5351,11 @@ function drawTube(cv, renderer, prm) {
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LESS);
     gl.depthMask(true);
-    clearToPaper();
-    gl.clearDepth(1.0);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    if (!composeKeepFrame) {
+        clearToPaper();
+        gl.clearDepth(1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    }
     gl.bindBuffer(gl.ARRAY_BUFFER, bufTube);
     const stride = TUBE_FLOATS * 4;
     const bound = [];
@@ -5357,8 +5385,8 @@ function drawTube(cv, renderer, prm) {
     gl.uniform3f(gl.getUniformLocation(progTube, 'uShift'), sh[0], sh[1], sh[2]);
     const Rt = currentRot();
     const dzTube = Rt[2][0] * sh[0] + Rt[2][1] * sh[1] + Rt[2][2] * sh[2];
-    gl.uniform2f(gl.getUniformLocation(progTube, 'uZRange'),
-        tubeRange[0] + dzTube, tubeRange[1] + dzTube);
+    const zrTube = composeZ || [tubeRange[0] + dzTube, tubeRange[1] + dzTube];
+    gl.uniform2f(gl.getUniformLocation(progTube, 'uZRange'), zrTube[0], zrTube[1]);
     u('uScale', (renderer._viewScale || 1) * ratio);
     uploadClip(progTube);
     u('uPersp', isPersp() ? 1 : 0);
@@ -5381,6 +5409,21 @@ function drawTube(cv, renderer, prm) {
     // shadow/tint pair the 2D renderer computes on the CPU by testing every
     // segment against every segment in front of it.
     const wantAO = renderer.shadowEnabled !== false && ensureOcc(cv.width, cv.height);
+    // ...AND IN A COMPOSED FRAME IT DRAWS STRAIGHT INTO THE SHARED BUFFER.
+    //
+    // gFbo is an OPTIMISATION, not the occlusion: it lets the final pass test
+    // against the prepass's completed depth buffer (they share the
+    // renderbuffer), and the picture is then copied to the canvas. That copy
+    // is a plain overwrite, so in a composed frame it wiped whatever the other
+    // painter had drawn - which is what took the shadows off the tube when a
+    // cartoon object was on screen beside it.
+    //
+    // The module already handles gFbo being absent ("the draw then goes
+    // straight to the canvas"), and the AO texture is sampled either way. So a
+    // composed frame takes that path: the occlusion stays, the two painters
+    // share one depth buffer, and what is given up is the early rejection -
+    // speed, on the structures big enough to notice.
+    const useG = !!gFbo && !composeZ;
     if (wantAO) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, zFbo);
         gl.viewport(0, 0, cv.width, cv.height);
@@ -5433,16 +5476,18 @@ function drawTube(cv, renderer, prm) {
         // Writing costs nothing here: the rejection that makes this fast is the
         // hardware testing against a buffer that is already complete, and a
         // fragment that passes writes the depth that was already there.
-        gl.bindFramebuffer(gl.FRAMEBUFFER, gFbo || null);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, useG ? gFbo : null);
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, aoTex2);
         gl.uniform1i(gl.getUniformLocation(progTube, 'uAOTex'), 1);
         gl.viewport(0, 0, cv.width, cv.height);
         gl.enable(gl.DEPTH_TEST);
         gl.depthMask(true);
-        if (gFbo) gl.depthFunc(gl.LEQUAL);
-        clearToPaper();
-        gl.clear(gl.COLOR_BUFFER_BIT | (gFbo ? 0 : gl.DEPTH_BUFFER_BIT));
+        if (useG) gl.depthFunc(gl.LEQUAL);
+        if (!composeKeepFrame) {
+            clearToPaper();
+            gl.clear(gl.COLOR_BUFFER_BIT | (useG ? 0 : gl.DEPTH_BUFFER_BIT));
+        }
     }
     u('uZOnly', 0);
     u('uUseAO', wantAO ? 1 : 0);
@@ -5480,7 +5525,7 @@ function drawTube(cv, renderer, prm) {
     tmEnd(tmF);
     // ...and onto the canvas. Colour only: the default framebuffer's depth is
     // nobody's business and blitting it would cost for nothing.
-    if (wantAO && gFbo) {
+    if (wantAO && useG) {
         const tmC = tmStart('5-copy');
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.viewport(0, 0, cv.width, cv.height);
@@ -5599,6 +5644,9 @@ function drawTubeInstances() {
  */
 function renderTubeApp(renderer, ctx, displayWidth, displayHeight, S) {
     if (typeof document === 'undefined') return false;
+    const compose = S && S.compose;
+    composeKeepFrame = !!(compose && compose.keep);
+    composeZ = (compose && compose.z) || null;
     if (!ctx || !ctx.canvas || !ctx.drawImage || ctx.getSerializedSvg) return false;
     const w = ctx.canvas.width;
     const h = ctx.canvas.height;
@@ -5665,10 +5713,7 @@ function renderTubeApp(renderer, ctx, displayWidth, displayHeight, S) {
         if (!drawTube(appCv, renderer,
             { outlineWidthPx: S.outlineWidthPx || 0, hasOcclusion: !!S.renderShadows,
                 displayWidth })) return false;
-        const prev = ctx.getTransform ? ctx.getTransform() : null;
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.drawImage(appCv, 0, 0);
-        if (prev) ctx.setTransform(prev.a, prev.b, prev.c, prev.d, prev.e, prev.f);
+        if (!compose || compose.blit !== false) blitApp(ctx);
         return true;
     } catch (err) {
         if (window.console) window.console.warn('tube GPU path unavailable:', err);
@@ -5678,6 +5723,20 @@ function renderTubeApp(renderer, ctx, displayWidth, displayHeight, S) {
         appCv = null;
         return false;
     }
+}
+
+/* THE OFFSCREEN CANVAS ONTO THE ONE THE APP OWNS, under whatever transform it
+ * is holding - which is why this saves and restores it. Exported as well,
+ * because a composed frame's last painter may be the one that declined, and
+ * the pixels the first one drew still have to reach the page.
+ */
+function blitApp(ctx) {
+    if (!appCv || !ctx || !ctx.drawImage) return false;
+    const prev = ctx.getTransform ? ctx.getTransform() : null;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(appCv, 0, 0);
+    if (prev) ctx.setTransform(prev.a, prev.b, prev.c, prev.d, prev.e, prev.f);
+    return true;
 }
 
 /* ------------------------------------------------- a context that draws nothing
@@ -5743,7 +5802,8 @@ window.py2dmolCartoonGPU = {
     // a build marker, so "is the browser running what I just wrote" is one
     // question with one answer rather than a guess
     build: 'plate-plain-2',
-    render: renderApp, renderTube: renderTubeApp, invalidate, paramsFromRenderer,
+    render: renderApp, renderTube: renderTubeApp, blit: blitApp,
+    invalidate, paramsFromRenderer,
     available, initGL, hasGL, clearGL, setZoomExact,
     setResidueMap, setSize, setPaletteSource, setDefaultParams, setOrtho,
     setPixelRatio, setFocalLength, setPaper, recolour,

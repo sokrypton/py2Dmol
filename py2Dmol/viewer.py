@@ -580,7 +580,7 @@ class view:
         if highlight is None:
             highlight = 3.0 if preset == "richardson" else (2.0 if is3d else 1.8)
         if shade is None:
-            # mirrors STYLE_DEFAULTS: richardson models more lightly than a
+            # mirrors LOOK_DEFAULTS: richardson models more lightly than a
             # rendered solid. Sending a flat 1.0 here made view(preset=...)
             # disagree with the identical preset chosen in the GUI.
             shade = 0.7 if preset == "richardson" else 1.0

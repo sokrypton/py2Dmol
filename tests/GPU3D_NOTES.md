@@ -213,7 +213,7 @@ strict test and colour flatters** - which is why the colour numbers below are
 better than the white ones and mean less.
 
 `white` and the preset dropdown drive both the renderer and the shader from
-`STYLE_DEFAULTS`, so the two cannot be configured differently.
+`LOOK_DEFAULTS`, so the two cannot be configured differently.
 
 | preset | white | agree | differ on edge | differ inside | bias |
 |---|---|--:|--:|--:|--:|

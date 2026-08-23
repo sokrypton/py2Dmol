@@ -56,31 +56,54 @@ window.addEventListener('load', () => {
     }])),
     n: r.coords.length, ink: ink(r.canvas),
   });
+  // FRAMES AND ANSWERS, NOT MILLISECONDS. Each step here is a call and a
+  // render, and what has to happen before the next line reads the result is
+  // that the browser has painted: three animation frames say that in 50 ms
+  // where a flat 1,500 said it in 1,500. Where the work is ASYNCHRONOUS - a
+  // file parsed, a session restored - the probe waits for the answer instead,
+  // which is both faster and steadier than guessing a duration.
+  const settle = async (n = 3) => {
+    for (let k = 0; k < n; k++) {
+      await new Promise((s) => requestAnimationFrame(() => s()));
+    }
+  };
+  const until = async (cond, ms = 4000) => {
+    const t0 = performance.now();
+    while (performance.now() - t0 < ms) {
+      if (cond()) return true;
+      await settle();
+    }
+    return false;
+  };
+  const loaded = () => {
+    const v = window.py2dmol_viewers && window.py2dmol_viewers['standalone-viewer-1'];
+    return !!(v && v.renderer && v.renderer.coords && v.renderer.coords.length);
+  };
   const go = async () => {
     const R = {};
     try {
-      await load('1UBQ.cif'); await wait(500);
+      await load('1UBQ.cif'); await until(loaded); await settle();
       const r = window.py2dmol_viewers['standalone-viewer-1'].renderer;
       r.useGPU = false;
-      await load('3CHY.cif'); await wait(700);
-      await load('6MRR.cif'); await wait(700);
+      await load('3CHY.cif'); await until(loaded); await settle();
+      await load('6MRR.cif'); await until(loaded); await settle();
       const names = Object.keys(r.objectsData);
       R.names = names;
       // MULTI, with the middle object switched off
-      document.getElementById('objectListButton').click(); await wait(400);
+      document.getElementById('objectListButton').click(); await settle();
       for (let k = 0; k < rows().length; k++) {
         const want = k !== 1;
         const on = !rows()[k].classList.contains('is-hidden');
-        if (on !== want) { eyes()[k].click(); await wait(350); }
+        if (on !== want) { eyes()[k].click(); await settle(); }
       }
       // ...some per-object state, and a camera the user chose
       r.objectsData[names[0]].sidechains = new Set([1, 2, 3]);
       r.objectsData[names[2]].hiddenBackbone = new Set([0, 1]);
       r.objectsData[names[0]].color = {type: 'advanced', value: {position: {2: '#ff0000'}}};
-      r.reloadDrawn(); await wait(500);
+      r.reloadDrawn(); await settle();
       r.viewerState.zoom = 1.7;
       r.viewerState.rotation = [[0, 1, 0], [-1, 0, 0], [0, 0, 1]];
-      r.render('probe camera'); await wait(300);
+      r.render('probe camera'); await settle();
       R.before = st(r, 'before save');
 
       // SAVE through the button's own path
@@ -94,10 +117,17 @@ window.addEventListener('load', () => {
       HTMLAnchorElement.prototype.click = realClick;
       R.saved = JSON.parse(captured).viewer_state.shown_objects;
 
-      r.clearAllObjects(); await wait(300);
+      r.clearAllObjects();
+      await until(() => !Object.keys(r.objectsData || {}).length, 2000);
       R.cleared = st(r, 'cleared');
       await window.loadViewerState(JSON.parse(captured));
-      await wait(1200);
+      // A RESTORE IS ASYNCHRONOUS: it parses each object's file and settles
+      // over several turns of the event loop, so the probe waits for the
+      // objects to BE there. Three frames caught it mid-way, with a leftover
+      // third object still on the list.
+      await until(() => Object.keys(r.objectsData || {}).length >= 2
+          && r.coords && r.coords.length > 0);
+      await settle();
       R.after = st(r, 'after load');
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});

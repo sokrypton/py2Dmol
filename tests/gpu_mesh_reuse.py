@@ -43,17 +43,40 @@ window.addEventListener('load', () => {
     await window.processFiles([{name: f, readAsync: () => Promise.resolve(txt)}], false);
   };
   const wait = (ms) => new Promise((s) => setTimeout(s, ms));
+  // FRAMES AND ANSWERS, NOT MILLISECONDS. Each step here is a call and a
+  // render, and what has to happen before the next line reads the result is
+  // that the browser has painted: three animation frames say that in 50 ms
+  // where a flat 1,500 said it in 1,500. Where the work is ASYNCHRONOUS - a
+  // file parsed, a session restored - the probe waits for the answer instead,
+  // which is both faster and steadier than guessing a duration.
+  const settle = async (n = 3) => {
+    for (let k = 0; k < n; k++) {
+      await new Promise((s) => requestAnimationFrame(() => s()));
+    }
+  };
+  const until = async (cond, ms = 4000) => {
+    const t0 = performance.now();
+    while (performance.now() - t0 < ms) {
+      if (cond()) return true;
+      await settle();
+    }
+    return false;
+  };
+  const loaded = () => {
+    const v = window.py2dmol_viewers && window.py2dmol_viewers['standalone-viewer-1'];
+    return !!(v && v.renderer && v.renderer.coords && v.renderer.coords.length);
+  };
   const go = async () => {
     const R = {toggles: []};
     try {
       const P = new URLSearchParams(location.search);
-      for (const f of P.get('files').split(',')) { await load(f); await wait(1200); }
-      await wait(800);
+      for (const f of P.get('files').split(',')) { await load(f); await until(loaded); await settle(); }
+      await settle();
       const r = window.py2dmol_viewers['standalone-viewer-1'].renderer;
       r.useGPU = true;
       r.styleChosen = true;            // a cartoon, because the user asked for one
       r.setStyle('cartoon');
-      await wait(2500);
+      await settle();
       R.n = r.coords.length;
       R.gpuDrew = r.gpuDrewLastFrame;
       const names = Object.keys(r.objectsData);
@@ -90,7 +113,7 @@ window.addEventListener('load', () => {
       const sel = document.getElementById('objectSelect');
       const to = async (nm) => {
         sel.value = nm; sel.dispatchEvent(new Event('change'));
-        await wait(1100);
+        await settle();
       };
       const seen = [];
       for (let k = 0; k < 4; k++) {
@@ -102,7 +125,7 @@ window.addEventListener('load', () => {
       for (const nm of names) {
         await to(nm);
         window.py2dmolCartoonGPU.invalidate();
-        r.render('forced rebuild'); await wait(1100);
+        r.render('forced rebuild'); await settle();
         ref[nm] = {png: shot(), pick: pick()};
       }
       R.switches = seen.map((x) => ({
@@ -120,16 +143,16 @@ window.addEventListener('load', () => {
       // ONE FULL CYCLE FIRST, so the camera has stopped moving: the very first
       // time an object is drawn the view widens to take it in, and a reference
       // shot taken then is of a different camera, not a different mesh.
-      r.setShownObjects(both); await wait(1200);
-      r.setShownObjects(one); await wait(1200);
+      r.setShownObjects(both); await settle();
+      r.setShownObjects(one); await settle();
       // THE REFERENCE IS A FRESH BUILD, forced. Taken after a restore instead,
       // it is the restore's own answer - so a restore that came back missing
       // something would be compared against itself and agree. This is the
       // check the whole probe exists for.
       const freshShot = async (want) => {
-        r.setShownObjects(want); await wait(900);
+        r.setShownObjects(want); await settle();
         window.py2dmolCartoonGPU.invalidate();
-        r.render('forced rebuild'); await wait(1200);
+        r.render('forced rebuild'); await settle();
         return {png: shot(), pick: pick()};
       };
       const bothFresh = await freshShot(both);
@@ -145,7 +168,7 @@ window.addEventListener('load', () => {
         const t = performance.now();
         r.setShownObjects(want);        // synchronous: the build is in here
         const ms = performance.now() - t;
-        await wait(900);
+        await settle();
         const ref = k % 2 === 0 ? bothFresh : oneFresh;
         R.toggles.push({
           shown: want.length, ms: Math.round(ms),
@@ -167,7 +190,7 @@ window.addEventListener('load', () => {
         const t0m = rebuiltAt();
         const co = r.coords || [];
         for (let i = 0; i < (co.length >> 1); i++) co[i].x += 8;
-        r.render('moved'); await wait(1200);
+        r.render('moved'); await settle();
         R.moved = {rebuilt: rebuiltAt() !== t0m, changed: shot() !== before};
       }
 

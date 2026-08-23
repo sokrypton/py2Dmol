@@ -28,6 +28,29 @@ window.addEventListener('load', () => {
     const txt = await (await fetch('/' + f)).text();
     await window.processFiles([{name: name || f, readAsync: () => Promise.resolve(txt)}], false);
   };
+  // FRAMES AND ANSWERS, NOT MILLISECONDS. Each step here is a call and a
+  // render, and what has to happen before the next line reads the result is
+  // that the browser has painted: three animation frames say that in 50 ms
+  // where a flat 1,500 said it in 1,500. Where the work is ASYNCHRONOUS - a
+  // file parsed, a session restored - the probe waits for the answer instead,
+  // which is both faster and steadier than guessing a duration.
+  const settle = async (n = 3) => {
+    for (let k = 0; k < n; k++) {
+      await new Promise((s) => requestAnimationFrame(() => s()));
+    }
+  };
+  const until = async (cond, ms = 4000) => {
+    const t0 = performance.now();
+    while (performance.now() - t0 < ms) {
+      if (cond()) return true;
+      await settle();
+    }
+    return false;
+  };
+  const loaded = () => {
+    const v = window.py2dmol_viewers && window.py2dmol_viewers['standalone-viewer-1'];
+    return !!(v && v.renderer && v.renderer.coords && v.renderer.coords.length);
+  };
   const go = async () => {
     const R = {};
     try {
@@ -37,7 +60,7 @@ window.addEventListener('load', () => {
       r.useGPU = false;
       const names = Object.keys(r.objectsData);
       r.setShownObjects(names);
-      await new Promise((s) => setTimeout(s, 400));
+      await settle();
       R.before = {drawn: r.drawnObjects(), n: r.coords.length,
                   offsets: r.multiState.sourceOffsets.slice()};
       // hide part of the second object, so there is state to lose
@@ -49,14 +72,12 @@ window.addEventListener('load', () => {
       // Load a third, untouched file and look at what survives.
       R.identityBefore = r.objectsData[names[1]] === r.objectsData[names[1]];
       const keep = r.objectsData[names[1]];
-      await load('1UBQ.cif');
-      await new Promise((s) => setTimeout(s, 600));
+      await load('1UBQ.cif'); await until(loaded); await settle();
       R.afterThirdHidden = Array.from((r.objectsData[names[1]] || {}).hiddenBackbone || []);
       R.sameObjectLiteral = r.objectsData[names[1]] === keep;
 
       // ...and RE-FETCH the first object, which deletes and re-adds it
-      await load('1BBH.cif');
-      await new Promise((s) => setTimeout(s, 700));
+      await load('1BBH.cif'); await until(loaded); await settle();
       R.after = {drawn: r.drawnObjects(), n: r.coords.length,
                  merged: !!(r.multiState && r.multiState.enabled),
                  offsets: r.multiState.sourceOffsets ? r.multiState.sourceOffsets.slice() : null,

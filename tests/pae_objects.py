@@ -35,6 +35,29 @@ window.addEventListener('load', () => {
       has: !!(r.paeRenderer && r.paeRenderer.paeData),
     };
   };
+  // FRAMES AND ANSWERS, NOT MILLISECONDS. Each step here is a call and a
+  // render, and what has to happen before the next line reads the result is
+  // that the browser has painted: three animation frames say that in 50 ms
+  // where a flat 1,500 said it in 1,500. Where the work is ASYNCHRONOUS - a
+  // file parsed, a session restored - the probe waits for the answer instead,
+  // which is both faster and steadier than guessing a duration.
+  const settle = async (n = 3) => {
+    for (let k = 0; k < n; k++) {
+      await new Promise((s) => requestAnimationFrame(() => s()));
+    }
+  };
+  const until = async (cond, ms = 4000) => {
+    const t0 = performance.now();
+    while (performance.now() - t0 < ms) {
+      if (cond()) return true;
+      await settle();
+    }
+    return false;
+  };
+  const loaded = () => {
+    const v = window.py2dmol_viewers && window.py2dmol_viewers['standalone-viewer-1'];
+    return !!(v && v.renderer && v.renderer.coords && v.renderer.coords.length);
+  };
   const go = async () => {
     const R = {};
     try {
@@ -57,12 +80,12 @@ window.addEventListener('load', () => {
       o._lastPaeFrame = 0;
       R.paeN = n;
       window.PAE.syncToDrawn(r);
-      await new Promise((s) => setTimeout(s, 200));
+      await settle();
       R.alone = panel(r);           // the prediction, on its own: the old world
 
       // MULTI, with both on screen: no panel.
       r.setShownObjects([noPae, withPae]);
-      await wait(400);
+      await settle();
       R.merged = panel(r);
       R.mergedDrawn = r.drawnObjects();
       R.offset = r.sourceOffsetOf(withPae);
@@ -71,17 +94,17 @@ window.addEventListener('load', () => {
       // object drawn is not the same as one object loaded, and a square that
       // comes and goes with an eye is the confusion this rule removes.
       r.setShownObjects([withPae]);
-      await wait(400);
+      await settle();
       R.multiOne = panel(r);
 
       // EVERYTHING OFF
       r.setShownObjects([]);
-      await wait(300);
+      await settle();
       R.off = panel(r);
 
       // BACK OUT OF MULTI: the picker's object, and its matrix with it.
       r.setShownObjects(null);
-      await wait(400);
+      await settle();
       R.back = panel(r);
       R.backDrawn = r.drawnObjects();
 
@@ -94,7 +117,7 @@ window.addEventListener('load', () => {
       pc.dispatchEvent(new MouseEvent('mousedown', at(2)));
       window.dispatchEvent(new MouseEvent('mousemove', at(8)));
       window.dispatchEvent(new MouseEvent('mouseup', at(8)));
-      await wait(300);
+      await settle();
       const sel = Array.from(r.getVisibility().positions || []).sort((a, b) => a - b);
       // ownerOf answers for a MERGE; outside one every position belongs to
       // the object on screen
@@ -107,7 +130,7 @@ window.addEventListener('load', () => {
       // THE OBJECT WITH NO MATRIX, picked: the panel goes away.
       r._switchToObject(noPae);
       r.setFrame(0);
-      await wait(500);
+      await settle();
       R.otherPicked = panel(r);
       R.paeObject = r.paeObjectName ? r.paeObjectName() : null;
     } catch (e) { R.error = String((e && e.stack) || e); }

@@ -350,9 +350,9 @@ function styleParams() {
     const el = (id) => document.getElementById(id);
     const preset = document.getElementById('preset').value;
     const rich = preset === 'richardson';
-    // Straight off STYLE_DEFAULTS, so the renderer and the shader cannot be
+    // Straight off LOOK_DEFAULTS, so the renderer and the shader cannot be
     // configured differently - which is what the first 97.6% turned out to be.
-    const P = (window.py2dmolCartoon.STYLE_DEFAULTS || {})[preset] || {};
+    const P = (window.py2dmolCartoon.LOOK_DEFAULTS || {})[preset] || {};
     // ONE SWITCH FOR BOTH SIDES. The renderer's `cel` is (cartoonSmooth !==
     // true), so smooth and quantisation are the same decision - setting them
     // independently on the two sides is how the shader ended up smooth while
