@@ -341,13 +341,19 @@ recorded so the next reader does not have to re-derive it:
 | file | what was wrong |
 |---|---|
 | `viewer-mol.js` | the 3D double-click's whole-chain widening; the silhouette's chain-break test; `chainPolymerBounds` (the head-to-tail test for a cyclic chain); `ligandIndicesByChain` (the fallback that bonds a chain's ligand atoms); the lone-atom ligand-group lookup; the hover readout; six entropy fills |
-| `viewer-seq.js` | the hit tester, the hover, the label's override colour, the drag, the whole-chain selection, the ligand groups, and one section's rows kept on `sequenceCanvasData` |
+| `viewer-seq.js` | the hit tester, the hover, the label's override colour, the drag, the whole-chain selection, the ligand groups, one section's rows kept on `sequenceCanvasData`, `chainIdOfItem` reading the edited object's frame, and a guard that refused a selection unless the EDITED object had frames |
 | `viewer-pae.js` | a box's rows landing at raw indices, the reverse mapping, the chain set it writes, the ligand expansion |
 | `viewer-cartoon.js` | the base-plate set, the forced-SSE map, the framing extent, the colour-override fast path |
 | `viewer-cartoon-gpu.js` | the mesh signature (which objects, the extent, the base and element sets, the per-position colour flag) and the contact cache key |
-| `web/app.js` | the panel's element/side-chain/base tallies, the side-chain colour readback, the chain set written when hiding, four entropy fills, Copy/Cut/Delete reporting |
+| `web/app.js` | the panel's element/side-chain/base tallies, the side-chain colour readback, the chain set written when hiding, four entropy fills, Copy/Cut/Delete reporting, and CONTACTS - filed on whichever object was current, found the same way, and matched in the index form at merged indices |
 | `viewer-msa.js` | nothing: it maps one object's alignment onto that object's own frame, and `entropyForDrawn` places the result |
 | `viewer-scatter.js` | nothing: it holds no position indices |
+
+**A contact between two objects is refused**, out loud. It is stored on an
+object as a pair of chain+residue references and resolved among that object's
+positions, so a pair with one end in each has nowhere to live: on either object
+the other end resolves to nothing, and the line would be recorded and never
+drawn.
 
 The rule that came out of it: **anything that identifies a residue, a chain or
 a sequence across the merged array carries its object.** The exceptions are
