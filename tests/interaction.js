@@ -90,7 +90,7 @@ global.OBJECT_STATE = new Function(
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyLookDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','_applyRecordVisibility','_composeAndApplyMask','_visibleForObject','_syncModelToMask','withSidechainAtoms','_baseCount','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','ligandGroupsOf','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyLookDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_transformedFrame','_parkedFrameIndex','setAlignTransform','clearAlignments','anyAlignment','_reapplyAfterAlign','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','_applyRecordVisibility','_composeAndApplyMask','_visibleForObject','_syncModelToMask','withSidechainAtoms','_baseCount','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','ligandGroupsOf','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -564,7 +564,9 @@ const panelBody = (() => {
         // ...and the two the toggles read: which of them is a ligand row, and
         // how much of it is drawn
         + '\n' + lift('ligandRowPositions') + '\n' + lift('visibleState')
-        + '\n' + lift('syncSseSelect');
+        + '\n' + lift('syncSseSelect')
+        // ...and the Align row, which the panel now syncs alongside Contact
+        + '\n' + lift('syncAlignRow');
 })();
 // A SHOW/HIDE PAIR, as much of one as the panel touches: two buttons, and the
 // one that matches what is drawn carries the class. Read back the way a switch
@@ -597,12 +599,19 @@ function plateToggleNode() {
 }
 function panelRun(selection, sidechained = new Set(), hasContact = false, types = null,
     shown = null, ligEls = new Set(), visible = null, sse = null, basesOff = null,
-    scMap = null, style = 'cartoon', colorMode = 'auto') {
+    scMap = null, style = 'cartoon', colorMode = 'auto', align = null) {
     const nodes = {
         selectionTools: { classList: { toggle(c, on) { this._on = on; } } },
         selectionPanel: { hidden: null },
         selectionPanelCount: { textContent: null, title: null },
         contactRow: { hidden: null },
+        // ALIGN: a row, and a dropdown whose options come and go with what is
+        // possible - "all to this" needs a second object, "undo" needs
+        // something already moved
+        alignRow: { hidden: null },
+        alignSelect: { options: [{ value: '', hidden: true }, { value: 'all', hidden: null },
+            { value: 'visible', hidden: null }, { value: 'none', hidden: null }],
+        opt(v) { return this.options.find((o) => o.value === v); } },
         clearAllResidues: { disabled: null },
         elementsShowToggle: (() => {
             const label = { hidden: null };
@@ -680,8 +689,13 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
             // both, and the side-chain mode is the first of the two.
             // `basesOff` is an empty base set - the object saying "no plates
             // here", which is how a nucleotide with nothing drawn is expressed
-            objectsData: { obj: Object.assign({}, shown ? { sidechains: shown } : {},
-                basesOff ? { bases: new Set() } : {}) },
+            objectsData: Object.assign(
+                { obj: Object.assign({}, shown ? { sidechains: shown } : {},
+                    basesOff ? { bases: new Set() } : {}) },
+                // a SECOND object, when the test is about the Align row: with
+                // one structure loaded there is nothing to align it to
+                (align && align.objects > 1) ? { other: { frames: [{}] } } : {}),
+            anyAlignment: () => !!(align && align.aligned),
         } },
         // a usable shape, not a bare {}: the panel reads the contact's stored
         // weight to load the width slider
@@ -694,9 +708,48 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
     nodes.selectionTools.querySelectorAll = () => [];
     global.window = global.window || {};
     global.window.refreshSelectionSwatches = () => {};
+    // THE ALIGNER IS A SEPARATE SCRIPT and the notebook build does not carry
+    // it. The row is offered only where it is loaded, so the mock says so.
+    if (align && align.loaded !== false) global.window.Align = { MIN_CHAIN: 15 };
+    else delete global.window.Align;
     f();
     return nodes;
 }
+
+t('Align is offered only when there is a second object to align', () => {
+    const one = panelRun([1, 2, 3], new Set(), false, null, null, new Set(), null,
+        null, null, null, 'cartoon', 'auto', { objects: 1 });
+    eq(one.alignRow.hidden, true, 'one structure has nothing to align to');
+    const two = panelRun([1, 2, 3], new Set(), false, null, null, new Set(), null,
+        null, null, null, 'cartoon', 'auto', { objects: 2 });
+    eq(two.alignRow.hidden, false, 'a second object makes it possible');
+    eq(two.alignSelect.opt('all').hidden, false, 'and both directions are offered');
+    eq(two.alignSelect.opt('none').hidden, true,
+        'undo is offered before anything has been aligned');
+});
+
+t('Undo appears once something is off its file coordinates', () => {
+    const n = panelRun([1, 2, 3], new Set(), false, null, null, new Set(), null,
+        null, null, null, 'cartoon', 'auto', { objects: 2, aligned: true });
+    eq(n.alignSelect.opt('none').hidden, false, 'undo is offered');
+    // ...and it survives being the ONLY thing on the row: an alignment can
+    // outlive the second object being deleted, and the way back must not go
+    // with it
+    const gone = panelRun([1, 2, 3], new Set(), false, null, null, new Set(), null,
+        null, null, null, 'cartoon', 'auto', { objects: 1, aligned: true });
+    eq(gone.alignRow.hidden, false, 'the row stays while something is still moved');
+    eq(gone.alignSelect.opt('none').hidden, false, 'and undo with it');
+    eq(gone.alignSelect.opt('all').hidden, true, 'but there is nothing left to align');
+});
+
+t('the aligner is a separate script, and the row goes with it', () => {
+    // viewer.py inlines its resources and does not carry tmalign.js, so a
+    // notebook page has no window.Align. The row is simply not offered there -
+    // which is a menu that does nothing, avoided.
+    const n = panelRun([1, 2, 3], new Set(), false, null, null, new Set(), null,
+        null, null, null, 'cartoon', 'auto', { objects: 2, loaded: false });
+    eq(n.alignRow.hidden, true, 'Align was offered on a page with no aligner');
+});
 
 t('a line separates what the selection IS from what to do with it', () => {
     // The rows above set properties of the picked residues - how they are
@@ -6553,6 +6606,94 @@ t('a merge concatenates the objects and maps each position back to its source', 
     eq(m.sourceOffsets.join(','), '0,3', 'where each source starts');
     // B is parked on frame 1, so its SECOND frame is the one merged
     eq(m.coords[3][0], 5, 'B contributed the frame it is parked on');
+});
+
+// AN ALIGNMENT IS A RIGID MOTION HELD ON THE OBJECT, applied on the way to the
+// screen. The coordinates on disk are never rewritten, which is what makes
+// aligning twice safe, undoing free, and a re-fetch not a silent revert.
+//
+// It goes in _resolvedFrame and not in the merge because that is the one place
+// BOTH the merge and the single-object load pass through. An aligned object
+// shown by itself, drawn where its file put it, is the same picture as "the
+// alignment was forgotten" - and nothing on screen would say which.
+function alignedViewer() {
+    const v = mergeViewer();
+    v._invalidateSegmentCache = () => {};
+    v._loadFrameData = () => {};
+    v.render = () => {};
+    v.multiState = { enabled: false };
+    return v;
+}
+// a quarter turn about z, then 10 along x: every component moves, and no
+// component moves the same way twice
+const QUARTER = { t: [10, 0, 0], u: [0, -1, 0, 1, 0, 0, 0, 0, 1] };
+
+t('the frame an object is parked on is one answer, for the merge and the aligner', () => {
+    const v = alignedViewer();
+    eq(v._parkedFrameIndex('A'), 0, 'the current object is on its live frame');
+    eq(v._parkedFrameIndex('B'), 1, 'every other object is on its saved one');
+    v.objectsData.B.viewerState.currentFrame = 99;
+    eq(v._parkedFrameIndex('B'), 1, 'a saved frame past the end is clamped, not trusted');
+    eq(v._parkedFrameIndex('nope'), -1, 'an object that is not there has no frame');
+});
+
+t('an aligned object is drawn moved, and its file is not touched', () => {
+    const v = alignedViewer();
+    v.setAlignTransform('B', QUARTER);
+    const m = v._mergeObjects(['A', 'B']);
+    // B's frame 1 starts at [5,0,0]: a quarter turn about z sends it to [0,5,0],
+    // then +10 in x
+    eq(m.coords[3][0], 10, 'B moved in x');
+    eq(m.coords[3][1], 5, 'B turned into y');
+    eq(m.coords[0][0], 0, 'A did not move - only the object carrying a transform does');
+    eq(v.objectsData.B.frames[1].coords[0][0], 5,
+        'the alignment rewrote the coordinates on disk');
+});
+
+t('the single-object path is moved too, not just the merge', () => {
+    const v = alignedViewer();
+    v.setAlignTransform('B', QUARTER);
+    // _loadFrameData reads _resolvedFrame, which is where the transform lives
+    const f = v._resolvedFrame(v.objectsData.B, 1);
+    eq(f.coords[0][0], 10, 'an object shown by itself is drawn where it was aligned');
+    eq(f.coords[0][1], 5, 'and turned with it');
+});
+
+t('aligning again replaces, and undoing is free', () => {
+    const v = alignedViewer();
+    v.setAlignTransform('B', QUARTER);
+    v.setAlignTransform('B', QUARTER);
+    // a SECOND quarter turn would put B at [10,-5,0] via [0,5,0] -> [-5,0,0]+10
+    eq(v._mergeObjects(['A', 'B']).coords[3][1], 5,
+        'two runs compounded - the transform is applied to already-moved coordinates');
+    eq(v.anyAlignment(), true, 'something is off its file coordinates');
+    eq(v.clearAlignments(), 1, 'one object was put back');
+    eq(v.anyAlignment(), false, 'and nothing is aligned any more');
+    eq(v._mergeObjects(['A', 'B']).coords[3][0], 5, 'B is back where its file put it');
+    eq(v.clearAlignments(), 0, 'undoing twice is not an event');
+});
+
+t('a side chain with no frame of its own is turned by hand', () => {
+    const v = alignedViewer();
+    // A side-chain row stores an offset in a LOCAL frame built from the
+    // backbone, so a rigid motion of the backbone carries it - except rows
+    // marked frameOf -1, whose offset is in WORLD axes because the copy they
+    // came from was too short to be framed. Those have to be rotated here or
+    // the atom keeps its old orientation while its residue turns.
+    v.objectsData.B.frames[1].sidechains = {
+        pos: [0, 1], frameOf: [0, -1],
+        coef: new Float32Array([1, 0, 0, 1, 0, 0]),
+        names: ['CB', 'CB'], elements: ['C', 'C'],
+        bonds: [], toBackbone: []
+    };
+    v.setAlignTransform('B', QUARTER);
+    const f = v._resolvedFrame(v.objectsData.B, 1);
+    eq(Math.round(f.sidechains.coef[0]), 1, 'a FRAMED row is carried by its frame, untouched');
+    eq(Math.round(f.sidechains.coef[1]), 0, '...in both components');
+    eq(Math.round(f.sidechains.coef[3]), 0, 'a LOOSE row was rotated');
+    eq(Math.round(f.sidechains.coef[4]), 1, '...into y, with the residue it hangs off');
+    eq(v.objectsData.B.frames[1].sidechains.coef[3], 1,
+        'the stored table was rewritten in place');
 });
 
 t('a merged bond can never join two objects', () => {

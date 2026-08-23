@@ -26,7 +26,7 @@ if [[ "$LANE" == "all" || "$LANE" == "node" ]]; then
            py2Dmol/resources/viewer-seq.js; do
     npx terser "$f" -c -m -o "${f%.js}.min.js" || { print "terser failed: $f"; exit 1 }
   done
-  for f in interaction smoke sequence copy_selection sidechain_chain na_frame; do
+  for f in interaction smoke sequence copy_selection sidechain_chain na_frame align; do
     out=$(node tests/$f.js 2>&1)
     if print -r -- "$out" | grep -q '^FAIL'; then
       fail=1; print "NODE $f:"; print -r -- "$out" | grep '^FAIL' | head -3
@@ -67,7 +67,7 @@ run_probe () {   # name, then its arguments
 if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
   UI=(pick_empty pae_objects pae_visibility hidden_reload cut_ligands
       sidechain_toggle nucleic_multi save_multi selection_panel minimal_input
-      object_reload python_page style_per_object)
+      object_reload python_page style_per_object align_objects)
   pids=(); names=()
   for t in $UI; do
     ( run_probe $t ) & pids+=($!); names+=($t)

@@ -1491,6 +1491,84 @@ function setupEventListeners() {
     // and past about 6 the answer is everything in the neighbourhood.
     const INTERACTION_CUTOFF_A = 5;
 
+    /**
+     * The Align row appears only when there is something to align: a second
+     * object, and a selection to align it to. The panel itself is already
+     * gated on there being a selection, so the row only has to answer the
+     * other half - and Undo appears within it whenever something is actually
+     * off its file coordinates, which is not the same question.
+     */
+    function syncAlignRow(picked, none) {
+        const row = document.getElementById('alignRow');
+        const sel = document.getElementById('alignSelect');
+        if (!row || !sel) return;
+        const r = viewerApi?.renderer;
+        const objects = r ? Object.keys(r.objectsData || {}) : [];
+        const aligned = !!(r && r.anyAlignment && r.anyAlignment());
+        const canAlign = !none && objects.length > 1 && !!window.Align;
+        row.hidden = !(canAlign || aligned);
+        for (const opt of sel.options) {
+            if (opt.value === 'none') opt.hidden = !aligned;
+            else if (opt.value) opt.hidden = !canAlign;
+        }
+    }
+
+    /**
+     * Run it, and say what happened in one line.
+     *
+     * The dropdown is disabled while it runs rather than queueing a second
+     * job: TM-align is seconds of arithmetic on a big chain, and two runs
+     * racing to write alignTransform would land in whichever order they
+     * finished in.
+     */
+    async function runAlign(mode) {
+        const r = viewerApi?.renderer;
+        const sel = document.getElementById('alignSelect');
+        if (!r) return;
+        if (mode === 'none') {
+            const n = r.clearAlignments();
+            setStatus(n ? `${n} object${n === 1 ? '' : 's'} back to file coordinates`
+                : 'nothing was aligned');
+            updateSelectionToolsState();
+            return;
+        }
+        if (sel) sel.disabled = true;
+        try {
+            setStatus('Aligning...');
+            r.onAlignProgress = (done, total) => setStatus(`Aligning ${done}/${total}...`);
+            const out = await r.alignToSelection(mode);
+            r.onAlignProgress = null;
+            // What the last run actually did, for the probe: whether it got a
+            // worker is not visible in the picture and not visible in the
+            // status line, and it is the half of this feature most likely to
+            // fail silently by falling back to the main thread for good.
+            window.__alignResult = { ref: out.ref, inWorker: out.inWorker,
+                results: out.results, skipped: out.skipped };
+            const res = out.results;
+            if (!res.length) { setStatus('nothing could be aligned', true); return; }
+            // ONE LINE, and it says the thing you would check: how good the fit
+            // is. For a single object that is its own numbers; for several it
+            // is the range, because listing four objects' scores is four lines
+            // in a panel that has room for one.
+            const fmt = (x) => x.toFixed(2);
+            if (res.length === 1) {
+                const a = res[0];
+                setStatus(`${a.name} ${a.chain} to ${out.ref}: TM ${fmt(a.tm)},`
+                    + ` RMSD ${a.rmsd.toFixed(1)} A over ${a.aligned}`);
+            } else {
+                const tms = res.map((a) => a.tm);
+                setStatus(`${res.length} objects to ${out.ref}: TM `
+                    + `${fmt(Math.min(...tms))}-${fmt(Math.max(...tms))}`);
+            }
+            updateSelectionToolsState();
+        } catch (e) {
+            r.onAlignProgress = null;
+            setStatus(String((e && e.message) || e), true);
+        } finally {
+            if (sel) sel.disabled = false;
+        }
+    }
+
     function selectNearby(cutoff, sidechainsOnly) {
         const renderer = viewerApi?.renderer;
         if (!renderer || !renderer.residuesWithin) return;
@@ -1636,6 +1714,7 @@ function setupEventListeners() {
         const contactRow = document.getElementById('contactRow');
         const pair = !none && picked.length === 2;
         if (contactRow) contactRow.hidden = !pair;
+        syncAlignRow(picked, none);
         if (pair) {
             const found = findContact(picked);
             const has = !!found;
@@ -1992,6 +2071,18 @@ function setupEventListeners() {
             nearBtn.addEventListener('click', (e) => {
                 e.preventDefault();
                 selectNearby(INTERACTION_CUTOFF_A, true);
+            });
+        }
+        // ALIGN. The dropdown is a MENU OF ACTIONS, not a setting, so it snaps
+        // back to its own label as soon as one is chosen - leaving it reading
+        // "all to this" would claim a state the app does not hold, and pressing
+        // it again would then be a no-op that looks like a repeat.
+        const alignSel = document.getElementById('alignSelect');
+        if (alignSel) {
+            alignSel.addEventListener('change', () => {
+                const mode = alignSel.value;
+                alignSel.value = '';
+                if (mode) runAlign(mode);
             });
         }
         // the protein form of the same control: two states, one switch - and on

@@ -1500,3 +1500,123 @@ aim 17.6° median / 49.5° p90, twist stdev 28.9°, reversals 22.2%.
 `viewer-cartoon.min.js`, and a bundle committed without being rebuilt scores
 exactly like the code it was meant to replace — which is how a shipped fix
 came to be source-only for a day.
+
+## Structural alignment — `align.js` / `align_objects.py` / `vendor_tmalign.mjs`
+
+TM-align, and the five decisions the viewer makes around it. The algorithm is
+not maintained in this repo: it lives inside
+`py2Dmol/resources/viewer-align.js`, **generated** into that file from
+`../foldjs/lib/tmalign.js` — a port of `TMalign.cpp` 20220412 whose parity
+against the C++ is checked upstream to 1.1e-16.
+
+**One file with a seam in it.** The algorithm and the viewer's side of it were
+two scripts once, which meant two `<script>` tags, two names in the worker's
+`importScripts`, and two ways for a page to end up with half the feature: the
+aligner present and its arithmetic missing, or the reverse. They are one file
+now, and the seam is a pair of markers:
+
+```
+// >>> BEGIN GENERATED: foldjs/lib/tmalign.js
+   ...1,433 lines, at column zero, byte-for-byte
+// <<< END GENERATED
+```
+
+The generated half sits at column zero while the rest of the file is indented,
+because reindenting it would break the diff that proves it is a copy.
+
+**The copy is derived, not edited.** foldjs exists because copied modules
+drift, and this is a copy of one of them. `tests/vendor_tmalign.mjs` states the
+derivation — drop `export ` from the eight top-level declarations, splice the
+result between the markers — and `align.js` runs the generator in check mode
+and fails on any difference. Regenerate with
+`node tests/vendor_tmalign.mjs --write`; the diff is then reviewable. An
+earlier version of the check looked for the upstream body *inside* the file,
+and a line appended to the end passed it.
+
+Why an IIFE rather than the ES module it is upstream: py2Dmol's resources are
+classic scripts, and the notebook build inlines them into one HTML file
+(`viewer.py:1313`), where a module cannot go and a `fetch` has nothing to
+fetch. `window.Align` is the only global; the algorithm's own entry points are
+hung off it too, so a test can read a raw score, but nothing in the app calls
+them.
+
+**Which coordinates.** Protein Cα only — the port leaves out the RNA C3′
+parameter sets, so a nucleic chain has no business being scored by it.
+Positions typed `'P'` are exactly the Cα trace, one per residue, which is the
+input TM-align wants with no resampling. Chains under 15 residues are dropped:
+d0 is clamped there and the score below it is noise with a confident face on.
+
+**Which chain.** The reference is the **selected residues**, and the object
+being moved may be a complex whose matching chain is neither its first nor its
+longest. Every protein chain is tried and the best kept.
+
+**Which search — and this one is a real trade.** All of them run at TM-align's
+`fast` settings (`Align.FULL_SEARCH`). Measured over 44 homolog-like pairs
+built from this repo's fixtures — a chain against itself with runs deleted and
+0.5–5 Å of jitter added — **41 agreed with the full search to four decimal
+places** on both TM and RMSD, for 2–4× less time: 63 ms against 149 ms on
+2OMF/2POR, 1.4 s against 15.7 s on a 1,365-residue chain.
+
+The other three failed badly rather than slightly. 1AOI's 116-residue histone
+at 3 Å of jitter scored **0.18 fast against 0.52 full**, RMSD 3.5 against 1.5 —
+the fast search missing the alignment altogether, which is what happens on
+short chains with little secondary structure to seed on. The failure is at
+least a loud one: the bad score is the one reported and the structures visibly
+do not overlap, so it reads as "these do not match" rather than passing for a
+fit. If that tail ever matters more than the wait, the shape to reach for is
+escalation rather than a flag — run fast, re-run the winner at full when it
+comes back under about 0.5, which is exactly where the three failures sit.
+
+Fast also collapses two passes into one: ranking N chains needs a score per
+chain anyway, so the winner's score *is* the answer and nothing is computed
+twice. The setting is read from one constant by both hosts, and `align.js`
+fails if a call site names it inline — the worker asked for the full search and
+the main-thread fallback for the fast one once, so a notebook and the web app
+answered differently, by 0.3 TM on the cases where the two searches disagree.
+
+**Which score ranks.** TM1 is normalised by chain 2 (the reference) and TM2 by
+chain 1 (the chain being moved). Comparing chains of *different lengths*
+against one fixed reference is only fair under the reference's normalisation,
+so TM1 ranks and TM1 is reported. TM2 hands the win to whichever chain is
+shortest — a 30-residue fragment that fits perfectly beats a whole domain that
+fits well, and `align.js` builds exactly that fixture so the two disagree.
+
+**Which direction.** TM-align's own direction is `X = t + u·x`: chain 1 onto
+chain 2. The chain being moved is passed as chain 1, so `t/u` applies to the
+moved object unchanged and **the reference never moves** — which is what keeps
+the camera valid. Run backwards it scores identically, so the probe checks the
+*coordinates*: 2OMF and 2POR start 70.6 Å apart and end 1.2 Å apart; the
+reversed transform drives them to 140.2 Å.
+
+**Where the transform lives.** On the object as `alignTransform`, applied in
+`_resolvedFrame` on the way to the screen — never written to `frame.coords`.
+That buys three things a rewrite would not: aligning again starts from the
+original coordinates instead of compounding, undo is deleting a field, and a
+re-fetch does not silently revert. `_resolvedFrame` and not the merge, because
+it is the one place **both** the merge and the single-object load pass through:
+in the merge alone, an aligned object shown by itself would be drawn where its
+file put it, and nothing on screen would say so.
+
+Side chains come along for free — they are coefficients in a local frame built
+from the backbone, and a rigid motion carries that frame. The exception is rows
+with `frameOf === -1`, whose coefficients are a *world* offset because the copy
+they came from was too short to be framed; those are rotated by hand, on a copy
+of the array, or the atom keeps its old orientation while its residue turns.
+
+`alignTransform` is in `OBJECT_STATE`, so it is saved with a session and
+carried across a Cut — the only field there that is not keyed by position, so
+it goes across whole. A Cut reads the *raw* frames, so without it the piece you
+just cut out of an aligned structure would fly back to its file coordinates on
+its own.
+
+**Where it runs.** In a Worker: 1,365 residues is still 1.4 s at fast
+settings. A page with no script URL to import from — the inlined notebook
+build — runs the same job on the main thread at fast settings instead. That
+fallback would also cover a *broken* worker perfectly quietly, and the only
+symptom would be a page that stops for several seconds, so `align_objects.py`
+asks which one ran.
+
+Measured end to end on 2OMF + 2POR (two porins), and pinned: TM 0.705 against
+2OMF, RMSD 3.18 Å over 278 residues, identical to the same pair in node.
+Normalised the other way it is 0.787 — a probe that accepted both would be
+accepting the score this code deliberately does not report.

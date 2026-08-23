@@ -203,6 +203,28 @@ test('an object-wide colour is carried whole - it is not keyed by position', () 
     }
 });
 
+test('a cut out of an aligned structure stays where the alignment put it', () => {
+    // A CUT READS THE RAW FRAMES, not the coordinates on screen: the alignment
+    // is a transform held on the object and applied on the way to the drawing.
+    // So the copy has to inherit the transform or it lands back where its file
+    // put it - the piece you just cut out flying off on its own, with nothing
+    // said. It is the only field here that is not keyed by position, so it goes
+    // across WHOLE: renumbering a rotation is meaningless.
+    const xf = { t: [10, 0, 0], u: [0, -1, 0, 1, 0, 0, 0, 0, 1], ref: 'other', tm: 0.8 };
+    const dst = {};
+    remap({ alignTransform: xf }, dst, SEL);
+    if (!eq(dst.alignTransform, xf)) {
+        throw new Error('the copy did not inherit the alignment: '
+            + JSON.stringify(dst.alignTransform));
+    }
+    // ...and an object that was never aligned does not acquire one
+    const clean = {};
+    remap({}, clean, SEL);
+    if ('alignTransform' in clean) {
+        throw new Error('an unaligned object was given an alignment');
+    }
+});
+
 // ---- the wiring --------------------------------------------------------------
 
 test('extractSelection actually carries the state across', () => {

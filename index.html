@@ -877,6 +877,31 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                 <button id="selectNearby" class="btn btn-grey btn-small"
                                     title="Select every residue whose side chain comes within 5 &#8491; of the selection">interactions</button>
                             </div>
+                            <!-- ALIGN: superpose other objects onto the SELECTED
+                                 RESIDUES by TM-align. It sits on this panel and
+                                 next to Find because it is the same kind of thing
+                                 - an action on the selection rather than a
+                                 property of it - and because what you align to is
+                                 the pick: one chain out of a complex, or one
+                                 domain out of a chain, is a selection and nothing
+                                 else in the app can say it.
+                                 A DROPDOWN AND NOT TWO BUTTONS: "all" and
+                                 "visible" are the same action over different
+                                 sets, so they read as one control with a choice,
+                                 and Undo belongs in the same list because it is
+                                 the third thing you can do to an alignment. The
+                                 row is hidden until a second object is loaded -
+                                 there is nothing to align one structure to. -->
+                            <div class="selection-panel-row" id="alignRow" hidden>
+                                <span class="selection-panel-label">Align</span>
+                                <select id="alignSelect" class="btn btn-grey btn-small"
+                                    title="Superpose other objects onto the selected residues (TM-align)">
+                                    <option value="" selected hidden>to selection</option>
+                                    <option value="all">all to this</option>
+                                    <option value="visible">visible to this</option>
+                                    <option value="none">undo</option>
+                                </select>
+                            </div>
                             <!-- CONTACTS need exactly two residues, so this row
                                  appears only then - a contact is a line between
                                  a pair and there is nothing to draw for one
@@ -1084,6 +1109,11 @@ AI Context: STANDALONE WEB APP ENTRY POINT
 
     <!-- Load scripts in order -->
     <script src="web/utils.js"></script>
+    <!-- TM-align and the viewer's side of it, in one file: loaded before
+         viewer-mol.js so the renderer's align methods have window.Align to
+         hand. Its TM-align half is generated from foldjs/lib/tmalign.js - see
+         tests/vendor_tmalign.mjs. -->
+    <script src="py2Dmol/resources/viewer-align.js"></script>
     <script src="py2Dmol/resources/viewer-mol.js"></script>
     <script src="py2Dmol/resources/viewer-cartoon.js"></script>
     <script src="py2Dmol/resources/viewer-cartoon-gpu.js"></script>
