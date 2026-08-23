@@ -9376,7 +9376,15 @@
                 // inside the same i/j loop, so using `i` for both made the two
                 // indistinguishable downstream: selecting one residue lit the
                 // whole rung, right across to its partner's backbone.
-                const mk = (base, fr, col, res) => {
+                // `slot` is WHICH COLOUR THIS RUNG TOOK - the same index into
+                // `colors` its backbone residue took. Without it the GPU port
+                // has to bake the colour into the mesh, and a mesh with one
+                // baked face in it cannot be repainted from a new palette at
+                // all: every colour change on any structure with a base pair
+                // in it rebuilt the whole thing. Measured on 4UG0, 21,744 of
+                // 167,824 faces were rungs, and a colour change cost 950 ms
+                // against 30 ms for the upload it should have been.
+                const mk = (base, fr, col, res, slot) => {
                     const n0x = fr.t[1] * fr.s[2] - fr.t[2] * fr.s[1];
                     const n0y = fr.t[2] * fr.s[0] - fr.t[0] * fr.s[2];
                     const n0z = fr.t[0] * fr.s[1] - fr.t[1] * fr.s[0];
@@ -9602,6 +9610,14 @@
                             // that rounds it to get a residue lands on the NEXT
                             // one for every slice past the midpoint.
                             resId: res,
+                            // ...and the palette slot, on the same terms the
+                            // backbone states it (see the rib prim): only when
+                            // the colour really did come from the palette, or a
+                            // lookup would repaint it with something else. A
+                            // rung is never protein, so the ss-mode half of
+                            // that test cannot apply to it.
+                            ci: frameProbe ? slot : undefined,
+                            ciPalette: frameProbe ? !hasColorOverrides : undefined,
                             gs0: res + s / Math.max(1, nseg),
                             gsStep: 1 / Math.max(1, nseg),
                         });
@@ -9669,8 +9685,10 @@
                 // pair leaves the other's half rung standing, which is what
                 // "show the bases I selected" has to mean when a selection
                 // covers one strand of a duplex
-                if (ci && baseShown(i)) mk(pi, fi, ci, i);
-                if (cj && baseShown(j)) mk(pj, fj, cj, j);
+                const si = bbSeg[i] >= 0 ? bbSeg[i] : bbSeg[i - 1];
+                const sj = bbSeg[j] >= 0 ? bbSeg[j] : bbSeg[j - 1];
+                if (ci && baseShown(i)) mk(pi, fi, ci, i, si);
+                if (cj && baseShown(j)) mk(pj, fj, cj, j, sj);
             }
         }
 

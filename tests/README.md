@@ -159,6 +159,26 @@ their atoms, and every side chain went out the moment a merge was rebuilt.
 Click any object's eye and the side chains of the object you did not touch
 disappeared with it.
 
+`tests/gpu_recolour.py` checks that **a colour change repaints the GPU mesh
+rather than rebuilding it**:
+
+    python3 tests/gpu_recolour.py            # 1EHZ, a small RNA
+    python3 tests/gpu_recolour.py 4UG0.cif   # a ribosome
+
+The mesh carries a palette INDEX per face, so a colour change is three texels
+per segment against geometry that never moves - and a face whose colour did
+not come from the palette has to bake it, which makes the WHOLE mesh
+ineligible. Nucleic base rungs were baked: their colour is `colors[bbSeg[i]]`,
+a palette lookup like any other, but the index was not recorded. So every
+colour change on any structure with a base pair in it rebuilt everything -
+21,744 of 167,824 faces on 4UG0, 950 ms against the 30 ms an upload costs.
+
+The probe compares the repainted picture with one drawn from a mesh built for
+that mode, PIXEL FOR PIXEL, in four modes - which is what catches a face
+repainted from the wrong palette slot. It also checks that the two cases which
+must still rebuild do: ss mode and a per-residue override both cut geometry at
+the midpoint between two colours.
+
 `tests/minimal_input.py` checks **the smallest thing the Python API can be
 handed**: an Nx3 array of CA coordinates and nothing else.
 

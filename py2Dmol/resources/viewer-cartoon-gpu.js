@@ -4622,6 +4622,10 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
             // showing: the ribbon kept the colour it was captured with. Where
             // the palette is incomplete a colour change rebuilds instead.
             appPalComplete = paletteComplete !== false;
+            // ...reported, because it decides whether a colour change is an
+            // upload or a rebuild, and one baked face out of a hundred
+            // thousand is the difference. tests/gpu_recolour.py reads it.
+            if (typeof window !== 'undefined') window.__palComplete = appPalComplete;
         } else {
             // A COLOUR CHANGE IS AN UPLOAD, not a rebuild - three texels per
             // segment against a mesh that never moves.
