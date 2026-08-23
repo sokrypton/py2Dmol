@@ -56,6 +56,9 @@ week, all the same shape - two paths, one of which quietly owns shared state:
 
 ## Next: unify the lifecycle (not the geometry)
 
+**All three steps are done** (2026-08-23). What follows is the record of what
+each one was and what it turned up.
+
 1. ~~**One signature vocabulary.**~~ DONE. `sharedGeometryKey(r)` holds the
    half neither path owns - object, what the coordinate array HOLDS, a content
    probe over it, segment count, mask content, line width, side chains, hidden
@@ -96,11 +99,20 @@ week, all the same shape - two paths, one of which quietly owns shared state:
    rebuilds the colour array from scratch whenever the drawn set changes.
    Toggling one object of a two-object merge in tube style: 33-50 ms -> 2-4 ms.
 
-3. **Derived state, filled independently of style.** Anything a reader outside
-   the render path consults must be askable and keyed on what it came from.
-   `_naPick` is stamped now and the SS assignment is askable; check the rest
-   (`_cartoonPair`, `_cartoonLadder`, `_cartoonSheet`) the same way if a
-   non-cartoon reader ever appears.
+3. ~~**Derived state, filled independently of style.**~~ Checked. The three
+   cartoon caches (`_cartoonPair`, `_cartoonLadder`, `_cartoonSheet`) have no
+   reader outside viewer-cartoon.js, `_naPick` carries the frame it was drawn
+   for, and the SS assignment is askable - so nothing outside the render path
+   depends on which painter ran.
+
+   What did come out of the check: `secCacheKey` was a THIRD hand-written list
+   of what the coordinates are, and the weakest - it could not see a coordinate
+   swap at all, which is why `_invalidateSegmentCache` reaches in and clears
+   those caches by hand. All three now ask `renderer._coordsKey()`
+   (viewer-mol.js), which is `_arrayKey()` - the statement the renderer already
+   keeps of what the array holds - plus three samples of the coordinates. The
+   hand-clearing stays: it also covers the other direction, the array unchanged
+   and something derived from it not.
 
 ## What must stay green
 

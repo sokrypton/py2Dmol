@@ -4199,23 +4199,26 @@ function sharedGeometryKey(r) {
         : ((o && o.hiddenBackbone) || null);
     return [
         r.currentObjectName,
-        // WHAT THE COORDINATE ARRAY HOLDS, in the renderer's own words: every
-        // drawn object with the frame it is showing, and how many side-chain
-        // atoms are appended. Not the array's IDENTITY - the merge is rebuilt
-        // from scratch whenever the drawn set changes, so switching an object
-        // off and back on yields the same picture in a new array and identity
-        // rebuilt the mesh for nothing (measured: every eye toggle, 70-80 ms
-        // that should have been 0). This is the same statement viewer-mol.js
-        // itself uses to decide whether the array needs reloading.
-        r._arrayKey ? r._arrayKey()
+        // WHAT THE COORDINATE ARRAY HOLDS AND WHAT IS IN IT, in the
+        // renderer's own words (viewer-mol.js:_coordsKey): every drawn object
+        // with the frame it is showing, the appended side-chain atoms, and
+        // three samples of the coordinates themselves.
+        //
+        // Not the array's IDENTITY - the merge is rebuilt from scratch
+        // whenever the drawn set changes, so switching an object off and back
+        // on yields the same picture in a new array, and identity rebuilt the
+        // mesh for nothing (measured: 70-80 ms on every eye toggle). Not its
+        // LENGTH alone either, which is what the cartoon's key used to keep
+        // and cannot see an alignment move the coordinates inside a frame.
+        //
+        // The same statement the secondary-structure cache asks for, which is
+        // the point: three hand-written versions of this list disagreed.
+        // (The fallback is for the test harnesses, which build a renderer by
+        // hand and have no objects behind it.)
+        r._coordsKey ? r._coordsKey()
             : (r.currentFrame + '|' + ((r.multiState && r.multiState.enabled
-                && r.multiState.sourceNames) ? r.multiState.sourceNames.join(',') : '')),
-        // ...and what is IN it, cheaply. The statement above names the frames
-        // but cannot see coordinates MOVE inside one - an alignment does
-        // exactly that, same objects, same frame index, same length - so three
-        // samples stand in for the content. O(1), unlike hashing 300,000
-        // positions on every frame.
-        coordsProbe(r.coords),
+                && r.multiState.sourceNames) ? r.multiState.sourceNames.join(',') : '')
+               + '|' + coordsProbe(r.coords)),
         r.segmentIndices && r.segmentIndices.length,
         // THE MASK BY WHAT IS IN IT. It is rebuilt from the objects' own
         // records whenever the drawn set changes, so an identical picture

@@ -12529,12 +12529,19 @@
      * itself - and its shorter key could describe two different merges of the
      * same total length.
      */
+    // THE SAME STATEMENT THE MESH KEYS ASK FOR (viewer-mol.js:_coordsKey):
+    // which objects, which frames, how many positions, and three samples of
+    // the coordinates themselves - which this key used to be unable to see
+    // move, so a live-mode replace() left the assignment in place and
+    // _invalidateSegmentCache had to clear it by hand. Plus the forced SSE,
+    // which is this cache's own business.
     const secCacheKey = (renderer, n) => (
-        `${renderer.currentObjectName}|${renderer.currentFrame}|${n}`
-        + `|${!!(renderer.overlayState && renderer.overlayState.enabled)}`
-        + `|${(renderer.multiState && renderer.multiState.enabled
-            && renderer.multiState.sourceNames)
-            ? renderer.multiState.sourceNames.join(',') : ''}`
+        (renderer._coordsKey ? renderer._coordsKey()
+            : `${renderer.currentObjectName}|${renderer.currentFrame}|${n}`
+              + `|${!!(renderer.overlayState && renderer.overlayState.enabled)}`
+              + `|${(renderer.multiState && renderer.multiState.enabled
+                  && renderer.multiState.sourceNames)
+                  ? renderer.multiState.sourceNames.join(',') : ''}`)
         + sseKey(renderer));
 
     const applySse = (sec, renderer) => {

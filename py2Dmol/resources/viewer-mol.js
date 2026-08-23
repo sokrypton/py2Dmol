@@ -10616,6 +10616,32 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
+         * WHAT THE ARRAY HOLDS AND WHAT IS IN IT - the one statement anything
+         * caching something derived from the coordinates should key on.
+         *
+         * `_arrayKey` names the objects, their frames and the appended atoms;
+         * three samples stand in for the coordinates themselves, which the
+         * names cannot see MOVE - a live-mode replace() and an alignment both
+         * do exactly that, same objects, same frame, same length. Every cache
+         * that used to write out its own version of this list disagreed with
+         * the others in some small way: the GPU mesh key kept only the array's
+         * length, the tube's kept its identity (which is a different array for
+         * the same picture, so every eye toggle rebuilt), and the secondary
+         * structure's could not see a coordinate swap at all - which is why
+         * _invalidateSegmentCache has to reach in and clear it by hand.
+         */
+        _coordsKey() {
+            const co = this.coords;
+            const n = co ? co.length : 0;
+            let s = '';
+            for (const i of [0, n >> 1, n - 1]) {
+                const p = n ? co[i] : null;
+                if (p) s += (((p.x + p.y * 3 + p.z * 7) * 1000) | 0) + ',';
+            }
+            return this._arrayKey() + '|' + n + ':' + s;
+        }
+
+        /**
          * HOW LONG THE ARRAY IS BEFORE THE SIDE-CHAIN ATOMS. Everything keyed
          * by residue counts up to here; the atoms live past it.
          */

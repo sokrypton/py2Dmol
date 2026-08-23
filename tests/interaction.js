@@ -7773,6 +7773,72 @@ t('the style follows what is drawn, not the last file loaded', () => {
     }
 });
 
+// ONE STATEMENT OF WHAT THE COORDINATES ARE, asked by every cache built on
+// them. There were three hand-written versions - the GPU mesh key, the tube's
+// key and the secondary-structure cache's - and all three disagreed: one kept
+// the array's length, one its identity (a different array for the same
+// picture, so every eye toggle rebuilt a mesh it already had), and none could
+// see the coordinates MOVE inside a frame, which is what an alignment and a
+// live-mode replace() both do.
+t('what the coordinate array is, said once', () => {
+    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const lift = (name) => {
+        const at = src.indexOf('        ' + name + '() {');
+        if (at < 0) throw new Error(name + ' not found in viewer-mol.js');
+        let d = 0; let k = src.indexOf('{', at);
+        for (; k < src.length; k++) {
+            if (src[k] === '{') d++;
+            else if (src[k] === '}' && !--d) break;
+        }
+        return src.slice(at, k + 1);
+    };
+    const obj = new Function('return {' + lift('_arrayKey') + ',\n'
+        + lift('_coordsKey') + '};')();
+    const mk = (n, dx) => Array.from({length: n},
+        (_, i) => ({x: i + (dx || 0), y: 0, z: 0}));
+    const r = Object.assign(obj, {
+        coords: mk(20), currentObjectName: 'A', currentFrame: 0,
+        objectsData: {A: {}, B: {viewerState: {currentFrame: 2}}},
+        drawnObjects: () => ['A', 'B'],
+        shownSidechainSet: () => null,
+        overlayState: null,
+    });
+    const before = r._coordsKey();
+    // THE SAME PICTURE IN A NEW ARRAY is the same key: the merge is rebuilt
+    // from scratch whenever an eye is clicked, and keying on the array itself
+    // made coming back to a picture already drawn count as a change.
+    r.coords = mk(20);
+    if (r._coordsKey() !== before) {
+        throw new Error('an identical array rebuilt reads as a change, so every'
+            + ' eye toggle rebuilds the geometry it already had');
+    }
+    // ...and a coordinate that MOVES is a change, with nothing else to show it
+    r.coords = mk(20, 0); r.coords[10] = {x: 99, y: 4, z: 7};
+    if (r._coordsKey() === before) {
+        throw new Error('moving the coordinates inside a frame reads as no'
+            + ' change, so an alignment leaves the old geometry on screen');
+    }
+    // a different frame of the same object, and a second object's frame too
+    r.coords = mk(20); r.currentFrame = 1;
+    if (r._coordsKey() === before) throw new Error('the frame is not in the key');
+    r.currentFrame = 0;
+    r.objectsData.B.viewerState.currentFrame = 3;
+    if (r._coordsKey() === before) {
+        throw new Error("a second drawn object's frame is not in the key");
+    }
+    // ...and every cache built on the coordinates asks for it rather than
+    // writing its own list
+    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    if (!/r\._coordsKey \? r\._coordsKey\(\)/.test(gpu)) {
+        throw new Error('the mesh keys do not ask what the coordinates are');
+    }
+    if (!/renderer\._coordsKey \? renderer\._coordsKey\(\)/.test(cart)) {
+        throw new Error('the secondary-structure cache still writes its own'
+            + ' list, which cannot see a coordinate swap');
+    }
+});
+
 // A CACHE IS KEYED ON WHAT IT WAS BUILT FROM, wherever that is something the
 // code can compare. The segment cache was keyed on the frame index and the
 // object name - neither of which changes when a merge is built or a side chain
