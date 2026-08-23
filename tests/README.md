@@ -159,6 +159,25 @@ their atoms, and every side chain went out the moment a merge was rebuilt.
 Click any object's eye and the side chains of the object you did not touch
 disappeared with it.
 
+`tests/minimal_input.py` checks **the smallest thing the Python API can be
+handed**: an Nx3 array of CA coordinates and nothing else.
+
+    python3 tests/minimal_input.py
+
+No chains, no residue names, no atom names, no types, no side-chain table -
+`view.add(coords)`. Everything downstream has to cope: the cartoon predicts a
+backbone to build a ribbon from, the SS assignment works off the trace (36 of
+60 residues found as helix, from coordinates alone), and the panel answers its
+questions without inventing data it has not got. It is also where a change
+made for the web app can quietly break the notebook, because the web always
+loads a full PDB.
+
+It times the assignment too, since the panel asks for it on every selection
+change: 1 ms cold and 5 microseconds warm on a 60-residue trace. On real
+structures in the tube style, where nothing else computes one, it is 19 ms for
+1AOI and 81 ms for 4UG0 - which is why the SSE control is not offered there at
+all unless the SS colour mode is on.
+
 `tests/selection_panel.py` drives the **selection panel's controls** the way a
 user does:
 

@@ -597,7 +597,7 @@ function plateToggleNode() {
 }
 function panelRun(selection, sidechained = new Set(), hasContact = false, types = null,
     shown = null, ligEls = new Set(), visible = null, sse = null, basesOff = null,
-    scMap = null) {
+    scMap = null, style = 'cartoon', colorMode = 'auto') {
     const nodes = {
         selectionTools: { classList: { toggle(c, on) { this._on = on; } } },
         selectionPanel: { hidden: null },
@@ -658,6 +658,10 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
             elementOwners: () => new Set([...sidechained, ...ligEls]),
             hasBasesFor: (p2) => !!types && p2.some((i) => types[i] === 'D' || types[i] === 'R'),
             hasSseFor: (p2) => (types ? p2.some((i) => types[i] === 'P') : true),
+            // the SSE control is offered where something is DRAWN from the
+            // assignment: the cartoon's ribbon, or the SS colour mode
+            style,
+            colorMode,
             // 'none' = nothing forced, which is what a structure nobody has
             // touched reads; '' = the selection disagrees
             forcedSseFor: () => (sse ? sse.forced : 'none'),
@@ -1089,6 +1093,20 @@ t('SSE is offered for protein and withheld from nucleic acid', () => {
     }
     if (panelRun(null, new Set(), false, PROT).selSsSelect.hidden !== true) {
         throw new Error('SSE is offered with nothing selected');
+    }
+    // ...AND WITHHELD FROM THE TUBE, which draws a tube whatever the structure
+    // is - four states of something invisible. Unless the SS COLOUR mode is
+    // on, where the letters are exactly what is painted, in any style.
+    const tube = panelRun([0, 1], new Set(), false, PROT, null, new Set(), null,
+        null, null, null, 'tube');
+    if (tube.selSsSelect.hidden !== true) {
+        throw new Error('SSE is offered in the tube style, which draws none of it');
+    }
+    const tubeSs = panelRun([0, 1], new Set(), false, PROT, null, new Set(), null,
+        null, null, null, 'tube', 'ss');
+    if (tubeSs.selSsSelect.hidden !== false) {
+        throw new Error('SSE is withheld in the tube style with SS colours on,'
+            + ' where the letters are what is painted');
     }
 });
 
@@ -7712,6 +7730,31 @@ t('every write to the mask is filed under the objects it describes', () => {
     }
     if (!/withSidechainAtoms/.test(app)) {
         throw new Error('the panel no longer takes the atoms along at all');
+    }
+});
+
+// A CACHE IS KEYED ON WHAT IT WAS BUILT FROM, wherever that is something the
+// code can compare. The segment cache was keyed on the frame index and the
+// object name - neither of which changes when a merge is built or a side chain
+// is appended, both of which replace the coordinate array. It worked because
+// every one of those paths also called _invalidateSegmentCache by hand, which
+// is a rule the next path has to know. The array's own identity is the honest
+// key, and the explicit invalidations stay for the other direction: the array
+// unchanged and the segments not (a contact added, the backbone hidden).
+t('the segment cache is keyed on the array it was built from', () => {
+    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    if (!/cachedSegmentIndicesCoords === this\.coords/.test(src)) {
+        throw new Error('the segment cache does not compare the array it was'
+            + ' built from, so a new array with the same frame and object'
+            + ' number reuses the old segments');
+    }
+    if (!/this\.cachedSegmentIndicesCoords = this\.coords/.test(src)) {
+        throw new Error('nothing records which array the segments came from');
+    }
+    // ...and it is still dropped by hand for the changes the array cannot show
+    if ((src.match(/cachedSegmentIndicesCoords = null/g) || []).length < 2) {
+        throw new Error('invalidating the segment cache leaves the array'
+            + ' pointer behind, so the next build looks cached');
     }
 });
 

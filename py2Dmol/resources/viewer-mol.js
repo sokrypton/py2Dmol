@@ -1444,6 +1444,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Cache segment indices per frame (bonds don't change within a frame)
             this.cachedSegmentIndices = null;
+            this.cachedSegmentIndicesCoords = null;
             this.cachedSegmentIndicesFrame = -1;
             this.cachedSegmentIndicesObjectName = null;
 
@@ -2769,6 +2770,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         // Helper method to invalidate segment cache
         _invalidateSegmentCache() {
             this.cachedSegmentIndices = null;
+            this.cachedSegmentIndicesCoords = null;
             this.cachedSegmentIndicesFrame = -1;
             this.cachedSegmentIndicesObjectName = null;
             // Everything the cartoon path derives from the unrotated coordinates
@@ -7214,7 +7216,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             // Check if we can reuse cached segment indices (bonds don't change within a frame)
+            // ...AND THE ARRAY IT WAS BUILT FROM, by identity. The frame and
+            // the object name do not describe the coordinate array once
+            // several objects can be merged into it, or once side chains can
+            // be appended to it: both leave that pair unchanged. Every path
+            // that replaces the array does build a NEW one (see
+            // _loadDataIntoRenderer), so a pointer comparison is exact - and
+            // it cannot be forgotten the way an explicit invalidation can.
+            //
+            // The explicit invalidations stay: they are for the other
+            // direction, where the array is the same and the segments are not
+            // - a contact added, a bond list changed, the backbone hidden.
             const canUseCache = this.cachedSegmentIndices !== null &&
+                this.cachedSegmentIndicesCoords === this.coords &&
                 this.cachedSegmentIndicesFrame === this.currentFrame &&
                 this.cachedSegmentIndicesObjectName === this.currentObjectName &&
                 this.cachedSegmentIndices.length > 0;
@@ -7674,6 +7688,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // regardless of whether they were loaded from cache or newly computed.
             if (this.currentFrame >= 0 && this.currentObjectName) {
                 this.cachedSegmentIndices = this.segmentIndices.map(seg => ({ ...seg }));
+                this.cachedSegmentIndicesCoords = this.coords;
                 this.cachedSegmentIndicesFrame = this.currentFrame;
                 this.cachedSegmentIndicesObjectName = this.currentObjectName;
             }

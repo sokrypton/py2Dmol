@@ -1663,10 +1663,23 @@ function setupEventListeners() {
             divider.hidden = none
                 || ((!scR || scR.hidden) && (!mcR || mcR.hidden));
         }
+        // SECONDARY STRUCTURE, WHERE ANYTHING IS DRAWN FROM IT. The cartoon
+        // draws it - a helix is a coil of ribbon and a strand is an arrow -
+        // and the SS colour mode paints it in any style. The TUBE draws a tube
+        // whatever the structure is, so on a tube with any other colour mode
+        // this control changes nothing on screen: it was a menu offering four
+        // states of something invisible.
+        //
+        // It also costs: the panel reads the assignment to fill this in, and
+        // in the tube style nothing else has computed one, so every selection
+        // after an edit paid for a full SS pass - 81 ms on a ribosome. Not
+        // asking is the cheapest way to not pay.
         const ssHide = document.getElementById('selSsSelect');
         if (ssHide) {
             const renderer = viewerApi?.renderer;
-            ssHide.hidden = none || !renderer || !renderer.hasSseFor
+            const drawsSse = !!renderer
+                && (renderer.style === 'cartoon' || renderer.colorMode === 'ss');
+            ssHide.hidden = none || !renderer || !drawsSse || !renderer.hasSseFor
                 || !renderer.hasSseFor(picked);
             if (!ssHide.hidden) syncSseSelect(ssHide, renderer, picked);
         }

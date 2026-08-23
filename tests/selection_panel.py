@@ -168,9 +168,25 @@ window.addEventListener('load', () => {
       // builds its own mesh instead, so a panel that reads those caches has
       // nothing to read there - the control said "DSSP" with no structure
       // named, in a viewer that knew perfectly well what the structure was.
+      // THE TUBE DRAWS NO SECONDARY STRUCTURE, so the control is not there -
+      // unless the SS colour mode is on, which paints it in any style.
       r.setStyle('tube'); await wait(600);
       await select(r, [10, 11, 12]);
+      R.tubeHidden = document.getElementById('selSsSelect').hidden;
+      const colorSel = document.getElementById('colorSelect');
+      if (colorSel) {
+        colorSel.value = 'ss';
+        colorSel.dispatchEvent(new Event('change', {bubbles: true}));
+      }
+      await wait(600);
+      await select(r, [10, 11, 12]);
+      R.tubeSsColour = document.getElementById('selSsSelect').hidden;
       R.sse.push(['tube', sseFace()]);
+      if (colorSel) {
+        colorSel.value = 'auto';
+        colorSel.dispatchEvent(new Event('change', {bubbles: true}));
+      }
+      await wait(400);
       r.setStyle('cartoon'); r.useGPU = true; await wait(700);
       await select(r, [20, 21]);
       await select(r, [10, 11, 12]);
@@ -282,6 +298,14 @@ if step['removed']['contacts']:
     bad.append(f"the bin left {step['removed']['contacts']} contacts")
 want('no selection', 'panel', False, 'the panel is away without a selection')
 want('selected', 'panel', True, 'the panel appears with one')
+print(f"  the SSE control in tube: hidden={R.get('tubeHidden')},"
+      f" and with SS colours: hidden={R.get('tubeSsColour')}")
+if not R.get('tubeHidden'):
+    bad.append("the SSE control is offered in the tube style, which draws no"
+               " secondary structure - four states of something invisible")
+if R.get('tubeSsColour'):
+    bad.append("the SSE control is withheld in the tube style even with SS"
+               " colours on, where the letters are exactly what is painted")
 print("  the SSE control:")
 for tag, face in (R.get("sse") or []):
     print(f"    {tag:20s} {face['value']!r} reading {face['text']!r}"
