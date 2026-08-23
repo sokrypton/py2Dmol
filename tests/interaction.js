@@ -84,7 +84,7 @@ global.NO_LIGAND_GROUPS = new Map();
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','ligandGroupsOf','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','_visibleFromObjectRecords','withSidechainAtoms','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','ligandGroupsOf','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -7377,6 +7377,66 @@ t('everything can be switched off, and the objects survive it', () => {
     eq(v.setShownObjects(['B']), true, 'switching one back on is a change');
     eq(v.drawnObjects().join(','), 'B', 'that object alone');
     if (!v.coords.length) throw new Error('nothing was loaded for it');
+});
+
+// THE LIVE MASK AND THE OBJECTS' RECORDS NEVER DISAGREE. The mask is merged
+// indices; each object's record is its own numbering. Two directions, and both
+// have been wrong: the whole merged mask was once filed under whichever object
+// happened to be current (so the other one vanished with its eye open), and
+// the composition back up left out the side-chain atoms (so every side chain
+// went out whenever an eye was clicked). They live next to each other now, and
+// nothing may write the live mask without filing it down.
+t('every write to the mask is filed under the objects it describes', () => {
+    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    // the writers, and what each is allowed to be
+    const allowed = [
+        ['setVisibility', /_saveVisibilityToObjects\(\)/],          // files it
+        ['resetVisibility', /_saveVisibilityToObjects\(\)/],        // files it
+        ['_switchToObject', /savedState/],                          // record -> live
+        ['_editOneObject', /_maskForObject\(editing\)/],            // one object, scoped
+    ];
+    for (const [name, probe] of allowed) {
+        const at = src.indexOf('        ' + name + '(');
+        if (at < 0) throw new Error(name + ' is gone');
+        let d = 0; let k = src.indexOf('{', at);
+        for (; k < src.length; k++) {
+            if (src[k] === '{') d++;
+            else if (src[k] === '}' && !--d) break;
+        }
+        if (!probe.test(src.slice(at, k))) {
+            throw new Error(name + ' writes the live mask without filing it'
+                + " under the objects it describes");
+        }
+    }
+    // ...and nobody else writes it at all
+    const writers = [];
+    const re = /\n(\s*)(?:this|renderer|r)\.visibilityModel(?:\.positions|\.chains|) = /g;
+    let m;
+    while ((m = re.exec(src))) {
+        // which method is this line inside?
+        const before = src.slice(0, m.index);
+        const owner = (before.match(/\n        ([A-Za-z_]\w*)\(/g) || []).pop();
+        writers.push(owner ? owner.trim().replace('(', '') : '?');
+    }
+    const names = new Set(writers);
+    for (const n of names) {
+        if (!allowed.some(([a]) => a === n) && n !== 'constructor') {
+            throw new Error(n + ' writes the live mask directly - it has to go'
+                + ' through setVisibility, or file the records itself');
+        }
+    }
+
+    // ONE RULE FOR THE ATOMS, three callers
+    const rule = src.indexOf('withSidechainAtoms(set, inPlace = false) {');
+    if (rule < 0) throw new Error('the side-chain atom rule has no home');
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    if (/for \(const \[idx, e\] of scMap\) if \(e && set\.has\(e\.owner\)\) set\.add\(idx\)/
+        .test(app)) {
+        throw new Error('web/app.js has its own copy of the atom rule again');
+    }
+    if (!/withSidechainAtoms/.test(app)) {
+        throw new Error('the panel no longer takes the atoms along at all');
+    }
 });
 
 // WHICH ATOMS MAKE UP ONE LIGAND IS A FUNCTION OF A FRAME, not a fact about an

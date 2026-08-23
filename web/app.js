@@ -1412,13 +1412,10 @@ function setupEventListeners() {
         // the side chain the user just asked for is not drawn. They inherit
         // their owner's visibility at materialisation; this keeps that true
         // afterwards.
-        const scMap = renderer.sidechainMap;
-        const withAtoms = (list) => {
-            if (!scMap || !scMap.size) return list;
-            const set = new Set(list);
-            for (const [idx, e] of scMap) if (e && set.has(e.owner)) set.add(idx);
-            return [...set];
-        };
+        // ...the renderer's own rule, not a third copy of it - see
+        // withSidechainAtoms
+        const withAtoms = (list) => (renderer.withSidechainAtoms
+            ? [...renderer.withSidechainAtoms(new Set(list))] : list);
         const show = []; const hide = [];
         for (const i of positions) (drawsSomething(i) ? show : hide).push(i);
         if (hide.length) setSelectionVisible(withAtoms(hide), false, false);

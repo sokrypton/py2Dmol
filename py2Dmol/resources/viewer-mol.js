@@ -1508,6 +1508,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 paeBoxes: [],
                 visibilityMode: 'default'
             };
+            // ...AND THE OBJECTS' OWN RECORDS WITH IT. Every other write to
+            // the live mask files itself down per object (see setVisibility);
+            // this one did not, so the records still said what had been hidden
+            // and the next merge rebuild - one click of an eye - composed the
+            // hiding straight back out of them. Reachable only with no object
+            // or an empty array today, which is luck rather than design: the
+            // invariant is that the live mask and the records never disagree.
+            this._saveVisibilityToObjects();
             this._composeAndApplyMask();
         }
 
@@ -6676,6 +6684,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // in a set that was written before they existed. That is invisible
             // from every angle except the screen, so it is done here, next to
             // the append, rather than left to a caller to remember.
+            // one rule, three callers - see withSidechainAtoms. The map is
+            // not on the renderer yet at this point in the load, so it is
+            // handed in.
             const follow = (set) => {
                 if (!set || !set.size) return;
                 for (const [idx, e] of map) {
@@ -10706,19 +10717,50 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          *
          * An object nobody has hidden anything in contributes all of itself.
          */
-        _applyMergedVisibility(merged, skipRender = false) {
-            const names = merged.sourceNames;
-            const offsets = merged.sourceOffsets;
-            const n = merged.coords.length;
-            const chains = merged.chains || [];
-            const vis = new Set();
+        /**
+         * A SET OF POSITIONS, PLUS THE SIDE-CHAIN ATOMS HANGING OFF THEM.
+         *
+         * A shown side chain is real positions APPENDED to the coordinate
+         * array, past everything the frame itself holds. Anything that talks
+         * about residues and is then used as a mask has to take them along, or
+         * the atoms are left out of the picture their residue is in.
+         *
+         * There were three copies of this rule - the materialiser's own
+         * `follow`, the panel's `withAtoms`, and the merged mask's - and the
+         * merged one did not exist at all until every side chain in a merge
+         * was found to vanish whenever an eye was clicked. One rule now, with
+         * three callers.
+         *
+         * @param {Set<number>} set
+         * @param {boolean} inPlace mutate the set given, rather than copying
+         */
+        withSidechainAtoms(set, inPlace = false) {
+            const map = this.sidechainMap;
+            if (!set || !map || !map.size) return set;
+            const out = inPlace ? set : new Set(set);
+            for (const [idx, e] of map) {
+                if (e && out.has(e.owner)) out.add(idx);
+            }
+            return out;
+        }
 
+        /**
+         * THE VISIBLE POSITIONS OF A MERGE, read off the objects' own records.
+         *
+         * Each object's record is in ITS numbering and says what is hidden in
+         * it; this is the one place they are read back up into the merged
+         * array's numbering. The reverse direction - the live mask filed back
+         * down per object - is _saveVisibilityToObjects, and the two are kept
+         * next to each other on purpose: filing the whole merged mask under
+         * one object is a bug this codebase has already had.
+         */
+        _visibleFromObjectRecords(names, offsets, n) {
+            const vis = new Set();
             for (let s = 0; s < names.length; s++) {
                 const off = offsets[s];
                 const end = (s + 1 < offsets.length) ? offsets[s + 1] : n;
-                const name = names[s];
-                // That object's own record, in its own numbering.
-                const st = this.objectsData[name] && this.objectsData[name].visibilityState;
+                const st = this.objectsData[names[s]]
+                    && this.objectsData[names[s]].visibilityState;
                 const hasPos = st && st.positions && st.positions.size > 0;
                 const hasChains = st && st.chains && st.chains.size > 0;
                 // NOBODY HAS ASKED, versus NOTHING IS VISIBLE. An object with
@@ -10739,27 +10781,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
                 }
             }
+            return vis;
+        }
 
-            // ...AND THE SIDE-CHAIN ATOMS, which are positions too.
-            //
-            // They are APPENDED to the coordinate array when their residue is
-            // switched on, after everything the loop above walks: `n` is the
-            // length of the merge, and the atoms live past it. Nobody's stored
-            // record mentions them - they are not residues of any object - so
-            // the mask came out naming every residue and none of their atoms,
-            // and every side chain in the picture disappeared the moment a
-            // merge was rebuilt. Toggle any object's eye and the side chains
-            // of the object you did not touch went with it.
-            //
-            // Each atom inherits its owner's visibility, which is what
-            // materialisation does when the mask is applied the other way
-            // round (see the `follow` pass in _materialiseSidechains).
-            const scMap = this.sidechainMap;
-            if (scMap && scMap.size) {
-                for (const [idx, e] of scMap) {
-                    if (e && vis.has(e.owner)) vis.add(idx);
-                }
-            }
+        _applyMergedVisibility(merged, skipRender = false) {
+            const n = merged.coords.length;
+            const vis = this._visibleFromObjectRecords(
+                merged.sourceNames, merged.sourceOffsets, n);
+            // ...AND THE SIDE-CHAIN ATOMS, which are positions too and are in
+            // nobody's record: they are not residues of any object. Left out,
+            // every side chain in the picture went out the moment a merge was
+            // rebuilt - including on objects nobody had touched.
+            this.withSidechainAtoms(vis, true);
             // EVERYTHING MEANS EVERYTHING IN THE ARRAY, atoms included - the
             // merge's own length is short of it by exactly those atoms, so a
             // fully visible picture read as a partial one.
