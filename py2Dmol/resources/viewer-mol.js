@@ -1081,7 +1081,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         },
         rendering: {
             style: "tube",
-            detail: 0.5,
+            // SUBDIVISIONS PER RESIDUE, 2-8, matching the slider and the
+            // Python default. It read 0.5 here, left over from when detail was
+            // a fractional sampling density: the constructor rounds and clamps
+            // to 2..8, so 0.5 came out as 2 - the LOWEST setting - for any
+            // caller that went through normalizeConfig without naming one.
+            detail: 4,
             // thickness / cel / highlight / outline_tint / width / arrows /
             // pencil / sheet_flat are deliberately absent: they are resolved
             // per style in the renderer constructor (see PRESET_KEYS in

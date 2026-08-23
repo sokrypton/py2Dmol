@@ -7790,6 +7790,33 @@ t('the style follows what is drawn, not the last file loaded', () => {
     }
 });
 
+// THE DETAIL DEFAULT IS A SUBDIVISION COUNT, not the fractional sampling
+// density it used to be. DEFAULT_CONFIG still said 0.5, and the constructor
+// rounds and clamps to 2..8 - so any caller that went through normalizeConfig
+// without naming a detail got 2, the lowest setting, while the slider's own
+// default and Python's both say 4.
+t('the default detail is the one the slider and Python agree on', () => {
+    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const block = src.slice(src.indexOf('rendering: {'), src.indexOf('shadow_strength'));
+    const m = /detail: ([0-9.]+)/.exec(block);
+    if (!m) throw new Error('no default detail in DEFAULT_CONFIG');
+    const d = Number(m[1]);
+    if (!Number.isInteger(d) || d < 2 || d > 8) {
+        throw new Error('the default detail is ' + m[1] + ', which the'
+            + ' constructor clamps to ' + Math.min(8, Math.max(2, Math.round(d))));
+    }
+    const html = fs.readFileSync('index.html', 'utf8');
+    const sl = /id="detailSlider"[^>]*value="(\d+)"/.exec(html);
+    if (sl && Number(sl[1]) !== d) {
+        throw new Error('the slider opens at ' + sl[1] + ' and the config says ' + d);
+    }
+    const py = fs.readFileSync('py2Dmol/viewer.py', 'utf8');
+    const pd = /"detail": (\d+)/.exec(py);
+    if (pd && Number(pd[1]) !== d) {
+        throw new Error('Python defaults detail to ' + pd[1] + ', the web to ' + d);
+    }
+});
+
 // ONE STATEMENT OF WHAT THE COORDINATES ARE, asked by every cache built on
 // them. There were three hand-written versions - the GPU mesh key, the tube's
 // key and the secondary-structure cache's - and all three disagreed: one kept
