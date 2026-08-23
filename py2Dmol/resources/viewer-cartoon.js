@@ -9136,7 +9136,7 @@
         // ...and per OBJECT: several can be on screen at once, each with its
         // own set in its own numbering (see mergedObjectSet in viewer-mol.js).
         const baseSet = renderer.mergedObjectSet
-            ? renderer.mergedObjectSet('bases', 'all')
+            ? renderer.mergedObjectSet('bases')
             : (renderer.currentObjectName
                 && (renderer.objectsData || {})[renderer.currentObjectName]
                 && (renderer.objectsData[renderer.currentObjectName].bases instanceof Set)

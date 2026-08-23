@@ -650,9 +650,28 @@ window.addEventListener('load', () => {
           value.position[local] = hex;
           o.color = { type: 'advanced', value };
         }
+        // ...and one of EVERY KIND in the per-object field list, because the
+        // save rule differs by kind and the difference inverts a feature: an
+        // EMPTY `bases` means no plates at all, while an absent one means
+        // every plate, so a saver that drops empty sets turns one into the
+        // other. See OBJECT_STATE.
+        r.objectsData[names[0]].sidechains = new Set([1, 2]);
+        r.objectsData[names[1]].bases = new Set();          // none, explicitly
+        r.objectsData[names[0]].elements = new Set([1]);
+        r.objectsData[names[0]].sse = { 2: 'H' };
+        r.objectsData[names[0]].sidechainColor = { 2: '#123456' };
+        r.objectsData[names[0]].contacts = [[1, 2, 1, '#abcdef']];
+        const setOf = (o, k) => (r.objectsData[o][k] instanceof Set
+          ? Array.from(r.objectsData[o][k]).sort((a, b) => a - b) : null);
         const state = (o) => ({
           hidden: Array.from(r.objectsData[o].hiddenBackbone || []).sort((a, b) => a - b),
           colour: JSON.stringify(((r.objectsData[o].color || {}).value || {}).position || null),
+          sidechains: setOf(o, 'sidechains'),
+          bases: setOf(o, 'bases'),
+          elements: setOf(o, 'elements'),
+          sse: JSON.stringify(r.objectsData[o].sse || null),
+          sidechainColor: JSON.stringify(r.objectsData[o].sidechainColor || null),
+          contacts: JSON.stringify(r.objectsData[o].contacts || null),
         });
         R.beforeSave = { [names[0]]: state(names[0]), [names[1]]: state(names[1]) };
 

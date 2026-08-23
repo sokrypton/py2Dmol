@@ -4224,7 +4224,7 @@ function signatureOf(r, w, h, colors) {
         // not from a position - so hiding a base rebuilt nothing and the GPU
         // went on drawing the plate from the cached mesh. By identity, like the
         // visibility mask: setBasesFor assigns a new Set every time.
-        (() => { const b = r.mergedObjectSet ? r.mergedObjectSet('bases', 'all')
+        (() => { const b = r.mergedObjectSet ? r.mergedObjectSet('bases')
             : (o && o.bases); return b ? 'b' + idOf(b) + ':' + b.size : 'ball'; })(),
         // ELEMENT COLOURS ARE GEOMETRY, for the reason the halves term above
         // gives: a bond whose ends differ is CUT at its midpoint when the mesh
@@ -4232,7 +4232,7 @@ function signatureOf(r, w, h, colors) {
         // cannot see that - it is a length, and the array keeps its length
         // whatever is in it. By identity, like the plates: setElementsFor
         // assigns a new Set every time.
-        (() => { const e = r.mergedObjectSet ? r.mergedObjectSet('elements', 'all')
+        (() => { const e = r.mergedObjectSet ? r.mergedObjectSet('elements')
             : (o && o.elements); return e ? 'e' + idOf(e) + ':' + e.size : 'eall'; })(),
         // THE NUCLEIC TRACE SMOOTHING IS GEOMETRY: it moves the rails, the
         // plates and the rungs together (see smoothNucleicTrace), so switching

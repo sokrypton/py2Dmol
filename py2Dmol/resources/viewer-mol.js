@@ -399,6 +399,193 @@ function ligandGroupsForFrame(frame) {
     return g;
 }
 
+/**
+ * EVERY PIECE OF PER-OBJECT STATE THAT IS KEYED BY POSITION INDEX.
+ *
+ * All of it means nothing except against the object it was set on, and all of
+ * it has to survive the same six things: a merge reading it up into merged
+ * indices, a write coming back down, an edit renumbering it, a session saving
+ * and restoring it. Each of those was written out field by field, so each was
+ * a place to forget one - and they were forgotten, repeatedly: a Copy that
+ * carried no colours, a Delete that left the ligand bonds pointing at whatever
+ * had moved into their slots.
+ *
+ * The list is here, once. `absent` is what a MISSING value means, which is not
+ * the same for all of them - no side chains are shown by default, while every
+ * base and every element is - and getting it backwards inverts the feature.
+ * `remap` is how an edit renumbers it; the ones without a remap say why.
+ *
+ * When you add a per-object field, add it here. tests/copy_selection.js fails
+ * until you do.
+ */
+const OBJECT_STATE = [
+    { key: 'sidechains', kind: 'set', absent: 'none', json: 'sidechains',
+        remap: remapPositionSet },
+    { key: 'bases', kind: 'set', absent: 'all', json: 'bases',
+        remap: remapPositionSet },
+    { key: 'elements', kind: 'set', absent: 'all', json: 'elements',
+        remap: remapPositionSet },
+    { key: 'hiddenBackbone', kind: 'set', absent: 'none', json: 'hidden_backbone',
+        remap: remapPositionSet },
+    // position -> letter, and position -> colour
+    { key: 'sse', kind: 'plain', absent: 'none', json: 'sse',
+        remap: remapPositionMap },
+    { key: 'sidechainColor', kind: 'plain', absent: 'none', json: 'sidechain_color',
+        remap: remapPositionMap },
+    // only the `position` map inside the tree is keyed by index
+    { key: 'color', kind: 'plain', absent: 'none', json: 'color',
+        remap: remapColorTree },
+    // [i, j, ...] indices, or [chain, res, chain, res, ...] names
+    { key: 'contacts', kind: 'plain', absent: 'none', json: 'contacts',
+        remap: remapContacts },
+    // [i, j] only - the object's fallback list for frames carrying none.
+    // json:null because it is NOT saved here: bonds travel with the frames,
+    // and the object's list is rebuilt from them on load.
+    { key: 'bonds', kind: 'plain', absent: 'none', json: null,
+        remap: remapIndexPairs },
+    // NOT REMAPPED, deliberately: a copy starts fully visible rather than
+    // inheriting what was hidden in the original, and Delete renumbers the
+    // record in place (it is the one piece of this that has a live twin).
+    // Saved by hand too - it is four fields, not a set, and two of them are
+    // renamed on the way out.
+    { key: 'visibilityState', kind: 'plain', absent: 'all', json: null,
+        remap: null },
+];
+
+/** A Set of positions. An EMPTY result is not the same as an absent one. */
+function remapPositionSet(set, ctx) {
+    if (!(set instanceof Set)) return undefined;
+    const out = new Set();
+    for (const i of set) {
+        const to = ctx.map.get(i);
+        if (to !== undefined) out.add(to);
+    }
+    return out;
+}
+
+/** A plain object keyed by position. Empty collapses to null. */
+function remapPositionMap(src, ctx) {
+    if (!src) return undefined;
+    const out = {};
+    for (const k of Object.keys(src)) {
+        const to = ctx.map.get(Number(k));
+        if (to !== undefined) out[to] = src[k];
+    }
+    return Object.keys(out).length ? out : null;
+}
+
+/**
+ * COLOUR. Only the `position` map inside it is keyed by index; the rest of the
+ * structure - an object-wide mode or literal the per-residue colours sit on
+ * top of - is not, and is carried through untouched so a copy keeps the same
+ * base to override.
+ */
+function remapColorTree(color, ctx) {
+    if (!color) return undefined;
+    if (color.type !== 'advanced' || !color.value) return color;
+    const value = { ...color.value };
+    if (value.position) {
+        const out = remapPositionMap(value.position, ctx);
+        if (out) value.position = out;
+        else delete value.position;
+    }
+    return Object.keys(value).length ? { type: 'advanced', value } : null;
+}
+
+/** [i, j, ...rest] where i and j are positions. */
+function remapIndexPairs(list, ctx) {
+    if (!Array.isArray(list) || !list.length) return undefined;
+    const kept = [];
+    for (const c of list) {
+        if (!Array.isArray(c)) continue;
+        const a = ctx.map.get(c[0]);
+        const b = ctx.map.get(c[1]);
+        if (a === undefined || b === undefined) continue;
+        kept.push(c.length > 2 ? [a, b, ...c.slice(2)] : [a, b]);
+    }
+    return kept.length ? kept : null;
+}
+
+/**
+ * Contacts come in two shapes. [i, j, w, colour?] is indices and renumbers;
+ * [chain, res, chain, res, w, colour?] names residues and survives a copy
+ * untouched - but only if both of its ends came with it, or it resolves to
+ * nothing on every frame load and warns to the console for the life of the
+ * object.
+ */
+function remapContacts(list, ctx) {
+    if (!Array.isArray(list) || !list.length) return undefined;
+    const r = ctx.renderer;
+    const survives = new Set();
+    for (const i of ctx.selected) {
+        const chain = r.chains && r.chains[i];
+        const res = r.residueNumbers && r.residueNumbers[i];
+        if (chain !== undefined && res !== undefined) survives.add(chain + ':' + res);
+    }
+    const kept = [];
+    for (const c of list) {
+        if (!Array.isArray(c)) continue;
+        if (typeof c[0] === 'number' && typeof c[1] === 'number') {
+            const a = ctx.map.get(c[0]);
+            const b = ctx.map.get(c[1]);
+            if (a === undefined || b === undefined) continue;
+            kept.push([a, b, ...c.slice(2)]);
+        } else if (typeof c[0] === 'string' && c.length >= 4) {
+            if (!survives.has(c[0] + ':' + c[1])) continue;
+            if (!survives.has(c[2] + ':' + c[3])) continue;
+            kept.push(c.slice());
+        }
+    }
+    return kept.length ? kept : null;
+}
+
+/** What an absent value means for one field, from the table. */
+function objectStateAbsent(key) {
+    const e = OBJECT_STATE.find((f) => f.key === key);
+    return e ? e.absent : 'none';
+}
+
+/**
+ * ONE OBJECT'S POSITION-KEYED STATE, ready for JSON.
+ *
+ * The save rule follows from `absent`, and this is why the field list carries
+ * it: a set whose absence means ALL has to be written even when it is EMPTY,
+ * because empty means "none of them" and leaving it out means "all of them" -
+ * the opposite. A set whose absence means NONE is only worth writing when it
+ * has something in it.
+ */
+function objectStateToJSON(object) {
+    const out = {};
+    if (!object) return out;
+    for (const f of OBJECT_STATE) {
+        if (!f.json) continue;
+        const v = object[f.key];
+        if (f.kind === 'set') {
+            if (!(v instanceof Set)) continue;
+            if (f.absent === 'none' && !v.size) continue;
+            out[f.json] = Array.from(v);
+        } else if (v) {
+            out[f.json] = v;
+        }
+    }
+    return out;
+}
+
+/** ...and back, onto an object. The inverse of objectStateToJSON. */
+function objectStateFromJSON(object, saved) {
+    if (!object || !saved) return;
+    for (const f of OBJECT_STATE) {
+        if (!f.json) continue;
+        const v = saved[f.json];
+        if (v === undefined || v === null) continue;
+        if (f.kind === 'set') {
+            if (Array.isArray(v)) object[f.key] = new Set(v);
+        } else {
+            object[f.key] = v;
+        }
+    }
+}
+
 function initializePy2DmolViewer(containerElement, viewerId) {
 
     // Helper function to normalize ortho value from old (50-200) or new (0-1) format
@@ -4112,94 +4299,39 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         _remapObjectState(src, dst, selectedIndices) {
             if (!src || !dst) return;
-            const renumber = new Map();
+            const map = new Map();
             for (let i = 0; i < selectedIndices.length; i++) {
-                renumber.set(selectedIndices[i], i);
+                map.set(selectedIndices[i], i);
             }
-            // position sets: sidechains, elements, bases, hiddenBackbone
-            for (const key of ['sidechains', 'elements', 'bases', 'hiddenBackbone']) {
-                const set = src[key];
-                if (!(set instanceof Set)) continue;
-                const out = new Set();
-                for (const i of set) {
-                    const to = renumber.get(i);
-                    if (to !== undefined) out.add(to);
-                }
-                // An empty result is NOT the same as absent for every one of
-                // these - null means ALL for bases and elements, NONE for side
-                // chains and NONE HIDDEN for the backbone - so an empty set is
-                // stored as empty rather than collapsed to null, which would
-                // invert two of the four.
-                dst[key] = out;
-            }
-            // forced secondary structure: position -> letter
-            if (src.sse) {
-                const out = {};
-                for (const k of Object.keys(src.sse)) {
-                    const to = renumber.get(Number(k));
-                    if (to !== undefined) out[to] = src.sse[k];
-                }
-                dst.sse = Object.keys(out).length ? out : null;
-            }
-            // COLOUR. Only the `position` map inside it is keyed by index; the
-            // rest of the structure - an object-wide mode or literal the
-            // per-residue colours sit on top of - is not, and is carried
-            // through untouched so a copy keeps the same base to override.
-            if (src.color) {
-                if (src.color.type === 'advanced' && src.color.value) {
-                    const value = { ...src.color.value };
-                    if (value.position) {
-                        const out = {};
-                        for (const k of Object.keys(value.position)) {
-                            const to = renumber.get(Number(k));
-                            if (to !== undefined) out[to] = value.position[k];
-                        }
-                        if (Object.keys(out).length) value.position = out;
-                        else delete value.position;
-                    }
-                    dst.color = Object.keys(value).length
-                        ? { type: 'advanced', value } : null;
-                } else {
-                    // a mode or a literal applies to the whole object either way
-                    dst.color = src.color;
-                }
-            }
-            // per-residue side-chain colour, keyed by owner position
-            if (src.sidechainColor) {
-                const out = {};
-                for (const k of Object.keys(src.sidechainColor)) {
-                    const to = renumber.get(Number(k));
-                    if (to !== undefined) out[to] = src.sidechainColor[k];
-                }
-                dst.sidechainColor = Object.keys(out).length ? out : null;
-            }
-            // contacts come in two shapes. [i, j, w, colour?] is indices and
-            // renumbers; [chain, res, chain, res, w, colour?] names residues
-            // and survives a copy untouched - but only if both of its ends
-            // came with it, or it resolves to nothing on every frame load and
-            // warns to the console for the life of the object.
-            if (Array.isArray(src.contacts) && src.contacts.length) {
-                const kept = [];
-                const survives = new Set();
-                for (const i of selectedIndices) {
-                    const chain = this.chains && this.chains[i];
-                    const res = this.residueNumbers && this.residueNumbers[i];
-                    if (chain !== undefined && res !== undefined) survives.add(chain + ':' + res);
-                }
-                for (const c of src.contacts) {
-                    if (!Array.isArray(c)) continue;
-                    if (typeof c[0] === 'number' && typeof c[1] === 'number') {
-                        const a = renumber.get(c[0]);
-                        const b = renumber.get(c[1]);
-                        if (a === undefined || b === undefined) continue;
-                        kept.push([a, b, ...c.slice(2)]);
-                    } else if (typeof c[0] === 'string' && c.length >= 4) {
-                        if (!survives.has(c[0] + ':' + c[1])) continue;
-                        if (!survives.has(c[2] + ':' + c[3])) continue;
-                        kept.push(c.slice());
-                    }
-                }
-                dst.contacts = kept.length ? kept : null;
+            this._renumberObjectState(src, dst, map, selectedIndices);
+        }
+
+        /**
+         * RENUMBER EVERY PIECE OF PER-OBJECT STATE, from one field list.
+         *
+         * This was written out field by field - a paragraph each for the
+         * position sets, the SSE map, the colour tree, the side-chain colours
+         * and the contacts - which is five chances to forget one, and the
+         * bonds were forgotten for as long as they have existed. The list is
+         * OBJECT_STATE now, and each field says how it renumbers.
+         *
+         * `dst` may be `src` itself, or a scratch object copied over it
+         * afterwards, which is what a Delete does: the remap reads while it
+         * writes, and there the source and the destination are the same
+         * object.
+         *
+         * @param {Map<number, number>} map old position -> new position
+         * @param {Array<number>} selected the positions that survive, in order
+         */
+        _renumberObjectState(src, dst, map, selected) {
+            const ctx = { map, selected, renderer: this };
+            for (const field of OBJECT_STATE) {
+                if (!field.remap) continue;
+                const out = field.remap(src[field.key], ctx);
+                // undefined means "this object has none of that" - leave the
+                // destination alone rather than writing an absence, which for
+                // half of these fields means the opposite of nothing
+                if (out !== undefined) dst[field.key] = out;
             }
         }
 
@@ -4409,21 +4541,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // (the ligand groups need no upkeep: they are derived from the
             // frames, which have just been replaced - see ligandGroupsForFrame)
             this._mergedLigCache = null;
-            // ...AND THE OBJECT'S OWN BOND LIST, which is position indices
-            // too. The frames carry a renumbered copy each, but this one is
-            // what every frame without its own falls back to, and it is
-            // written back over from setCoords - left in the old numbering it
-            // comes round again on the next frame load.
-            if (Array.isArray(object.bonds) && object.bonds.length) {
-                const nb = [];
-                for (const b of object.bonds) {
-                    const i = newIndexOf.get(b[0]);
-                    const j = newIndexOf.get(b[1]);
-                    if (i === undefined || j === undefined) continue;
-                    nb.push(b.length > 2 ? [i, j, ...b.slice(2)] : [i, j]);
-                }
-                object.bonds = nb.length ? nb : null;
-            }
+            // (the object's own bond list is renumbered with everything else
+            // keyed by position - see OBJECT_STATE)
 
             // THE MASK IS POSITION INDICES TOO. Renumbered rather than reset:
             // a delete is not a reason to un-hide the chain you were hiding.
@@ -7954,7 +8073,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // itself, so the two ends of a bond can be switched separately, and
             // half of one is still worth drawing.
             // per object, in merged indices - see mergedObjectSet
-            const only = this.mergedObjectSet('elements', 'all');
+            const only = this.mergedObjectSet('elements');
             const on = (i) => !only || only.has(this._elementOwnerOf(i));
             const T = this.constructor.ELEMENT_COLORS;
             const ca = (ea && on(segInfo.idx1)) ? (T[ea] || null) : null;
@@ -8315,7 +8434,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * on. Empty or missing means the whole backbone is drawn.
          */
         backboneHiddenSet() {
-            const set = this.mergedObjectSet('hiddenBackbone', 'none');
+            const set = this.mergedObjectSet('hiddenBackbone');
             return (set instanceof Set && set.size) ? set : null;
         }
 
@@ -10427,6 +10546,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
+         * THE PER-OBJECT STATE TABLE, for the app's session save and restore.
+         * One list, walked by every lifecycle operation - see OBJECT_STATE.
+         */
+        objectStateToJSON(object) { return objectStateToJSON(object); }
+
+        objectStateFromJSON(object, saved) { objectStateFromJSON(object, saved); }
+
+        /**
          * WHAT THE COORDINATE ARRAY IS SUPPOSED TO HOLD, as a string.
          *
          * Everything that builds the array - a frame load, a merge, an empty
@@ -11252,7 +11379,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * @param {string} field  the property on the object
          * @param {'all'|'none'} nullMeans  what an absent set means
          */
-        mergedObjectSet(field, nullMeans) {
+        /**
+         * ...and what an ABSENT set means is the field's own business, not the
+         * caller's: no side chains are shown by default while every base and
+         * every element is, so a caller passing the wrong one inverts the
+         * feature for merged objects only. The answer is in OBJECT_STATE.
+         */
+        mergedObjectSet(field, nullMeans = objectStateAbsent(field)) {
             const ms = this.multiState;
             if (!ms || !ms.enabled || !ms.sourceNames) {
                 const o = this.objectsData?.[this.currentObjectName];

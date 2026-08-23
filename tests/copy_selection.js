@@ -37,11 +37,45 @@ function liftMethod(name) {
 }
 const remapRaw = liftMethod('_remapObjectState');
 
-// A stub `this`: the chain/residue lookup the contact filter needs.
+// ...AND THE FIELD LIST IT WALKS, plus the handlers the list names. The remap
+// is one loop over OBJECT_STATE now - the field-by-field version was five
+// chances to forget a field, and the bonds were forgotten for as long as they
+// existed - so lifting the method alone lifts an empty loop.
+function liftModuleScope() {
+    const at = SRC.indexOf('const OBJECT_STATE = [');
+    const end = SRC.indexOf('function initializePy2DmolViewer(');
+    if (at < 0 || end < 0) throw new Error('OBJECT_STATE moved out of module scope');
+    return SRC.slice(at, end);
+}
+// ...evaluated in a function rather than with eval: a `const` inside an eval
+// is scoped to the eval and nothing outside can see it, which reads as
+// "OBJECT_STATE is not defined" in twelve tests at once.
+const OBJECT_STATE = new Function(
+    liftModuleScope() + '; return OBJECT_STATE;')();
+const renumberRaw = (() => {
+    const at = SRC.indexOf('        _renumberObjectState(src, dst, map, selected) {');
+    if (at < 0) throw new Error('_renumberObjectState moved or changed signature');
+    let depth = 0; let k = SRC.indexOf('{', at); const body = k;
+    for (; k < SRC.length; k++) {
+        if (SRC[k] === '{') depth++;
+        else if (SRC[k] === '}' && !--depth) break;
+    }
+    return new Function('src', 'dst', 'map', 'selected', 'OBJECT_STATE',
+        `return (function () {${SRC.slice(body + 1, k)}}).call(this);`);
+})();
+
+// A stub `this`: the chain/residue lookup the contact filter needs, and the
+// generic renumber the remap delegates to.
 const CHAINS = ['A', 'A', 'A', 'A', 'B', 'B', 'B', 'B'];
 const RESNUM = [1, 2, 3, 4, 1, 2, 3, 4];
-const remap = (src, dst, sel) =>
-    remapRaw.call({ chains: CHAINS, residueNumbers: RESNUM }, src, dst, sel);
+const THIS = {
+    chains: CHAINS,
+    residueNumbers: RESNUM,
+    _renumberObjectState(src, dst, map, selected) {
+        return renumberRaw.call(this, src, dst, map, selected, OBJECT_STATE);
+    },
+};
+const remap = (src, dst, sel) => remapRaw.call(THIS, src, dst, sel);
 
 let failures = 0;
 function test(name, fn) {
@@ -188,37 +222,50 @@ test('extractSelection actually carries the state across', () => {
     }
 });
 
-test('every display key the panel writes is one the copy knows about', () => {
-    // The trap this whole file exists for: state carried field by field drops
-    // whatever nobody wrote down. If the selection panel learns to store a new
-    // per-object key, this fails until the remap names it too.
+test('every per-object key is in the field list or excluded on purpose', () => {
+    // THE TRAP THIS WHOLE FILE EXISTS FOR: state carried field by field drops
+    // whatever nobody wrote down. There is one list now - OBJECT_STATE in
+    // viewer-mol.js - and every lifecycle operation walks it, so this test is
+    // the gate on the list: a new per-object key fails until it is either
+    // registered or named here as something else.
     const app = fs.readFileSync(path.join(ROOT, 'web/app.js'), 'utf8');
     const written = new Set();
     for (const m of app.matchAll(/\bobj\.([A-Za-z_][A-Za-z0-9_]*)\s*=/g)) written.add(m[1]);
     for (const m of SRC.matchAll(/\bobject\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s/g)) written.add(m[1]);
-    // Not display state: frames and geometry, bookkeeping, and the caches.
+    // Not per-position state: frames and geometry, bookkeeping, and caches.
     const NOT_DISPLAY = new Set([
         'frames', 'maxExtent', 'stdDev', 'globalCenterSum', 'totalPositions',
-        'visibilityState', 'ligandGroups', 'msa', 'pae', 'paeData', 'bonds',
+        'ligandGroups', 'msa', 'pae', 'paeData',
         'name', 'colorScale', 'plddtRange', 'seqOffsets', 'chainToSequence',
         '_lastPlddtFrame', '_lastPaeFrame',
-        // the loader's own mark on a PENDING record - "this one has already
-        // been handed to the renderer, do not rebuild it". Nothing to do with
-        // an object in objectsData, and an extracted copy was never pending.
-        '_appliedToRenderer',
         // recomputed for the copy from its own coordinates
         'center',
         // the scatter panel's own configuration: not keyed by position, and
         // it names columns of data the copy does not carry
         'scatterConfig',
+        // the loader's own mark on a PENDING record - "this one has already
+        // been handed to the renderer, do not rebuild it". Nothing to do with
+        // an object in objectsData, and an extracted copy was never pending.
+        '_appliedToRenderer',
     ]);
-    const at = SRC.indexOf('_remapObjectState(src, dst, selectedIndices) {');
-    const remapSrc = SRC.slice(at, SRC.indexOf('\n        _remapSidechains', at));
-    const missed = [...written].filter((k) => !NOT_DISPLAY.has(k) && !remapSrc.includes(`'${k}'`)
-        && !remapSrc.includes(`.${k}`));
+    const registered = new Set(OBJECT_STATE.map((f) => f.key));
+    const missed = [...written].filter((k) => !NOT_DISPLAY.has(k) && !registered.has(k));
     if (missed.length) {
-        throw new Error('per-object keys nobody copies: ' + missed.join(', ')
-            + ' - either name them in _remapObjectState or list them as not display state');
+        throw new Error('per-object keys in neither OBJECT_STATE nor the'
+            + ' excluded list: ' + missed.join(', '));
+    }
+    // ...and the list itself is well formed: every field says what an absent
+    // value means, because it is not the same answer for all of them - no side
+    // chains are shown by default, while every base and element is, and
+    // getting it backwards inverts the feature.
+    for (const f of OBJECT_STATE) {
+        if (f.absent !== 'all' && f.absent !== 'none') {
+            throw new Error(f.key + " does not say what an absent value means");
+        }
+        if (f.remap !== null && typeof f.remap !== 'function') {
+            throw new Error(f.key + ' has no renumbering and does not say so'
+                + ' explicitly with null');
+        }
     }
 });
 

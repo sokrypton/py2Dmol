@@ -1216,7 +1216,7 @@ function setupEventListeners() {
         // off the object it would be that object's own numbering, and every
         // object after the first would answer for the wrong residues.
         set('elementsShowToggle', tally(elAble,
-            renderer.mergedObjectSet ? renderer.mergedObjectSet('elements', 'all')
+            renderer.mergedObjectSet ? renderer.mergedObjectSet('elements')
                 : (obj.elements instanceof Set ? obj.elements : null), true));
         // ...and whether any of it is a nucleotide, which is the renderer's own
         // question rather than a second copy of the type test
@@ -1232,7 +1232,7 @@ function setupEventListeners() {
         // ...both in MERGED indices - see shownSidechainSet and mergedObjectSet
         const scSet = renderer.shownSidechainSet ? renderer.shownSidechainSet()
             : (obj.sidechains instanceof Set ? obj.sidechains : null);
-        const bSet = renderer.mergedObjectSet ? renderer.mergedObjectSet('bases', 'all')
+        const bSet = renderer.mergedObjectSet ? renderer.mergedObjectSet('bases')
             : (obj.bases instanceof Set ? obj.bases : null);
         const modeOf = (i) => {
             if (scSet && scSet.has(i)) return 'full';
@@ -1397,7 +1397,7 @@ function setupEventListeners() {
         // ...in merged indices, like the positions this walks
         const sc = renderer.shownSidechainSet ? renderer.shownSidechainSet()
             : (obj.sidechains instanceof Set ? obj.sidechains : null);
-        const bases = renderer.mergedObjectSet ? renderer.mergedObjectSet('bases', 'all')
+        const bases = renderer.mergedObjectSet ? renderer.mergedObjectSet('bases')
             : (obj.bases instanceof Set ? obj.bases : null);
         const drawsSomething = (i) => {
             if (!hidBB || !hidBB.has(i)) return true;              // backbone drawn
@@ -7669,52 +7669,22 @@ function saveViewerState() {
                 }
             }
 
-            // Add contacts data if it exists
-            if (objectData.contacts && Array.isArray(objectData.contacts) && objectData.contacts.length > 0) {
-                objToSave.contacts = objectData.contacts;
-            }
-
             // Add scatter config if it exists (camelCase internal)
             const scatterCfg = objectData.scatterConfig;
             if (scatterCfg) {
                 objToSave.scatter_config = scatterCfg;
             }
 
-            // Which residues show a side chain, and any colour of their own.
-            // A Set does not survive JSON, so it goes as an array.
-            if (objectData.sidechains && objectData.sidechains.size) {
-                objToSave.sidechains = Array.from(objectData.sidechains);
-            }
-            // Which nucleotides show a base plate. Saved whenever the set
-            // EXISTS, empty included: an empty set means "none", which is a
-            // real choice and the opposite of the absent-means-all default. The
-            // side-chain line above can test `.size` because there null and
-            // empty mean the same thing there; here they do not.
-            if (objectData.bases instanceof Set) {
-                objToSave.bases = Array.from(objectData.bases);
-            }
-            // ...and which residues show element colours. Same rule: saved
-            // whenever the set EXISTS, empty included, because absent means all.
-            if (objectData.elements instanceof Set) {
-                objToSave.elements = Array.from(objectData.elements);
-            }
-            // ...and whose backbone is hidden. Absent means none, so this one
-            // is only worth writing when there is something in it.
-            if (objectData.hiddenBackbone instanceof Set
-                && objectData.hiddenBackbone.size) {
-                objToSave.hidden_backbone = Array.from(objectData.hiddenBackbone);
-            }
-            if (objectData.sidechainColor) {
-                objToSave.sidechain_color = objectData.sidechainColor;
-            }
-
-            // Add color overrides if they exist
-            if (objectData.color) {
-                objToSave.color = objectData.color;
-            }
-            // secondary structure travels with the object, like colour
-            if (objectData.sse) {
-                objToSave.sse = objectData.sse;
+            // EVERY PIECE OF PER-OBJECT STATE KEYED BY POSITION, from the
+            // one list that names them (OBJECT_STATE in viewer-mol.js). This
+            // was seven near-identical blocks, each with its own rule about
+            // when an empty value still has to be written - and the rule is
+            // not the same for all of them: a set whose absence means ALL has
+            // to go out even when it is EMPTY, because empty means "none of
+            // them" and leaving it out means "all of them". The list carries
+            // that, so this does not have to remember it.
+            if (renderer.objectStateToJSON) {
+                Object.assign(objToSave, renderer.objectStateToJSON(objectData));
             }
 
             // Add per-object viewerState if it exists
@@ -8053,66 +8023,22 @@ async function loadViewerState(stateData) {
                     }
                 }
 
-                // Store contacts data if present
-                if (objData.contacts && Array.isArray(objData.contacts) && objData.contacts.length > 0) {
-                    if (!renderer.objectsData[objData.name]) {
-                        renderer.objectsData[objData.name] = {};
-                    }
-                    renderer.objectsData[objData.name].contacts = objData.contacts;
-                    // Invalidate segment cache so contacts will be regenerated when object is displayed
+                // ...AND EVERY PIECE OF PER-OBJECT STATE KEYED BY POSITION,
+                // from the same list that saved it (OBJECT_STATE). Seven
+                // blocks each testing a differently-shaped emptiness, and one
+                // of them - the bases - had to accept an EMPTY array where the
+                // others rejected it.
+                if (!renderer.objectsData[objData.name]) {
+                    renderer.objectsData[objData.name] = {};
+                }
+                if (renderer.objectStateFromJSON) {
+                    renderer.objectStateFromJSON(
+                        renderer.objectsData[objData.name], objData);
+                }
+                // ...and contacts need the segment cache dropped, since they
+                // are drawn as segments and the cache was built without them
+                if (objData.contacts && objData.contacts.length) {
                     renderer.cachedSegmentIndices = null;
-                }
-
-                // Restore color overrides if present
-                if (objData.color) {
-                    if (!renderer.objectsData[objData.name]) {
-                        renderer.objectsData[objData.name] = {};
-                    }
-                    renderer.objectsData[objData.name].color = objData.color;
-                }
-
-                // ... and secondary structure, which lives beside it
-                if (objData.sse) {
-                    if (!renderer.objectsData[objData.name]) {
-                        renderer.objectsData[objData.name] = {};
-                    }
-                    renderer.objectsData[objData.name].sse = objData.sse;
-                }
-
-                // ... and which residues were showing a side chain. Back to a
-                // Set: everything downstream asks it .has(). Only the residues
-                // whose ATOMS were saved can be shown, and the panel already
-                // reflects that on its own - hasSidechainsFor finds nothing for
-                // the others, so the Side chains row is simply not offered.
-                if (objData.sidechains && objData.sidechains.length) {
-                    if (!renderer.objectsData[objData.name]) {
-                        renderer.objectsData[objData.name] = {};
-                    }
-                    renderer.objectsData[objData.name].sidechains = new Set(objData.sidechains);
-                }
-                // ...and the bases, where an empty array is meaningful: it
-                // says every plate was hidden, which absent does not.
-                if (Array.isArray(objData.elements)) {
-                    if (!renderer.objectsData[objData.name]) {
-                        renderer.objectsData[objData.name] = {};
-                    }
-                    renderer.objectsData[objData.name].elements = new Set(objData.elements);
-                }
-                if (Array.isArray(objData.bases)) {
-                    if (!renderer.objectsData[objData.name]) {
-                        renderer.objectsData[objData.name] = {};
-                    }
-                    renderer.objectsData[objData.name].bases = new Set(objData.bases);
-                }
-                if (Array.isArray(objData.hidden_backbone)) {
-                    renderer.objectsData[objData.name].hiddenBackbone
-                        = new Set(objData.hidden_backbone);
-                }
-                if (objData.sidechain_color) {
-                    if (!renderer.objectsData[objData.name]) {
-                        renderer.objectsData[objData.name] = {};
-                    }
-                    renderer.objectsData[objData.name].sidechainColor = objData.sidechain_color;
                 }
 
                 // Restore per-object viewerState if present

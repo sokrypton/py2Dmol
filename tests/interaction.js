@@ -63,7 +63,8 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_GAIN',
 // ...and the module-level FUNCTIONS they call, for the same reason: a lifted
 // method that reaches one of these gets a ReferenceError, which reads as ten
 // unrelated halo tests breaking at once.
-for (const name of ['selectionBandFor', 'ligandGroupsForFrame']) {
+for (const name of ['selectionBandFor', 'ligandGroupsForFrame',
+    'objectStateAbsent']) {
     const at = molSrc.indexOf('function ' + name + '(');
     if (at < 0) throw new Error('function not found in viewer-mol.js: ' + name);
     // brace-matched rather than "the next line that is a closing brace at four
@@ -80,6 +81,11 @@ for (const name of ['selectionBandFor', 'ligandGroupsForFrame']) {
 // ...and the two module-level constants ligandGroupsForFrame closes over.
 global.LIGAND_GROUPS_BY_FRAME = new WeakMap();
 global.NO_LIGAND_GROUPS = new Map();
+// ...and the per-object field list, which several lifted methods walk
+global.OBJECT_STATE = new Function(
+    molSrc.slice(molSrc.indexOf('const OBJECT_STATE = ['),
+        molSrc.indexOf('function initializePy2DmolViewer('))
+    + '; return OBJECT_STATE;')();
 
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
@@ -2739,8 +2745,9 @@ t('hiding a base rebuilds the GPU mesh, because a plate is geometry', () => {
     const sig = gpu.slice(at, gpu.indexOf('\n}', at));
     // ...named through mergedObjectSet, because several objects can be on
     // screen and each carries its own set in its own numbering
-    if (!/mergedObjectSet\('bases', 'all'\)/.test(sig)
-        || !/idOf\(b\)/.test(sig)) {
+    // (what an absent set means is the field's own business now - see
+    // OBJECT_STATE - so the caller names the field and nothing else)
+    if (!/mergedObjectSet\('bases'\)/.test(sig) || !/idOf\(b\)/.test(sig)) {
         throw new Error('the mesh signature does not name the base set');
     }
     if (!/cartoonBasePlates === false \? 'noplates'/.test(sig)) {
@@ -2755,7 +2762,7 @@ t('hiding a base rebuilds the GPU mesh, because a plate is geometry', () => {
     // in the same signature gives: a bond whose ends differ is CUT at its
     // midpoint when the mesh is captured. The halves term is a LENGTH, and the
     // array keeps its length whatever is in it, so it cannot see the uncut.
-    if (!/mergedObjectSet\('elements', 'all'\)/.test(sig) || !/idOf\(e\)/.test(sig)) {
+    if (!/mergedObjectSet\('elements'\)/.test(sig) || !/idOf\(e\)/.test(sig)) {
         throw new Error('the mesh signature does not name the element set, so'
             + ' switching element colours off leaves the cut mesh on screen');
     }
@@ -2848,10 +2855,12 @@ t('the backbone hides per selection, and the side chains keep their CA', () => {
         || !/const drawsSomething = \(i\) =>/.test(app)) {
         throw new Error('nothing composes visibility from the parts');
     }
-    if (!/'sidechains', 'elements', 'bases', 'hiddenBackbone'/.test(mol)) {
+    // ...and it is carried by a Copy, which now means: it is in the field
+    // list every lifecycle operation walks (see OBJECT_STATE)
+    if (!/key: 'hiddenBackbone'[\s\S]{0,120}remap: remapPositionSet/.test(mol)) {
         throw new Error('a Copy loses which backbones were hidden');
     }
-    if (!/objToSave\.hidden_backbone/.test(app) || !/objData\.hidden_backbone/.test(app)) {
+    if (!/key: 'hiddenBackbone'[\s\S]{0,120}json: 'hidden_backbone'/.test(mol)) {
         throw new Error('the session does not carry the hidden backbone');
     }
 });
@@ -4001,29 +4010,43 @@ t('a contact loaded from a contacts file is the same contact to the GUI', () => 
 
 
 t('everything the selection panel sets is written to a saved session', () => {
-    // Each of these is stored somewhere different, and the save path names its
-    // fields ONE BY ONE - anything not listed is dropped in silence, which has
-    // already happened three times in this codebase.
+    // Each of these is stored somewhere different, and the save path used to
+    // name its fields ONE BY ONE - anything not listed was dropped in silence,
+    // which happened three times in this codebase. There is one list now
+    // (OBJECT_STATE in viewer-mol.js) and the save and the restore are each a
+    // loop over it, so this checks the list and the two loops.
     const app = appSrc;
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
     const saved = app.slice(app.indexOf('const objToSave = {'),
         app.indexOf('const stateData', app.indexOf('const objToSave = {')));
+    if (!/objectStateToJSON\(objectData\)/.test(saved)) {
+        throw new Error('the save no longer walks the per-object field list');
+    }
+    if (!/objectStateFromJSON\(/.test(app)) {
+        throw new Error('the restore no longer walks it');
+    }
     for (const [what, field] of [
         ['contacts (with their colour and width inside)', 'contacts'],
         ['which residues show a side chain', 'sidechains'],
         ['per-residue side-chain colour', 'sidechain_color'],
         ['per-residue colour', 'color'],
         ['secondary-structure overrides', 'sse'],
+        ['which nucleotides show a plate', 'bases'],
+        ['which residues show element colours', 'elements'],
     ]) {
-        if (!new RegExp('objToSave\\.' + field + '\\s*=').test(saved)) {
-            throw new Error(what + ' is not written to a saved session'
-                + ' (objToSave.' + field + ')');
+        if (!new RegExp("json: '" + field + "'").test(mol)) {
+            throw new Error(what + ' is not in the field list, so a saved'
+                + ' session drops it (json: ' + field + ')');
         }
     }
-    // ...and read back. The restore path is equally field-by-field.
-    for (const field of ['contacts', 'sidechains', 'sidechain_color']) {
-        if (!new RegExp('objData\\.' + field).test(app)) {
-            throw new Error('objData.' + field + ' is never read back on load');
-        }
+    // ...AND THE RULE THAT DIFFERS PER FIELD: a set whose absence means ALL
+    // has to be written even when EMPTY - empty means "none of them" and
+    // absent means "all of them", so dropping it inverts the feature.
+    const rule = mol.slice(mol.indexOf('function objectStateToJSON('),
+        mol.indexOf('function objectStateFromJSON('));
+    if (!/f\.absent === 'none' && !v\.size/.test(rule)) {
+        throw new Error('the save writes every empty set, or none of them -'
+            + ' the two kinds need opposite treatment');
     }
     // the per-frame side-chain table rides on the frame, not the object
     if (!/frameData\.sidechains/.test(app) || !/reviveSidechainTable/.test(app)) {
@@ -6879,8 +6902,8 @@ t('nothing writes a bond list back onto an object', () => {
     if (!/object\.bonds = data\.bonds/.test(src4)) {
         throw new Error('addFrame no longer records the bonds a frame declares');
     }
-    if (!/object\.bonds = nb\.length \? nb : null/.test(src4)) {
-        throw new Error('an edit no longer renumbers the object\'s bond list,'
+    if (!/key: 'bonds'[\s\S]{0,300}remap: remapIndexPairs/.test(src4)) {
+        throw new Error("an edit no longer renumbers the object's bond list,"
             + ' which nothing else will now heal');
     }
 });
@@ -7377,6 +7400,52 @@ t('everything can be switched off, and the objects survive it', () => {
     eq(v.setShownObjects(['B']), true, 'switching one back on is a change');
     eq(v.drawnObjects().join(','), 'B', 'that object alone');
     if (!v.coords.length) throw new Error('nothing was loaded for it');
+});
+
+// ONE FIELD LIST, WALKED BY EVERY LIFECYCLE OPERATION. Each per-object field
+// keyed by position has to survive six things - a merge reading it up, a write
+// coming down, an edit renumbering it, a session saving and restoring it - and
+// each of those was written out field by field, so each was a place to forget
+// one. They were forgotten repeatedly: a Copy that carried no colours, a
+// Delete that left the ligand bonds pointing at whatever had moved into their
+// slots.
+t('the per-object fields are declared once and walked, not listed per operation', () => {
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const app = fs.readFileSync('web/app.js', 'utf8');
+
+    // the renumbering is a loop over the list, not a paragraph per field
+    const remap = mol.slice(mol.indexOf('_renumberObjectState(src, dst, map, selected) {'),
+        mol.indexOf('_remapSidechains(')).replace(/\s+/g, ' ');
+    if (!/for \(const field of OBJECT_STATE\)/.test(remap)) {
+        throw new Error('the renumbering no longer walks the field list');
+    }
+    for (const gone of ['sidechainColor', 'hiddenBackbone', 'contacts']) {
+        if (new RegExp("'" + gone + "'").test(remap)) {
+            throw new Error(gone + ' is named in the renumbering again - that'
+                + ' is the field-by-field version coming back');
+        }
+    }
+    // an entry with no renumbering says so explicitly, rather than by absence
+    if (!/remap: null/.test(mol)) {
+        throw new Error('a field with no renumbering is left out of the list'
+            + ' rather than named with remap: null');
+    }
+    // the save and the restore walk it too
+    if (!/objectStateToJSON\(objectData\)/.test(app)
+        || !/objectStateFromJSON\(/.test(app)) {
+        throw new Error('the session save and restore are back to naming'
+            + ' fields one by one');
+    }
+    // ...and what an absent value means is the field's business, not the
+    // caller's: passing 'all' where the field says 'none' inverts it
+    const callers = (mol + app
+        + fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8')
+        + fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8'))
+        .match(/mergedObjectSet\('[a-zA-Z]+', *'(all|none)'\)/g) || [];
+    if (callers.length) {
+        throw new Error('callers are still deciding what an absent set means: '
+            + callers.join(', '));
+    }
 });
 
 // THE LIVE MASK AND THE OBJECTS' RECORDS NEVER DISAGREE. The mask is merged
