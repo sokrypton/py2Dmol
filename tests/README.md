@@ -126,6 +126,13 @@ own residue, forced SSE on the object that was given it, and a contact naming
 "chain A 10 to 20" in EACH object resolving inside its own window rather than
 both landing on the first object's residues.
 
+It also runs the STATE PIPELINE both ways before the page: what Python saves
+must reload in Python with the same per-object colours and contacts, and a file
+saved by the WEB - which carries `shown_objects` and a per-object `viewerState`,
+keys Python has never seen - must load without choking. The comparison goes
+through JSON on both sides on purpose: a position map is keyed by an int in
+memory and by a string once it has been through a file, and JS reads either.
+
 IT LOADS THE MINIFIED BUNDLE, like every Python page. Editing the source and
 running this proves nothing until `npx terser` has run - which is worth
 remembering, because a mutation test against it silently passed for that

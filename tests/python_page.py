@@ -36,6 +36,38 @@ except ImportError:
 sys.path.insert(0, ROOT)
 import py2Dmol
 
+# ...and the state pipeline both ways, before the page: what Python saves must
+# reload in Python, and what the WEB saves - which carries keys Python has
+# never seen, `shown_objects` among them - must not choke it.
+def _check_state_round_trip():
+    import tempfile
+    a = py2Dmol.view()
+    a.add_pdb(ROOT + '/1UBQ.cif', name='ubq')
+    a.add_pdb(ROOT + '/6MRR.cif', name='pep')
+    a.set_color('red', name='ubq', position=3)
+    a.add_contacts([['A', 10, 'A', 20, 1.0]], name='pep')
+    path = os.path.join(tempfile.gettempdir(), 'py2dmol_state_check.json')
+    a.save_state(path)
+    st = json.load(open(path))
+    b = py2Dmol.view(); b.load_state(path)
+    # ...compared THROUGH JSON. A position map is keyed by an int in memory and
+    # by a string once it has been through a file, because that is what JSON
+    # keys are; JS reads either, so the two states mean the same thing and a
+    # literal comparison would fail on the round trip it is meant to bless.
+    def shape(view):
+        return json.loads(json.dumps(
+            [[o.get('color'), o.get('contacts')] for o in view.objects]))
+    same = shape(a) == shape(b)
+    # ...now the web's extra keys
+    st['viewer_state']['shown_objects'] = ['ubq', 'pep']
+    st['objects'][0]['viewerState'] = {'style': 'tube', 'styleChosen': True}
+    json.dump(st, open(path, 'w'))
+    c = py2Dmol.view(); c.load_state(path)
+    os.remove(path)
+    return same, [len(o['frames']) for o in c.objects]
+
+SAME, WEB_FRAMES = _check_state_round_trip()
+
 v = py2Dmol.view()
 v.add_pdb(ROOT + '/1UBQ.cif', name='ubq')
 v.add_pdb(ROOT + '/6MRR.cif', name='pep')
@@ -119,6 +151,7 @@ R = box[0] if box else {'error': 'no result posted'}
 if R.get('error'):
     sys.exit('page error: ' + R['error'])
 
+print(f"state round trip: python->python same {SAME}, web file loads {WEB_FRAMES}")
 print(f"objects {R['objects']}, drawn {R['drawn']} ({R['n']} positions,"
       f" merged {R['merged']})")
 print(f"  both shown: {R['bothDrawn']} ({R['bothN']} positions,"
@@ -128,6 +161,12 @@ print(f"  forced SSE: pep 5 -> {R['sseAt']!r}, ubq 5 -> {R['sseOther']!r}")
 print(f"  contacts: {R['contactSegs']}")
 
 bad = []
+if not SAME:
+    bad.append("a state file saved from Python did not reload with the same"
+               " per-object colours and contacts")
+if WEB_FRAMES != [1, 1]:
+    bad.append(f"a state file saved by the WEB - which carries shown_objects and"
+               f" a per-object viewerState - loaded as {WEB_FRAMES}")
 if R['drawn'] != ['ubq'] or R['merged']:
     bad.append(f"a Python page opened showing {R['drawn']} - one object is the"
                " resting state there as everywhere else")
