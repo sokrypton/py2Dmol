@@ -7762,5 +7762,42 @@ t('the strip reads a position from the object that owns it', () => {
     }
 });
 
+// COPY ENDS ON THE OBJECT IT MADE, however many objects it made. A
+// single-object Copy has always switched to the copy; under a merge the edit
+// runs once per object and each turn puts the edited object back, so the
+// switch happens once, after they have all had their turn.
+t('a multi-object copy ends on what it made', () => {
+    const v = mergedViewer();
+    v.residueSelection = new Set([1, 4]);
+    v._showObject = function (name) { this.currentObjectName = name; this._shown = name; };
+    let made = 0;
+    v._perObjectEdit(() => {
+        // what Copy does: makes an object and switches to it
+        const name = 'copy' + (++made);
+        v.objectsData[name] = { frames: [{ coords: [[0, 0, 0]], chains: ['A'] }] };
+        v.currentObjectName = name;
+        return name;
+    });
+    eq(made, 2, 'one copy per object the selection reached');
+    eq(v._shown, 'copy2', 'and it ends on the last one it made');
+});
+
+// ...AND A PAGE CAN HOLD SEVERAL VIEWERS. The picker lives outside the viewer's
+// own container, so the renderer falls back to the document - which on a grid
+// would hand this renderer another viewer's picker, and both would drive it.
+t('the picker is only taken from the document when there is one of them', () => {
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = mol.indexOf("const objectSelect = containerElement.querySelector('#objectSelect')");
+    if (at < 0) throw new Error('the picker lookup is gone');
+    const call = mol.slice(at, at + 500);
+    if (/getElementById\('objectSelect'\)/.test(call)) {
+        throw new Error('the fallback takes the first match in the document,'
+            + " which on a page with several viewers is another viewer's");
+    }
+    if (!/all\.length === 1 \? all\[0\] : null/.test(call)) {
+        throw new Error('the fallback does not check that there is exactly one');
+    }
+});
+
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');
 process.exit(fail?1:0);

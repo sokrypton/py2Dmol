@@ -10542,11 +10542,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // behind - so the second object would be handed whatever the first
             // one finished with, and get nothing of its own.
             const carried = this._selectionAsOwners();
+            this._lastEditMade = null;
             const out = [];
             for (const name of names) {
                 this._restoreSelectionFromOwners(carried);
                 out.push(this._editOneObject(() => fn(), name));
             }
+            // ...AND END ON WHAT WAS MADE, the way a single-object Copy always
+            // has: it switches to the object it makes. Each object's turn puts
+            // the edited object back so the next one starts clean, so the
+            // switch happens once, here, when they are all done.
+            if (this._lastEditMade && this.objectsData[this._lastEditMade]) {
+                this._showObject(this._lastEditMade);
+            }
+            this._lastEditMade = null;
             return out;
         }
 
@@ -10788,7 +10797,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // ...and back, minus anything the edit removed, plus whatever
                 // it made: a Copy that lands off screen looks like a Copy that
                 // did not happen.
+                // ...BACK TO THE OBJECT THAT WAS BEING EDITED, so the next
+                // object's turn starts from a known place. What an edge MADE
+                // is switched to by the caller, once, after every object has
+                // had its turn - see _perObjectEdit.
                 const made = this.currentObjectName;
+                if (made && made !== editing && this.objectsData[made]) {
+                    this._lastEditMade = made;
+                }
                 if (wasCurrent && this.objectsData[wasCurrent]) {
                     this.currentObjectName = wasCurrent;
                 }
@@ -15017,8 +15033,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // renderer would have no picker at all: no options, no change listener,
     // and no way to switch objects. Falls back to the document, and stays
     // container-first so two viewers on one page keep their own.
+    // ...and only when there is EXACTLY ONE on the page. Several viewers can
+    // share a document - see the grid - and a fallback that takes the first
+    // match would hand this renderer another viewer's picker, so both would
+    // drive the same one.
     const objectSelect = containerElement.querySelector('#objectSelect')
-        || (containerElement.ownerDocument || document).getElementById('objectSelect');
+        || (function () {
+            const doc = containerElement.ownerDocument || document;
+            const all = doc.querySelectorAll('#objectSelect');
+            return all.length === 1 ? all[0] : null;
+        }());
     const speedButton = containerElement.querySelector('#speedButton');
     const rotationCheckbox = containerElement.querySelector('#rotationCheckbox');
     const lineWidthSlider = containerElement.querySelector('#lineWidthSlider');
