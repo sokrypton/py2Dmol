@@ -2973,13 +2973,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Populate entropy data from MSA if available
             if (this.objectsData[newObjectName]?.msa?.msasBySequence && this.objectsData[newObjectName]?.msa?.chainToSequence && window.MSA) {
-                this.entropy = window.MSA.mapEntropyToStructure(this.objectsData[newObjectName], this.currentFrame >= 0 ? this.currentFrame : 0);
+                // ...for everything DRAWN, not the object just switched to
+                this.entropy = this.entropyForDrawn();
                 this._updateEntropyOptionVisibility();
             } else if (this.colorMode === 'entropy') {
                 // If entropy mode is active but no MSA, try to map it anyway
                 const objectName = this.currentObjectName;
                 if (objectName && this.objectsData[objectName] && window.MSA) {
-                    this.entropy = window.MSA.mapEntropyToStructure(this.objectsData[objectName], this.currentFrame >= 0 ? this.currentFrame : 0);
+                    this.entropy = this.entropyForDrawn();
                     this._updateEntropyOptionVisibility();
                 } else {
                     this.entropy = undefined;
@@ -14573,7 +14574,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Map entropy to structure if entropy mode is selected
             if (selectedMode === 'entropy' && renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName] && window.MSA) {
-                renderer.entropy = window.MSA.mapEntropyToStructure(renderer.objectsData[renderer.currentObjectName], renderer.currentFrame >= 0 ? renderer.currentFrame : 0);
+                renderer.entropy = renderer.entropyForDrawn
+                    ? renderer.entropyForDrawn()
+                    : window.MSA.mapEntropyToStructure(renderer.objectsData[renderer.currentObjectName], renderer.currentFrame >= 0 ? renderer.currentFrame : 0);
                 renderer._updateEntropyOptionVisibility();
             } else {
                 // Clear entropy when switching away from entropy mode
@@ -15315,7 +15318,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const firstObjectName = (window.py2dmol_staticData && window.py2dmol_staticData[viewerId])[0].name;
                 if (renderer.objectsData[firstObjectName]?.msa?.msasBySequence &&
                     renderer.objectsData[firstObjectName]?.msa?.chainToSequence && window.MSA) {
-                    renderer.entropy = window.MSA.mapEntropyToStructure(renderer.objectsData[firstObjectName], 0);
+                    // ...through the one path, which answers for everything
+                    // drawn - here that is this object, and it stays right the
+                    // day a static page shows two.
+                    renderer.entropy = renderer.entropyForDrawn();
                     renderer._updateEntropyOptionVisibility();
                 }
 

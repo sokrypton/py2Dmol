@@ -143,10 +143,14 @@
         // Expand ligand positions
         expandLigandPositions(positionIndices) {
             if (typeof expandLigandSelection === 'function') {
-                const currentObject = this.mainRenderer.objectsData[this.mainRenderer.currentObjectName];
-                if (currentObject?.ligandGroups) {
-                    return expandLigandSelection(positionIndices, currentObject.ligandGroups);
-                }
+                // ...in MERGED indices, like the positions handed in - the
+                // object's own groups are in its own numbering, and matched
+                // against merged indices they expand nothing (or somebody
+                // else's ligand).
+                const groups = this.mainRenderer.mergedLigandGroups
+                    ? this.mainRenderer.mergedLigandGroups()
+                    : (this.mainRenderer.objectsData[this.mainRenderer.currentObjectName] || {}).ligandGroups;
+                if (groups) return expandLigandSelection(positionIndices, groups);
             }
             return new Set(positionIndices);
         }
@@ -245,9 +249,16 @@
                     const currentSelection = this.mainRenderer.getVisibility();
                     const existingBoxes = currentSelection.paeBoxes || [];
                     const existingPositions = currentSelection.positions || new Set();
+                    // A PAE ROW IS A RESIDUE OF THIS OBJECT, and the mask
+                    // speaks merged indices - so a box drawn on the second
+                    // object's matrix used to hide the first object's residues.
+                    const paeOff = this.mainRenderer.sourceOffsetOf
+                        ? this.mainRenderer.sourceOffsetOf(this.mainRenderer.currentObjectName) : 0;
                     const newPositions = new Set();
-                    for (let r = i_start; r <= i_end; r++) if (r >= 0 && r < this.mainRenderer.chains.length) newPositions.add(r);
-                    for (let r = j_start; r <= j_end; r++) if (r >= 0 && r < this.mainRenderer.chains.length) newPositions.add(r);
+                    const inRange = (r) => (r + paeOff) >= 0
+                        && (r + paeOff) < this.mainRenderer.chains.length;
+                    for (let r = i_start; r <= i_end; r++) if (inRange(r)) newPositions.add(r + paeOff);
+                    for (let r = j_start; r <= j_end; r++) if (inRange(r)) newPositions.add(r + paeOff);
                     const expandedNewPositions = this.expandLigandPositions(newPositions);
 
                     if (this.isAdding) {
@@ -257,7 +268,11 @@
                         const newChains = new Set();
                         if (this.mainRenderer.chains) {
                             for (const pos of combinedPositions) {
-                                if (pos >= 0 && pos < this.mainRenderer.chains.length) newChains.add(this.mainRenderer.chains[pos]);
+                                if (pos >= 0 && pos < this.mainRenderer.chains.length) {
+                                    newChains.add(this.mainRenderer.chainKeyAt
+                                        ? this.mainRenderer.chainKeyAt(pos)
+                                        : this.mainRenderer.chains[pos]);
+                                }
                             }
                         }
                         const hasPartialSelections = combinedPositions.size > 0 && combinedPositions.size < (this.mainRenderer.chains?.length || 0);
@@ -269,7 +284,11 @@
                         const newChains = new Set();
                         if (this.mainRenderer.chains) {
                             for (const pos of expandedNewPositions) {
-                                if (pos >= 0 && pos < this.mainRenderer.chains.length) newChains.add(this.mainRenderer.chains[pos]);
+                                if (pos >= 0 && pos < this.mainRenderer.chains.length) {
+                                    newChains.add(this.mainRenderer.chainKeyAt
+                                        ? this.mainRenderer.chainKeyAt(pos)
+                                        : this.mainRenderer.chains[pos]);
+                                }
                             }
                         }
                         const hasPartialSelections = expandedNewPositions.size > 0 && expandedNewPositions.size < (this.mainRenderer.chains?.length || 0);

@@ -7586,5 +7586,70 @@ t('the 3D hover readout says which object', () => {
     }
 });
 
+// ENTROPY IS PER OBJECT, and the colour array is over everything drawn. One
+// object's alignment laid over a merged array colours the second structure by
+// the first one's conservation, so every path that fills renderer.entropy goes
+// through entropyForDrawn.
+t('nothing fills the entropy vector from a single object', () => {
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    const offenders = [];
+    for (const [file, src] of [['viewer-mol.js', mol], ['web/app.js', app]]) {
+        src.split('\n').forEach((line, k) => {
+            // the RENDERER's vector, not an MSA's own entropy array
+            if (!/(renderer|this)\.entropy = /.test(line)) return;
+            if (/entropyForDrawn/.test(line)) return;
+            if (/entropy = undefined|entropy = null/.test(line)) return;
+            offenders.push(file + ':' + (k + 1) + ' ' + line.trim().slice(0, 70));
+        });
+    }
+    if (offenders.length) {
+        throw new Error('the entropy vector is filled from one object at '
+            + offenders.join(' | '));
+    }
+    // ...and the one path concatenates per source
+    const at = mol.indexOf('entropyForDrawn() {');
+    const body = mol.slice(at, mol.indexOf('\n        }', at));
+    if (!/sourceNames[\s\S]*sourceOffsets/.test(body)) {
+        throw new Error('entropyForDrawn no longer walks the sources');
+    }
+});
+
+// A PAE MATRIX BELONGS TO ONE OBJECT, and its rows are that object's residues.
+// The mask speaks merged indices, so a box drawn on the second object's matrix
+// hid the FIRST object's residues, and the chain set it wrote was bare ids.
+t('a PAE box lands on the object whose matrix it was drawn on', () => {
+    const pae = fs.readFileSync('py2Dmol/resources/viewer-pae.js', 'utf8');
+    // in
+    if (!/sourceOffsetOf\(this\.mainRenderer\.currentObjectName\)/.test(pae)) {
+        throw new Error('a PAE box is turned into positions without the'
+            + " object's offset");
+    }
+    // BOTH loops - a box has an i range and a j range, and offsetting one of
+    // them puts half the selection on the wrong object
+    if ((pae.match(/newPositions\.add\(r \+ paeOff\)/g) || []).length !== 2) {
+        throw new Error('a box row is turned into a position without the'
+            + " object's offset");
+    }
+    // out
+    const at = pae.indexOf('getSequenceSelectedPAEPositions()');
+    const back = pae.slice(at, at + 2200).replace(/\s+/g, ' ');
+    if (!/chainKeyAt\(r \+ off\)/.test(back) || !/positions\.has\(r \+ off\)/.test(back)) {
+        throw new Error('the reverse mapping reads the mask at raw PAE rows');
+    }
+    // ...and the ligand expansion it runs on the way
+    if (!/const groups = this\.mainRenderer\.mergedLigandGroups\s*\n?\s*\? this\.mainRenderer\.mergedLigandGroups\(\)/
+        .test(pae.replace(/\s+/g, ' ').replace(/ \? /g, '\n? '))
+        && !/groups = this\.mainRenderer\.mergedLigandGroups \? this\.mainRenderer\.mergedLigandGroups\(\)/
+            .test(pae.replace(/\s+/g, ' '))) {
+        throw new Error("the PAE expands ligands with one object's groups,"
+            + ' which are in that object\'s own numbering');
+    }
+    // ...and the chain set it writes is keyed
+    if (/newChains\.add\(this\.mainRenderer\.chains\[pos\]\)/.test(pae)) {
+        throw new Error('the PAE writes bare chain ids into the mask');
+    }
+});
+
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');
 process.exit(fail?1:0);

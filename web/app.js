@@ -176,7 +176,12 @@ function refreshEntropyColors() {
     // Always map entropy to structure when MSA data is available
     // This ensures the entropy dropdown option becomes visible
     if (renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName] && window.MSA) {
-        renderer.entropy = window.MSA.mapEntropyToStructure(renderer.objectsData[renderer.currentObjectName], renderer.currentFrame >= 0 ? renderer.currentFrame : 0);
+        // ...for everything DRAWN, not one object: one object's alignment laid
+        // over a merged array colours the second structure by the first one's
+        // conservation. See entropyForDrawn.
+        renderer.entropy = renderer.entropyForDrawn
+            ? renderer.entropyForDrawn()
+            : window.MSA.mapEntropyToStructure(renderer.objectsData[renderer.currentObjectName], renderer.currentFrame >= 0 ? renderer.currentFrame : 0);
         if (renderer._updateEntropyOptionVisibility) renderer._updateEntropyOptionVisibility();
     }
 
@@ -2343,7 +2348,10 @@ function handleObjectChange() {
         const rendererObj = viewerApi.renderer.objectsData[selectedObject];
         if (rendererObj && rendererObj.msa && rendererObj.msa.msasBySequence && rendererObj.msa.chainToSequence) {
             if (selectedObject && window.MSA) {
-                viewerApi.renderer.entropy = window.MSA.mapEntropyToStructure(rendererObj, viewerApi.renderer.currentFrame >= 0 ? viewerApi.renderer.currentFrame : 0);
+                // ...for everything DRAWN - see entropyForDrawn
+                viewerApi.renderer.entropy = viewerApi.renderer.entropyForDrawn
+                    ? viewerApi.renderer.entropyForDrawn()
+                    : window.MSA.mapEntropyToStructure(rendererObj, viewerApi.renderer.currentFrame >= 0 ? viewerApi.renderer.currentFrame : 0);
                 if (viewerApi.renderer._updateEntropyOptionVisibility) viewerApi.renderer._updateEntropyOptionVisibility();
             }
         }
@@ -5600,7 +5608,10 @@ async function handleFetch() {
                                                 // Map entropy from MSA
                                                 if (viewerApi?.renderer && objectName) {
                                                     if (objectName && viewerApi.renderer.objectsData[objectName] && window.MSA) {
-                                                        viewerApi.renderer.entropy = window.MSA.mapEntropyToStructure(viewerApi.renderer.objectsData[objectName], viewerApi.renderer.currentFrame >= 0 ? viewerApi.renderer.currentFrame : 0);
+                                                        // ...for everything drawn - see entropyForDrawn
+                                                        viewerApi.renderer.entropy = viewerApi.renderer.entropyForDrawn
+                                                            ? viewerApi.renderer.entropyForDrawn()
+                                                            : window.MSA.mapEntropyToStructure(viewerApi.renderer.objectsData[objectName], viewerApi.renderer.currentFrame >= 0 ? viewerApi.renderer.currentFrame : 0);
                                                         if (viewerApi.renderer._updateEntropyOptionVisibility) viewerApi.renderer._updateEntropyOptionVisibility();
                                                     }
                                                 }
@@ -6846,7 +6857,10 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                                     // Map entropy from MSA
                                     if (viewerApi?.renderer && currentObjectName) {
                                         if (currentObjectName && viewerApi.renderer.objectsData[currentObjectName] && window.MSA) {
-                                            viewerApi.renderer.entropy = window.MSA.mapEntropyToStructure(viewerApi.renderer.objectsData[currentObjectName], viewerApi.renderer.currentFrame >= 0 ? viewerApi.renderer.currentFrame : 0);
+                                            // ...for everything DRAWN - see entropyForDrawn
+                                            viewerApi.renderer.entropy = viewerApi.renderer.entropyForDrawn
+                                                ? viewerApi.renderer.entropyForDrawn()
+                                                : window.MSA.mapEntropyToStructure(viewerApi.renderer.objectsData[currentObjectName], viewerApi.renderer.currentFrame >= 0 ? viewerApi.renderer.currentFrame : 0);
                                             if (viewerApi.renderer._updateEntropyOptionVisibility) viewerApi.renderer._updateEntropyOptionVisibility();
                                         }
                                     }
