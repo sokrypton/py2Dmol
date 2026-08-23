@@ -96,7 +96,7 @@ All are `view()` arguments and all have a slider in the panel:
 | `width` | overall ribbon scale |
 | `shade` | 0–1, how much directional modelling: `0` is flat colour, `1` full light and inner shadow |
 | `highlight` | specular band, *not* scaled by `shade` — so `shade=0, highlight=2` is flat colour with a highlight on top |
-| `detail` | 2–8 subdivisions per residue. An upper bound: a structure drawn small quietly uses less. |
+| `detail` | 2–8 subdivisions per residue. Exactly this, at every canvas size, zoom and structure size. |
 | `arrows` | arrowhead on each strand's C-terminal end (default on) |
 | `sheet_flat` | 0–1, damps the β-pleat and smooths loops |
 | `pencil` | 0–1, coloured-pencil paper grain, on the structure only |

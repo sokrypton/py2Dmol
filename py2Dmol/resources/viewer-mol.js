@@ -12968,11 +12968,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * opts.format    'svg' | 'svgz' | 'png'
          * opts.dpi       PNG only; CSS pixels are 96 dpi, so this is the scale
          *
-         * Detail is NOT forced up for an export. Subdivision is capped by how
-         * big a residue is in the OUTPUT (see subCapCur in viewer-cartoon.js),
-         * so a PNG at 300 dpi already gets three times the subdivision of the
-         * screen, and on a large structure the extra stations the old "max
-         * detail" option added were finer than a pixel either way.
+         * Detail is NOT forced up for an export: sampling is whatever the
+         * Detail control says, here as on screen, so what you export is what
+         * you were looking at. (It used to be capped by how big a residue came
+         * out in the OUTPUT, which meant a 300 dpi PNG quietly got three times
+         * the subdivision of the screen; that cap is gone - see subFloor in
+         * viewer-cartoon.js for why.)
          *
          * EXPORTS ARE ALWAYS TRANSPARENT, whatever the viewer background is set
          * to. A saved figure goes into a document whose page colour is not ours

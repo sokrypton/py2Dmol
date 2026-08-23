@@ -2650,16 +2650,25 @@
     // step of the control distinct.
     const MIN_SUB = 2;
     let detailCur = 1;
-    // Stations closer together than this on screen cannot be told apart, so the
-    // extra ones are geometry, depth sorting and stroking spent on curvature the
-    // display cannot show.
-    const SUB_TARGET_PX = 3;
-    // Upper bound on subdivision from the size of a residue in the OUTPUT, set
-    // per render below. Exports are capped the same way - they render at their
-    // own resolution, so a high-dpi PNG raises the cap by itself.
-    let subCapCur = Infinity;
-    const subFloor = (base) => Math.max(MIN_SUB,
-        Math.min(Math.round(base * detailCur), subCapCur));
+    // SAMPLING IS THE CONTROL, AND NOTHING ELSE. There used to be a second cap
+    // here, from how big a residue came out on screen: stations closer than a
+    // few pixels apart are curvature the display cannot show, so subdivision
+    // was capped by the projected scale. Removed - twice over, and the second
+    // reason is why it is gone for good:
+    //
+    //   * on the GPU the sampling is baked into a MESH, so the cap made the
+    //     detail of a picture depend on the zoom it was first built at - a
+    //     ribosome built while small stayed faceted when you zoomed in - and
+    //     tracking it properly meant rebuilding the mesh (1.1 s) whenever the
+    //     cap moved. A saving that costs a rebuild is not a saving;
+    //   * and it made the drawing depend on something invisible in the
+    //     controls. Detail said 4 and the picture was drawn at 2, with nothing
+    //     on screen to say why.
+    //
+    // Sampling is now exactly what the control asks for, at every canvas size,
+    // zoom and structure. Large structures cost what they cost; the Detail
+    // slider is how you buy that back, and it says what it does.
+    const subFloor = (base) => Math.max(MIN_SUB, Math.round(base * detailCur));
     // Depth fade DISABLED by default (user decision): 1.0 = uniform tone
     // at any depth. The old 0.45 fade read as "the object fading into the
     // screen" / a shade stuck to the view. Re-enable per renderer with
@@ -3001,16 +3010,6 @@
         // the scale this style actually drew at, so a pan drag can convert
         // screen pixels into Angstroms (see the pan handler in viewer-mol.js)
         renderer._viewScale = scale;
-        // AUTO-SUBDIVISION. Detail is a quality control, not a promise to draw
-        // curvature finer than the screen can resolve. A residue is CA_STEP_A
-        // long, so at this scale it spans CA_STEP_A * scale pixels; splitting it
-        // into more than that over SUB_TARGET_PX gains nothing visible and costs
-        // a station's worth of work in every pass. It binds only when the
-        // structure is SMALL on screen - a single domain at default zoom is
-        // ~31px per residue and keeps the full setting - so it is a large-
-        // structure and zoomed-out saving, which is where the cost actually is.
-        // MIN_SUB still applies underneath: 2 is a hard floor, not a preference.
-        subCapCur = Math.max(MIN_SUB, Math.floor((CA_STEP_A * scale) / SUB_TARGET_PX));
         // Emit each ribbon station's frame in MODEL space alongside the
         // projected corners. For consumers that keep the geometry and re-use it
         // at other views; see evalSlab for why a projected drawing is not

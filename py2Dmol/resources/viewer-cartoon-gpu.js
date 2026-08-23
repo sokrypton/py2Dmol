@@ -4262,8 +4262,6 @@ function signatureOf(r, w, h, colors) {
         // scale is built from it
         ((r.drawnStats && r.drawnStats()) || o || {}).maxExtent, w, h,
         r.cartoonThickness, r.cartoonSheetFlat, r.cartoonDetail,
-        // the thickness floors are geometry, so tuning either rebuilds
-        r.cartoonGpuRibbonThick, r.cartoonGpuHelixTh,
         r.cartoonArrows, r.cartoonRichardson, r.cartoonStyle,
         // NOT colorMode. Colour is a texture: three texels per segment against
         // a mesh that never moves, and putting the mode in here made every
