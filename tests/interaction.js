@@ -6524,6 +6524,11 @@ function shownViewer() {
     };
     v._invalidateSegmentCache = function () { this.segCleared = true; };
     v._framedObjects = new Set();
+    v._loadedKey = null;
+    v._arrayKey = function () {
+        return this.drawnObjects().join(',') + '#' + this.currentFrame;
+    };
+    v._noteArrayLoaded = function () { this._loadedKey = this._arrayKey(); };
     v.screenFrameId = 0;
     v._invalidateScreenProjection = function () {
         this.screenFrameId++; this._pickPending = null;
@@ -7339,6 +7344,50 @@ t('everything can be switched off, and the objects survive it', () => {
     eq(v.setShownObjects(['B']), true, 'switching one back on is a change');
     eq(v.drawnObjects().join(','), 'B', 'that object alone');
     if (!v.coords.length) throw new Error('nothing was loaded for it');
+});
+
+// WHAT THE ARRAY HOLDS IS RECORDED, NOT REASONED ABOUT. The fast path used to
+// argue from which branch it was on - "one object, and it is the one being
+// edited, so the ordinary path must already have loaded it" - which was true
+// from every direction but the one where the array had just been emptied on
+// purpose. A recorded key cannot be wrong that way; it can only be incomplete,
+// so it names everything that decides the CONTENTS of the array.
+t('the array says what it holds rather than being deduced', () => {
+    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const key = src.slice(src.indexOf('_arrayKey() {'),
+        src.indexOf('_noteArrayLoaded() {')).replace(/\s+/g, ' ');
+    if (!key) throw new Error('_arrayKey is gone');
+    for (const [what, probe] of [
+        ['which objects are drawn', /this\.drawnObjects\(\)/],
+        ['which frame each is on', /viewerState && o\.viewerState\.currentFrame/],
+        ['whether the overlay merge is up', /overlayState && this\.overlayState\.enabled/],
+        ['how many side chains are materialised', /shownSidechainSet/],
+    ]) {
+        if (!probe.test(key)) {
+            throw new Error('the key ignores ' + what + ', so a change to it'
+                + ' would be skipped as "already loaded"');
+        }
+    }
+    // ...and every builder records it, every emptier clears it
+    const mol = src.replace(/\s+/g, ' ');
+    const builders = (mol.match(/_noteArrayLoaded\(\)/g) || []).length;
+    if (builders < 4) {
+        throw new Error('only ' + builders + ' places record what they loaded'
+            + ' - the merge, the frame load, the empty canvas and the record'
+            + ' itself are four');
+    }
+    if ((mol.match(/this\._loadedKey = null/g) || []).length < 2) {
+        throw new Error('emptying the array does not clear the record, so the'
+            + ' next load is skipped as unnecessary');
+    }
+    const apply = src.slice(src.indexOf('_applyShownObjects(skipRender = false) {'),
+        src.indexOf('drawnStats() {'));
+    if (/this\.coords && this\.coords\.length\) return/.test(apply)) {
+        throw new Error('the fast path is guessing from the array length again');
+    }
+    if (!/this\._loadedKey === this\._arrayKey\(\)/.test(apply)) {
+        throw new Error('the fast path does not compare the record');
+    }
 });
 
 // COMING BACK FROM NOTHING, for the object being EDITED. That is the one case

@@ -4920,6 +4920,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.currentFrame = -1;
                 this.coords = [];
                 this._invalidateScreenProjection();
+                this._loadedKey = null;
                 clearCanvas();
                 if (this.paeRenderer) { this.paeRenderer.setData(null); }
                 this.updateUIControls();
@@ -4934,6 +4935,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.viewerState.currentFrame = -1;
                 this.coords = [];
                 this._invalidateScreenProjection();
+                this._loadedKey = null;
                 clearCanvas();
                 if (this.paeRenderer) { this.paeRenderer.setData(null); }
                 this.updateUIControls();
@@ -7628,6 +7630,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Load 3D data (with skipRender option)
             this._loadDataIntoRenderer(resolvedData, skipRender);
+            this._noteArrayLoaded();
 
             // Load PAE data (use resolved value)
             if (window.PAE) {
@@ -10404,6 +10407,48 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
+         * WHAT THE COORDINATE ARRAY IS SUPPOSED TO HOLD, as a string.
+         *
+         * Everything that builds the array - a frame load, a merge, an empty
+         * canvas - records this afterwards in `_loadedKey`, and anything
+         * thinking of skipping the work compares the two. The alternative,
+         * which is what was here, is to REASON about it: "one object, and it
+         * is the one being edited, so the ordinary path must already have it
+         * loaded". That was true from every direction but one - the array had
+         * just been emptied on purpose by switching every object off - and
+         * lighting the eye again then drew nothing at all, for good.
+         *
+         * A recorded fact cannot be wrong in that way. It can only be
+         * incomplete, so it names everything that decides the CONTENTS: which
+         * objects, which frame of each, whether the overlay merge is up, and
+         * how many side chains are materialised into it (they are appended
+         * positions, so they change the array's length).
+         *
+         * It deliberately does NOT try to cover colours, contacts or anything
+         * else that changes the picture without changing the array. Those
+         * paths reload through reloadDrawn, which does not consult this.
+         */
+        _arrayKey() {
+            const ov = !!(this.overlayState && this.overlayState.enabled);
+            const parts = [];
+            for (const n of this.drawnObjects()) {
+                const o = this.objectsData[n];
+                const f = (n === this.currentObjectName)
+                    ? this.currentFrame
+                    : ((o && o.viewerState && o.viewerState.currentFrame) || 0);
+                parts.push(n + '#' + f);
+            }
+            const sc = this.shownSidechainSet ? this.shownSidechainSet() : null;
+            return (ov ? 'overlay|' : 'frames|') + parts.join(',')
+                + '|sc' + (sc ? sc.size : 0);
+        }
+
+        /** Record what was just loaded. Called by everything that builds it. */
+        _noteArrayLoaded() {
+            this._loadedKey = this._arrayKey();
+        }
+
+        /**
          * WHICH OBJECTS ARE ON SCREEN. The list UI writes here.
          *
          * Names not loaded are ignored rather than an error - an object can be
@@ -10457,6 +10502,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this._invalidateScreenProjection();
                 this._invalidateSegmentCache();
                 this._invalidateShadowCache();
+                this._noteArrayLoaded();
                 this._syncPaeToDrawn();
                 if (!skipRender) this.render('nothing shown');
                 return;
@@ -10466,17 +10512,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // untouched. Any other single object goes through the merge, which
             // is what knows how to draw an object that is not the current one.
             if (names.length === 1 && names[0] === this.currentObjectName) {
-                // ...UNLESS THERE IS NOTHING IN THE ARRAY, which is where
-                // coming back from "everything switched off" lands. Returning
-                // on the grounds that the ordinary path already holds this
-                // object was true from every other direction and false from
-                // that one: the array had been emptied on purpose, so lighting
-                // the eye again drew nothing, for good. The sequence strip
-                // meanwhile builds from the object's own frames, so it came
-                // back as a full-length row of grey cells - a strip describing
-                // a structure the renderer no longer had.
-                if (!ms.enabled && this.coords && this.coords.length) return;
+                // ...IF THE ARRAY ALREADY HOLDS IT. Asked of the record of
+                // what was last loaded (see _arrayKey), not reasoned about
+                // from which path we are on: reasoning is what left this
+                // returning without loading anything after every object had
+                // been switched off, so lighting an eye again drew nothing at
+                // all, for good.
                 if (!ms.enabled) {
+                    if (this._loadedKey === this._arrayKey()) return;
                     this._loadFrameData(this.currentFrame >= 0 ? this.currentFrame : 0,
                         skipRender);
                     return;
@@ -10572,6 +10615,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // still on screen.
             const carried = sameSources ? null : this._selectionAsOwners();
             this._loadDataIntoRenderer(merged, true);
+            this._noteArrayLoaded();
             if (carried) this._restoreSelectionFromOwners(carried);
             this._syncPaeToDrawn();
             this._applyMergedVisibility(merged, skipRender);
