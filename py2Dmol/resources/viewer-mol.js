@@ -1942,16 +1942,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (e.target !== this.canvas) return;
                 const i = this.pickResidueAt(e.clientX, e.clientY);
                 if (i < 0 || !this.chains) return;
-                const chain = this.chains[i];
+                const chain = this.chainKeyAt(i);
                 if (chain === undefined) return;
                 // the two shift-clicks that precede this already toggled residue
                 // i; the chain union covers it either way
                 const next = e.shiftKey ? new Set(this.residueSelection || []) : new Set();
-                // THE WHOLE CHAIN, CLIP OR NO CLIP: the pick above must land on
-                // something visible, but widening it is a bulk operation on a
-                // NAME, and a chain does not stop at the near plane.
+                // THE WHOLE CHAIN OF THAT OBJECT, clip or no clip: the pick
+                // must land on something visible, but widening it is a bulk
+                // operation on a NAME - and by bare id that name was chain A
+                // of every object on screen (chainKeyAt).
                 for (let k = 0; k < this.chains.length; k++) {
-                    if (this.chains[k] === chain) next.add(k);
+                    if (this.chainKeyAt(k) === chain) next.add(k);
                 }
                 this.setResidueSelection(next);
             });
@@ -8730,7 +8731,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const a = idx[k - 1]; const b = idx[k];
                 if (b !== a + 1) continue;                     // a gap
                 if (isAtom(a) || isAtom(b)) continue;          // bonds decide these
-                if (chains && chains[a] !== chains[b]) continue;
+                // ...and never across the join between two objects, which
+                // consecutive indices with the same chain id would otherwise
+                // be: see chainKeyAt.
+                if (chains && this.chainKeyAt(a) !== this.chainKeyAt(b)) continue;
                 addEdge(a, b);
             }
             if (this.bonds) {
@@ -10470,7 +10474,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 for (let i = off; i < end; i++) {
                     const local = i - off;
                     if ((hasPos && st.positions.has(local))
-                        || (hasChains && st.chains.has(chains[i]))) {
+                        || (hasChains && st.chains.has(this.chainKeyAt(i)))) {
                         vis.add(i);
                     }
                 }

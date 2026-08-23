@@ -7388,5 +7388,48 @@ t('every route to a whole chain names the object it belongs to', () => {
     }
 });
 
+// THE STRIP HAS ONE LOOKUP FOR "THAT CHAIN OF THAT OBJECT", and everything
+// chain-wide goes through it. Each of these was its own clash:
+//
+//   * the hit tester found a chain's BOX by id, which is another object's row
+//     once two are on screen - so every chain A but the first was untestable
+//     and a click on it selected nothing at all;
+//   * hovering a chain label lit up the first object's chain of that name;
+//   * the label's override colour walked the current object's frame with raw
+//     indices, so a second object's label asked about the first one's residues;
+//   * a drag across chain labels tracked "the chain we are over" by id, so
+//     moving from one object's chain A to another's looked like standing still.
+t('the strip looks a chain up by object and chain, never by chain alone', () => {
+    const seq = fs.readFileSync('py2Dmol/resources/viewer-seq.js', 'utf8');
+    if (!/function cellsOfChain\(layout, chainId, objectName\)/.test(seq)) {
+        throw new Error('the shared (object, chain) lookup is gone');
+    }
+    // the hit tester
+    if (/chainLabelPositions\?\.find\(p => p\.chainId === item\.chainId\)/.test(seq)) {
+        throw new Error("the hit tester finds a chain's box by id alone, so"
+            + ' every chain A but the first matches nothing');
+    }
+    if ((seq.match(/chainBoxOf\(layout, item\)/g) || []).length < 2) {
+        throw new Error('a hit-test branch no longer asks chainBoxOf');
+    }
+    // the hover and the label colour
+    const hover = seq.slice(seq.indexOf('} else if (chainLabelPos) {'));
+    if (!/cellsOfChain\(layout, chainLabelPos\.chainId,\s*\n?\s*chainLabelPos\.object\)/.test(hover.slice(0, 700))) {
+        throw new Error('hovering a chain label does not name the object');
+    }
+    if (!/cellsOfChain\(layout, chainId, chainPos\.object\)/.test(seq)) {
+        throw new Error("the chain label's override colour does not name the object");
+    }
+    // the drag
+    if (!/const overKey = \(over\.object \|\| ''\)/.test(seq)) {
+        throw new Error('a drag across chain labels tracks bare chain ids');
+    }
+    // ...and nothing keeps ONE section's rows around to answer with
+    if (/sequenceCanvasData = \{[\s\S]{0,240}chainBoundaries/.test(seq)) {
+        throw new Error("one section's chain boundaries are stored on the canvas"
+            + ' data, where anything can answer the wrong object with them');
+    }
+});
+
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');
 process.exit(fail?1:0);

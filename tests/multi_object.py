@@ -363,31 +363,64 @@ window.addEventListener('load', () => {
       if (window.SEQ && window.SEQ.buildView) window.SEQ.buildView();
       await new Promise((s) => setTimeout(s, 400));
 
+      // LIGANDS COLLAPSE TO ONE TOKEN PER LIGAND, in every section. The row
+      // loop read the FIRST section's ligand groups for all of them, so no
+      // section but the first could match one and every object after it drew
+      // its ligands one atom per cell.
+      {
+        const lay3 = window.SEQ.layout();
+        R.ligandTokens = {};
+        for (const nm of names) {
+          const cells = lay3.residuePositions.filter(
+            (rp) => rp.residueData && rp.residueData.object === nm);
+          R.ligandTokens[nm] = {
+            tokens: cells.filter((c) => c.residueData.isLigandToken).length,
+            groups: (r.objectsData[nm].ligandGroups || new Map()).size,
+          };
+        }
+      }
+
       // CLICKING CHAIN A OF ONE OBJECT SELECTS THAT CHAIN A, and not the
       // other object's - "when I select chain A in one object, chain A of the
       // other object enabled to selected", which is what a bare chain id means
       // once two files are on screen.
+      // EVERY section's chain A, not just the first: the hit tester found a
+      // chain's box by id alone, which is another object's row once two are on
+      // screen - so every chain A but the first matched nothing and selected
+      // nothing at all.
+      R.chainClicks = [];
       {
-        const lay2 = window.SEQ.layout();
-        const label = lay2.chainLabelPositions.find(
-          (cp) => cp.chainId === 'A' && cp.object === names[0]);
-        const cv = document.getElementById('sequenceCanvas');
-        const bx = cv.getBoundingClientRect();
-        const at = { x: bx.left + label.x + 2, y: bx.top + label.y + 2 };
-        cv.dispatchEvent(new MouseEvent('mousedown', { bubbles: true,
-          clientX: at.x, clientY: at.y }));
-        cv.dispatchEvent(new MouseEvent('mouseup', { bubbles: true,
-          clientX: at.x, clientY: at.y }));
-        await new Promise((s) => setTimeout(s, 350));
-        const picked = r.residueSelection ? Array.from(r.residueSelection) : [];
-        const owners = new Set(picked.map((i) => (r.ownerOf(i) || {}).name));
-        R.chainClickOwners = Array.from(owners);
-        R.chainClickCount = picked.length;
-        // ...and how many residues chain A of that object actually has
-        R.chainASize = lay2.residuePositions.filter(
-          (rp) => rp.residueData && rp.residueData.object === names[0]
-            && rp.residueData.chain === 'A'
-            && rp.residueData.positionIndex >= 0).length;
+        // ...RE-READ FOR EVERY CLICK. A rebuild replaces the canvas element,
+        // and events dispatched on the old one go nowhere - which is a probe
+        // artefact, but it hid a real one: switching the edited object used to
+        // rebuild the strip to draw the same rows with a different heading.
+        const dpi = 200 / 96;   // the canvas is not 1:1 with the page
+        for (const nm of names) {
+          const lay2 = window.SEQ.layout();
+          const cv = document.getElementById('sequenceCanvas');
+          const bx = cv.getBoundingClientRect();
+          const label = lay2.chainLabelPositions.find(
+            (cp) => cp.chainId === 'A' && cp.object === nm);
+          if (!label) { R.chainClicks.push({ object: nm, error: 'no chain A' }); continue; }
+          r.clearResidueSelection();
+          // ...MINUS THE SCROLL, which the hit tester adds back. The strip
+          // can be scrolled by the time this runs, and a click computed from
+          // content coordinates then lands somewhere else entirely.
+          const x = bx.left + (label.x + 2) * bx.width / (cv.width / dpi);
+          const y = bx.top + (label.y + 2 - (lay2.scrollTop || 0))
+            * bx.height / (cv.height / dpi);
+          cv.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: x, clientY: y }));
+          cv.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: x, clientY: y }));
+          await new Promise((s) => setTimeout(s, 300));
+          const picked = r.residueSelection ? Array.from(r.residueSelection) : [];
+          const owners = Array.from(new Set(picked.map((i) => (r.ownerOf(i) || {}).name)));
+          const size = lay2.residuePositions.filter(
+            (rp) => rp.residueData && rp.residueData.object === nm
+              && rp.residueData.chain === 'A'
+              && rp.residueData.positionIndex >= 0).length;
+          R.chainClicks.push({ object: nm, count: picked.length, owners, size,
+            scrollTop: lay2.scrollTop, y: Math.round(y - bx.top) });
+        }
         r.clearResidueSelection();
       }
 
@@ -570,8 +603,11 @@ def main():
     print(f"  strip: sections {R.get('stripSections')}, chains {R.get('stripChains')};"
           f" one object -> headings {R.get('stripSectionsOne')},"
           f" chains {R.get('stripChainsOne')}")
-    print(f"  chain A of {R['objects'][0]}: selected {R.get('chainClickCount')}"
-          f" residues of {R.get('chainClickOwners')}, chain has {R.get('chainASize')}")
+    for c in R.get("chainClicks", []):
+        print(f"  chain A of {c['object']}: selected {c.get('count')} of"
+              f" {c.get('size')}, from {c.get('owners')}"
+              f" (scrollTop {c.get('scrollTop')}, clicked y {c.get('y')})")
+    print(f"  ligand tokens: {R.get('ligandTokens')}")
     print(f"  empty strip: layout {R.get('emptyStripLayout')}, note"
           f" {R.get('emptyStripNote')}, tools dead {R.get('emptyStripDisabled')};"
           f" back -> {R.get('backStripSections')}, live {R.get('backStripEnabled')}")
@@ -682,12 +718,19 @@ def main():
     chains = R.get("stripChains") or []
     if len({c.split('/')[0] for c in chains}) != 2:
         bad.append(f"the strip's chain rows come from {chains}")
-    if R.get("chainClickOwners") != [R["objects"][0]]:
-        bad.append(f"clicking chain A of {R['objects'][0]} selected residues of"
-                   f" {R.get('chainClickOwners')}")
-    if R.get("chainClickCount") != R.get("chainASize"):
-        bad.append(f"clicking chain A selected {R.get('chainClickCount')} residues,"
-                   f" and that chain has {R.get('chainASize')}")
+    for c in R.get("chainClicks", []):
+        if c.get("error"):
+            bad.append(f"{c['object']}: {c['error']}")
+        elif c["owners"] != [c["object"]]:
+            bad.append(f"clicking chain A of {c['object']} selected residues of"
+                       f" {c['owners']}")
+        elif c["count"] != c["size"]:
+            bad.append(f"clicking chain A of {c['object']} selected {c['count']}"
+                       f" residues, and that chain has {c['size']}")
+    for nm, lig in (R.get("ligandTokens") or {}).items():
+        if lig["groups"] and lig["tokens"] != lig["groups"]:
+            bad.append(f"{nm} drew {lig['tokens']} ligand tokens for"
+                       f" {lig['groups']} ligands - they are not collapsing")
     if R.get("emptyStripLayout") is not None:
         bad.append("the strip still laid out rows with nothing on screen")
     if not R.get("emptyStripNote"):

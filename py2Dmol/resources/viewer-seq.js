@@ -18,7 +18,7 @@
     // ============================================================================
     // INTERNAL STATE
     // ============================================================================
-    let sequenceCanvasData = null; // Canvas-based structure: { canvas, ctx, allResidueData, chainBoundaries, layout, mode }
+    let sequenceCanvasData = null; // { canvas, ctx, allResidueData, layout, mode }
     let lastSequenceFrameIndex = -1; // Track which frame the sequence view is showing
     let sequenceViewMode = true;  // Default: show sequence (enabled by default)
     let lastSequenceUpdateHash = null;
@@ -223,6 +223,43 @@
     }
 
     // Unified detection function for all selectable items
+    /**
+     * THE BOX A CHAIN ITEM WAS DRAWN IN.
+     *
+     * By chain id alone this found the FIRST label with that id, which with
+     * several objects on screen is another object's row - so every chain A but
+     * the first was untestable: clicking it matched nothing and selected
+     * nothing. Chain ids are unique inside a file and nowhere else.
+     */
+    function chainBoxOf(layout, item) {
+        const boxes = layout.chainLabelPositions || [];
+        return boxes.find((p) => p.chainId === item.chainId
+            && (p.object || null) === (item.object || null))
+            || boxes.find((p) => p.chainId === item.chainId);
+    }
+
+    /**
+     * EVERY POSITION OF ONE CHAIN OF ONE OBJECT, in the renderer's indices.
+     *
+     * Read off the layout, which knows both - rather than off an object's
+     * frame, which knows neither the merged indices nor which object the
+     * caller meant. Every chain-wide act goes through this: selecting a chain,
+     * hovering its label, deciding whether the label should show an override
+     * colour.
+     */
+    function cellsOfChain(layout, chainId, objectName) {
+        const out = [];
+        for (const rp of ((layout && layout.residuePositions) || [])) {
+            const rd = rp.residueData;
+            if (!rd || rd.chain !== chainId) continue;
+            if (objectName && rd.object && rd.object !== objectName) continue;
+            const ids = rd.positionIndices
+                || (rd.positionIndex >= 0 ? [rd.positionIndex] : []);
+            for (const i of ids) out.push(i);
+        }
+        return out;
+    }
+
     function getSelectableItemAtPosition(x, y, layout, sequenceViewMode) {
         if (!layout || !layout.selectableItems) return null;
 
@@ -259,7 +296,7 @@
             if (sequenceViewMode) {
                 // In sequence mode, only match chain button if clicking in button area
                 // Use chainLabelPositions to get actual button bounds
-                const chainPos = layout.chainLabelPositions?.find(p => p.chainId === item.chainId);
+                const chainPos = chainBoxOf(layout, item);
                 if (chainPos) {
                     if (x >= chainPos.x && x < chainPos.x + chainPos.width &&
                         adjustedY >= chainPos.y && adjustedY < chainPos.y + chainPos.height) {
@@ -270,7 +307,7 @@
                 // In chain mode, check if BOTH X and Y are within button bounds
                 // This preserves column position when dragging vertically between rows
                 // Use chainLabelPositions to get actual button bounds (not full row)
-                const chainPos = layout.chainLabelPositions?.find(p => p.chainId === item.chainId);
+                const chainPos = chainBoxOf(layout, item);
                 if (chainPos) {
                     if (x >= chainPos.x && x < chainPos.x + chainPos.width &&
                         adjustedY >= chainPos.y && adjustedY < chainPos.y + chainPos.height) {
@@ -435,7 +472,9 @@
     function renderSequenceCanvas() {
         if (!sequenceCanvasData) return;
 
-        const { canvas, ctx, allResidueData, chainBoundaries, layout, sortedPositionEntries } = sequenceCanvasData;
+        // ...one section's rows are not what this draws: it walks the layout,
+        // which carries every section's cells with the object each belongs to.
+        const { canvas, ctx, allResidueData, layout } = sequenceCanvasData;
         const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
         if (!renderer) return;
 
@@ -538,8 +577,6 @@
             // The pending selection is shown by the yellow box instead.
             const chainSelection = visibilityModel?.chains;
             const visibilityMode = visibilityModel?.visibilityMode;
-            const frameChains = renderer.objectsData?.[renderer.currentObjectName]
-                ?.frames?.[0]?.chains || null;
 
             // Only render chains that are visible in the current scroll position
             for (const chainPos of layout.chainLabelPositions) {
@@ -564,12 +601,16 @@
                 let chainColor = renderer?.getChainColorForChainId?.(chainId,
                     chainPos.object || renderer.currentObjectName)
                     || { r: 128, g: 128, b: 128 };
-                if (renderer?.getColorOverride && frameChains) {
+                if (renderer?.getColorOverride) {
+                    // THIS chain of THIS object, in the renderer's indices.
+                    // Walked over the current object's frame with raw indices,
+                    // a second object's label asked about the first object's
+                    // residues - and about the wrong ones at that.
+                    const own = cellsOfChain(layout, chainId, chainPos.object);
                     let uniform = null;
-                    let all = true;
-                    for (let i = 0; i < frameChains.length && all; i++) {
-                        if (frameChains[i] !== chainId) continue;
-                        const ov = renderer.getColorOverride(i);
+                    let all = own.length > 0;
+                    for (let k = 0; k < own.length && all; k++) {
+                        const ov = renderer.getColorOverride(own[k]);
                         if (!ov) { all = false; break; }
                         if (uniform === null) uniform = ov;
                         else if (ov.r !== uniform.r || ov.g !== uniform.g
@@ -1151,19 +1192,21 @@ function positionLetter(position, chainType) {
             return;
         }
         setStripEnabled(true);
-        const object = renderer.objectsData[objectName];
         const currentFrameIndex = renderer.currentFrame >= 0 ? renderer.currentFrame : 0;
-        const currentFrame = sections[0].frame;
 
-        // Check if sequence actually changed - only rebuild if it did. The
-        // SHOWN SET counts too: the same frame of the same object is a
-        // different strip once another object is beside it.
-        const shownKey = sections.map((x) => x.name + ':' + x.frameIndex).join(',');
-        const lastFrame = (object && lastSequenceFrameIndex >= 0
-            && lastSequenceFrameIndex < object.frames.length)
-            ? object.frames[lastSequenceFrameIndex] : null;
-        if (lastFrame && !sequencesDiffer(currentFrame, lastFrame) && sequenceCanvasData
-            && lastSequenceShownKey === shownKey) {
+        // IS THIS THE SAME STRIP? The sections answer it completely: which
+        // objects, which frame of each, and how many rows each came to - the
+        // last of those is what changes when side chains appear or a Copy
+        // renumbers something.
+        //
+        // It used to compare the current object's frame with the one built
+        // last, which meant that changing WHICH OBJECT IS EDITED rebuilt the
+        // whole strip - a new canvas, losing the scroll position and any
+        // element a caller was holding - to draw exactly the same rows with a
+        // different heading marked.
+        const shownKey = sections.map(
+            (x) => x.name + ':' + x.frameIndex + ':' + x.entries.length).join(',');
+        if (sequenceCanvasData && lastSequenceShownKey === shownKey) {
             // Sequence hasn't changed, just update colors and selection
             updateSequenceViewColors();
             updateSequenceViewSelectionState();
@@ -1174,18 +1217,9 @@ function positionLetter(position, chainType) {
         lastSequenceFrameIndex = currentFrameIndex;
         lastSequenceShownKey = shownKey;
 
-        // ...and the FIRST section's rows are what the code below lays out;
-        // the loop over the rest comes with the sections that follow it.
-        const hasPositionNames = sections[0].hasPositionNames;
-
-        const sortedPositionEntries = sections[0].entries;
-        const chainBoundaries = sections[0].boundaries;
-
-        const chainSequenceTypes = sections[0].chainSequenceTypes;
-
-        // Helper function to get position letter based on chain's sequence type
-        const getPositionLetter = (position) => positionLetter(position,
-            chainSequenceTypes[position.chain] || 'protein');
+        // ...and the sizing below wants every section's chains, not one's.
+        // The rows themselves are laid out per section, each shadowing these
+        // names with its own - see the loop.
 
         // Canvas rendering settings
         const charWidth = 10; // Monospace character width
@@ -1263,8 +1297,11 @@ function positionLetter(position, chainType) {
         if (sequenceViewMode) {
             // Get ligand groups from renderer (computed using shared utility)
             // THIS SECTION'S ligand groups, already in the index space its
-            // entries speak - see buildObjectSection.
-            const ligandGroups = sections[0].ligandGroups;
+            // entries speak - see buildObjectSection. Read from the FIRST
+            // section for every one of them, no section but the first could
+            // match a group, so every object after it drew its ligands one
+            // atom per cell instead of collapsing them to a token.
+            const ligandGroups = section.ligandGroups;
 
             // Reverse map: position index -> ligand group key.
             //
@@ -1672,12 +1709,13 @@ function positionLetter(position, chainType) {
         sequenceViewEl.appendChild(canvas);
 
         // Store structure
+        // NO chainBoundaries OR sortedPositionEntries HERE. They describe one
+        // section, and there can be several; everything that used them asks
+        // the layout instead, which carries the object with every cell.
         sequenceCanvasData = {
             canvas,
             ctx,
             allResidueData,
-            chainBoundaries,
-            sortedPositionEntries,
             layout,
             mode: sequenceViewMode
         };
@@ -1709,7 +1747,10 @@ function positionLetter(position, chainType) {
             unselectMode: false,     // started on a selected item, so this drag removes
         };
 
-        const { canvas, allResidueData, chainBoundaries, sortedPositionEntries, layout } = sequenceCanvasData;
+        // ...no chainBoundaries or sortedPositionEntries: those describe ONE
+        // section, and every chain-wide act here goes through cellsOfChain,
+        // which asks the layout and knows which object the caller meant.
+        const { canvas, allResidueData, layout } = sequenceCanvasData;
 
         // Remove old event listeners by cloning the canvas
         const newCanvas = canvas.cloneNode(false);
@@ -1802,18 +1843,8 @@ function positionLetter(position, chainType) {
             // object's frame instead, a click on chain A selected chain A of
             // whichever object happened to be current - and with two of them
             // on screen that is a coin toss.
-            const layout = sequenceCanvasData && sequenceCanvasData.layout;
-            const out = new Set();
-            if (layout && layout.residuePositions) {
-                for (const rp of layout.residuePositions) {
-                    const rd = rp.residueData;
-                    if (!rd || rd.chain !== chainId) continue;
-                    if (objectName && rd.object && rd.object !== objectName) continue;
-                    const ids = rd.positionIndices
-                        || (rd.positionIndex >= 0 ? [rd.positionIndex] : []);
-                    for (const i of ids) out.add(i);
-                }
-            }
+            const lay = sequenceCanvasData && sequenceCanvasData.layout;
+            const out = new Set(cellsOfChain(lay, chainId, objectName));
             if (out.size) return out;
             // ...and the old route as a fallback, for a layout that has not
             // been built yet
@@ -1895,6 +1926,7 @@ function positionLetter(position, chainType) {
                     // the whole ligand marks as one thing
                     setHoverAtoms(new Set(residueData.positionIndices));
                     hoveredResidueInfo = {
+                        object: residueData.object,
                         chain: residueData.chain,
                         resName: residueData.ligandName || residueData.resName,
                         resSeq: residueData.resSeq
@@ -1903,6 +1935,7 @@ function positionLetter(position, chainType) {
                     setHoverAtoms(new Set([residueData.positionIndex]));
                     // Store hovered position info for tooltip
                     hoveredResidueInfo = {
+                        object: residueData.object,
                         chain: residueData.chain,
                         resName: residueData.resName,
                         resSeq: residueData.resSeq
@@ -1913,14 +1946,12 @@ function positionLetter(position, chainType) {
                 }
             } else if (chainLabelPos) {
                 // In both sequence mode and chain mode, highlight entire chain on hover over chain button
-                const chainId = chainLabelPos.chainId;
-                const boundary = chainBoundaries.find(b => b.chain === chainId);
-                if (boundary) {
-                    const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                    if (chainPositions.length > 0) {
-                        setHoverAtoms(new Set(chainPositions.map(a => a.positionIndex)));
-                    }
-                }
+                // ...OF THAT OBJECT. Found through the first section's chain
+                // boundaries, hovering the second object's chain A lit up the
+                // first object's chain A in the 3D view.
+                const own = cellsOfChain(layout, chainLabelPos.chainId,
+                    chainLabelPos.object);
+                if (own.length) setHoverAtoms(new Set(own));
                 // Clear tooltip when hovering over chain button (in both modes)
                 hoveredResidueInfo = null;
             } else {
@@ -2147,8 +2178,11 @@ function positionLetter(position, chainType) {
                     // drag did nothing at all.
                     if (over.type !== 'chain') return;
                     dragState.active = true;
-                    if (over.chainId === dragState.endChainId) return;
-                    dragState.endChainId = over.chainId;
+                    // ...by (object, chain): dragging from one object's chain
+                    // A onto another's looked like staying still.
+                    const overKey = (over.object || '') + '\u0000' + over.chainId;
+                    if (overKey === dragState.endChainId) return;
+                    dragState.endChainId = overKey;
                     setLocalPreview(chainRangePositions(item.chainId, over.chainId,
                         item.object, over.object));
                     lastSequenceUpdateHash = null;
@@ -2366,8 +2400,14 @@ function positionLetter(position, chainType) {
         const i = hoveredResidueInfo;
         // "A GLY 39" - chain, residue, number. Three words in the order you
         // would say them, rather than three labelled lines.
+        //
+        // ...WITH THE OBJECT IN FRONT when more than one is on screen: chain A
+        // residue 39 exists in both, and the readout was the same words for
+        // two different molecules.
+        const many = (renderer.drawnObjects ? renderer.drawnObjects().length : 1) > 1;
+        const where = (many && i && i.object) ? i.object + ' ' : '';
         renderer.setHover(hoverAtoms,
-            i ? { text: `${i.chain} ${i.resName} ${i.resSeq}` } : null);
+            i ? { text: `${where}${i.chain} ${i.resName} ${i.resSeq}` } : null);
     }
 
     function setHoverAtoms(atoms) {
@@ -2387,7 +2427,8 @@ function positionLetter(position, chainType) {
         // WHAT THE STRIP LAID OUT, for tests: the sections, the chain rows and
         // the cells, each carrying the object it belongs to. Read-only, and the
         // only way from outside to ask what the strip is actually showing.
-        layout: () => (sequenceCanvasData ? sequenceCanvasData.layout : null),
+        layout: () => (sequenceCanvasData
+            ? Object.assign({ scrollTop }, sequenceCanvasData.layout) : null),
 
         // Main functions
         buildView: buildSequenceView,

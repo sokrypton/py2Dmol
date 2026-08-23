@@ -274,9 +274,32 @@ that asks "is this position in that chain" now asks `chainKeyAt(i)` /
 | the strip's chain buttons | `viewer-seq.js` |
 | the PAE map's rows | `viewer-pae.js` |
 | the palette | `chainIndexMap` |
+| the 3D double-click "whole chain" | `viewer-mol.js` |
+| the silhouette's chain-break test | `viewer-mol.js` |
+| the strip: hit test, hover, label colour, drag, selection | `cellsOfChain` / `chainBoxOf` |
 
 `this.chains` stays the bare id - it is what the file said and what the panel
 prints. The key is only for questions of identity.
+
+**Inside the strip the same rule holds, through two helpers.** `cellsOfChain`
+answers "every position of that chain of that object", read off the LAYOUT -
+which carries the object with every cell and speaks the renderer's indices -
+and `chainBoxOf` finds the box a chain item was drawn in. Everything
+chain-wide goes through one or the other: selecting a chain, hovering its
+label, deciding whether the label shows an override colour, dragging across
+labels. Each of those was its own instance of the same bug:
+
+- the hit tester found a chain's box *by id*, which is another object's row
+  once two are on screen - so every chain A but the first matched nothing and
+  a click on it selected nothing at all;
+- hovering a chain label lit the first object's chain of that name in 3D;
+- the label's override colour walked the current object's frame with raw
+  indices, so a second object's label asked about the first one's residues;
+- a drag from one object's chain A to another's looked like standing still.
+
+Nothing keeps one section's rows around any more: `chainBoundaries` and
+`sortedPositionEntries` are gone from `sequenceCanvasData`, because anything
+holding them can answer the wrong object with them.
 
 ## What the selection still does not do
 
@@ -300,6 +323,9 @@ What is missing:
   one new object.
 - **The selection panel's tallies** count merged positions, so "12 residues,
   3 with side chains" mixes objects without saying so.
+- **A ligand token spanning objects** cannot happen (groups are per object),
+  but a SELECTION spanning them can, and Cut takes only the edited object's
+  share - see `_editOneObject`.
 - **The selection is dropped when the shown set changes.** Hiding an object
   clears a selection made on the one still visible, which it should not.
 
