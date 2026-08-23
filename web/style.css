@@ -1465,6 +1465,48 @@ table.layout-table td {
     min-width: 54px;
 }
 
+/* SHOW / HIDE, as one control: two buttons that share a border and answer one
+   question between them. The one that matches what is DRAWN is filled, so the
+   pair says both what it will do and what it has done - a single switch could
+   only say the first, which is what made this panel hard to read. Neither is
+   filled when the selection disagrees with itself. */
+.selection-switch {
+    display: inline-flex;
+    flex: 0 0 auto;
+    border: 1px solid var(--color-gray-300);
+    border-radius: var(--btn-radius);
+    overflow: hidden;
+    height: var(--btn-height-small);
+}
+
+.selection-switch[hidden] { display: none; }
+
+.selection-switch-btn {
+    appearance: none;
+    border: 0;
+    background: #fff;
+    color: var(--color-gray-600);
+    font-size: var(--btn-font-size-small);
+    font-weight: 600;
+    padding: 0 7px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.selection-switch-btn + .selection-switch-btn {
+    border-left: 1px solid var(--color-gray-300);
+}
+
+.selection-switch-btn:hover { background: var(--color-gray-100); }
+
+/* THE STATE, on the face of the button that matches it. */
+.selection-switch-btn.is-on {
+    background: var(--color-primary);
+    color: #fff;
+}
+
+.selection-switch-btn.is-on:hover { background: var(--color-primary-hover); }
+
 .selection-toggle > span {
     padding: 0 8px;
 }
@@ -1483,9 +1525,35 @@ table.layout-table td {
    the side-chain row - so it is sized to the toggle rather than to its own
    content, or the two rows would end at different places. */
 #selSsSelect {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
     min-width: 54px;
+    /* ...AND IT MAY SHRINK. A Show/Hide pair is half as wide again as the
+       switch it replaced, and this select's content ("DSSP", "Helix") had it
+       asking for 121px of a 314px row - which pushed the row onto two lines.
+       It is the one control here that can lose width without losing meaning,
+       since its job is to show one short word. */
+    max-width: 84px;
 }
+
+/* ADD, on a row that has nothing on it yet. A plain button rather than half a
+   pair: until the contact exists there is no state to show, and once it does
+   the button is gone. */
+.selection-add {
+    flex: 0 0 auto;
+}
+
+/* ...AND THE BIN, at the end of that contact's own controls. Ghosted until
+   hovered, like the panel head's icons: a destructive action that does not
+   advertise itself. */
+.selection-tools .selection-icon-btn {
+    flex: 0 0 auto;
+    /* the head's icons are 24px squares in a 28px row; on a control row it
+       lines up with the switches beside it */
+    height: var(--btn-height-small);
+    width: var(--btn-height-small);
+}
+
+.selection-tools .selection-icon-btn[hidden] { display: none; }
 
 /* Per-contact width. Narrow enough to share a row with a swatch and two
    buttons, which is the whole reason it is a slider and not a number box. */

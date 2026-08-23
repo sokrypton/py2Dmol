@@ -159,6 +159,24 @@ their atoms, and every side chain went out the moment a merge was rebuilt.
 Click any object's eye and the side chains of the object you did not touch
 disappeared with it.
 
+`tests/selection_panel.py` drives the **selection panel's controls** the way a
+user does:
+
+    python3 tests/selection_panel.py
+
+Each part of a residue is answered by two buttons rather than one switch: the
+action is explicit and the button matching what is DRAWN is filled, so the
+control says both what it will do and what it has done. A selection that
+disagrees with itself fills neither - the state a switch could only show as a
+grey smear. Contacts read Add, and once one exists the Add goes and the row
+becomes that contact's own colour, width and a bin.
+
+The node tests score this against a stub DOM; this presses the real buttons
+and looks at the real structure. It also measures the ROWS: a pair is half as
+wide again as the switch it replaced, and the main-chain row wrapped onto two
+lines until the SSE select was capped. A wrapped row is the confusion this was
+meant to remove, so it is a test rather than a look.
+
 `tests/save_multi.py` checks that **a Multi session comes back the way it was
 saved**:
 

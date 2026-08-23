@@ -1150,6 +1150,29 @@ function setupEventListeners() {
                 : `Forced to ${NAME[forced] || forced}`);
     }
 
+    /**
+     * A SHOW/HIDE PAIR: one question, two buttons, and the state on their faces.
+     *
+     * `true` fills the first button, `false` the second, and `null` - the
+     * selection disagreeing with itself - fills neither. A single switch could
+     * only show that third state as a grey smear, which is what made the panel
+     * hard to read: the control said what it would do and left you to work out
+     * what it had done.
+     *
+     * The wrapper carries `hidden` for the rows that come and go, so callers
+     * hide the pair rather than reaching for a label around a checkbox.
+     */
+    function setSelectionPair(id, state) {
+        const pair = document.getElementById(id);
+        if (!pair) return;
+        const [on, off] = pair.querySelectorAll('.selection-switch-btn');
+        if (!on || !off) return;
+        on.classList.toggle('is-on', state === true);
+        off.classList.toggle('is-on', state === false);
+        on.setAttribute('aria-pressed', state === true ? 'true' : 'false');
+        off.setAttribute('aria-pressed', state === false ? 'true' : 'false');
+    }
+
     function syncSelectionToggles(picked, none) {
         const renderer = viewerApi?.renderer;
         const obj = renderer?.objectsData?.[renderer.currentObjectName];
@@ -1170,9 +1193,11 @@ function setupEventListeners() {
             return null;
         };
         if (none || !renderer || !obj) {
-            for (const id of ['elementsShowToggle', 'mainchainShowToggle',
-                'sidechainShowToggle', 'contactShowToggle', 'plateShowToggle']) {
+            for (const id of ['elementsShowToggle', 'plateShowToggle']) {
                 set(id, false);
+            }
+            for (const id of ['sidechainPair', 'mainchainPair']) {
+                setSelectionPair(id, false);
             }
             return;
         }
@@ -1243,7 +1268,7 @@ function setupEventListeners() {
         const modes = new Set(res.map(modeOf));
         const mode = modes.size === 1 ? [...modes][0] : '';
         const scSel = document.getElementById('plateShowToggle');
-        const scTog = document.getElementById('sidechainShowToggle');
+        const scTog = document.getElementById('sidechainPair');
         // WHICH OF THE TWO IS ON THE ROW. A protein side chain is drawn or it
         // is not; only a nucleotide has the plate as well, and only there is a
         // menu worth reading. Never both - two controls for one question is
@@ -1270,9 +1295,8 @@ function setupEventListeners() {
         const ligShown = ligPos ? visibleState(ligPos) : false;
         const scNothing = !scAble.length && !hasNuc;
         if (scTog) {
-            const wrapTog = scTog.closest ? scTog.closest('label') : null;
-            (wrapTog || scTog).hidden = scNothing && !ligPos;
-            set('sidechainShowToggle', ligPos ? ligShown
+            scTog.hidden = scNothing && !ligPos;
+            setSelectionPair('sidechainPair', ligPos ? ligShown
                 : (mode === '' ? null : mode !== 'none'));
         }
         if (scSel) {
@@ -1343,10 +1367,20 @@ function setupEventListeners() {
         // ...over residues too: an appended atom is not a backbone position, so
         // it is never in the hidden set, and a chain whose backbone is hidden
         // read as Mixed as soon as its side chains were drawn.
-        set('mainchainShowToggle', !hidBB ? true
+        setSelectionPair('mainchainPair', !hidBB ? true
             : (res.every((i) => !hidBB.has(i)) ? true
                 : (res.every((i) => hidBB.has(i)) ? false : null)));
-        set('contactShowToggle', list.length === 2 && !!findContact(list));
+        // THE CONTACT ROW IS ONE CONTROL PER STATE. No contact: an Add
+        // button and nothing else, because there is nothing yet to colour or
+        // to size. A contact: its own colour, its own width, and a bin - and
+        // no Add, which by then would be a button that does nothing. Which of
+        // the two is on the row is decided here; updateSelectionToolsState
+        // shows the colour and the slider by the same answer.
+        const hasContact = list.length === 2 && !!findContact(list);
+        const addBtn = document.getElementById('contactAddButton');
+        const binBtn = document.getElementById('contactDeleteButton');
+        if (addBtn) addBtn.hidden = hasContact;
+        if (binBtn) binBtn.hidden = !hasContact;
     }
 
     // Element colours, per residue. A pure repaint - the atoms and bonds are
@@ -1867,8 +1901,27 @@ function setupEventListeners() {
                 updateSelectionToolsState();
             }));
         };
+        // A PAIR IS TWO BUTTONS AND ONE QUESTION: each says which way it goes,
+        // rather than a switch that means "the other one from now". Pressing
+        // the button that is already filled is a no-op the same way asking for
+        // what you already have is - it runs, and the state comes back the
+        // same. The answer is re-read from the structure afterwards, like the
+        // switches: an action can be refused (no side-chain atoms, base plates
+        // off globally) and the buttons must then show what is drawn rather
+        // than what was asked for.
+        const onPair = (id, fn) => {
+            const pair = document.getElementById(id);
+            if (!pair) return;
+            const btns = pair.querySelectorAll('.selection-switch-btn');
+            btns.forEach((btn, k) => {
+                btn.addEventListener('click', withSelection((positions) => {
+                    fn(positions, k === 0);
+                    updateSelectionToolsState();
+                }));
+            });
+        };
         onToggle('elementsShowToggle', (p2, v) => setSelectionElements(p2, v));
-        onToggle('mainchainShowToggle', (p2, v) => {
+        onPair('mainchainPair', (p2, v) => {
             setSelectionBackbone(p2, v);
             syncSelectionVisibility(p2);
         });
@@ -1886,7 +1939,7 @@ function setupEventListeners() {
         // the protein form of the same control: two states, one switch - and on
         // a ligand row the same switch draws the ligand itself, which is the
         // visibility mask rather than a side chain nothing there owns
-        onToggle('sidechainShowToggle', (p2, v) => {
+        onPair('sidechainPair', (p2, v) => {
             const lig = ligandRowPositions(p2);
             if (lig) { setSelectionVisible(lig, v, false); return; }
             // SHOW MEANS "DRAWN", AND THE MENU SAYS HOW. Switching on a
@@ -1904,8 +1957,17 @@ function setupEventListeners() {
         onToggle('plateShowToggle', (p2, v) => {
             setSelectionSidechainMode(p2, v ? 'plate' : 'full');
         });
-        onToggle('contactShowToggle', (p2, v) => (v
-            ? addSelectionContact(p2) : removeSelectionContact(p2)));
+        // ...and the two buttons that replace the pair, each with one job
+        const onPress = (id, fn) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener('click', withSelection((positions) => {
+                fn(positions);
+                updateSelectionToolsState();
+            }));
+        };
+        onPress('contactAddButton', (p2) => addSelectionContact(p2));
+        onPress('contactDeleteButton', (p2) => removeSelectionContact(p2));
 
         // Every surface that draws the selection listens here, so a change made
         // on ANY of them shows on all the others. The sequence strip used to be

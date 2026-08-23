@@ -692,12 +692,16 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                         <!-- WHAT IS DRAWN, one labelled row per part, because
                              the two are independent: a residue can show its main
                              chain, its side chain, both or neither.
-                             Show and Hide are separate buttons rather than one
-                             toggle - a toggle has to name the state to be usable
-                             ("Hide side chains"), and with two rows you would be
-                             reading two labels to work out what the selection
-                             currently looks like. Two buttons say what they do
-                             and leave the state to the drawing. -->
+                             Show and Hide are two buttons rather than one
+                             switch. A switch says what it will do and leaves
+                             you to work out what it has done; a pair says both,
+                             because the one matching what is drawn is filled -
+                             and a selection that disagrees with itself fills
+                             neither, which is a state a switch can only show as
+                             a grey smear. Plate and Elements stay switches: they
+                             are not "is this drawn" but "which way", and a
+                             second pair on the same row would read as a second
+                             copy of the same question. -->
                         <div id="selectionTools" class="selection-tools" title="Applies to the selected residues">
                             <!-- Hidden when the selection has no side chains to
                                  show - all glycine, nucleic acid, or a
@@ -716,16 +720,23 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     </button>
                                     <div id="scColorMenu" class="selection-color-menu" hidden></div>
                                 </span>
-                                <!-- A PROTEIN SIDE CHAIN IS DRAWN OR IT IS NOT, so
-                                     it gets a switch. Only a nucleotide has a third
-                                     state - the plate - and only there is a menu
-                                     worth reading. One of the two is on the row,
-                                     never both. -->
-                                <label class="btn-toggle btn-small selection-toggle" title="Draw side chains for the selected residues">
-                                    <input type="checkbox" id="sidechainShowToggle"
-                                        aria-label="Draw side chains for the selected residues">
-                                    <span>Show</span>
-                                </label>
+                                <!-- TWO BUTTONS, ONE QUESTION. A single switch
+                                     said what it would do and left you to work
+                                     out what it had done; a pair says both -
+                                     the one that matches what is drawn is
+                                     filled, and neither is when the selection
+                                     disagrees with itself. Which is the third
+                                     state a switch could only show as a grey
+                                     smear. -->
+                                <span class="selection-switch" id="sidechainPair"
+                                    role="group" aria-label="Draw side chains for the selected residues">
+                                    <button type="button" id="sidechainShowButton"
+                                        class="selection-switch-btn"
+                                        title="Draw side chains for the selected residues">Show</button>
+                                    <button type="button" id="sidechainHideButton"
+                                        class="selection-switch-btn"
+                                        title="Hide the side chains of the selected residues">Hide</button>
+                                </span>
                                 <!-- ...AND HOW, FOR A NUCLEOTIDE, which is the only
                                      thing with two ways of being drawn: the plate or
                                      its real atoms. A switch rather than a menu,
@@ -774,11 +785,15 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                      residue with no chain and no side chain
                                      draws nothing, and drops out of the
                                      visibility mask on its own. -->
-                                <label class="btn-toggle btn-small selection-toggle" title="Draw the backbone of the selected residues. Off leaves their side chains, bases and contacts.">
-                                    <input type="checkbox" id="mainchainShowToggle" checked
-                                        aria-label="Draw the backbone of the selected residues">
-                                    <span>Show</span>
-                                </label>
+                                <span class="selection-switch" id="mainchainPair"
+                                    role="group" aria-label="Draw the backbone of the selected residues">
+                                    <button type="button" id="mainchainShowButton"
+                                        class="selection-switch-btn"
+                                        title="Draw the backbone of the selected residues">Show</button>
+                                    <button type="button" id="mainchainHideButton"
+                                        class="selection-switch-btn"
+                                        title="Hide the backbone. Their side chains, bases and contacts stay.">Hide</button>
+                                </span>
                                 <!-- SSE lives HERE because it is a BACKBONE
                                      property: a side chain has no secondary
                                      structure. It sits where Elements sits on
@@ -848,11 +863,16 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     </button>
                                     <div id="contactColorMenu" class="selection-color-menu" hidden></div>
                                 </span>
-                                <label class="btn-toggle btn-small selection-toggle" title="Draw a contact between the two selected residues">
-                                    <input type="checkbox" id="contactShowToggle"
-                                        aria-label="Draw a contact between the two selected residues">
-                                    <span>Show</span>
-                                </label>
+                                <!-- ADD, not Show: a contact does not exist
+                                     until you make one, and once it does the
+                                     button has nothing left to offer - so it
+                                     goes, and the row becomes the contact's own
+                                     controls: its colour, its width, and a bin
+                                     to be rid of it. One control per state
+                                     rather than a pair with a dead half. -->
+                                <button type="button" id="contactAddButton"
+                                    class="btn btn-grey btn-small selection-add"
+                                    title="Draw a contact between the two selected residues">Add</button>
                                 <!-- Per contact, not global: the stored entry
                                      carries its own weight, so two contacts in
                                      one picture can differ. Narrow, to keep the
@@ -866,6 +886,18 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     min="0.15" max="1" step="0.05" value="1" hidden
                                     aria-label="Width of this contact"
                                     title="Width of this contact (full width is the maximum)">
+                                <!-- ...AND THE BIN, at the end of the row: the
+                                     last thing on a row of that contact's own
+                                     controls, where a destructive action is a
+                                     deliberate reach rather than the button
+                                     next to the one you were just pressing. -->
+                                <button type="button" id="contactDeleteButton"
+                                    class="btn btn-grey btn-small selection-icon-btn selection-icon-danger"
+                                    hidden
+                                    aria-label="Remove the contact between the two selected residues"
+                                    title="Remove this contact">
+                                    <i class="fa-solid fa-trash-can"></i>
+                                </button>
                             </div>
                         </div>
                     </div>
