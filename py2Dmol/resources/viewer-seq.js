@@ -1083,7 +1083,8 @@ function positionLetter(position, chainType) {
 
         // ...and this object's ligand groups, in the same index space the
         // entries speak. Offset once, here, rather than at each comparison.
-        const ownGroups = object.ligandGroups || new Map();
+        const ownGroups = (renderer.ligandGroupsOf
+            ? renderer.ligandGroupsOf(object) : object.ligandGroups) || new Map();
         const ligandGroups = seqOffset
             ? new Map(Array.from(ownGroups, ([k, v]) => [k, v.map((i) => i + seqOffset)]))
             : ownGroups;

@@ -63,16 +63,28 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_GAIN',
 // ...and the module-level FUNCTIONS they call, for the same reason: a lifted
 // method that reaches one of these gets a ReferenceError, which reads as ten
 // unrelated halo tests breaking at once.
-for (const name of ['selectionBandFor']) {
+for (const name of ['selectionBandFor', 'ligandGroupsForFrame']) {
     const at = molSrc.indexOf('function ' + name + '(');
     if (at < 0) throw new Error('function not found in viewer-mol.js: ' + name);
-    eval('global.' + name + ' = ' + molSrc.slice(at, molSrc.indexOf('\n    }', at) + 6)
+    // brace-matched rather than "the next line that is a closing brace at four
+    // spaces" - these live at two different indents (one inside the factory,
+    // one at module scope) and the old rule silently lifted half a function.
+    let d = 0; let k = molSrc.indexOf('{', at);
+    for (; k < molSrc.length; k++) {
+        if (molSrc[k] === '{') d++;
+        else if (molSrc[k] === '}' && !--d) break;
+    }
+    eval('global.' + name + ' = ' + molSrc.slice(at, k + 1)
         .replace('function ' + name, 'function'));
 }
+// ...and the two module-level constants ligandGroupsForFrame closes over.
+global.LIGAND_GROUPS_BY_FRAME = new WeakMap();
+global.NO_LIGAND_GROUPS = new Map();
+
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','ligandGroupsOf','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -1736,7 +1748,11 @@ t('side chain to side chain is the other question, and leaves the trace out', ()
         coef: Float32Array.from([1, 0, 0]) };
     // ...and the two ligand atoms are ONE ligand, 15 A apart: only the near one
     // is in reach, and the far one has to come with it
-    lv.objectsData = { obj: { ligandGroups: new Map([['LIG', [1, 2]]]) } };
+    // ...the groups are DERIVED from the frame now (ligandGroupsForFrame), and
+    // this fixture has no frame worth deriving from - it is testing what a
+    // ligand group does to a neighbour search, not how one is found.
+    lv.objectsData = { obj: {} };
+    lv.ligandGroupsOf = () => new Map([['LIG', [1, 2]]]);
     lv.currentObjectName = 'obj';
     const hadExpand = global.expandLigandSelection;
     global.expandLigandSelection = (set, groups) => {
@@ -6836,19 +6852,36 @@ t('a contact is resolved among its own object\'s positions', () => {
     eq(d.idx1 + ',' + d.idx2, '3,4', 'offset onto B');
 });
 
-t('a merged bond list is never written back onto an object', () => {
-    // setCoords persists bonds onto the current object so the next frame can
-    // reuse them. A MERGED list is offsets into an array of several objects,
-    // and stored there it outlives the merge: the next plain load reads it
-    // back and bonds that object's residues to positions that are gone.
+t('nothing writes a bond list back onto an object', () => {
+    // setCoords used to persist the bonds it was handed onto the current
+    // object, which made object.bonds a cache pretending to be data. Two
+    // faults came out of it: a MERGED list, whose indices are offsets into an
+    // array of several objects, could be stored on one of them and outlive the
+    // merge; and an edit that left the list in the old numbering was quietly
+    // healed on the next load, until a path turned up where no frame carried
+    // bonds of its own and the stale list was all there was.
+    //
+    // The object's list is DECLARED now - addFrame writes it, an edit
+    // renumbers it, _resolvedFrame reads it as the fallback for a frame with
+    // none of its own - and nothing writes it from the draw path.
     const src4 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
     const at = src4.indexOf('        setCoords(');
-    const body = src4.slice(at, at + 2000);
-    const m = body.match(/objectsData\[this\.currentObjectName\]\.bonds = bonds/);
-    if (!m) throw new Error('setCoords no longer persists bonds at all');
-    const before = body.slice(0, body.indexOf(m[0]));
-    if (!/multiState && this\.multiState\.enabled/.test(before)) {
-        throw new Error('a merged bond list can still be written onto an object');
+    const body = src4.slice(at, at + 2500);
+    if (/objectsData\[this\.currentObjectName\]\.bonds = bonds/.test(body)) {
+        throw new Error('setCoords is writing bonds back onto the object again');
+    }
+    // ...and it still READS them, which is what a frame without its own needs
+    if (!/objectsData\[this\.currentObjectName\]\.bonds\b/.test(body)) {
+        throw new Error('a frame with no bonds of its own no longer falls back'
+            + " to the object's list");
+    }
+    // the two places that legitimately set it
+    if (!/object\.bonds = data\.bonds/.test(src4)) {
+        throw new Error('addFrame no longer records the bonds a frame declares');
+    }
+    if (!/object\.bonds = nb\.length \? nb : null/.test(src4)) {
+        throw new Error('an edit no longer renumbers the object\'s bond list,'
+            + ' which nothing else will now heal');
     }
 });
 
@@ -7344,6 +7377,50 @@ t('everything can be switched off, and the objects survive it', () => {
     eq(v.setShownObjects(['B']), true, 'switching one back on is a change');
     eq(v.drawnObjects().join(','), 'B', 'that object alone');
     if (!v.coords.length) throw new Error('nothing was loaded for it');
+});
+
+// WHICH ATOMS MAKE UP ONE LIGAND IS A FUNCTION OF A FRAME, not a fact about an
+// object. Stored on the object it had to be maintained, and Delete did not
+// maintain it: after cutting a chain out, the ligands that were left pointed
+// at whatever had moved into their slots. Keyed on the frame instead, an edit
+// - which builds new frame objects - gets a new answer for free, and there is
+// no invalidation for the next feature to forget.
+t('ligand groups follow the frames rather than being stored and refreshed', () => {
+    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    if (!/const LIGAND_GROUPS_BY_FRAME = new WeakMap\(\)/.test(src)) {
+        throw new Error('the groups are not cached against the frame');
+    }
+    if (/\.ligandGroups = groupLigandAtoms\(/.test(src)) {
+        throw new Error('something is storing ligand groups on an object again');
+    }
+    if (/ligandGroups: new Map\(\)/.test(src)) {
+        throw new Error('a new object still carries a ligandGroups field for'
+            + ' somebody to forget to update');
+    }
+    // ...and every reader goes through the accessor
+    for (const [file, src2] of [
+        ['viewer-mol.js', src],
+        ['viewer-seq.js', fs.readFileSync('py2Dmol/resources/viewer-seq.js', 'utf8')],
+        ['viewer-pae.js', fs.readFileSync('py2Dmol/resources/viewer-pae.js', 'utf8')],
+    ]) {
+        // ...the OBJECT's field. `section.ligandGroups` is the strip's own
+        // per-section copy, already offset into merged indices, and has
+        // nothing to do with this.
+        const reads = (src2.match(/\w+\.ligandGroups\b/g) || [])
+            .filter((r) => /^(object|obj|o|objectsData\w*)\./.test(r));
+        // viewer-seq keeps one as the fallback for a renderer too old to have
+        // the accessor; nothing else may read the field
+        if (reads.length > (file === 'viewer-seq.js' ? 1 : 0)) {
+            throw new Error(file + ' reads object.ligandGroups directly: '
+                + reads.join(', '));
+        }
+    }
+    // the derivation is guarded for a page without utils.js
+    const fn = src.slice(src.indexOf('function ligandGroupsForFrame('),
+        src.indexOf('function initializePy2DmolViewer('));
+    if (!/typeof groupLigandAtoms !== 'function'/.test(fn)) {
+        throw new Error('the derivation assumes web/utils.js is loaded');
+    }
 });
 
 // WHAT THE ARRAY HOLDS IS RECORDED, NOT REASONED ABOUT. The fast path used to

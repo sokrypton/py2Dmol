@@ -368,6 +368,37 @@ function getAllValidColorModes() {
  * All logic is scoped to this container.
  * @param {HTMLElement} containerElement The root <div> element for this viewer.
  */
+/**
+ * WHICH ATOMS MAKE UP ONE LIGAND, keyed by the FRAME they were read from.
+ *
+ * This used to be computed once in addFrame and stored on the object, which
+ * made it a fact that had to be maintained: every path that rewrote the frames
+ * had to remember to recompute it, and Delete did not - so after cutting a
+ * chain out, the ligands that were left pointed at whatever had moved into
+ * their slots, drew as loose spheres and stopped collapsing to one token in
+ * the sequence strip.
+ *
+ * It is not a fact about an object. It is a function of a frame - chain,
+ * residue number and name - so it is computed from one and cached against it.
+ * An edit builds NEW frame objects (see _subsetFrames), so the answer for them
+ * is computed fresh the first time anything asks, and there is no invalidation
+ * to forget. The WeakMap lets the cache go when the frame does.
+ */
+const LIGAND_GROUPS_BY_FRAME = new WeakMap();
+const NO_LIGAND_GROUPS = new Map();
+
+function ligandGroupsForFrame(frame) {
+    if (!frame || typeof groupLigandAtoms !== 'function') return NO_LIGAND_GROUPS;
+    if (!frame.chains || !frame.position_types) return NO_LIGAND_GROUPS;
+    let g = LIGAND_GROUPS_BY_FRAME.get(frame);
+    if (!g) {
+        g = groupLigandAtoms(frame.chains, frame.position_types,
+            frame.residue_numbers || [], frame.position_names || []);
+        LIGAND_GROUPS_BY_FRAME.set(frame, g);
+    }
+    return g;
+}
+
 function initializePy2DmolViewer(containerElement, viewerId) {
 
     // Helper function to normalize ortho value from old (50-200) or new (0-1) format
@@ -1338,7 +1369,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 visibilityMode: 'default' // Start in default mode (show all)
             };
 
-            // Ligand groups: Now stored per-object in objectsData[name].ligandGroups
+            // Ligand groups: derived from each object's frame on demand -
+            // see ligandGroupsForFrame and renderer.ligandGroupsOf
             // (removed from renderer-level to fix bug where loading object B overwrites object A's groups)
 
             // Explicit bonds: Array of [idx1, idx2] pairs defining bonds between any atoms/positions
@@ -3206,7 +3238,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     _lastPaeFrame: -1,
                     bonds: null,
                     contacts: null,
-                    ligandGroups: new Map(),  // Per-object ligand groups
                     visibilityState: {
                         positions: new Set(),
                         chains: new Set(),
@@ -3282,15 +3313,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Add frame to object
             this.objectsData[targetObjectName].frames.push(data);
 
-            // Compute ligandGroups NOW, before any UI updates
-            if (typeof groupLigandAtoms === 'function' && data.chains && data.position_types) {
-                this.objectsData[targetObjectName].ligandGroups = groupLigandAtoms(
-                    data.chains,
-                    data.position_types,
-                    data.residue_numbers || [],
-                    data.position_names || []
-                );
-            }
+            // ...and NOT the ligand groups, which are derived from the
+            // frame whenever something asks - see ligandGroupsForFrame.
 
             // If this was the active object and it was on last frame, stay on last frame.
             // Store contacts if provided in data (object-level)
@@ -4374,7 +4398,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // strip. Rebuilt from the frame rather than renumbered: the map is
             // derived from the frame in the first place, and there is one
             // function that does it.
-            this._recomputeLigandGroups(object);
+            // (the ligand groups need no upkeep: they are derived from the
+            // frames, which have just been replaced - see ligandGroupsForFrame)
+            this._mergedLigCache = null;
             // ...AND THE OBJECT'S OWN BOND LIST, which is position indices
             // too. The frames carry a renumbered copy each, but this one is
             // what every frame without its own falls back to, and it is
@@ -4424,22 +4450,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.setFrame(at);
             this.updateUIControls();
             return true;
-        }
-
-        /**
-         * THE LIGAND GROUPS OF AN OBJECT, from the frame it now has.
-         *
-         * Which atoms make up one ligand is derived from the frame - chain,
-         * residue number and name - so anything that rewrites the frames
-         * rebuilds this rather than trying to renumber it.
-         */
-        _recomputeLigandGroups(object) {
-            if (typeof groupLigandAtoms !== 'function') return;
-            const f = object && object.frames && object.frames[0];
-            if (!f || !f.chains || !f.position_types) return;
-            object.ligandGroups = groupLigandAtoms(f.chains, f.position_types,
-                f.residue_numbers || [], f.position_names || []);
-            this._mergedLigCache = null;
         }
 
         /**
@@ -6813,19 +6823,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             this.coords = coords;
 
-            // Set bonds from parameter or from object's stored bonds
+            // WHAT THE FRAME RESOLVED TO, and nothing written back.
+            //
+            // This used to store the bonds it was handed onto the current
+            // object, which made object.bonds a cache pretending to be data:
+            // the object's list was rewritten on every load, so an edit that
+            // left it in the old numbering was quietly healed the next time a
+            // frame came through - until a path came along where no frame
+            // carried bonds of its own and the stale list was all there was.
+            // The object's list is DECLARED now (addFrame writes it, an edit
+            // renumbers it) and read as a fallback in _resolvedFrame.
             if (bonds !== null && bonds !== undefined) {
-                // Frame has explicit bonds - use them
                 this.bonds = bonds;
-                // Store in object for reuse - but NEVER a merged list. Its
-                // indices are offsets into an array of several objects, and
-                // written onto the current object they outlive the merge:
-                // the next plain load reads them back and bonds that object's
-                // residues to positions that no longer exist.
-                const merged = this.multiState && this.multiState.enabled;
-                if (!merged && this.currentObjectName && this.objectsData[this.currentObjectName]) {
-                    this.objectsData[this.currentObjectName].bonds = bonds;
-                }
             } else if (this.currentObjectName && this.objectsData[this.currentObjectName] && this.objectsData[this.currentObjectName].bonds) {
                 // No bonds for this frame - use object's stored bonds
                 this.bonds = this.objectsData[this.currentObjectName].bonds;
@@ -11287,14 +11296,25 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * for the same reason chain ids do, so each is prefixed with the object
          * it came from; the indices are offset like everything else.
          */
+        /**
+         * ONE OBJECT'S LIGAND GROUPS, derived from the frame it holds.
+         *
+         * Ask for them; do not read a field. See ligandGroupsForFrame - the
+         * answer follows the frames, so an edit cannot leave it stale.
+         */
+        ligandGroupsOf(name) {
+            const o = (typeof name === 'string') ? this.objectsData?.[name] : name;
+            const f = o && o.frames && o.frames[0];
+            return ligandGroupsForFrame(f);
+        }
+
         mergedLigandGroups() {
             const ms = this.multiState;
             if (!ms || !ms.enabled || !ms.sourceNames) {
-                const o = this.objectsData?.[this.currentObjectName];
-                return (o && o.ligandGroups) || null;
+                const g = this.ligandGroupsOf(this.currentObjectName);
+                return (g && g.size) ? g : null;
             }
-            const parts = ms.sourceNames.map(
-                (n) => (this.objectsData[n] || {}).ligandGroups);
+            const parts = ms.sourceNames.map((n) => this.ligandGroupsOf(n));
             const c = this._mergedLigCache;
             if (c && c.names === ms.sourceNames && c.parts.length === parts.length
                 && c.parts.every((p, k) => p === parts[k])) {

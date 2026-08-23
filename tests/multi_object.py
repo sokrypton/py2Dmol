@@ -454,7 +454,7 @@ window.addEventListener('load', () => {
             (rp) => rp.residueData && rp.residueData.object === nm);
           R.ligandTokens[nm] = {
             tokens: cells.filter((c) => c.residueData.isLigandToken).length,
-            groups: (r.objectsData[nm].ligandGroups || new Map()).size,
+            groups: (r.ligandGroupsOf(nm) || new Map()).size,
           };
         }
       }

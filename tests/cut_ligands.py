@@ -35,7 +35,9 @@ window.addEventListener('load', () => {
     const chains = f.chains || [];
     const nums = f.residue_numbers || [];
     const names = f.position_names || [];
-    const groups = o.ligandGroups || new Map();
+    // DERIVED from the frame, not stored on the object - see
+    // ligandGroupsForFrame in viewer-mol.js
+    const groups = r.ligandGroupsOf(name) || new Map();
     let bad = [];
     let atoms = 0;
     for (const [key, idxs] of groups) {

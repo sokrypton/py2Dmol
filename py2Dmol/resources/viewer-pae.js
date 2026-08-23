@@ -149,7 +149,9 @@
                 // else's ligand).
                 const groups = this.mainRenderer.mergedLigandGroups
                     ? this.mainRenderer.mergedLigandGroups()
-                    : (this.mainRenderer.objectsData[this.mainRenderer.currentObjectName] || {}).ligandGroups;
+                    : (this.mainRenderer.ligandGroupsOf
+                        ? this.mainRenderer.ligandGroupsOf(this.mainRenderer.currentObjectName)
+                        : null);
                 if (groups) return expandLigandSelection(positionIndices, groups);
             }
             return new Set(positionIndices);
