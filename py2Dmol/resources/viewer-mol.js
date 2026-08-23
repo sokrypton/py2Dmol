@@ -6702,7 +6702,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const C0 = window.py2dmolCartoon;
             const nucLo = C0 && C0.NUCLEIC_STEP_MIN;
             const nucHi = C0 && C0.NUCLEIC_STEP_MAX;
-            const posTypes = this.positionTypes || [];
+            // THE TYPES OF THE FRAME BEING MATERIALISED, not the renderer's.
+            //
+            // this.positionTypes still describes the array that is being
+            // REPLACED - setCoords has not run yet - so on any load that
+            // changes the shape of the array it answers about the wrong
+            // structure. Leaving Multi with a nucleic object on screen is that
+            // case: the types were the merged array's, so index 3 of the RNA
+            // read as some protein residue of the object beside it, the base
+            // was rebuilt through the peptide's step range, localFrame failed
+            // for every one of them, and all 347 atoms were dropped in
+            // silence - the bases the user had just switched to full atoms
+            // simply were not drawn.
+            //
+            // The frame carries its own types, exactly as long as its
+            // coordinates. There is nothing to be out of step with.
+            const posTypes = data.position_types || this.positionTypes || [];
             const frameAt = (i) => {
                 if (!frames.has(i)) {
                     const nuc = posTypes[i] === 'D' || posTypes[i] === 'R';
@@ -10754,9 +10769,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         z: back.center[2] };
                     this.viewerState.extent = back.maxExtent || null;
                 }
-                this._loadFrameData(this.currentFrame, skipRender);
+                // THE FRAME IS HELD BACK UNTIL THE STATE IS WHOLE. Loading
+                // with a render of its own painted the picture before the
+                // selection had been carried across and before the mask had
+                // been composed, so leaving Multi with a selection dropped its
+                // highlight until something else happened to redraw - measured
+                // at 8,946 yellow pixels missing, and they stayed missing.
+                this._loadFrameData(this.currentFrame, true);
                 this._restoreSelectionFromOwners(carriedOut);
+                // ...and the mask from this object's own record, for the same
+                // reason as the branch above: the live one is a set of indices
+                // into the merged array that has just been replaced, so a
+                // residue hidden in the merge would hide whichever residue of
+                // this object now has that number.
+                this._applyRecordVisibility([this.currentObjectName], [0],
+                    this._baseCount(), true);
                 this._syncPaeToDrawn();
+                if (!skipRender) this.render('one object again');
                 return;
             }
 

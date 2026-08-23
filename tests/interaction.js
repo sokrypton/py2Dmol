@@ -7454,6 +7454,53 @@ t('the per-object fields are declared once and walked, not listed per operation'
     }
 });
 
+// A LOAD IS MATERIALISED AGAINST ITS OWN FRAME, not against the array it is
+// replacing. this.positionTypes still describes the OLD array while a new one
+// is being built - setCoords has not run yet - so on any load that changes the
+// array's shape it answers about a different structure. A nucleotide's side
+// chain is rebuilt through a longer local frame than a peptide's, and the
+// choice is made from those types: leaving Multi with an RNA on screen read
+// its bases as protein residues of the object beside it, every frame failed,
+// and all 347 atoms were dropped in silence.
+t('side chains are rebuilt from the frame being loaded, not the last one', () => {
+    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = src.indexOf('_materialiseSidechains(data) {');
+    const body = src.slice(at, src.indexOf('\n        }\n', src.indexOf('frameAt', at)));
+    if (/const posTypes = this\.positionTypes/.test(body)) {
+        throw new Error("the materialiser reads the renderer's position types,"
+            + ' which describe the array being replaced');
+    }
+    if (!/const posTypes = data\.position_types/.test(body)) {
+        throw new Error("the materialiser no longer reads the frame's own types");
+    }
+});
+
+// ...AND THE FRAME IS PAINTED ONCE THE STATE IS WHOLE. Leaving Multi loaded
+// the object with a render of its own, before the selection had been carried
+// across and before the mask had been composed - so the selection's highlight
+// vanished until something else happened to redraw. Measured: 8,946 yellow
+// pixels missing, and they stayed missing.
+t('leaving the merge paints after the state is put back, not during', () => {
+    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = src.indexOf('const carriedOut = this._selectionAsOwners();');
+    if (at < 0) throw new Error('the merged-to-single branch has moved');
+    const body = src.slice(at, src.indexOf('THE TWO MERGES ARE EXCLUSIVE', at));
+    if (!/_loadFrameData\(this\.currentFrame, true\)/.test(body)) {
+        throw new Error('the load paints its own frame, before the selection'
+            + ' and the mask are put back');
+    }
+    const order = ['_loadFrameData', '_restoreSelectionFromOwners',
+        '_applyRecordVisibility', "this.render('one object again')"];
+    let last = -1;
+    for (const step of order) {
+        const k = body.indexOf(step);
+        if (k < 0) throw new Error(step + ' is missing from the branch');
+        if (k < last) throw new Error(step + ' runs out of order - the frame'
+            + ' has to be painted last');
+        last = k;
+    }
+});
+
 // ORIENT LOOKS AT WHAT IS DRAWN. It read the coordinates off the renderer's
 // array only when that array was at least as long as the object the PICKER
 // names - which is false the moment a big object's eye is closed and a small

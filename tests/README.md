@@ -159,6 +159,25 @@ their atoms, and every side chain went out the moment a merge was rebuilt.
 Click any object's eye and the side chains of the object you did not touch
 disappeared with it.
 
+`tests/nucleic_multi.py` checks that **a nucleic object keeps its atoms when
+the viewer drops out of Multi**:
+
+    python3 tests/nucleic_multi.py
+
+Reported as "1YNE lost its base pairs": show a protein and an RNA together,
+set the RNA's bases to full atoms rather than plates, press Multi off, and the
+RNA came back with no bases at all - the plates switched off on purpose, the
+atoms dropped. A nucleotide's side chain is rebuilt through a longer local
+frame than a peptide's and the choice is made from `positionTypes`, which the
+materialiser took from the RENDERER - the array being replaced - rather than
+from the frame it is materialising. On any load that changes the array's shape
+those describe a different structure.
+
+It also checks that the frame drawn by the switch is pixel-identical to a
+repaint of the same state: the load used to paint before the selection had
+been carried across, so the highlight went missing until something else
+redrew.
+
 `tests/pae_objects.py` checks that **the PAE panel belongs to one object**:
 
     python3 tests/pae_objects.py
