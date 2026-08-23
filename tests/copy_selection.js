@@ -37,11 +37,45 @@ function liftMethod(name) {
 }
 const remapRaw = liftMethod('_remapObjectState');
 
-// A stub `this`: the chain/residue lookup the contact filter needs.
+// ...AND THE FIELD LIST IT WALKS, plus the handlers the list names. The remap
+// is one loop over OBJECT_STATE now - the field-by-field version was five
+// chances to forget a field, and the bonds were forgotten for as long as they
+// existed - so lifting the method alone lifts an empty loop.
+function liftModuleScope() {
+    const at = SRC.indexOf('const OBJECT_STATE = [');
+    const end = SRC.indexOf('function initializePy2DmolViewer(');
+    if (at < 0 || end < 0) throw new Error('OBJECT_STATE moved out of module scope');
+    return SRC.slice(at, end);
+}
+// ...evaluated in a function rather than with eval: a `const` inside an eval
+// is scoped to the eval and nothing outside can see it, which reads as
+// "OBJECT_STATE is not defined" in twelve tests at once.
+const OBJECT_STATE = new Function(
+    liftModuleScope() + '; return OBJECT_STATE;')();
+const renumberRaw = (() => {
+    const at = SRC.indexOf('        _renumberObjectState(src, dst, map, selected) {');
+    if (at < 0) throw new Error('_renumberObjectState moved or changed signature');
+    let depth = 0; let k = SRC.indexOf('{', at); const body = k;
+    for (; k < SRC.length; k++) {
+        if (SRC[k] === '{') depth++;
+        else if (SRC[k] === '}' && !--depth) break;
+    }
+    return new Function('src', 'dst', 'map', 'selected', 'OBJECT_STATE',
+        `return (function () {${SRC.slice(body + 1, k)}}).call(this);`);
+})();
+
+// A stub `this`: the chain/residue lookup the contact filter needs, and the
+// generic renumber the remap delegates to.
 const CHAINS = ['A', 'A', 'A', 'A', 'B', 'B', 'B', 'B'];
 const RESNUM = [1, 2, 3, 4, 1, 2, 3, 4];
-const remap = (src, dst, sel) =>
-    remapRaw.call({ chains: CHAINS, residueNumbers: RESNUM }, src, dst, sel);
+const THIS = {
+    chains: CHAINS,
+    residueNumbers: RESNUM,
+    _renumberObjectState(src, dst, map, selected) {
+        return renumberRaw.call(this, src, dst, map, selected, OBJECT_STATE);
+    },
+};
+const remap = (src, dst, sel) => remapRaw.call(THIS, src, dst, sel);
 
 let failures = 0;
 function test(name, fn) {
@@ -169,6 +203,28 @@ test('an object-wide colour is carried whole - it is not keyed by position', () 
     }
 });
 
+test('a cut out of an aligned structure stays where the alignment put it', () => {
+    // A CUT READS THE RAW FRAMES, not the coordinates on screen: the alignment
+    // is a transform held on the object and applied on the way to the drawing.
+    // So the copy has to inherit the transform or it lands back where its file
+    // put it - the piece you just cut out flying off on its own, with nothing
+    // said. It is the only field here that is not keyed by position, so it goes
+    // across WHOLE: renumbering a rotation is meaningless.
+    const xf = { t: [10, 0, 0], u: [0, -1, 0, 1, 0, 0, 0, 0, 1], ref: 'other', tm: 0.8 };
+    const dst = {};
+    remap({ alignTransform: xf }, dst, SEL);
+    if (!eq(dst.alignTransform, xf)) {
+        throw new Error('the copy did not inherit the alignment: '
+            + JSON.stringify(dst.alignTransform));
+    }
+    // ...and an object that was never aligned does not acquire one
+    const clean = {};
+    remap({}, clean, SEL);
+    if ('alignTransform' in clean) {
+        throw new Error('an unaligned object was given an alignment');
+    }
+});
+
 // ---- the wiring --------------------------------------------------------------
 
 test('extractSelection actually carries the state across', () => {
@@ -188,18 +244,20 @@ test('extractSelection actually carries the state across', () => {
     }
 });
 
-test('every display key the panel writes is one the copy knows about', () => {
-    // The trap this whole file exists for: state carried field by field drops
-    // whatever nobody wrote down. If the selection panel learns to store a new
-    // per-object key, this fails until the remap names it too.
+test('every per-object key is in the field list or excluded on purpose', () => {
+    // THE TRAP THIS WHOLE FILE EXISTS FOR: state carried field by field drops
+    // whatever nobody wrote down. There is one list now - OBJECT_STATE in
+    // viewer-mol.js - and every lifecycle operation walks it, so this test is
+    // the gate on the list: a new per-object key fails until it is either
+    // registered or named here as something else.
     const app = fs.readFileSync(path.join(ROOT, 'web/app.js'), 'utf8');
     const written = new Set();
     for (const m of app.matchAll(/\bobj\.([A-Za-z_][A-Za-z0-9_]*)\s*=/g)) written.add(m[1]);
     for (const m of SRC.matchAll(/\bobject\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s/g)) written.add(m[1]);
-    // Not display state: frames and geometry, bookkeeping, and the caches.
+    // Not per-position state: frames and geometry, bookkeeping, and caches.
     const NOT_DISPLAY = new Set([
         'frames', 'maxExtent', 'stdDev', 'globalCenterSum', 'totalPositions',
-        'visibilityState', 'ligandGroups', 'msa', 'pae', 'paeData', 'bonds',
+        'ligandGroups', 'msa', 'pae', 'paeData',
         'name', 'colorScale', 'plddtRange', 'seqOffsets', 'chainToSequence',
         '_lastPlddtFrame', '_lastPaeFrame',
         // recomputed for the copy from its own coordinates
@@ -207,14 +265,107 @@ test('every display key the panel writes is one the copy knows about', () => {
         // the scatter panel's own configuration: not keyed by position, and
         // it names columns of data the copy does not carry
         'scatterConfig',
+        // the loader's own mark on a PENDING record - "this one has already
+        // been handed to the renderer, do not rebuild it". Nothing to do with
+        // an object in objectsData, and an extracted copy was never pending.
+        '_appliedToRenderer',
     ]);
-    const at = SRC.indexOf('_remapObjectState(src, dst, selectedIndices) {');
-    const remapSrc = SRC.slice(at, SRC.indexOf('\n        _remapSidechains', at));
-    const missed = [...written].filter((k) => !NOT_DISPLAY.has(k) && !remapSrc.includes(`'${k}'`)
-        && !remapSrc.includes(`.${k}`));
+    const registered = new Set(OBJECT_STATE.map((f) => f.key));
+    const missed = [...written].filter((k) => !NOT_DISPLAY.has(k) && !registered.has(k));
     if (missed.length) {
-        throw new Error('per-object keys nobody copies: ' + missed.join(', ')
-            + ' - either name them in _remapObjectState or list them as not display state');
+        throw new Error('per-object keys in neither OBJECT_STATE nor the'
+            + ' excluded list: ' + missed.join(', '));
+    }
+    // ...and the list itself is well formed: every field says what an absent
+    // value means, because it is not the same answer for all of them - no side
+    // chains are shown by default, while every base and element is, and
+    // getting it backwards inverts the feature.
+    for (const f of OBJECT_STATE) {
+        if (f.absent !== 'all' && f.absent !== 'none') {
+            throw new Error(f.key + " does not say what an absent value means");
+        }
+        if (f.remap !== null && typeof f.remap !== 'function') {
+            throw new Error(f.key + ' has no renumbering and does not say so'
+                + ' explicitly with null');
+        }
+    }
+});
+
+// ---- and the side chains of a NUCLEIC copy ----------------------------------
+//
+// A copied RNA arrived with its `sidechains` set naming every residue and no
+// atoms to show for it. _remapSidechains rebuilds each row's coefficients
+// through the frame the copy can build, and it asked localFrame for that frame
+// at the peptide's step range - 3.0 to 4.2 A. A nucleic trace steps 5.5-6.5
+// C4' to C4', so every anchor read as a chain break, every row was dropped as
+// "unframable at source", and the table came out empty. Measured on 1EHZ,
+// copying 38 of its 76 nucleotides: 0 table rows and 0 atoms, against 461 and
+// 461 with the range passed.
+test('a copied RNA keeps its bases', () => {
+    const at = SRC.indexOf('_remapSidechains(sc, selectedIndices, srcCoords, dstCoords) {');
+    if (at < 0) throw new Error('_remapSidechains is gone');
+    const body = SRC.slice(at, SRC.indexOf('\n        /**', at));
+    if (!/localFrame\(at, n, i, fbuf, null, nucLo, nucHi\)/.test(body)) {
+        throw new Error('the remap frames a nucleotide at the peptide step range, '
+            + 'so every base is dropped from the copy');
+    }
+    // the range is the one the table was BUILT with, or the coefficients mean
+    // something different in the copy from what they meant in the parent
+    if (!/C\.NUCLEIC_STEP_MIN/.test(body) || !/C\.NUCLEIC_STEP_MAX/.test(body)) {
+        throw new Error('the remap invents its own step range');
+    }
+    // asked of the SOURCE index either way - a destination anchor is the same
+    // residue, renumbered
+    if (!/const src = which === 's' \? i : selectedIndices\[i\];/.test(body)) {
+        throw new Error('the destination anchor is not mapped back to its residue, '
+            + 'so its type is read off the wrong position');
+    }
+    // ...and proline's ring-closing N stays marked, or a copied proline goes
+    // back to diving into the ribbon
+    if (!/onBackbone\.push\(\(sc\.onBackbone && sc\.onBackbone\[k\]\)/.test(body)
+        || !/onBackbone: new Uint8Array\(onBackbone\)/.test(body)) {
+        throw new Error('the copy loses which atoms are backbone atoms kept on purpose');
+    }
+});
+
+// ---- the MSA that comes with the copy ---------------------------------------
+//
+// A copy has to show the same conservation for a residue as the structure it
+// was cut from, or the same residue reads two ways in two windows. The parent's
+// entropy is over the sequences that pass the coverage and identity cutoffs; a
+// copy that counted ALL of them read 0.2881 at residue 105 of AF-P0A8I3 where
+// the parent read 0.2569.
+test('a copied region keeps the parent\'s own conservation numbers', () => {
+    const msa = fs.readFileSync(path.join(ROOT, 'py2Dmol/resources/viewer-msa.js'), 'utf8');
+    const at = msa.indexOf('function extractMSASubset');
+    if (at < 0) throw new Error('extractMSASubset is gone');
+    const body = msa.slice(at, msa.indexOf('\n    function ', at + 10));
+    if (!/extractedMSAData\.entropy = sliceByColumn\(originalMSAData\.entropy\)/.test(body)
+        || !/extractedMSAData\.frequencies = sliceByColumn\(originalMSAData\.frequencies\)/.test(body)) {
+        throw new Error('the copy no longer takes the columns the parent already '
+            + 'computed - recomputing gives different numbers for the same residue, '
+            + 'because coverage is measured over the copy\'s length');
+    }
+    // ...and ALL of them still come across, or the copy's own sliders have
+    // nothing left to widen to
+    if (!/sequencesOriginal: extractedSequences/.test(body)) {
+        throw new Error('the copy no longer carries the sequences the filters hid');
+    }
+    // ...CARRYING WHAT THE FILTERS MEASURED. Slicing the parent's numbers is
+    // only half of it: anything that re-runs the filters on the subset - a
+    // sequence-strip rebuild after a delete, for one - measures coverage over
+    // the subset's shorter length, admits a different set of sequences, and
+    // moves the conservation of residues nobody touched.
+    if (!/extractedSeq\.coverage = cov/.test(body) || !/extractedSeq\.identity = idt/.test(body)) {
+        throw new Error('the subset does not carry each sequence\'s coverage and '
+            + 'identity from the alignment it came out of');
+    }
+    const msaSrc = fs.readFileSync(path.join(ROOT, 'py2Dmol/resources/viewer-msa.js'), 'utf8');
+    const cov = msaSrc.slice(msaSrc.indexOf('function filterByCoverage'),
+        msaSrc.indexOf('function filterByIdentity'));
+    if (!/typeof seq\.coverage === 'number'/.test(cov)) {
+        throw new Error('filterByCoverage ignores a carried coverage, so carrying '
+            + 'it changes nothing');
     }
 });
 

@@ -351,25 +351,19 @@
     background: var(--color-gray-400);
 }
 
-/* Active state for grey buttons (used by nav-button.active) */
-.btn-grey.active,
-.nav-button.active {
+/* Active state for a grey button. */
+.btn-grey.active {
     background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-hover) 100%);
     color: white;
 }
 
-.btn-grey.active:hover:not(:disabled),
-.nav-button.active:hover:not(:disabled) {
+.btn-grey.active:hover:not(:disabled) {
     background: linear-gradient(135deg, var(--color-success-hover) 0%, var(--color-success-dark) 100%);
 }
 
 
 /* .btn-blue removed - use .btn-primary instead */
 
-.btn-disabled {
-    background: linear-gradient(135deg, var(--color-gray-200), var(--color-gray-300));
-    color: var(--color-gray-400);
-}
 
 /* Button utility classes */
 .btn-flex {
@@ -386,17 +380,6 @@
     /* Height inherits from btn/btn-small; width stays fixed for icons */
 }
 
-.btn-min-width-sm {
-    min-width: 80px;
-}
-
-.btn-min-width-md {
-    min-width: 100px;
-}
-
-.btn-min-width-lg {
-    min-width: 170px;
-}
 
 /* Specific button overrides (for backward compatibility) */
 #fetch-btn {
@@ -439,34 +422,6 @@
     text-align: center;
 }
 
-/* Navigation buttons - extends .btn base class */
-/* Note: nav-button should be used with .btn class: <button class="btn nav-button"> */
-.nav-button {
-    /* Inherits all base .btn styles when used with .btn */
-    line-height: var(--btn-height);
-}
-
-.nav-button.btn-small {
-    line-height: var(--btn-height-small);
-}
-
-/* Greyed-out state for navigation buttons */
-.nav-button.greyed-out {
-    background: var(--color-gray-100);
-    color: var(--color-gray-400);
-    cursor: not-allowed;
-    opacity: 0.6;
-}
-
-.nav-button.greyed-out:hover {
-    background: var(--color-gray-100);
-    color: var(--color-gray-400);
-}
-
-/* Scoped nav-button styles for viewer instance (backward compatibility) */
-.py2dmol-viewer-instance .nav-button {
-    line-height: var(--btn-h);
-}
 
 /* ============================================================================
    TOGGLE SWITCHES (UNIFIED STYLE)
@@ -1027,15 +982,92 @@
     color: #9ca3af;
 }
 
-#fetch-input-container {
+/* THE FETCH PANEL. Lines, not columns: the ID box and its buttons, the
+   examples, and the options when they are asked for. A two-column table put
+   the options beside the input and sized the whole panel by the part nobody
+   changes, which left the examples in half a column where four of them wrapped
+   onto two rows. */
+.fetch-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.fetch-row {
     display: flex;
     gap: 8px;
     align-items: center;
 }
 
+/* NOWRAP, which is the whole point of giving this row the full width: the
+   examples are a set and they read as one when they are on one line. */
+.fetch-examples {
+    flex-wrap: nowrap;
+    gap: 6px;
+}
+
+.fetch-row-label {
+    font-size: 14px;
+    font-weight: 500;
+    color: #374151;
+    margin-right: 2px;
+}
+
+/* The ID box takes what is left. min-width: 0 because a flex item will not
+   shrink below its content otherwise, and a long placeholder would then push
+   the buttons off the end. */
 #fetch-input-container input {
-    flex-grow: 1;
+    flex: 1 1 auto;
+    min-width: 0;
     height: 42px;
+}
+
+/* ...AND THE OPTIONS, IN GROUPS. Eight switches in one flowing row is a list
+   to read rather than a thing to scan: they answer three separate questions,
+   and which one a switch belongs to is not obvious from its name. One column
+   per question, so the two you are not asking can be skipped at a glance. */
+.fetch-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 28px;
+    padding: 10px 12px;
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+}
+
+.fetch-option-group {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+/* A RULE BETWEEN THE GROUPS, not around them: a box each would make three
+   panels out of one. Drawn on the left of every group but the first, so it
+   disappears with the group and cannot end up dangling. */
+.fetch-option-group + .fetch-option-group {
+    border-left: 1px solid #e5e7eb;
+    padding-left: 28px;
+    margin-left: -14px;
+}
+
+.fetch-option-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #9ca3af;
+    margin-bottom: 1px;
+}
+
+/* [hidden] is a UA rule and display:flex outranks it - the same trap the clip
+   and style panels document. */
+.fetch-options[hidden] { display: none !important; }
+
+/* the caret turns when the panel is open, so the button says which way it goes */
+#fetchOptionsButton[aria-expanded="true"] #fetchOptionsCaret {
+    display: inline-block;
+    transform: rotate(180deg);
 }
 
 /* ============================================================================
@@ -1053,14 +1085,6 @@
     border-radius: 8px;
 }
 
-.upload-option-label {
-    font-size: 12px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: #6b7280;
-    margin-bottom: 4px;
-}
 
 .upload-toggle-item {
     display: flex;
@@ -1136,25 +1160,108 @@ h1 {
     letter-spacing: -0.025em;
 }
 
-.text-gray-500 {
-    color: #6b7280;
+/* THE HEADER, ON ONE LINE. The title and the line under it were two stacked
+   blocks with their own margins, which spent three lines of the page on a word
+   and a sentence. Baseline-aligned rather than centred: they are one sentence
+   with a big first word, and centring made the strapline look like a caption
+   floating beside the title. */
+.page-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 10px;
+    /* clear of the Save / Clear All / GPU cluster, which is positioned
+       absolutely against this same container - without it a longer strapline
+       runs under the buttons instead of wrapping */
+    padding-right: 300px;
 }
 
-.bg-white.p-6.rounded-2xl {
-    background: #ffffff;
-    padding: 24px;
-    border-radius: 16px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
-    border: 1px solid #e5e7eb;
+.page-head h1 {
+    font-size: 1.75rem;
+    font-weight: 800;
+    line-height: 1.1;
+    margin: 0;
+}
+
+/* THE PAGE-LEVEL BUTTONS: OUTLINED, NOT FILLED. Save, Clear All and GPU sit at
+   the top of the page for the whole session, while Fetch and Upload are used
+   once and then not again - so as three filled blocks in strong colours the
+   standing ones took the eye first, and the first thing to do on this page is
+   load something.
+   Fading them was the first attempt and it was the wrong instrument: a faded
+   red is a red that looks broken. Outlined instead - white ground, coloured
+   letters, coloured border - which reads as a lighter WEIGHT rather than a
+   weaker version of the same thing, and keeps every one of them legible.
+   The colour still says which is which: blue Save, red Clear All.
+   ONE RULE FOR ALL THREE. The GPU control is a label wrapping a checkbox and
+   the other two are buttons, so their skins are different elements - they are
+   listed together here so the height, padding, type and border cannot drift
+   apart, which is exactly what happened when each carried its own. */
+/* the LABEL as well as the span it wraps: the label carries its own height,
+   and left at the full one it sat 4 px above the two buttons beside it */
+.page-actions .btn-toggle-global {
+    height: var(--btn-height-small);
+}
+
+.page-actions .btn,
+.page-actions .btn-toggle-global>span {
+    height: var(--btn-height-small);
+    padding: 0 var(--btn-padding-x-small);
+    font-size: 12px;
+    font-weight: 600;
+    gap: 6px;
+    border-radius: var(--btn-radius);
+    border: 1px solid currentColor;
+    background: #fff;
+    background-image: none;
+    box-shadow: none;
+    box-sizing: border-box;
+    transition: background 0.2s, color 0.2s;
+}
+
+.page-actions #saveStateButton { color: var(--color-primary); }
+.page-actions #clearAllButton { color: var(--color-danger); }
+.page-actions .btn-toggle-global>span { color: var(--color-gray-500); }
+
+/* HOVER FILLS THE OUTLINE, rather than changing the colour: the button you are
+   about to press is the one that is solid. */
+.page-actions #saveStateButton:hover:not(:disabled) {
+    background: var(--color-primary);
+    background-image: none;
+    color: #fff;
+}
+
+.page-actions #clearAllButton:hover:not(:disabled) {
+    background: var(--color-danger);
+    background-image: none;
+    color: #fff;
+}
+
+/* ...AND THE GPU SWITCH IS A STATE, not an action, so it fills when it is ON.
+   Which way it stands has to be readable without hovering - that is the whole
+   job of the control - and green-on-white is the same green the toggles in the
+   Style panel use for on. */
+.page-actions .btn-toggle-global input:checked+span {
+    color: var(--color-success);
+    background: rgba(16, 185, 129, 0.10);
+    background-image: none;
+}
+
+.page-actions .btn-toggle-global:hover>span,
+.page-actions .btn-toggle-global input:checked+span:hover {
+    background: var(--color-gray-100);
+    background-image: none;
+    box-shadow: none;
+    transform: none;
+}
+
+.page-actions .btn-toggle-global input:checked+span:hover {
+    background: rgba(16, 185, 129, 0.18);
 }
 
 /* ============================================================================
    UTILITY CLASSES
    ============================================================================ */
-.vertical-divider-md {
-    width: 1px;
-    background: linear-gradient(to bottom, transparent, #e5e7eb 10%, #e5e7eb 90%, transparent);
-}
 
 .hidden {
     display: none !important;
@@ -1170,44 +1277,6 @@ table.layout-table td {
     vertical-align: top;
 }
 
-/* Selection Mode Toggle */
-.selection-mode-toggle {
-    display: flex;
-    border: 1px solid #d1d5db;
-    border-radius: 8px;
-    overflow: hidden;
-    margin-bottom: 12px;
-}
-
-.selection-mode-toggle label {
-    flex: 1;
-    text-align: center;
-    padding: 8px 12px;
-    cursor: pointer;
-    background-color: #f9fafb;
-    color: #4b5563;
-    font-size: 14px;
-    font-weight: 500;
-    transition: background-color 0.2s ease-in-out, color 0.2s ease-in-out;
-    position: relative;
-}
-
-.selection-mode-toggle label:first-of-type {
-    border-right: 1px solid #d1d5db;
-}
-
-.selection-mode-toggle input[type="radio"] {
-    display: none;
-}
-
-.selection-mode-toggle input[type="radio"]:checked+span {
-    color: #ffffff;
-}
-
-.selection-mode-toggle label:has(input:checked) {
-    background-color: #4f46e5;
-    color: #ffffff;
-}
 
 /* [EDIT] Removed old opacity styles for .residue-span */
 
@@ -1248,38 +1317,6 @@ table.layout-table td {
     margin-top: 8px;
 }
 
-.sequence-toggle-btn {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    background: none;
-    border: none;
-    padding: 0;
-    cursor: pointer;
-    font-size: 15px;
-    font-weight: 600;
-    color: #374151;
-}
-
-.sequence-toggle-btn:hover {
-    color: #1f2937;
-}
-
-.sequence-toggle-btn .chevron {
-    font-size: 24px;
-    color: #6b7280;
-    transition: transform 0.2s ease;
-    line-height: 1;
-    font-weight: normal;
-    display: inline-block;
-    vertical-align: middle;
-}
-
-.sequence-title {
-    font-weight: 600;
-    color: #374151;
-    font-size: 15px;
-}
 
 .sequence-content.hidden {
     display: none;
@@ -1323,13 +1360,56 @@ table.layout-table td {
     font-size: 13px;
 }
 
-/* How many residues are in play. The panel appearing says THAT there is a
-   selection; this says how big it is, which is the thing you cannot see from
-   the buttons and the one number that changes what pressing them does. */
+/* WHAT IS IN PLAY, by name. A count said how many; the ranges say WHICH, which
+   is what you check before pressing anything - and the count is still there in
+   front of them. Truncated with an ellipsis rather than wrapped, so the head
+   stays one line however wide the selection is; the whole list is in the title. */
 .selection-panel-count {
     font-size: 12px;
     color: #6b7280;
     font-variant-numeric: tabular-nums;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* The panel's own actions, as icons in the corner: they act on the selection as
+   a whole rather than on one part of it, and they are the two that are hard to
+   undo. */
+.selection-panel-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
+}
+
+.selection-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background: #fff;
+    color: #6b7280;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.selection-icon-btn:hover {
+    background: var(--color-gray-200, #e5e7eb);
+    color: #374151;
+}
+
+.selection-icon-danger:hover {
+    background: #fee2e2;
+    border-color: #fecaca;
+    color: #b91c1c;
 }
 
 /* Selection tools: act on the residues currently selected. Stacked as labelled
@@ -1349,6 +1429,18 @@ table.layout-table td {
 }
 
 .selection-panel-row[hidden] { display: none; }
+
+/* PROPERTIES ABOVE, ACTIONS BELOW. A hairline the full width of the panel:
+   the rows are already small and closely stacked, so anything heavier reads as
+   two panels rather than as a break in one list. */
+.selection-panel-divider {
+    height: 1px;
+    background: #e5e7eb;
+    margin: 3px 0 3px 0;
+}
+
+.selection-panel-divider[hidden] { display: none; }
+
 
 /* Fixed width so the two rows' controls line up under each other; without it
    "Side chains" and "Main chain" push their buttons to different columns and
@@ -1373,6 +1465,48 @@ table.layout-table td {
     min-width: 54px;
 }
 
+/* SHOW / HIDE, as one control: two buttons that share a border and answer one
+   question between them. The one that matches what is DRAWN is filled, so the
+   pair says both what it will do and what it has done - a single switch could
+   only say the first, which is what made this panel hard to read. Neither is
+   filled when the selection disagrees with itself. */
+.selection-switch {
+    display: inline-flex;
+    flex: 0 0 auto;
+    border: 1px solid var(--color-gray-300);
+    border-radius: var(--btn-radius);
+    overflow: hidden;
+    height: var(--btn-height-small);
+}
+
+.selection-switch[hidden] { display: none; }
+
+.selection-switch-btn {
+    appearance: none;
+    border: 0;
+    background: #fff;
+    color: var(--color-gray-600);
+    font-size: var(--btn-font-size-small);
+    font-weight: 600;
+    padding: 0 7px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.selection-switch-btn + .selection-switch-btn {
+    border-left: 1px solid var(--color-gray-300);
+}
+
+.selection-switch-btn:hover { background: var(--color-gray-100); }
+
+/* THE STATE, on the face of the button that matches it. */
+.selection-switch-btn.is-on {
+    background: var(--color-primary);
+    color: #fff;
+}
+
+.selection-switch-btn.is-on:hover { background: var(--color-primary-hover); }
+
 .selection-toggle > span {
     padding: 0 8px;
 }
@@ -1391,9 +1525,35 @@ table.layout-table td {
    the side-chain row - so it is sized to the toggle rather than to its own
    content, or the two rows would end at different places. */
 #selSsSelect {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
     min-width: 54px;
+    /* ...AND IT MAY SHRINK. A Show/Hide pair is half as wide again as the
+       switch it replaced, and this select's content ("DSSP", "Helix") had it
+       asking for 121px of a 314px row - which pushed the row onto two lines.
+       It is the one control here that can lose width without losing meaning,
+       since its job is to show one short word. */
+    max-width: 84px;
 }
+
+/* ADD, on a row that has nothing on it yet. A plain button rather than half a
+   pair: until the contact exists there is no state to show, and once it does
+   the button is gone. */
+.selection-add {
+    flex: 0 0 auto;
+}
+
+/* ...AND THE BIN, at the end of that contact's own controls. Ghosted until
+   hovered, like the panel head's icons: a destructive action that does not
+   advertise itself. */
+.selection-tools .selection-icon-btn {
+    flex: 0 0 auto;
+    /* the head's icons are 24px squares in a 28px row; on a control row it
+       lines up with the switches beside it */
+    height: var(--btn-height-small);
+    width: var(--btn-height-small);
+}
+
+.selection-tools .selection-icon-btn[hidden] { display: none; }
 
 /* Per-contact width. Narrow enough to share a row with a swatch and two
    buttons, which is the whole reason it is a slider and not a number box. */
@@ -1614,32 +1774,187 @@ table.layout-table td {
     display: block;
 }
 
-/* ============================================================================
-   LINK BUTTON (for README and other links)
-   ============================================================================ */
-.link-button {
-    background: none;
-    border: none;
-    color: #3b82f6;
-    font-size: 14px;
-    font-weight: 600;
+
+/* A TOGGLE THAT LIVES OUTSIDE THE VIEWER. The .btn-toggle rules are scoped to
+   .py2dmol-viewer-instance, and Use GPU sits in the page header beside Save and
+   Clear All - it is a global setting, not a viewer control. Same skin as those
+   toggles (green on, grey off), same size as the buttons it stands next to. */
+.btn-toggle-global {
+    position: relative;
+    display: inline-flex;
+    height: var(--btn-height);
+    border-radius: var(--btn-radius);
     cursor: pointer;
-    padding: 0;
+}
+
+.btn-toggle-global input[type="checkbox"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    margin: 0;
+    cursor: pointer;
+}
+
+.btn-toggle-global>span {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: var(--btn-height);
+    padding: 0 var(--btn-padding-x);
+    border-radius: var(--btn-radius);
+    font-size: var(--btn-font-size);
+    font-weight: 600;
+    box-shadow: var(--shadow-sm);
+    transition: all 0.2s;
+    background: var(--color-gray-200);
+    color: var(--color-gray-700);
+    box-sizing: border-box;
+}
+
+.btn-toggle-global input:checked+span {
+    background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-hover) 100%);
+    color: #fff;
+}
+
+.btn-toggle-global input:not(:checked)+span:hover {
+    background: var(--color-gray-300);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+}
+
+.btn-toggle-global input:checked+span:hover {
+    background: linear-gradient(135deg, var(--color-success-hover) 0%, var(--color-success-dark) 100%);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+}
+
+/* THE OBJECT LIST - what is on screen, and only that. The button opens into a
+   row per object, each an eye and a name, and only the eye is the switch.
+   Which object is being EDITED is asked for separately, by the picker in the
+   sequence header - which is the whole control in the ordinary mode, and
+   greyed out in Multi. */
+.object-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.object-list-btn {
+    height: var(--btn-height-small);
+    /* AN ICON, so square: three stacked lines standing for the list this
+       opens. The word it replaced ("Multi") took 46px of a 340px row that the
+       picker beside it now has. */
+    width: var(--btn-height-small);
     display: inline-flex;
     align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    padding: 0;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-gray-500);
+    background: #fff;
+    border: 1px solid currentColor;
+    border-radius: var(--btn-radius);
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+}
+
+.object-list-btn:hover { background: var(--color-gray-100); }
+
+/* MULTI IS A MODE, so the button fills while it is on - the same way the GPU
+   switch reads on. */
+.object-list-btn.is-on,
+.object-list-btn[aria-pressed="true"] {
+    color: var(--color-primary);
+    background: rgba(59, 130, 246, 0.10);
+}
+
+.object-list {
+    margin-top: 4px;
+    border: 1px solid #e5e7eb;
+    border-radius: var(--btn-radius);
+    overflow: hidden;
+}
+
+.object-list[hidden] { display: none; }
+
+.object-list-row {
+    display: flex;
+    align-items: center;
     gap: 6px;
-    pointer-events: auto;
-    text-decoration: none;
+    padding: 3px 6px;
+    font-size: 12px;
+    cursor: pointer;
 }
 
-.link-button:hover,
-.link-button:focus-visible {
-    text-decoration: underline;
-    color: #2563eb;
+.object-list-row + .object-list-row { border-top: 1px solid #f3f4f6; }
+
+.object-list-row:hover { background: var(--color-gray-100); }
+
+/* TWO HALVES, TWO QUESTIONS. The eye is whether the object is DRAWN; the name
+   is whether it is the one the controls act on. Both offer themselves. */
+.object-list-eye { cursor: pointer; }
+.object-list-name { cursor: pointer; }
+
+/* ...AND THE ONE BEING EDITED SAYS SO. Every panel below the list - Style,
+   Clip, the settings - acts on this object and on no other, which is not
+   guessable from a list where every row looks the same. */
+.object-list-row.is-editing { background: var(--color-gray-100); }
+.object-list-row.is-editing .object-list-name {
+    font-weight: 600;
+    color: var(--color-gray-900);
 }
 
-.link-button:disabled {
-    color: #9ca3af;
+/* THE PICKER sits beside the Multi button, because the two are one control
+   between them: which object, or several. Live in both modes: in Multi the
+   eyes decide what is DRAWN and the picker still decides what you are
+   EDITING. */
+.object-picker {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--color-gray-300);
+    border-radius: var(--btn-radius);
+    background: #fff;
+    color: var(--color-gray-700);
+}
+
+.object-picker:disabled {
+    opacity: 0.5;
     cursor: not-allowed;
-    pointer-events: none;
 }
+
+.object-list-eye {
+    width: 20px;
+    text-align: center;
+    color: var(--color-gray-500);
+    font-size: 12px;
+}
+
+/* A HIDDEN OBJECT KEEPS ITS ROW but loses its ink, so the list reads as a set
+   of switches rather than as a list that things vanish from. */
+.object-list-row.is-hidden .object-list-name,
+.object-list-row.is-hidden .object-list-eye { opacity: 0.45; }
+.object-list-row:hover .object-list-eye { color: var(--color-primary); }
+
+.object-list-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+
+
+/* THE SEQUENCE STRIP WITH NOTHING ON SCREEN. Every object can be switched off,
+   and a strip still listing residues then describes a picture that is not
+   there. It says so, and its tools are dead until something comes back. */
+.sequence-empty-note {
+    padding: 10px 4px;
+    font-size: 12px;
+    color: var(--color-gray-500);
+    font-style: italic;
+}
+
+.sequence-section-container.is-empty .sequence-actions { opacity: 0.45; }

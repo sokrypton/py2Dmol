@@ -1046,7 +1046,7 @@ Segments sorted by **average Z** after rotation (painter's algorithm).
 - **`tube`** (default): the segment pipeline in `viewer-mol.js` described in this section.
 - **`cartoon`**: `Pseudo3DRenderer._renderToContext()` delegates to `window.py2dmolCartoon.render()` (defined in `viewer-cartoon.js`) right after rotation and per-segment colors are computed, then returns. The plugin draws secondary-structure cartoons: one strip primitive per residue interval for helices/strands (subdivided stations; edges stroked as continuous polylines, outline band as one seamless polygon), flattened plates for strands, Catmull-Rom tube polylines for loops and nucleic backbones, black outlines with paint-order-aware end caps, cross-edge caps at element ends (closing helix-to-loop junctions), and silhouette strokes at ribbon folds (cross edges stroked only where screen-space winding flips, i.e. where the ribbon turns edge-on). SS assignment is real DSSP (hydrogen-bond energies, turns, bridges) run on a backbone rebuilt from the C-alpha trace (`predictBackbone`, a PULCHRA-style binned table for C and N; O follows from sp2 geometry), so it needs no atoms beyond the trace: Q3 90.0% with 94.0% strand recall against DSSP on the true backbone, from 85.3% / 72.4% for the C-alpha-only `make_sec` it replaces; backbone dihedrals gate the assignment as in PyMOL's `dss` (still exported for `tests/ss_bench.js`). The bridge partners come back with it and are the sheet ladders. Strand frames are built from them (`buildSheetFrames`: PyMOL's peptide-plane normal and flattening cycles, then a plane fitted to each residue's patch of the sheet, then a joint relaxation along the strand and across the rungs). SS, ladders and strand frames are cached per object/frame (`renderer._cartoonSec` / `_cartoonLadder` / `_cartoonSheet`, all invalidated by `_invalidateSegmentCache()`); the frames are stored as local-frame coefficients so a render only rebuilds the frame from the rotated trace. Nucleic bases are handled the same way and from the same principle: nothing per-nucleotide is stored, and the C4'->base-centroid direction and base-plane normal are predicted from the C4' trace (`predictBaseFrames`, `NA_BASE_TABLE`, fitted by `tests/na_table.py` and scored by `tests/na_bench.js`). That prediction is weaker than the peptide one - 16.7 deg median with a 69 deg p90 tail, because the glycosidic torsion is a free degree of freedom the trace cannot see - so three things downstream compensate: the base-geometry gate on a candidate pair is widened (`NA_BASE_SEP_MAX` / `NA_COPLANAR_MIN`), a base that points away from its pair partner is flipped after pairing, and the ribbon's twist per residue is capped (`NA_TWIST_MAX`). Measured against the frames files themselves carry, before that path was removed: B-DNA and tRNA pair identically, tertiary RNA differs on a handful. Ligands, contacts, explicit bonds and lone atoms stay generic primitives and depth-sort against the cartoon. Shadows are not used in cartoon mode (depth cue is a blend toward the background instead).
 - Runtime switching: `renderer.setStyle('tube'|'cartoon')` - two styles because there are two draw paths - wired to the `#styleSelect` dropdown (**Tube** / **Cartoon**) in both viewer.html and index.html.
-- **Presets** are a second axis: `renderer.setPreset('ribbon'|'richardson'|'3d')`, `#presetSelect`. `richardson` is the default and owns three things: the geometry profile (`cartoonRichardson`), the slider values (`STYLE_DEFAULTS`) and the page background. `ribbon` (plain cartoon) maps to `STYLE_DEFAULTS.cartoon`. `3d` additionally sets a black background (`_applyPresetBackground`); the other two set white.
+- **Presets** are a second axis: `renderer.setPreset('ribbon'|'richardson'|'3d')`, `#presetSelect`. `richardson` is the default and owns three things: the geometry profile (`cartoonRichardson`), the slider values (`LOOK_DEFAULTS`) and the page background. `ribbon` (plain cartoon) is `LOOK_DEFAULTS.ribbon`. The table is keyed by LOOK - the `tube` style and the three cartoon presets - and by nothing else: its plain-cartoon entry used to be keyed `cartoon`, which reads as the cartoon STYLE, and anything passing a style name through got the ribbon look with no warning. `3d` additionally sets a black background (`_applyPresetBackground`); the other two set white.
 - Python: `py2Dmol.view(style="cartoon")`; `viewer-cartoon.min.js` is always inlined next to `viewer-mol.min.js` so the dropdown works in notebooks.
 
 ### Selection vs Visibility
@@ -1125,7 +1125,7 @@ Drawn in two passes:
 - `rainbow` - N→C terminus gradient
 - `entropy` - MSA entropy (if available)
 - `deepmind` - DeepMind pLDDT coloring
-- `ss` - by secondary structure, using a named palette (`ss_palette`: pymol | jmol | jr1 | jr2)
+- `ss` - by secondary structure, using a named palette (`ss_palette`: pymol | jmol)
 
 **Color Resolution**: `resolveColorHierarchy()` in `viewer-mol.js` walks object →
 chain → position and returns either a resolved MODE or a literal colour, in that
@@ -1651,7 +1651,7 @@ DEFAULT_CONFIG = {
     "color": {
         "mode": "auto",
         "colorblind": False
-        # "ss_palette" is added when set: pymol | jmol | jr1 | jr2
+        # "ss_palette" is added when set: pymol | jmol
     },
     "pae": {
         "enabled": False,

@@ -37,7 +37,9 @@ function registerCustomColorMode(modeName, colorFunc) {
  * Get all valid color modes (including custom ones)
  */
 function getAllValidColorModes() {
-    const builtinModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy'];
+    // 'object' only means anything with more than one object merged in, and
+    // is what 'auto' resolves to there - see setCoords.
+    const builtinModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy', 'object'];
     const customModes = window.py2dmol_customColors ? Object.keys(window.py2dmol_customColors) : [];
     return builtinModes.concat(customModes);
 }
@@ -366,6 +368,237 @@ function getAllValidColorModes() {
  * All logic is scoped to this container.
  * @param {HTMLElement} containerElement The root <div> element for this viewer.
  */
+/**
+ * WHICH ATOMS MAKE UP ONE LIGAND, keyed by the FRAME they were read from.
+ *
+ * This used to be computed once in addFrame and stored on the object, which
+ * made it a fact that had to be maintained: every path that rewrote the frames
+ * had to remember to recompute it, and Delete did not - so after cutting a
+ * chain out, the ligands that were left pointed at whatever had moved into
+ * their slots, drew as loose spheres and stopped collapsing to one token in
+ * the sequence strip.
+ *
+ * It is not a fact about an object. It is a function of a frame - chain,
+ * residue number and name - so it is computed from one and cached against it.
+ * An edit builds NEW frame objects (see _subsetFrames), so the answer for them
+ * is computed fresh the first time anything asks, and there is no invalidation
+ * to forget. The WeakMap lets the cache go when the frame does.
+ */
+const LIGAND_GROUPS_BY_FRAME = new WeakMap();
+const NO_LIGAND_GROUPS = new Map();
+
+function ligandGroupsForFrame(frame) {
+    if (!frame || typeof groupLigandAtoms !== 'function') return NO_LIGAND_GROUPS;
+    if (!frame.chains || !frame.position_types) return NO_LIGAND_GROUPS;
+    let g = LIGAND_GROUPS_BY_FRAME.get(frame);
+    if (!g) {
+        g = groupLigandAtoms(frame.chains, frame.position_types,
+            frame.residue_numbers || [], frame.position_names || []);
+        LIGAND_GROUPS_BY_FRAME.set(frame, g);
+    }
+    return g;
+}
+
+/**
+ * EVERY PIECE OF PER-OBJECT STATE THAT IS KEYED BY POSITION INDEX.
+ *
+ * All of it means nothing except against the object it was set on, and all of
+ * it has to survive the same six things: a merge reading it up into merged
+ * indices, a write coming back down, an edit renumbering it, a session saving
+ * and restoring it. Each of those was written out field by field, so each was
+ * a place to forget one - and they were forgotten, repeatedly: a Copy that
+ * carried no colours, a Delete that left the ligand bonds pointing at whatever
+ * had moved into their slots.
+ *
+ * The list is here, once. `absent` is what a MISSING value means, which is not
+ * the same for all of them - no side chains are shown by default, while every
+ * base and every element is - and getting it backwards inverts the feature.
+ * `remap` is how an edit renumbers it; the ones without a remap say why.
+ *
+ * When you add a per-object field, add it here. tests/copy_selection.js fails
+ * until you do.
+ */
+const OBJECT_STATE = [
+    { key: 'sidechains', kind: 'set', absent: 'none', json: 'sidechains',
+        remap: remapPositionSet },
+    { key: 'bases', kind: 'set', absent: 'all', json: 'bases',
+        remap: remapPositionSet },
+    { key: 'elements', kind: 'set', absent: 'all', json: 'elements',
+        remap: remapPositionSet },
+    { key: 'hiddenBackbone', kind: 'set', absent: 'none', json: 'hidden_backbone',
+        remap: remapPositionSet },
+    // position -> letter, and position -> colour
+    { key: 'sse', kind: 'plain', absent: 'none', json: 'sse',
+        remap: remapPositionMap },
+    { key: 'sidechainColor', kind: 'plain', absent: 'none', json: 'sidechain_color',
+        remap: remapPositionMap },
+    // only the `position` map inside the tree is keyed by index
+    { key: 'color', kind: 'plain', absent: 'none', json: 'color',
+        remap: remapColorTree },
+    // [i, j, ...] indices, or [chain, res, chain, res, ...] names
+    { key: 'contacts', kind: 'plain', absent: 'none', json: 'contacts',
+        remap: remapContacts },
+    // [i, j] only - the object's fallback list for frames carrying none.
+    // json:null because it is NOT saved here: bonds travel with the frames,
+    // and the object's list is rebuilt from them on load.
+    { key: 'bonds', kind: 'plain', absent: 'none', json: null,
+        remap: remapIndexPairs },
+    // NOT REMAPPED, deliberately: a copy starts fully visible rather than
+    // inheriting what was hidden in the original, and Delete renumbers the
+    // record in place (it is the one piece of this that has a live twin).
+    // Saved by hand too - it is four fields, not a set, and two of them are
+    // renamed on the way out.
+    { key: 'visibilityState', kind: 'plain', absent: 'all', json: null,
+        remap: null },
+    // WHERE AN ALIGNMENT PUT THE OBJECT: {t[3], u[9]}, applied on the way to
+    // the screen (see _transformedFrame). The ONE field here that is not keyed
+    // by position, so it is carried across a copy WHOLE rather than renumbered
+    // - and it has to be carried, because a Cut reads the raw frames: without
+    // it the piece you just cut out of an aligned structure would jump back to
+    // where its file put it, on its own, with nothing said.
+    { key: 'alignTransform', kind: 'plain', absent: 'none', json: 'align_transform',
+        remap: remapWhole },
+];
+
+/** Carried across unchanged: this one is not keyed by position. */
+function remapWhole(v) {
+    return v === undefined ? undefined : v;
+}
+
+/** A Set of positions. An EMPTY result is not the same as an absent one. */
+function remapPositionSet(set, ctx) {
+    if (!(set instanceof Set)) return undefined;
+    const out = new Set();
+    for (const i of set) {
+        const to = ctx.map.get(i);
+        if (to !== undefined) out.add(to);
+    }
+    return out;
+}
+
+/** A plain object keyed by position. Empty collapses to null. */
+function remapPositionMap(src, ctx) {
+    if (!src) return undefined;
+    const out = {};
+    for (const k of Object.keys(src)) {
+        const to = ctx.map.get(Number(k));
+        if (to !== undefined) out[to] = src[k];
+    }
+    return Object.keys(out).length ? out : null;
+}
+
+/**
+ * COLOUR. Only the `position` map inside it is keyed by index; the rest of the
+ * structure - an object-wide mode or literal the per-residue colours sit on
+ * top of - is not, and is carried through untouched so a copy keeps the same
+ * base to override.
+ */
+function remapColorTree(color, ctx) {
+    if (!color) return undefined;
+    if (color.type !== 'advanced' || !color.value) return color;
+    const value = { ...color.value };
+    if (value.position) {
+        const out = remapPositionMap(value.position, ctx);
+        if (out) value.position = out;
+        else delete value.position;
+    }
+    return Object.keys(value).length ? { type: 'advanced', value } : null;
+}
+
+/** [i, j, ...rest] where i and j are positions. */
+function remapIndexPairs(list, ctx) {
+    if (!Array.isArray(list) || !list.length) return undefined;
+    const kept = [];
+    for (const c of list) {
+        if (!Array.isArray(c)) continue;
+        const a = ctx.map.get(c[0]);
+        const b = ctx.map.get(c[1]);
+        if (a === undefined || b === undefined) continue;
+        kept.push(c.length > 2 ? [a, b, ...c.slice(2)] : [a, b]);
+    }
+    return kept.length ? kept : null;
+}
+
+/**
+ * Contacts come in two shapes. [i, j, w, colour?] is indices and renumbers;
+ * [chain, res, chain, res, w, colour?] names residues and survives a copy
+ * untouched - but only if both of its ends came with it, or it resolves to
+ * nothing on every frame load and warns to the console for the life of the
+ * object.
+ */
+function remapContacts(list, ctx) {
+    if (!Array.isArray(list) || !list.length) return undefined;
+    const r = ctx.renderer;
+    const survives = new Set();
+    for (const i of ctx.selected) {
+        const chain = r.chains && r.chains[i];
+        const res = r.residueNumbers && r.residueNumbers[i];
+        if (chain !== undefined && res !== undefined) survives.add(chain + ':' + res);
+    }
+    const kept = [];
+    for (const c of list) {
+        if (!Array.isArray(c)) continue;
+        if (typeof c[0] === 'number' && typeof c[1] === 'number') {
+            const a = ctx.map.get(c[0]);
+            const b = ctx.map.get(c[1]);
+            if (a === undefined || b === undefined) continue;
+            kept.push([a, b, ...c.slice(2)]);
+        } else if (typeof c[0] === 'string' && c.length >= 4) {
+            if (!survives.has(c[0] + ':' + c[1])) continue;
+            if (!survives.has(c[2] + ':' + c[3])) continue;
+            kept.push(c.slice());
+        }
+    }
+    return kept.length ? kept : null;
+}
+
+/** What an absent value means for one field, from the table. */
+function objectStateAbsent(key) {
+    const e = OBJECT_STATE.find((f) => f.key === key);
+    return e ? e.absent : 'none';
+}
+
+/**
+ * ONE OBJECT'S POSITION-KEYED STATE, ready for JSON.
+ *
+ * The save rule follows from `absent`, and this is why the field list carries
+ * it: a set whose absence means ALL has to be written even when it is EMPTY,
+ * because empty means "none of them" and leaving it out means "all of them" -
+ * the opposite. A set whose absence means NONE is only worth writing when it
+ * has something in it.
+ */
+function objectStateToJSON(object) {
+    const out = {};
+    if (!object) return out;
+    for (const f of OBJECT_STATE) {
+        if (!f.json) continue;
+        const v = object[f.key];
+        if (f.kind === 'set') {
+            if (!(v instanceof Set)) continue;
+            if (f.absent === 'none' && !v.size) continue;
+            out[f.json] = Array.from(v);
+        } else if (v) {
+            out[f.json] = v;
+        }
+    }
+    return out;
+}
+
+/** ...and back, onto an object. The inverse of objectStateToJSON. */
+function objectStateFromJSON(object, saved) {
+    if (!object || !saved) return;
+    for (const f of OBJECT_STATE) {
+        if (!f.json) continue;
+        const v = saved[f.json];
+        if (v === undefined || v === null) continue;
+        if (f.kind === 'set') {
+            if (Array.isArray(v)) object[f.key] = new Set(v);
+        } else {
+            object[f.key] = v;
+        }
+    }
+}
+
 function initializePy2DmolViewer(containerElement, viewerId) {
 
     // Helper function to normalize ortho value from old (50-200) or new (0-1) format
@@ -392,7 +625,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         mul(s) { return new Vec3(this.x * s, this.y * s, this.z * s); }
         dot(v) { return this.x * v.x + this.y * v.y + this.z * v.z; }
         length() { return Math.sqrt(this.dot(this)); }
-        distanceTo(v) { return this.sub(v).length(); }
         distanceToSq(v) { const s = this.sub(v); return s.dot(s); }
         normalize() {
             const len = this.length();
@@ -402,8 +634,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     function rotationMatrixX(angle) { const c = Math.cos(angle), s = Math.sin(angle); return [[1, 0, 0], [0, c, -s], [0, s, c]]; }
     function rotationMatrixY(angle) { const c = Math.cos(angle), s = Math.sin(angle); return [[c, 0, s], [0, 1, 0], [-s, 0, c]]; }
     function multiplyMatrices(a, b) { const r = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]; for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) for (let k = 0; k < 3; k++) r[i][j] += a[i][k] * b[k][j]; return r; }
-    function applyMatrix(m, v) { return new Vec3(m[0][0] * v.x + m[0][1] * v.y + m[0][2] * v.z, m[1][0] * v.x + m[1][1] * v.y + m[1][2] * v.z, m[2][0] * v.x + m[2][1] * v.y + m[2][2] * v.z); }
-    function sigmoid(x) { return 0.5 + x / (2 * (1 + Math.abs(x))); }
     // ============================================================================
     // COLOR UTILITIES
     // ============================================================================
@@ -456,6 +686,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // anyone would want to tune, and expressing it as a boost meant retuning
     // the LIGAND width would silently move side chains with it.
     const SIDECHAIN_WIDTH = 0.5;
+    // How far an atom can sit from its residue's trace point: an arginine's tip
+    // is ~7 A from its CA and a purine's ~7 from its C4'. Used to widen a
+    // distance search's first pass, so the exact one never misses a pair.
+    const SIDECHAIN_REACH_A = 8;
     // A CONTACT IS ONE WIDTH IN BOTH STYLES, and does not follow the Line Width
     // control in either. That control sets how heavy the BACKBONE is drawn; a
     // contact is an annotation over the structure, and one that changed weight
@@ -471,10 +705,66 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // changes width when you switch style is exactly what this exists to stop.
     const CONTACT_WIDTH_A = 1.175;
     const SELECTION_HALO_CSS = 'rgba(255, 255, 0, 0.45)';
-    // Half-width in screen pixels at unit perspective, before the per-residue
-    // radius is added. Wide enough to read as a band around the ribbon rather
-    // than a line on it.
-    const SELECTION_HALO_PX = 7;
+    // ...and the same colour split in two, for the scratch layer: opaque while
+    // the widths are drawn, composited once at the alpha they share.
+    const SELECTION_HALO_SOLID_CSS = 'rgb(255, 255, 0)';
+    const SELECTION_HALO_ALPHA = 0.45;
+    // The hover MARK has no colour of its own: it is the selection band, drawn
+    // over what the pointer is on. Only the readout needs one, and it follows
+    // the paper rather than sitting on a plate of its own.
+    const HOVER_TEXT_LIGHT_CSS = 'rgba(40, 40, 40, 0.9)';    // on white paper
+    const HOVER_TEXT_DARK_CSS = 'rgba(235, 235, 235, 0.9)';  // on the 3d preset's black
+    const HOVER_TEXT_MARGIN = 10;
+    // HOW FAR THE BAND REACHES PAST THE GEOMETRY, as a multiple of what is
+    // drawn rather than a number of pixels.
+    //
+    // It was a flat 7 px, which is a band around the ribbon at the zoom the
+    // number was chosen at and a stripe with a ribbon inside it anywhere else:
+    // zoomed out on 1TIM the drawn radius is 2 px and the band was 18 px wide -
+    // four and a half times the thing it was marking - and on a structure big
+    // enough to pin the radius at its floor (3J3Q) it was 18 px at every zoom.
+    //
+    // PROPORTION, AND NOTHING ELSE. The band is 1.3 x the radius of whatever
+    // it marks, so a highlight looks the same at every zoom and on every kind
+    // of thing - and the two clamps that used to bound it were exactly where it
+    // stopped doing that:
+    //
+    //   the FLOOR was added to the margin, so a small mark got a band far wider
+    //   than its proportion - 2.5 px around a 1.7 px zinc, which is why a
+    //   selected metal started out looking too heavy;
+    //   the CEILING held the margin at 14 px, so a big mark stopped growing -
+    //   2.30x the radius at 7 px and 1.52x at 27, which is why it then refused
+    //   to keep up on the way in.
+    //
+    // Between the two it was proportional only in the middle, which is where a
+    // ribbon happens to live (2-7 px) - so the rule looked right for years and
+    // was wrong for the first thing drawn at a size of its own.
+    //
+    // What survives is a floor on the WHOLE BAND rather than on the margin: a
+    // hairline still has to be markable, and 2.5 px of band around a half-pixel
+    // strand does that without touching anything bigger. Nothing else needs a
+    // bound - a band around a big thing is big, and that is what proportion
+    // means. The default view is unchanged either way (12.5 px, as before).
+    const SELECTION_HALO_RADIUS_FRAC = 0.5;
+    /**
+     * How wide the band over something of drawn radius `rad` is - a DIAMETER,
+     * because it is used as a stroke width.
+     *
+     * Module scope so it can be tested: the proportion it holds is the whole
+     * point of it, and it is not visible in a screenshot of one zoom.
+     */
+    function selectionBandFor(rad, pxScale, ref) {
+        const r = rad || 2;
+        // THE RING IS A PEN, THE INNER EDGE IS THE THING. Its thickness comes
+        // from `ref` - the ordinary residue radius at this view - and not from
+        // r, so a mark sticks out by the same amount whatever it is drawn
+        // around. Defaults to r, which is the same number for everything that
+        // is drawn at the residue radius, so this changes nothing there.
+        const m = SELECTION_HALO_GAIN * (ref === undefined ? r : ref);
+        return 2 * Math.max(r + m, SELECTION_HALO_MIN_PX * pxScale);
+    }
+    const SELECTION_HALO_GAIN = 1.3;
+    const SELECTION_HALO_MIN_PX = 2.5;
 
     const namedColorsMap = {
         "red": "#ff0000", "green": "#00ff00", "blue": "#0000ff", "yellow": "#ffff00", "cyan": "#00ffff", "magenta": "#ff00ff",
@@ -627,8 +917,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
     }
 
-    function getChainColor(chainIndex) { if (chainIndex < 0) chainIndex = 0; return hexToRgb(pymolColors[chainIndex % pymolColors.length]); }
-
     // PAE color functions moved to viewer-pae.js
 
     // ============================================================================
@@ -642,9 +930,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
      * @returns {Object} - {resolvedMode: "chain"|"plddt"|etc, resolvedColor: "#hex"|{r,g,b}|null}
      */
     function resolveColorHierarchy(context, colorSpec) {
-        const { frameIndex, posIndex, chainId, renderer } = context;
-        const objectName = renderer.currentObjectName;
+        let { frameIndex, posIndex } = context;
+        const { chainId, renderer } = context;
+        // EVERY LEVEL OF THIS IS PER OBJECT - a colour set on the object, on
+        // one of its frames, on one of its chains, on one of its positions -
+        // and in a merged view the position index arriving here belongs to
+        // whichever object it came from, not to the current one. Resolved back
+        // to that object and its own numbering, or the second structure takes
+        // the first one's per-position colours.
+        const owner = renderer.ownerOf ? renderer.ownerOf(posIndex) : null;
+        const objectName = owner ? owner.name : renderer.currentObjectName;
         const object = renderer.objectsData[objectName];
+        if (owner) { posIndex = owner.local; frameIndex = owner.frame; }
 
         let resolvedMode = renderer.colorMode || 'auto';  // Global default
         let resolvedLiteralColor = null;
@@ -779,9 +1076,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const TINT_CUTOFF_MULTIPLIER = 0.5;     // tint_cutoff = avgLen * 0.5
     const SHADOW_OFFSET_MULTIPLIER = 2.5;   // Proportional offset multiplier
     const TINT_OFFSET_MULTIPLIER = 2.5;     // Proportional offset multiplier
-    const WIDTH_RATIO_CLAMP_MIN = 0.01;     // Minimum width ratio for shadow/tint
-    const WIDTH_RATIO_CLAMP_MAX = 10.0;     // Maximum width ratio for shadow/tint
     const MAX_SHADOW_SUM = 12;              // Maximum accumulated shadow sum (saturating accumulation)
+
+    // The clip's soft edge, as a fraction of the slab's thickness. The panel
+    // shows it as a percentage - 10 - and the renderer works in fractions.
+    const CLIP_FADE_DEFAULT = 0.1;
 
     // Default nested config used by both Python and standalone HTML
     const DEFAULT_CONFIG = {
@@ -795,7 +1094,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         },
         rendering: {
             style: "tube",
-            detail: 0.5,
+            // SUBDIVISIONS PER RESIDUE, 2-8, matching the slider and the
+            // Python default. It read 0.5 here, left over from when detail was
+            // a fractional sampling density: the constructor rounds and clamps
+            // to 2..8, so 0.5 came out as 2 - the LOWEST setting - for any
+            // caller that went through normalizeConfig without naming one.
+            detail: 4,
             // thickness / cel / highlight / outline_tint / width / arrows /
             // pencil / sheet_flat are deliberately absent: they are resolved
             // per style in the renderer constructor (see PRESET_KEYS in
@@ -937,6 +1241,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Current render state
             this.coords = []; // This is now an array of Vec3 objects
+            // WHICH OBJECTS THE CAMERA HAS ALREADY BEEN FRAMED FOR. A merge
+            // re-frames for an object that is new to it and holds still for
+            // one being switched back on - see _applyShownObjects.
+            this._framedObjects = new Set();
             this.plddts = [];
             this.chains = [];
             this.positionTypes = [];
@@ -1032,6 +1340,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.cartoonSmooth = (config.rendering?.smooth !== undefined)
                 ? config.rendering.smooth === true
                 : (this.style !== 'cartoon');
+            // THE GPU PATH, off unless asked for. It changes how fast the
+            // picture appears and not what the picture is, so it is a rendering
+            // option like any other - and it is checked against WebGL2 at the
+            // point of use rather than here, because a context can be lost long
+            // after the viewer was built.
+            this.useGPU = config.rendering?.gpu === true;
             // Highlight gain: 0 = the old ceiling at the base colour, 1 = a
             // full lift toward white on faces pointing at the light.
             const hg = Number(config.rendering?.highlight);
@@ -1055,7 +1369,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // and every py2Dmol.view() send a width whether or not anyone chose
             // it, so richardson kept ribbon's 3.0 while taking every other
             // preset value.
-            this._lineWidthUserSet = false;
+            // WIDTH IS REMEMBERED PER STYLE. The slider is one control but it
+            // is not one quantity: in tube it is the radius of the tube, in
+            // cartoon it scales the ribbon. A width dragged in tube used to
+            // follow the switch into cartoon and arrive as a ribbon several
+            // times too wide - invisible until opening a second, smaller
+            // structure started switching style on its own, and then it looked
+            // like the tube's settings being copied into cartoon, which is
+            // what it was.
+            this._widthByStyle = {};
             // Same idea for THICKNESS, and for the ligand's sake. The plain
             // cartoon preset sets thickness 0 because a flat ribbon is the look
             // it means; a ligand stick at 0 is not a thinner stick, it is a
@@ -1116,14 +1438,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.colorsNeedUpdate = true;
             this.plddtColorsNeedUpdate = true;
 
-            // [OPTIMIZATION] Phase 4: Allocation-free rendering
+            // Allocation-free rendering
             // Pre-allocated arrays to replace Maps/Sets in render loop
             this.adjList = null;         // Array of arrays: adjList[posIdx] = [segIdx1, segIdx2, ...]
             this.segmentOrder = null;    // Int32Array: segmentOrder[segIdx] = renderOrderIndex
             this.segmentFrame = null;    // Int32Array: segmentFrame[segIdx] = frameId (last rendered frame)
             this.renderFrameId = 0;      // Counter for render frames to validate segmentFrame entries
 
-            // [OPTIMIZATION] Phase 5: Micro-optimizations
+            // Micro-optimizations
             this.segmentEndpointFlags = null; // Uint8Array: bit 0=start, bit 1=end
             this.screenX = null;              // Float32Array: screen X for each position
             this.screenY = null;              // Float32Array: screen Y for each position
@@ -1140,6 +1462,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Cache segment indices per frame (bonds don't change within a frame)
             this.cachedSegmentIndices = null;
+            this.cachedSegmentIndicesCoords = null;
             this.cachedSegmentIndicesFrame = -1;
             this.cachedSegmentIndicesObjectName = null;
 
@@ -1157,12 +1480,27 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.recordingFrameSequence = null; // Timeout ID for sequential recording
 
             // Overlay mode (for merging multiple frames in same view)
-            // UNIFIED overlay state object (Commit 1 refactor)
+            // UNIFIED overlay state object
             this.overlayState = {
                 enabled: false,              // Is overlay mode currently active?
                 shouldAutoEnable: (typeof config.overlay?.enabled === 'boolean') ? config.overlay.enabled : false,
                 frameIdMap: null,            // Maps atom index → frame index (null if not merged)
                 autoColor: null              // Auto color determination (rainbow/chain/plddt)
+            };
+
+            // Several objects shown at once, merged into one coordinate array
+            // the same way the overlay merges frames - see _mergeObjects and
+            // MULTI_OBJECT_PLAN.md. The two are mutually exclusive: a merge is
+            // of frames or of objects, never both.
+            this.multiState = {
+                enabled: false,              // Is more than one object merged in?
+                sourceIdMap: null,           // position -> index into sourceNames
+                sourceNames: null,           // the objects merged, in drawing order
+                sourceOffsets: null,         // where each of them starts
+                sourceFrames: null,          // the frame each was taken from
+                sourceAutoColors: null,      // what 'auto' means for each of them
+                stats: null,                 // centre and extent of the lot - see drawnStats
+                autoColor: null
             };
 
             // Debug properties
@@ -1193,10 +1531,27 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // visible. Was called visibilityMask, which invited the wrong
             // mental model - it is not a per-residue boolean array.
             this.visiblePositions = null;
+            // THE CLIP SLAB, in view space: keep what lies between clipFar
+            // and clipNear along the camera's own z. null for no clipping. It
+            // cuts the DRAWING, not the visibility - see the note on setClipSlab.
+            this.clipNear = null;
+            this.clipFar = null;
+            // ...and how soft its edges are: a FRACTION of the slab's own
+            // thickness over which the drawing fades out instead of stopping.
+            // 0 is the knife. A fraction rather than Angstrom because the
+            // useful softness scales with what is being looked at - the same
+            // 0.2 reads the same on a peptide and on a ribosome. The control
+            // shows it as a percentage, and a tenth is the default: enough to
+            // read as a soft edge, little enough to keep the cut a cut.
+            this.clipFade = CLIP_FADE_DEFAULT;
+            // Whether the CONTROLS are up. Separate from the slab itself,
+            // which stays where it was set: switching Clip off puts the panel
+            // away, it does not undo the cut. Reset is what uncuts.
+            this.clipEditing = false;
             this.highlightedAtom = null; // To store position index for highlighting (property name kept for API compatibility)
             this.highlightedAtoms = null; // To store Set of position indices for highlighting multiple positions (property name kept for API compatibility)
 
-            // [PATCH] Unified selection model (sequence/chain + PAE)
+            // Unified selection model (sequence/chain + PAE)
             // positions: Set of position indices (0, 1, 2, ...) - one position per entry in frame data
             // chains: Set of chain IDs (empty => all chains)
             // paeBoxes: Array of selection rectangles in PAE position space {i_start,i_end,j_start,j_end}
@@ -1220,7 +1575,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 visibilityMode: 'default' // Start in default mode (show all)
             };
 
-            // Ligand groups: Now stored per-object in objectsData[name].ligandGroups
+            // Ligand groups: derived from each object's frame on demand -
+            // see ligandGroupsForFrame and renderer.ligandGroupsOf
             // (removed from renderer-level to fix bug where loading object B overwrites object A's groups)
 
             // Explicit bonds: Array of [idx1, idx2] pairs defining bonds between any atoms/positions
@@ -1248,11 +1604,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.orthoSlider = null;
             this.shadowSlider = null;
 
-            // Recording state
+            // Recording state. The recorder itself lives in _recSink for as
+            // long as a recording is running - see _makeVideoSink.
             this.isRecording = false;
-            this.mediaRecorder = null;
-            this.recordedChunks = [];
-            this.recordingStream = null;
+            this._recSink = null;
             this.recordingEndFrame = 0;
 
             // Cache shadow/tint arrays during dragging for performance
@@ -1263,6 +1618,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Batch loading flag to suppress unnecessary renders during bulk data loading
             this._batchLoading = false;
+            // WHICH OBJECTS ARE ON SCREEN. Empty means "just the current one",
+            // which is every session today; the object list will write names
+            // into it. Read through drawnObjects(), never directly, so the
+            // day it holds several the callers need no changing.
+            // See MULTI_OBJECT_PLAN.md.
+            this.shownObjects = null;
 
             // Width multipliers are now always based on TYPE_BASELINES (no scaling factors needed)
 
@@ -1279,7 +1640,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.render('setClearColor'); // Re-render with new clear color
         }
 
-        // [PATCH] --- Unified Selection API ---
+        // --- Unified Selection API ---
         setVisibility(patch, skip3DRender = false) {
             if (!patch) return;
             if (patch.positions !== undefined) {
@@ -1317,15 +1678,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
-            // Save selection state to current object whenever it changes
-            if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
-                this.objectsData[this.currentObjectName].visibilityState = {
-                    positions: new Set(this.visibilityModel.positions),
-                    chains: new Set(this.visibilityModel.chains),
-                    paeBoxes: this.visibilityModel.paeBoxes.map(box => ({ ...box })),
-                    visibilityMode: this.visibilityModel.visibilityMode
-                };
-            }
+            // Save selection state to the object it belongs to - or to each
+            // of them, when several are merged. See _saveVisibilityToObjects.
+            this._saveVisibilityToObjects();
 
             this._composeAndApplyMask(skip3DRender);
         }
@@ -1359,6 +1714,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 paeBoxes: [],
                 visibilityMode: 'default'
             };
+            // ...AND THE OBJECTS' OWN RECORDS WITH IT. Every other write to
+            // the live mask files itself down per object (see setVisibility);
+            // this one did not, so the records still said what had been hidden
+            // and the next merge rebuild - one click of an eye - composed the
+            // hiding straight back out of them. Reachable only with no object
+            // or an empty array today, which is luck rather than design: the
+            // invariant is that the live mask and the records never disagree.
+            this._saveVisibilityToObjects();
             this._composeAndApplyMask();
         }
 
@@ -1376,8 +1739,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 allPositions.add(i);
             }
 
-            // Select all chains
-            const allChains = new Set(this.chains);
+            // Select all chains - by (object, chain), like everything else
+            const allChains = new Set();
+            for (let i = 0; i < (this.chains ? this.chains.length : 0); i++) {
+                allChains.add(this.chainKeyAt(i));
+            }
 
             // Clear PAE boxes when resetting to default (select all)
             this.setVisibility({
@@ -1398,6 +1764,98 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             });
         }
 
+        /**
+         * WHAT ONE OBJECT SHOWS, in the merged array's numbering.
+         *
+         * THE ONE RULE, and there used to be two. A visibility record holds
+         * three contributors - residues picked in the strip, whole chains, and
+         * boxes drawn on the PAE matrix - and they combine by UNION, with the
+         * mode deciding what an EMPTY answer means: `default` shows everything
+         * (nobody has asked for anything), `explicit` shows nothing (someone
+         * asked for nothing).
+         *
+         * The rebuild path used to have its own version of this that knew
+         * about positions and chains and nothing else, and it wrote its answer
+         * back through setVisibility with `paeBoxes: []` - so every rebuild of
+         * the coordinate array (an eye, a side chain, a frame step) silently
+         * erased the boxes and dropped the mode back to default. Draw a box on
+         * a prediction, switch on a second object, and the whole structure
+         * came back: measured, 7 residues visible before and all 144 after.
+         *
+         * @returns {Set<number>|null} null means "all of this object" - not
+         *   the same as an empty set, which means none of it.
+         */
+        _visibleForObject(name, off, end) {
+            const o = this.objectsData && this.objectsData[name];
+            const st = o && o.visibilityState;
+            const hasPos = !!(st && st.positions && st.positions.size);
+            const hasChains = !!(st && st.chains && st.chains.size);
+            const boxes = (st && st.paeBoxes) || [];
+            const explicit = !!(st && st.visibilityMode === 'explicit');
+            if (!st || (!hasPos && !hasChains && !boxes.length && !explicit)) return null;
+
+            const out = new Set();
+            // ...THE FRAMES OF AN OVERLAY ARE ONE OBJECT. The record is in
+            // frame 0's numbering and the array holds every frame end to end,
+            // so a residue picked once is picked in all of them.
+            const ov = this.overlayState && this.overlayState.enabled
+                && this.overlayState.frameIdMap;
+            const spans = [];
+            if (ov) {
+                const map = this.overlayState.frameIdMap;
+                let at = 0;
+                for (let i = 1; i <= map.length; i++) {
+                    if (i === map.length || map[i] !== map[at]) {
+                        spans.push([off + at, i - at]);
+                        at = i;
+                    }
+                }
+            } else {
+                spans.push([off, end - off]);
+            }
+            const add = (local) => {
+                for (const [base, len] of spans) {
+                    if (local >= 0 && local < len) out.add(base + local);
+                }
+            };
+
+            // THE ALGEBRA, and it is not symmetric: RESIDUES AND CHAINS
+            // INTERSECT, and the PAE boxes UNION with the result.
+            //
+            // A chain set is a FILTER over the residues - "of these residues,
+            // the ones in these chains", and with no residues named, all of
+            // those chains - while a box drawn on the matrix ADDS its rows and
+            // columns to whatever is already showing. Making chains a
+            // contributor instead of a filter shows the whole structure the
+            // moment anything writes a chain set, which is most of the time.
+            if (hasPos || hasChains) {
+                const first = spans[0];
+                for (let local = 0; local < first[1]; local++) {
+                    // CHAIN IDENTITY IS (OBJECT, CHAIN) - chainKeyAt - even
+                    // though the record belongs to one object, because that is
+                    // the vocabulary everything that WRITES the set uses (the
+                    // panel, the strip). Compared as bare ids, hiding chain A
+                    // of one object hid chain A of the other.
+                    if (hasChains && !st.chains.has(this.chainKeyAt(first[0] + local))) continue;
+                    if (hasPos && !st.positions.has(local)) continue;
+                    add(local);
+                }
+            }
+            if (out.size) return out;
+            // nothing asked for: everything, or nothing, per the mode
+            return explicit ? out : null;
+        }
+
+        /**
+         * THE LIVE MASK, COMPOSED FROM THE OBJECTS' OWN RECORDS.
+         *
+         * One composer for every path that needs one: a selection made in the
+         * strip, a box drawn on the PAE matrix, an eye switched in Multi, a
+         * side chain appended, a frame step. The records are the truth and the
+         * mask is derived; the mask means nothing except against the array it
+         * was built for, which is why rebuilding it is the answer rather than
+         * translating the old one.
+         */
         _composeAndApplyMask(skip3DRender = false) {
             const n = this.coords ? this.coords.length : 0;
             if (n === 0) {
@@ -1407,211 +1865,67 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
                 return;
             }
+            const ms = this.multiState;
+            const merged = !!(ms && ms.enabled && ms.sourceNames);
+            const names = merged ? ms.sourceNames
+                : (this.currentObjectName ? [this.currentObjectName] : []);
+            const offsets = merged ? ms.sourceOffsets : [0];
+            const base = this._baseCount();
 
-            // (1) Position/Chain contribution
-            // Always compute position selection - it works together with PAE via UNION
-            let allowedChains;
-            if (this.visibilityModel.chains && this.visibilityModel.chains.size > 0) {
-                allowedChains = this.visibilityModel.chains;
-            } else {
-                // All chains
-                allowedChains = new Set(this.chains);
-            }
-
-            let seqPositions = null;
-            if ((this.visibilityModel.positions && this.visibilityModel.positions.size > 0) ||
-                (this.visibilityModel.chains && this.visibilityModel.chains.size > 0)) {
-                seqPositions = new Set();
-
-                // In overlay mode, selections are based on frame[0] indices but need to be expanded
-                // to include corresponding positions from all frames in the merged array
-                if (this.overlayState.enabled && this.overlayState.frameIdMap && this.visibilityModel.positions.size > 0) {
-                    // Build frame offset map: frameIdx -> starting index in merged array
-                    const frameOffsets = new Map();
-                    const frameSizes = new Map();
-                    let currentFrame = -1;
-                    let frameStart = 0;
-
-                    for (let i = 0; i < this.overlayState.frameIdMap.length; i++) {
-                        const frameIdx = this.overlayState.frameIdMap[i];
-                        if (frameIdx !== currentFrame) {
-                            if (currentFrame >= 0) {
-                                frameSizes.set(currentFrame, i - frameStart);
-                            }
-                            frameOffsets.set(frameIdx, i);
-                            frameStart = i;
-                            currentFrame = frameIdx;
-                        }
-                    }
-                    if (currentFrame >= 0) {
-                        frameSizes.set(currentFrame, this.overlayState.frameIdMap.length - frameStart);
-                    }
-
-                    // Expand selections: for each selected position (based on frame 0),
-                    // find corresponding positions in all frames
-                    const frame0Size = frameSizes.get(0) || 0;
-                    for (const selectedPos of this.visibilityModel.positions) {
-                        // Only process positions that exist in frame 0
-                        if (selectedPos >= frame0Size) continue;
-
-                        // Add this position from all frames
-                        for (const [frameIdx, offset] of frameOffsets.entries()) {
-                            const frameSize = frameSizes.get(frameIdx) || 0;
-                            // Only add if this position exists in this frame
-                            if (selectedPos < frameSize) {
-                                const mergedIdx = offset + selectedPos;
-                                const ch = this.chains[mergedIdx];
-                                if (allowedChains.has(ch)) {
-                                    seqPositions.add(mergedIdx);
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // Normal mode or overlay with no position selection
-                    for (let i = 0; i < n; i++) {
-                        const ch = this.chains[i];
-                        if (!allowedChains.has(ch)) continue;
-                        // If positions are explicitly selected, check if this position is in the set
-                        // If no positions selected but chains are, include all positions in allowed chains
-                        if (this.visibilityModel.positions.size === 0 || this.visibilityModel.positions.has(i)) {
-                            seqPositions.add(i);
-                        }
-                    }
+            const vis = new Set();
+            let everything = true;
+            for (let s = 0; s < names.length; s++) {
+                const off = offsets[s];
+                const end = (s + 1 < offsets.length) ? offsets[s + 1] : base;
+                const own = this._visibleForObject(names[s], off, end);
+                if (own === null) {
+                    for (let i = off; i < end; i++) vis.add(i);
+                    continue;
                 }
+                everything = false;
+                for (const i of own) vis.add(i);
             }
+            // ...AND THE SIDE-CHAIN ATOMS, which are positions too and are in
+            // nobody's record: they are not residues of any object. Left out,
+            // every side chain in the picture went out the moment the array
+            // was rebuilt - including on objects nobody had touched.
+            this.withSidechainAtoms(vis, true);
 
-            // (2) PAE contribution: expand i/j ranges into position indices
-            // PAE boxes are in PAE position space (0, 1, 2, ... for PAE matrix)
-            // If PAE data exists, it maps PAE positions to position indices
-            // For now, assume PAE positions directly map to position indices (0, 1, 2, ...)
-            // PAE may only cover subset of positions (e.g., only polymer)
-            // Handled by mapping PAE positions directly to position indices
-            let paePositions = null;
-            if (this.visibilityModel.paeBoxes && this.visibilityModel.paeBoxes.length > 0) {
-                paePositions = new Set();
-
-                // In overlay mode, PAE selections should expand across all frames
-                // (same logic as sequence selections)
-                if (this.overlayState.enabled && this.overlayState.frameIdMap) {
-                    // Build frame offset map
-                    const frameOffsets = new Map();
-                    const frameSizes = new Map();
-                    let currentFrame = -1;
-                    let frameStart = 0;
-
-                    for (let i = 0; i < this.overlayState.frameIdMap.length; i++) {
-                        const frameIdx = this.overlayState.frameIdMap[i];
-                        if (frameIdx !== currentFrame) {
-                            if (currentFrame >= 0) {
-                                frameSizes.set(currentFrame, i - frameStart);
-                            }
-                            frameOffsets.set(frameIdx, i);
-                            frameStart = i;
-                            currentFrame = frameIdx;
-                        }
-                    }
-                    if (currentFrame >= 0) {
-                        frameSizes.set(currentFrame, this.overlayState.frameIdMap.length - frameStart);
-                    }
-
-                    const frame0Size = frameSizes.get(0) || 0;
-                    for (const box of this.visibilityModel.paeBoxes) {
-                        const i0 = Math.max(0, Math.min(frame0Size - 1, Math.min(box.i_start, box.i_end)));
-                        const i1 = Math.max(0, Math.min(frame0Size - 1, Math.max(box.i_start, box.i_end)));
-                        const j0 = Math.max(0, Math.min(frame0Size - 1, Math.min(box.j_start, box.j_end)));
-                        const j1 = Math.max(0, Math.min(frame0Size - 1, Math.max(box.j_start, box.j_end)));
-
-                        // Expand i and j ranges across all frames
-                        for (let r = i0; r <= i1; r++) {
-                            for (const [frameIdx, offset] of frameOffsets.entries()) {
-                                const frameSize = frameSizes.get(frameIdx) || 0;
-                                if (r < frameSize) {
-                                    paePositions.add(offset + r);
-                                }
-                            }
-                        }
-                        for (let r = j0; r <= j1; r++) {
-                            for (const [frameIdx, offset] of frameOffsets.entries()) {
-                                const frameSize = frameSizes.get(frameIdx) || 0;
-                                if (r < frameSize) {
-                                    paePositions.add(offset + r);
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // Normal mode
-                    for (const box of this.visibilityModel.paeBoxes) {
-                        const i0 = Math.max(0, Math.min(n - 1, Math.min(box.i_start, box.i_end)));
-                        const i1 = Math.max(0, Math.min(n - 1, Math.max(box.i_start, box.i_end)));
-                        const j0 = Math.max(0, Math.min(n - 1, Math.min(box.j_start, box.j_end)));
-                        const j1 = Math.max(0, Math.min(n - 1, Math.max(box.j_start, box.j_end)));
-                        // PAE positions map directly to position indices (one position per entry in frame data)
-                        for (let r = i0; r <= i1; r++) {
-                            if (r < n) paePositions.add(r);
-                        }
-                        for (let r = j0; r <= j1; r++) {
-                            if (r < n) paePositions.add(r);
-                        }
-                    }
-                }
-            }
-
-            // (3) Combine via UNION
-            let combined = null;
-            if (seqPositions && paePositions) {
-                combined = new Set(seqPositions);
-                for (const a of paePositions) combined.add(a);
-            } else {
-                combined = seqPositions || paePositions;
-            }
-
-            // (4) Apply based on selection mode
-            const mode = this.visibilityModel.visibilityMode || 'default';
             const oldVisiblePositions = this.visiblePositions;
-            if (combined && combined.size > 0) {
-                // We have some selection - use it
-                this.visiblePositions = combined;
-            } else {
-                // No selection computed
-                if (mode === 'default') {
-                    // Default mode: empty selection means "show all"
-                    this.visiblePositions = null;
-                } else {
-                    // Explicit mode: empty selection means "show nothing"
-                    this.visiblePositions = new Set(); // Empty set = nothing visible
-                }
-            }
+            // NULL IS "EVERYTHING", and it is worth reaching: every drawing
+            // path tests the mask per position, so a mask naming every
+            // position is a hash lookup per position for an answer that is
+            // always yes.
+            this.visiblePositions = (everything || vis.size >= n) ? null : vis;
 
-            // Clear shadow cache when visibility changes (selection/deselection)
-            // Visibility changes affect which segments are visible, so shadows need recalculation
-            // Compare by reference and size (simple check - if different objects or different sizes, changed)
+            // Clear shadow cache when visibility changes: which segments are
+            // drawn decides which cast.
+            // ...and NOT-A-MASK is null OR undefined: a renderer that has
+            // never composed one has neither, and `=== null` alone read the
+            // size of undefined.
             const visibilityChanged = (
-                oldVisiblePositions !== this.visiblePositions &&
-                (oldVisiblePositions === null || this.visiblePositions === null ||
-                    oldVisiblePositions.size !== this.visiblePositions.size)
+                oldVisiblePositions !== this.visiblePositions
+                && (!oldVisiblePositions || !this.visiblePositions
+                    || oldVisiblePositions.size !== this.visiblePositions.size)
             );
             if (visibilityChanged && !skip3DRender) {
                 this._invalidateShadowCache();
-                this.lastShadowRotationMatrix = null; // Force recalculation
+                this.lastShadowRotationMatrix = null;
             }
+            if (!skip3DRender) this.render('_composeAndApplyMask');
 
-            // Only render 3D viewer if not skipping (e.g., during PAE drag)
-            if (!skip3DRender) {
-                this.render('_composeAndApplyMask');
-            }
-
-            // Always dispatch event to notify UI of selection change (sequence/PAE viewers need this)
+            // Always dispatch: the sequence strip and the PAE panel draw their
+            // own version of the selection and have no other way to hear.
             if (typeof document !== 'undefined') {
                 try {
                     document.dispatchEvent(new CustomEvent('py2dmol-visibility-change', {
                         detail: {
-                            hasSelection: this.visiblePositions !== null && this.visiblePositions.size > 0,
+                            hasSelection: this.visiblePositions !== null
+                                && this.visiblePositions.size > 0,
                             visibilityModel: {
                                 positions: Array.from(this.visibilityModel.positions),
                                 chains: Array.from(this.visibilityModel.chains),
-                                paeBoxes: this.visibilityModel.paeBoxes.map(b => ({ ...b })),
+                                paeBoxes: this.visibilityModel.paeBoxes.map((b) => ({ ...b })),
                                 visibilityMode: this.visibilityModel.visibilityMode
                             }
                         }
@@ -1621,6 +1935,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
         }
+
         // [END PATCH]
 
         // --- PAE / Visibility ---
@@ -1632,7 +1947,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.scatterRenderer = scatterRenderer;
         }
 
-        // [PATCH] Re-routed setResidueVisibility to use the new unified selection model
+        // Re-routed setResidueVisibility to use the new unified selection model
         setResidueVisibility(selection) {
             if (selection === null) {
                 // Clear only PAE contribution; leave sequence/chain selections intact
@@ -1658,7 +1973,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this._hoverIdx = i;
                 if (i < 0) { window.SEQ.setHoveredResidue(null); return; }
                 const num = this.residueNumbers && this.residueNumbers[i];
+                const own = this.ownerOf ? this.ownerOf(i) : null;
                 window.SEQ.setHoveredResidue({
+                    // ...and WHICH OBJECT, when several are drawn: chain A
+                    // residue 39 exists in both, and the readout was the same
+                    // three words for two different molecules.
+                    object: own ? own.name : this.currentObjectName,
                     chain: (this.chains && this.chains[i]) || '?',
                     resName: (this.positionNames && this.positionNames[i]) || 'UNK',
                     resSeq: (num === undefined || num === null) ? i : num,
@@ -1672,11 +1992,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             });
 
             this.canvas.addEventListener('mousedown', (e) => {
-                // Only start dragging if we clicked directly on the canvas or the highlight overlay
-                // (the overlay has pointer-events: none, but we check for it just in case)
-                const isHighlightOverlay = e.target.id === 'highlightOverlay';
-                if (e.target !== this.canvas && !isHighlightOverlay) return;
-
+                if (e.target !== this.canvas) return;
 
                 // PAN instead of rotate on the middle button, or Cmd/Ctrl with
                 // the left - the same two gestures PyMOL uses. preventDefault
@@ -1694,7 +2010,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.lastDragX = e.clientX;
                 this.lastDragY = e.clientY;
                 this.lastDragTime = performance.now();
-                if (this.autoRotate) this._setAutoRotate(false);
+                // A DRAG STOPS THE SPIN - unless the spin is already held.
+                // While the Capture panel is open the turn is paused so the
+                // view can be aimed before recording; a drag there is the
+                // aiming, and switching Rotate off would take the Turn button
+                // off the panel (and the panel with it) at the moment it was
+                // about to be pressed. Reported as: adjusting the view with
+                // Capture up disabled Rotate.
+                if (this.autoRotate && !this._uiPaused) this._setAutoRotate(false);
 
                 // Add temporary window listeners for drag outside canvas
                 const handleMove = (e) => {
@@ -1814,13 +2137,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (e.target !== this.canvas) return;
                 const i = this.pickResidueAt(e.clientX, e.clientY);
                 if (i < 0 || !this.chains) return;
-                const chain = this.chains[i];
+                const chain = this.chainKeyAt(i);
                 if (chain === undefined) return;
                 // the two shift-clicks that precede this already toggled residue
                 // i; the chain union covers it either way
                 const next = e.shiftKey ? new Set(this.residueSelection || []) : new Set();
+                // THE WHOLE CHAIN OF THAT OBJECT, clip or no clip: the pick
+                // must land on something visible, but widening it is a bulk
+                // operation on a NAME - and by bare id that name was chain A
+                // of every object on screen (chainKeyAt).
                 for (let k = 0; k < this.chains.length; k++) {
-                    if (this.chains[k] === chain) next.add(k);
+                    if (this.chainKeyAt(k) === chain) next.add(k);
                 }
                 this.setResidueSelection(next);
             });
@@ -1916,8 +2243,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 clearTimeout(this.zoomTimeout);
                 this.zoomTimeout = setTimeout(() => {
                     this.isZooming = false;
-                    // gesture over: bring the highlight overlay back in sync
-                    if (window.SEQ && window.SEQ.drawHighlights) window.SEQ.drawHighlights();
                 }, 100);
             }, { passive: false });
 
@@ -1935,7 +2260,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     this.lastDragX = e.touches[0].clientX;
                     this.lastDragY = e.touches[0].clientY;
                     this.lastDragTime = performance.now();
-                    if (this.autoRotate) this._setAutoRotate(false);
+                    // A DRAG STOPS THE SPIN - unless the spin is already held.
+                // While the Capture panel is open the turn is paused so the
+                // view can be aimed before recording; a drag there is the
+                // aiming, and switching Rotate off would take the Turn button
+                // off the panel (and the panel with it) at the moment it was
+                // about to be pressed. Reported as: adjusting the view with
+                // Capture up disabled Rotate.
+                if (this.autoRotate && !this._uiPaused) this._setAutoRotate(false);
                 } else if (e.touches.length === 2) {
                     // Start of a pinch-zoom
                     this.isDragging = false; // Stop dragging
@@ -2158,7 +2490,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     e.stopPropagation();
                     // shift-click skips the panel and writes a PNG at whatever
                     // DPI was last used, for when the settings are already right
-                    if (e.shiftKey) this.saveImage(this._saveOpts || { dpi: 300 });
+                    if (e.shiftKey) this.saveImage(this.captureOpts());
                     else this._toggleSaveImagePanel(this.saveImageButton);
                 });
             }
@@ -2199,9 +2531,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (this.lineWidthSlider) {
                 this.lineWidthSlider.addEventListener('input', (e) => {
                     this.lineWidth = parseFloat(e.target.value);
-                    // the user has taken width over; style switches stop
-                    // imposing their preset on it (see _applyStyleDefaults)
-                    this._lineWidthUserSet = true;
+                    // THE USER, NOT THE APP. A width the user dragged is
+                    // remembered against the style it was dragged in, and a
+                    // style switch restores that style's own (see
+                    // _applyLookDefaults) - so this must only record an actual
+                    // gesture.
+                    //
+                    // Restoring saved state sets the slider and dispatches a
+                    // synthetic 'input' to push the value through. Recording
+                    // that as a drag would make every load look like a choice,
+                    // and the style's profile width would never apply again.
+                    //
+                    // isTrusted is false for any event dispatched from script
+                    // and true only for one the browser raised from real input,
+                    // which is exactly the distinction wanted here.
+                    if (e.isTrusted) {
+                        if (!this._widthByStyle) this._widthByStyle = {};
+                        this._widthByStyle[this.style] = this.lineWidth;
+                    }
                     if (!this.isPlaying) {
                         this.render('updateUIControls: lineWidthSlider');
                     }
@@ -2237,7 +2584,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     const normalizedValue = parseFloat(e.target.value);
 
                     // Get object size using standard deviation from center
-                    const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
+                    const object = this.drawnStats();
                     let baseSize = DEFAULT_SIZE;
                     if (object && object.stdDev > 0) {
                         // Use standard deviation * 3.0 as the base size measure
@@ -2381,6 +2728,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         // Helper method to invalidate segment cache
         _invalidateSegmentCache() {
             this.cachedSegmentIndices = null;
+            this.cachedSegmentIndicesCoords = null;
             this.cachedSegmentIndicesFrame = -1;
             this.cachedSegmentIndicesObjectName = null;
             // Everything the cartoon path derives from the unrotated coordinates
@@ -2415,7 +2763,136 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * the dropdown, the panel row filter, the delegation check - carried a
          * special case reading "...or richardson" to undo the mistake.
          */
-        setStyle(style) {
+        /**
+         * @param {string} style 'tube' or 'cartoon'
+         * @param {boolean} [quiet] set the style WITHOUT drawing. For a caller
+         *   that is about to draw anyway - _switchToObject restores an object's
+         *   style before its frames are loaded, so the render here would build
+         *   the picture out of the PREVIOUS object's coordinates and throw it
+         *   away a moment later. Measured on a ribosome-to-peptide switch:
+         *   1,150-1,550 ms of a 2 s switch, all of it wasted.
+         */
+        /**
+         * EVERYTHING A STYLE OWNS, in one list.
+         *
+         * A style switch re-asserts every one of these from LOOK_DEFAULTS
+         * (see _applyLookDefaults), which is right the first time a style is
+         * entered and wrong every time after: the settings are single fields
+         * on the renderer, so tube's defaults land on top of the cartoon
+         * numbers and the cartoon's land back on top of tube's. With one
+         * object on screen that only cost you your own adjustments. With the
+         * style per object it became visible as objects interfering with each
+         * other - select a tube object and the cartoon object beside it was
+         * suddenly drawn with tube's thickness and outline.
+         *
+         * So each style keeps its own set, remembered when you leave it and
+         * put back when you return. `_widthByStyle` did exactly this for the
+         * width slider alone, for the same reason ("a tube radius arrived in
+         * cartoon as a ribbon width"); this is that rule for the rest of them.
+         *
+         * A field added to the Style panel belongs here, or it will be the one
+         * that leaks between styles next.
+         */
+        static get STYLE_SETTINGS() {
+            return ['lineWidth', 'cartoonThickness', 'cartoonOutlineTint',
+                'cartoonHighlight', 'cartoonSheetFlat', 'cartoonPencil',
+                'cartoonSmooth', 'relativeOutlineWidth', 'outlineMode',
+                'cartoonArrows', 'cartoonDetail', 'cartoonFade', 'cartoonShade',
+                'cartoonRichardson', 'cartoonBasePlates', 'cartoonStyle',
+                'cartoonGpuRibbonThick', 'cartoonGpuHelixTh',
+                'cartoonHelixThRel', 'naSmooth'];
+            // NOT stylePreset, deliberately, and setStyle says why where it
+            // switches to tube: "tube has no preset, and clobbering it lost
+            // which cartoon preset to come back to". Listed here it became
+            // style-owned again through the back door - the tube's profile
+            // captured whatever preset happened to be current and handed it
+            // back on the way out, so a picture holding both styles would
+            // drop into Ribbon on its own.
+        }
+
+        /**
+         * INSTALL A STYLE'S SETTINGS FOR THE DURATION OF ONE PASS, and hand
+         * back what was there so the caller can put it straight.
+         *
+         * Field assignment and nothing else: no cache invalidation and no
+         * panel sync. This runs TWICE PER FRAME on a mixed picture, where
+         * dropping the segment cache would rebuild it sixty times a second and
+         * syncing the panel would have the controls flickering between two
+         * styles. What the fields affect is the geometry, and both mesh keys
+         * already carry every one of them that does.
+         */
+        _installStyleProfile(style) {
+            const keys = this.constructor.STYLE_SETTINGS;
+            const prev = {};
+            for (const k of keys) prev[k] = this[k];
+            const held = this._styleSettings && this._styleSettings[style];
+            if (held) {
+                for (const k of keys) if (held[k] !== undefined) this[k] = held[k];
+            } else {
+                // NEVER SELECTED THIS STYLE IN THIS SESSION: its profile is its
+                // defaults - the same ones setStyle would apply, arrived at the
+                // same way, so that a style first met inside a mixed frame and
+                // a style first chosen from the panel come out identical.
+                // Cartoon's defaults are the PRESET's (a preset is a whole
+                // look); tube has none, and no Richardson with it.
+                const wasQuiet = this._quietStyleDefaults;
+                this._quietStyleDefaults = true;
+                try {
+                    if (style === 'cartoon') {
+                        const preset = this.stylePreset || 'richardson';
+                        this.cartoonRichardson = (preset === 'richardson');
+                        this._applyLookDefaults(preset);
+                    } else {
+                        this.cartoonRichardson = false;
+                        this._applyLookDefaults('tube');
+                    }
+                } finally { this._quietStyleDefaults = wasQuiet; }
+                this._keepStyleSettings(style);
+            }
+            return prev;
+        }
+
+        /** ...and put back what the pass found. */
+        _restoreStyleProfile(prev) {
+            if (!prev) return;
+            for (const k of this.constructor.STYLE_SETTINGS) this[k] = prev[k];
+        }
+
+        /** Remember what this style is set to. */
+        _keepStyleSettings(style) {
+            const keys = this.constructor.STYLE_SETTINGS;
+            const out = {};
+            for (const k of keys) out[k] = this[k];
+            (this._styleSettings || (this._styleSettings = {}))[style || this.style] = out;
+        }
+
+        /**
+         * Put a style's settings back. Returns false when this style has never
+         * been visited, and then the caller applies its defaults instead.
+         */
+        _recallStyleSettings(style) {
+            const held = this._styleSettings && this._styleSettings[style];
+            if (!held) return false;
+            for (const k of this.constructor.STYLE_SETTINGS) {
+                if (held[k] !== undefined) this[k] = held[k];
+            }
+            if (this._invalidateShadowCache) this._invalidateShadowCache();
+            if (this._invalidateSegmentCache) this._invalidateSegmentCache();
+            if (this._syncStyleControls) this._syncStyleControls();
+            return true;
+        }
+
+        setStyle(style, quiet) {
+            // QUIET IS A FLAG ON THE RENDERER, not a parameter threaded down.
+            // The draw this has to stop is not the one at the end of this
+            // method: setPreset draws too, and so does anything else the
+            // switch reaches. Suppressing only the last one left the cost
+            // exactly where it was (measured: 1,143 ms of a 1,144 ms call).
+            if (quiet) {
+                const prev = this._quietStyle;
+                this._quietStyle = true;
+                try { return this.setStyle(style); } finally { this._quietStyle = prev; }
+            }
             if (style !== 'tube' && style !== 'cartoon') {
                 console.warn(`Invalid style "${style}" - expected "tube" or "cartoon".`);
                 return;
@@ -2425,11 +2902,68 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 return;
             }
             if (this.style === style) return;
+            // WILL THE CARTOON EVEN FIT?
+            //
+            // The cartoon build materialises prims, one object per face and an
+            // edge table all at once, and that costs about 20 kB PER POSITION -
+            // measured 339 MB for 4UG0's 17,544. A capsid is 313,236 positions,
+            // so it would ask for 6.3 GB on top of the ~1.9 GB the structure
+            // already occupies, against a 4.2 GB heap. It does not fail
+            // gracefully: the tab dies, and a structure that took sixteen
+            // seconds to load dies with it.
+            //
+            // So the switch is refused before anything is allocated. This is a
+            // ceiling, not a fix - see GPU3D_NOTES - and cartoonForce bypasses
+            // it for anyone who wants to find their own limit.
+            if (style === 'cartoon' && !this.cartoonForce) {
+                const fit = this._cartoonWouldFit();
+                if (!fit.ok) {
+                    console.warn('py2dmol: staying in tube style - the cartoon '
+                        + 'build needs about ' + fit.needMB + ' MB for '
+                        + fit.positions + ' positions and only ' + fit.freeMB
+                        + ' MB of heap is left. Set renderer.cartoonForce = true '
+                        + 'to try anyway.');
+                    if (this.onStyleRefused) this.onStyleRefused(fit);
+                    if (this.styleSelect && this.styleSelect.value !== this.style) {
+                        this.styleSelect.value = this.style;
+                    }
+                    return;
+                }
+            }
+            // WHAT THE STYLE BEING LEFT IS SET TO, before anything overwrites
+            // it - and what the one being entered was left at, after.
+            this._keepStyleSettings(this.style);
             this.style = style;
+            // ...AND THE OBJECT BEING EDITED IS DRAWN IN IT. The style has
+            // always been per object; with several on screen at once it has to
+            // be recorded the moment it is picked rather than when the object
+            // is switched away from, because the painters read it every frame.
+            //
+            // A QUIET call is the restore path putting an object's own style
+            // back (see _switchToObject), so it says nothing about anyone
+            // having CHOSEN: only a call from the panel marks that, and what
+            // it marks is the size rule keeping its hands off this object.
+            if (this.currentObjectName && this.objectsData
+                    && this.objectsData[this.currentObjectName]) {
+                const cur = this.objectsData[this.currentObjectName];
+                cur.style = style;
+                if (cur.viewerState) cur.viewerState.style = style;
+                if (!this._quietStyle) cur.styleChosen = true;
+            }
             // The build-up is cartoon-only, so leaving cartoon leaves the mode
             // too - otherwise the save button goes on offering to record a
             // drawing this style cannot make.
             if (style !== 'cartoon' && this.drawMode) this.setDrawMode(false);
+            // ...AND A STYLE YOU HAVE BEEN IN BEFORE COMES BACK AS YOU LEFT IT.
+            // Only a style's FIRST visit takes the defaults below.
+            if (this._recallStyleSettings(style)) {
+                if (this.styleSelect && this.styleSelect.value !== style) {
+                    this.styleSelect.value = style;
+                }
+                if (this._syncStylePanel) this._syncStylePanel();
+                if (!quiet) this.render('setStyle');
+                return;
+            }
             if (style === 'cartoon') {
                 // Entering the cartoon path lands on its default preset, which
                 // is what actually decides the look.
@@ -2440,13 +2974,65 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // stylePreset is deliberately NOT touched: tube has no preset, and
             // clobbering it lost which cartoon preset to come back to, so
             // Cartoon -> Tube -> Cartoon landed somewhere else than it left.
-            this._applyPresetBackground('ribbon');   // tube is drawn on paper
-            this._applyStyleDefaults('tube');
+            this._applyLookBackground('tube');       // tube is drawn on paper
+            this._applyLookDefaults('tube');
             if (this.styleSelect && this.styleSelect.value !== style) {
                 this.styleSelect.value = style;
             }
             if (this._syncStylePanel) this._syncStylePanel();
-            this.render('setStyle');
+            if (!quiet) this.render('setStyle');
+        }
+
+        /**
+         * CAN A CARTOON BUILD FOR THIS STRUCTURE FIT IN THE HEAP THAT IS LEFT?
+         *
+         * THE FIGURE IS THE BUILD'S PEAK, not what it keeps. Those are very
+         * different numbers and the distinction matters, because it is the
+         * peak that kills the tab:
+         *
+         *   retained after a build      163 bytes per position
+         *   peak during the build    ~14,000 bytes per position
+         *
+         * The build holds the captured 2D primitives, a face object per quad,
+         * the per-piece rails and the normals all at once, and only the mesh
+         * survives. An earlier version of this comment quoted 20 kB as the
+         * RETAINED cost, measured by watching the heap after a build without
+         * forcing a collection first - most of what it saw was garbage, and
+         * `window.gc` is a no-op unless Chrome is started with
+         * --js-flags=--expose-gc. Measure live data only after a real
+         * collection.
+         *
+         * 14 kB/position is the large-structure figure (135,780 positions,
+         * peak 2.0 GB). Small structures cost more per position because the
+         * build has fixed overheads; erring high is the right way to err.
+         *
+         * performance.memory is Chrome-only and non-standard. Where it is
+         * missing there is no way to ask how much room is left, so the test
+         * falls back to a flat position count - chosen as what fits in a 4 GB
+         * heap with a typical structure already in it.
+         */
+        /**
+         * @param {number} [nPositions] count to ask about, when it is not the
+         *   one currently loaded. _switchToObject restores an object's style
+         *   BEFORE its frames are loaded - this.coords is still the previous
+         *   object's there, so a small structure following a huge one was
+         *   refused its own cartoon and came back as a tube.
+         */
+        _cartoonWouldFit(nPositions) {
+            const positions = (typeof nPositions === 'number') ? nPositions
+                : ((this.coords && this.coords.length) || 0);
+            const needMB = Math.round(positions * 14000 / 1048576);
+            const m = (typeof performance !== 'undefined') && performance.memory;
+            if (!m || !m.jsHeapSizeLimit) {
+                const CAP = 120000;
+                return { ok: positions <= CAP, positions, needMB, freeMB: -1 };
+            }
+            const freeMB = Math.round(
+                (m.jsHeapSizeLimit - m.usedJSHeapSize) / 1048576);
+            // 0.8 of what is left: the build's peak is higher than its
+            // residue, and a tab that survives the allocation only to die on
+            // the next one has not been saved from anything.
+            return { ok: needMB < freeMB * 0.8, positions, needMB, freeMB };
         }
 
         /**
@@ -2456,12 +3042,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          *
          * This is where richardson lives. The preset owns three things: the
          * geometry profile (cartoonRichardson), the slider values
-         * (STYLE_DEFAULTS), and the page background. A preset always implies
+         * (LOOK_DEFAULTS), and the page background. A preset always implies
          * the cartoon style, so choosing one switches to it.
          *
-         * 'ribbon' is the plain cartoon - smooth off, no slab thickness, ink on
-         * - which IS STYLE_DEFAULTS.cartoon; it exists as a named preset so
-         * there is a way back to plain cartoon after richardson or 3d.
+         * 'ribbon' is the plain cartoon - smooth off, no slab thickness, ink
+         * on - and it is LOOK_DEFAULTS.ribbon, under its own name. It exists
+         * as a named preset so there is a way back to plain cartoon after
+         * richardson or 3d.
          */
         setPreset(name) {
             if (name !== 'richardson' && name !== 'ribbon' && name !== '3d') {
@@ -2475,8 +3062,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.style = 'cartoon';
             this.stylePreset = name;
             this.cartoonRichardson = (name === 'richardson');
-            this._applyStyleDefaults(name === 'ribbon' ? 'cartoon' : name);
-            this._applyPresetBackground(name);
+            this._applyLookDefaults(name);
+            this._applyLookBackground(name);
             if (this.styleSelect && this.styleSelect.value !== 'cartoon') {
                 this.styleSelect.value = 'cartoon';
             }
@@ -2485,14 +3072,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
-         * A preset carries its page background: '3d' is solid shaded geometry
-         * and is meant to be seen on black, the other two are drawings on
-         * paper. Applied as part of the preset rather than left to the user,
-         * for the same reason the sliders are - a preset is a whole look.
-         * Still just a starting point: the Dark toggle stays live afterwards.
+         * A LOOK carries its page background: '3d' is solid shaded geometry
+         * and is meant to be seen on black; tube, ribbon and richardson are
+         * drawings on paper. Applied as part of the look rather than left to
+         * the user, for the same reason the sliders are - a look is a whole
+         * look. Still just a starting point: the Dark toggle stays live
+         * afterwards.
          */
-        _applyPresetBackground(name) {
-            const want = (name === '3d') ? '#000000' : '#ffffff';
+        _applyLookBackground(look) {
+            const want = (look === '3d') ? '#000000' : '#ffffff';
             if (this.backgroundColor === want) return;
             this.backgroundColor = want;
             const dark = this.containerElement
@@ -2503,16 +3091,40 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         /**
          * Set every preset-controlled value to the given style's defaults and
-         * sync the sliders. Values come from py2dmolCartoon.STYLE_DEFAULTS so
+         * sync the sliders. Values come from py2dmolCartoon.LOOK_DEFAULTS so
          * the renderer and the UI cannot disagree about what a style means.
          */
-        _applyStyleDefaults(style) {
-            const table = window.py2dmolCartoon && window.py2dmolCartoon.STYLE_DEFAULTS;
-            const d = table && (table[style] || table.cartoon);
+        /**
+         * SET EVERY CONTROL TO WHAT ONE LOOK ASKS FOR.
+         *
+         * A LOOK is the `tube` STYLE or one of the cartoon style's presets -
+         * `richardson`, `ribbon`, `3d` - and those four names are the table's
+         * keys (viewer-cartoon.js: LOOK_DEFAULTS). It used to be handed a
+         * STYLE by some callers and a PRESET by others, with the plain-cartoon
+         * entry keyed 'cartoon' so that both spellings resolved to something:
+         * 'ribbon' had to be translated on the way in, and anything passing
+         * the style name 'cartoon' got the ribbon look silently, whatever
+         * preset was selected.
+         */
+        _applyLookDefaults(look) {
+            const table = window.py2dmolCartoon && window.py2dmolCartoon.LOOK_DEFAULTS;
+            const d = table && table[look];
             if (!d) return;
-            // Width is shared with ribbon, so it follows the style only until
-            // the user takes it over (see _lineWidthUserSet).
-            if (!this._lineWidthUserSet) this.lineWidth = d.width;
+            // WIDTH: this style's own, if it was ever set by hand; the
+            // profile's otherwise. The latch alone made it sticky ACROSS
+            // styles, which carried a tube radius into a cartoon ribbon - see
+            // _widthByStyle. Keyed on the current style, which setStyle has
+            // already assigned by the time this runs, and not on the argument:
+            // that is a PRESET name (richardson, 3d) on half the call sites.
+            // PER STYLE, because the slider is one control and not one
+            // quantity: in tube it is the radius of the tube, in cartoon it
+            // scales the ribbon. This was a single "the user has taken it
+            // over" flag, and once set the width stopped following ANY switch -
+            // which is how a tube radius arrived in cartoon as a ribbon width.
+            // A style that has never had its width dragged takes the profile's;
+            // one that has takes its own back.
+            const mine = this._widthByStyle && this._widthByStyle[this.style];
+            this.lineWidth = (typeof mine === 'number') ? mine : d.width;
             this.cartoonThickness = d.thickness;
             this.cartoonOutlineTint = d.outlineTint;
             this.cartoonHighlight = d.highlight;
@@ -2534,6 +3146,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (d.detail !== undefined) this.cartoonDetail = d.detail;
             if (d.fade !== undefined) this.cartoonFade = d.fade;
             if (d.shade !== undefined) this.cartoonShade = d.shade;
+            // ...UNLESS THIS IS A PASS OF A MIXED FRAME, which installs a
+            // style's profile for the length of one draw: there is nothing to
+            // invalidate (the mesh keys carry these fields) and the panel must
+            // go on describing the object you selected, not whichever half of
+            // the picture is being painted.
+            if (this._quietStyleDefaults) return;
             if (this._invalidateShadowCache) this._invalidateShadowCache();
             if (this._invalidateSegmentCache) this._invalidateSegmentCache();
             if (this._syncStyleControls) this._syncStyleControls();
@@ -2547,15 +3165,44 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         // Switch to a different object (handles save/restore of selection state)
         _switchToObject(newObjectName) {
+            // ONE DRAW PER SWITCH, AND NOT UNTIL THE NEW OBJECT IS IN.
+            //
+            // A switch is followed by half a dozen things that each ask for a
+            // render - the visibility mask, the scatter, the sequence view,
+            // and app.js re-running the Ortho slider - and every one of them
+            // fires while this.coords still holds the PREVIOUS object: the
+            // frames are loaded by the caller, after this returns. Cheap while
+            // both objects were drawn the same way; ruinous once the style
+            // travels with the object, because switching to a small cartoon
+            // meant building a full cartoon of the ribosome still in memory
+            // and throwing it away. Measured on 4UG0 -> 6MRR: one
+            // render('orthoSlider') of 1,146 ms with 17,550 positions loaded,
+            // for a picture of 68.
+            //
+            // Held until the next frame, by which time the caller has loaded
+            // the frames, and then drawn ONCE.
+            this._switchQuiet = true;
+            if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(() => {
+                    this._switchQuiet = false;
+                    this.render('object switch settled');
+                });
+            } else {
+                this._switchQuiet = false;
+            }
+            // THE MASK IS NOT ONE OBJECT'S WHILE SEVERAL ARE DRAWN. It covers
+            // everything on screen, in merged indices, so filing it under the
+            // object being switched away from would write another object's
+            // hidden residues into its record - and restoring the new object's
+            // copy below would hide most of the picture. Each object's share is
+            // recovered from the live mask when the merge is rebuilt; see
+            // _maskForObject.
+            const mergedMask = (this.multiState && this.multiState.enabled)
+                || this._mergeWanted();
             // Save current object's selection state and viewer state
             if (this.currentObjectName && this.currentObjectName !== newObjectName && this.objectsData[this.currentObjectName]) {
                 const obj = this.objectsData[this.currentObjectName];
-                obj.visibilityState = {
-                    positions: new Set(this.visibilityModel.positions),
-                    chains: new Set(this.visibilityModel.chains),
-                    paeBoxes: this.visibilityModel.paeBoxes.map(box => ({ ...box })),
-                    visibilityMode: this.visibilityModel.visibilityMode
-                };
+                this._saveVisibilityToObjects();
                 obj.viewerState = {
                     rotation: this._deepCopyMatrix(this.viewerState.rotation),
                     zoom: this.viewerState.zoom,
@@ -2563,7 +3210,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     focalLength: this.viewerState.focalLength,
                     center: this.viewerState.center ? { ...this.viewerState.center } : null,
                     extent: this.viewerState.extent,
-                    currentFrame: this.currentFrame
+                    currentFrame: this.currentFrame,
+                    // THE CLIP TRAVELS WITH THE OBJECT. A slab is Angstrom along
+                    // the camera's depth, and objects differ in size by orders
+                    // of magnitude - a slab set on a peptide cuts a ribosome in
+                    // half, and one set on a ribosome does nothing to a peptide.
+                    // It rides with the rest of the per-object view state.
+                    clipNear: this.clipNear,
+                    clipFar: this.clipFar,
+                    clipFade: this.clipFade,
+                    // ...AND SO DOES THE STYLE. A ribosome is drawn as a tube
+                    // because a ribbon of it is a tangle; a peptide beside it
+                    // is not, and switching between the two should not mean
+                    // setting the style again each time. The flag rides along
+                    // with it so an automatic choice stays automatic and a
+                    // hand-picked one stays picked.
+                    style: this.style,
+                    styleChosen: !!this.styleChosen
                 };
 
                 // Persist scatter metadata (labels/limits) from renderer before switching away
@@ -2581,7 +3244,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // ... and drop the residue selection with it: the selection is a set
             // of position indices, meaningful only against the object it was
             // made on (see clearResidueSelection).
-            if (this.currentObjectName !== newObjectName) this.clearResidueSelection();
+            //
+            // NOT WHILE SEVERAL ARE MERGED. There the indices are the merged
+            // array's and mean the same thing whichever object is being
+            // edited - and the strip SETS the edited object from where you
+            // clicked, so clearing here would throw away the selection that
+            // asked for the switch.
+            if (this.currentObjectName !== newObjectName && !mergedMask) {
+                this.clearResidueSelection();
+            }
             this.currentObjectName = newObjectName;
 
             // Get new object reference
@@ -2628,30 +3299,38 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Restore selection state
             const savedState = this.objectsData[newObjectName].visibilityState;
 
-            // Apply the saved selection directly to visibilityModel (bypassing setVisibility's normalization)
-            this.visibilityModel.positions = new Set(savedState.positions);
-            this.visibilityModel.chains = new Set(savedState.chains);
-            this.visibilityModel.paeBoxes = savedState.paeBoxes.map(box => ({ ...box }));
-            this.visibilityModel.visibilityMode = savedState.visibilityMode;
+            // ...and it is not restored under a merge either: what is hidden on
+            // screen stays hidden, whichever object is being edited. Only the
+            // PAE boxes travel, since the map belongs to the new object.
+            if (mergedMask) {
+                this.visibilityModel.paeBoxes = (savedState.paeBoxes || []).map((b) => ({ ...b }));
+            } else {
+                // Apply the saved selection directly to visibilityModel (bypassing setVisibility's normalization)
+                this.visibilityModel.positions = new Set(savedState.positions);
+                this.visibilityModel.chains = new Set(savedState.chains);
+                this.visibilityModel.paeBoxes = savedState.paeBoxes.map(box => ({ ...box }));
+                this.visibilityModel.visibilityMode = savedState.visibilityMode;
 
-            // Only normalize if in default mode with empty positions, using correct coords length
-            if (this.visibilityModel.visibilityMode === 'default' &&
-                (!this.visibilityModel.positions || this.visibilityModel.positions.size === 0)) {
-                this.visibilityModel.positions = new Set();
-                for (let i = 0; i < correctCoordsLength; i++) {
-                    this.visibilityModel.positions.add(i);
+                // Only normalize if in default mode with empty positions, using correct coords length
+                if (this.visibilityModel.visibilityMode === 'default' &&
+                    (!this.visibilityModel.positions || this.visibilityModel.positions.size === 0)) {
+                    this.visibilityModel.positions = new Set();
+                    for (let i = 0; i < correctCoordsLength; i++) {
+                        this.visibilityModel.positions.add(i);
+                    }
                 }
             }
 
             // Populate entropy data from MSA if available
             if (this.objectsData[newObjectName]?.msa?.msasBySequence && this.objectsData[newObjectName]?.msa?.chainToSequence && window.MSA) {
-                this.entropy = window.MSA.mapEntropyToStructure(this.objectsData[newObjectName], this.currentFrame >= 0 ? this.currentFrame : 0);
+                // ...for everything DRAWN, not the object just switched to
+                this.entropy = this.entropyForDrawn();
                 this._updateEntropyOptionVisibility();
             } else if (this.colorMode === 'entropy') {
                 // If entropy mode is active but no MSA, try to map it anyway
                 const objectName = this.currentObjectName;
                 if (objectName && this.objectsData[objectName] && window.MSA) {
-                    this.entropy = window.MSA.mapEntropyToStructure(this.objectsData[objectName], this.currentFrame >= 0 ? this.currentFrame : 0);
+                    this.entropy = this.entropyForDrawn();
                     this._updateEntropyOptionVisibility();
                 } else {
                     this.entropy = undefined;
@@ -2661,30 +3340,42 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.entropy = undefined;
             }
 
-            // Save the restored selection state (setVisibility would do this, but we're bypassing it)
-            if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
-                this.objectsData[this.currentObjectName].visibilityState = {
-                    positions: new Set(this.visibilityModel.positions),
-                    chains: new Set(this.visibilityModel.chains),
-                    paeBoxes: this.visibilityModel.paeBoxes.map(box => ({ ...box })),
-                    visibilityMode: this.visibilityModel.visibilityMode
-                };
-            }
+            // Save the restored selection state (setVisibility would do this,
+            // but we're bypassing it) - per object under a merge, where the
+            // live mask is not any one object's.
+            this._saveVisibilityToObjects();
 
             // Restore viewer state from new object (fallback to defaults if missing)
             const obj = this.objectsData[newObjectName];
             const saved = obj.viewerState || {
                 rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
                 zoom: 1.0,
-                // seeded from the control, not hardcoded: a new object must not
-                // silently discard the ortho setting the viewer is already on
+                // seeded from the control - see the first of these three defaults
                 ortho: this.orthoSlider ? parseFloat(this.orthoSlider.value) : 1,
                 focalLength: 200.0,
                 center: null,
                 extent: null,
-                currentFrame: -1
+                currentFrame: -1,
+                clipNear: null,
+                clipFar: null,
+                clipFade: CLIP_FADE_DEFAULT,
+                style: null,
+                styleChosen: false
             };
-            this.viewerState = {
+            // THE CAMERA DOES NOT MOVE WHEN SEVERAL OBJECTS ARE ON SCREEN.
+            //
+            // Picking a different object to work on is not a request to look
+            // somewhere else: both structures are in front of you, framed
+            // together, and swinging to one object's saved pose would throw the
+            // other off the screen - the same complaint as clicking a name
+            // hiding the other, in a different disguise. Only the frame index
+            // is taken, since that is which frame of the new object to draw.
+            const merged = (this.multiState && this.multiState.enabled)
+                || this._mergeWanted();
+            this.viewerState = merged ? {
+                ...this.viewerState,
+                currentFrame: saved.currentFrame
+            } : {
                 rotation: this._deepCopyMatrix(saved.rotation),
                 zoom: saved.zoom,
                 // older saves carry the boolean instead; false meant orthographic
@@ -2695,6 +3386,73 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 extent: saved.extent,
                 currentFrame: saved.currentFrame
             };
+
+            // ...and its clip. An object that has never been clipped comes back
+            // unclipped, rather than inheriting the slab of whatever was on
+            // screen before it.
+            // ...and neither does the clip, for the same reason: a slab set on
+            // one of two merged structures is a slab through the picture, and
+            // the picture has not changed.
+            if (!merged) {
+                this.clipNear = (typeof saved.clipNear === 'number') ? saved.clipNear : null;
+                this.clipFar = (typeof saved.clipFar === 'number') ? saved.clipFar : null;
+                this.clipFade = (typeof saved.clipFade === 'number')
+                    ? saved.clipFade : CLIP_FADE_DEFAULT;
+            }
+
+            // ...AND ITS STYLE, for the same reason the clip travels: what is
+            // right for a ribosome is not right for the peptide beside it.
+            // An object that has never been drawn (no saved style) keeps
+            // whatever is on screen, and the loader's size rule decides for it
+            // a moment later - see tubeByDefaultIfBig in web/app.js.
+            //
+            // setStyle, not an assignment: a style carries a whole profile of
+            // defaults with it, and half-switching leaves the panel describing
+            // one style while the renderer draws another.
+            // ...AND THE STYLE FOLLOWS UNDER A MERGE TOO, now that the style
+            // belongs to the object. It used to be held back here: one array
+            // was drawn one way, so adopting the newly picked object's style
+            // would have restyled every other structure with it. It no longer
+            // does - each drawn object is painted in its own style (see
+            // drawnStyleGroups) - so what this changes is only which object
+            // the Style panel is describing, which is exactly what picking an
+            // object in Multi is asking for.
+            this.styleChosen = merged ? this.styleChosen : !!saved.styleChosen;
+            const ownStyle = merged
+                ? (newObject && (newObject.style
+                    || (newObject.viewerState && newObject.viewerState.style)))
+                : saved.style;
+            if (merged && ownStyle && ownStyle !== this.style && this.setStyle) {
+                // quiet: the frames are not loaded yet, and the picture does
+                // not change anyway - only the panel does
+                this.setStyle(ownStyle, true);
+            }
+            if (!merged && saved.style && saved.style !== this.style && this.setStyle) {
+                // ...ASKED ABOUT THE OBJECT BEING SWITCHED TO, not the one on
+                // screen. The frames are loaded by the caller, after this, so
+                // this.coords is still the PREVIOUS object's - and a small
+                // structure following a huge one had its cartoon refused on
+                // the huge one's size and came back as a tube.
+                const fr = obj.frames && obj.frames[
+                    (saved.currentFrame >= 0 ? saved.currentFrame : 0)];
+                const nPos = (fr && fr.coords && fr.coords.length) || 0;
+                const fits = saved.style !== 'cartoon' || this.cartoonForce
+                    || !this._cartoonWouldFit || this._cartoonWouldFit(nPos).ok;
+                if (fits) {
+                    const force = this.cartoonForce;
+                    this.cartoonForce = true;      // the size question is settled
+                    // ...AND NOT A PIXEL DRAWN HERE. setStyle ends in a render,
+                    // and at this point the new object's frames are not loaded
+                    // yet - this.coords still holds the PREVIOUS object's. On a
+                    // switch from a ribosome to a peptide that render built a
+                    // full cartoon of the ribosome and threw it away a moment
+                    // later when 68 positions replaced 17,550: measured 1,150
+                    // to 1,550 ms of the 2 s the switch took, all of it wasted.
+                    // The caller draws once the frames are in.
+                    this.setStyle(saved.style, true);
+                    this.cartoonForce = force;
+                }
+            }
 
             // Restore currentFrame from viewerState
             this.currentFrame = this.viewerState.currentFrame;
@@ -2714,8 +3472,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (window.SEQ.clear) {
                     window.SEQ.clear();
                 }
-                // Rebuild sequence view for the new object
-                window.SEQ.buildView();
+                // Rebuild sequence view for the new object - after the paint,
+                // since nothing the structure canvas draws depends on it
+                (window.SEQ.buildViewDeferred || window.SEQ.buildView)();
             }
 
             // Focal length is derived from the ortho value AND the object's
@@ -2727,11 +3486,41 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.orthoSlider.dispatchEvent(new Event('input'));
             }
 
+            // ...AND THE CAPTURE PANEL, if it is open. A different object has a
+            // different answer to "is there a trajectory to record": switching
+            // from one with frames to one without left a Frames button that
+            // recorded nothing, and switching the other way left the button
+            // missing until the panel was closed and opened again.
+            if (this._savePanel && !this._captureBusy) this._rebuildSavePanel();
+
+            // ...AND THE PAE PANEL, which follows the object being edited when
+            // that object is drawn. Under a merge nothing else here reloads a
+            // frame, so this is the only thing that would ask.
+            this._syncPaeToDrawn();
+
             // Note: _composeAndApplyMask will be called by setFrame after the frame data is loaded
         }
 
         // Add a new object
         addObject(name) {
+            // A NEW OBJECT JOINS WHAT IS ON SCREEN. The shown set is a list of
+            // names, and one that does not mention the object just loaded
+            // leaves it invisible - so a fetch, a Copy or a drag-and-drop while
+            // two structures are up would appear to have done nothing.
+            //
+            // INCLUDING FROM AN EMPTY SET. Everything switched off is a state
+            // the user can be in, and loading a file from there is a request
+            // to see that file: leaving the set empty made the load look like
+            // it had failed. Only a set at all - a null set is the resting
+            // state, where the object being edited is drawn and this one is
+            // about to become it.
+            if (this.shownObjects instanceof Set) {
+                this.shownObjects.add(name);
+            }
+            // ...and it is new to the CAMERA, which will widen once to take it
+            // in. A re-fetch under the same name counts: the structure behind
+            // it can be anywhere.
+            if (this._framedObjects) this._framedObjects.delete(name);
             const objectExists = this.objectsData[name] !== undefined;
             const existingScatterConfig = objectExists
                 ? (this.objectsData[name].scatterConfig || null)
@@ -2776,7 +3565,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     _lastPaeFrame: -1,
                     bonds: null,
                     contacts: null,
-                    ligandGroups: new Map(),  // Per-object ligand groups
                     visibilityState: {
                         positions: new Set(),
                         chains: new Set(),
@@ -2852,15 +3640,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Add frame to object
             this.objectsData[targetObjectName].frames.push(data);
 
-            // Compute ligandGroups NOW, before any UI updates
-            if (typeof groupLigandAtoms === 'function' && data.chains && data.position_types) {
-                this.objectsData[targetObjectName].ligandGroups = groupLigandAtoms(
-                    data.chains,
-                    data.position_types,
-                    data.residue_numbers || [],
-                    data.position_names || []
-                );
-            }
+            // ...and NOT the ligand groups, which are derived from the
+            // frame whenever something asks - see ligandGroupsForFrame.
 
             // If this was the active object and it was on last frame, stay on last frame.
             // Store contacts if provided in data (object-level)
@@ -2902,7 +3683,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             // If this is the first frame and overlay should be auto-enabled, enable it now
-            // Commit 6: Use _enterOverlayMode instead of toggleOverlay for atomic state management
+            // Use _enterOverlayMode instead of toggleOverlay for atomic state management
             let justAutoEnabledOverlay = false;
             if (this.overlayState.shouldAutoEnable && object.frames.length === 1 && !this.overlayState.enabled) {
                 // Use atomic entry to overlay mode
@@ -2927,46 +3708,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.render('addFrame-color');
             }
 
-            // Recompute global center and extent across all frames (handles overlay/non-overlay)
-            let globalCenter = new Vec3(0, 0, 0);
-            let totalCount = 0;
-            for (const frame of object.frames) {
-                if (frame && frame.coords) {
-                    for (let i = 0; i < frame.coords.length; i++) {
-                        const c = frame.coords[i];
-                        globalCenter = globalCenter.add(new Vec3(c[0], c[1], c[2]));
-                        totalCount++;
-                    }
-                }
-            }
-            if (totalCount > 0) {
-                globalCenter = globalCenter.mul(1 / totalCount);
-            }
-
-            // Recalculate maxExtent and standard deviation using the global center
-            let maxDistSq = 0;
-            let sumDistSq = 0;
-            let positionCount = 0;
-            for (const frame of object.frames) {
-                if (frame && frame.coords) {
-                    for (let i = 0; i < frame.coords.length; i++) {
-                        const c = frame.coords[i];
-                        const coordVec = new Vec3(c[0], c[1], c[2]);
-                        const centeredCoord = coordVec.sub(globalCenter);
-                        const distSq = centeredCoord.dot(centeredCoord);
-                        if (distSq > maxDistSq) maxDistSq = distSq;
-                        sumDistSq += distSq;
-                        positionCount++;
-                    }
-                }
-            }
-            object.maxExtent = Math.sqrt(maxDistSq);
-            // Calculate standard deviation: sqrt(mean of squared distances)
-            object.stdDev = positionCount > 0 ? Math.sqrt(sumDistSq / positionCount) : 0;
-            object.center = [globalCenter.x, globalCenter.y, globalCenter.z];
-            this.viewerState.center = { x: globalCenter.x, y: globalCenter.y, z: globalCenter.z };
-            object.totalPositions = totalCount;
-            object.globalCenterSum = new Vec3(globalCenter.x * totalCount, globalCenter.y * totalCount, globalCenter.z * totalCount);
+            this._recomputeObjectStats(object);
 
             // First frame in: re-apply the Ortho slider, which sets both the
             // perspective flag and a focal length scaled to the object's size.
@@ -2983,7 +3725,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // If in overlay mode, re-merge to include the new frame
             // Skip re-merge if we just auto-enabled overlay on this frame (toggleOverlay already did it)
             if (this.overlayState.enabled && !this._batchLoading && !justAutoEnabledOverlay) {
-                // Re-merge all frames when new frame added in overlay mode (Commit 2)
+                // Re-merge all frames when new frame added in overlay mode
                 const merged = this._mergeFrameRange(object, 0, object.frames.length - 1);
 
                 if (merged) {
@@ -3057,6 +3799,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * distance only separates candidates at equal depth.
          */
         pickResidueAt(clientX, clientY) {
+            this._ensurePickProjection();
             if (!this.canvas || !this.screenX || !this.screenValid) return -1;
             const rect = this.canvas.getBoundingClientRect();
             const px = clientX - rect.left;
@@ -3075,8 +3818,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // residues and the fact that it was a contact was thrown away.
             // Recording the winner lets pickGroupAt widen it to the pair.
             let bestSeg = null;
+            // WHAT IS CLIPPED AWAY CANNOT BE CLICKED. The slab cuts the drawing,
+            // and picking has to agree with the drawing or the click lands on
+            // something nobody can see - the residue behind the near plane,
+            // which is exactly the one the clip was set to get out of the way.
+            // Tested on the depth the cursor is at along a segment, which is
+            // the same number the shader discards on.
+            const clipped = (z) => !this.clipAccepts(z);
             // +z is toward the viewer (see Coordinate System)
             const offer = (idx, d2, z, seg) => {
+                if (clipped(z)) return;
                 if (z > bestZ + 1e-6 || (Math.abs(z - bestZ) <= 1e-6 && d2 < bestD2)) {
                     bestZ = z; bestD2 = d2; best = idx; bestSeg = seg || null;
                 }
@@ -3130,7 +3881,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // cartoon records one screen outline per HALF rung, each tagged
             // with its own residue, so a click selects the base it is actually
             // over rather than its partner across the pair.
-            const naPick = this._naPick;
+            // ...and only if they were drawn by the frame these screen
+            // positions came from - see _naPickId, set where they are built.
+            const naPick = (this._naPickId === fid) ? this._naPick : null;
             if (naPick && naPick.length) {
                 for (let k = 0; k < naPick.length; k++) {
                     const e = naPick[k];
@@ -3160,6 +3913,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * it. Ligand groups are already known (the bonding search uses them), so
          * a pick inside one widens to the whole group; anything else is itself.
          */
+        /**
+         * Is this position one a click in the viewer may land on? False for
+         * anything the clip slab has cut away - the drawing does not show it,
+         * so a selection made in the viewer must not contain it.
+         */
+        _pickable(i) {
+            if (!this.clipSlabOn()) return true;
+            this._ensureRotated();
+            const c = this.rotatedCoords && this.rotatedCoords[i];
+            return !c || this.clipAccepts(c.z);
+        }
+
         pickGroupAt(i) {
             if (i < 0) return [];
             // A CONTACT IS ONE THING TO CLICK, and what it names is the pair it
@@ -3169,7 +3934,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // endpoint is a click on the residue, and the segment test in
             // pickResidueAt has already decided which of the two was nearer.
             const pc = this._pickedContact;
-            if (pc && (pc[0] === i || pc[1] === i)) return [pc[0], pc[1]];
+            if (pc && (pc[0] === i || pc[1] === i)) {
+                // both ends, unless the clip has taken one of them
+                return [pc[0], pc[1]].filter((k) => this._pickable(k));
+            }
             // A SIDE CHAIN IS PART OF ITS RESIDUE, not a molecule of its own.
             // It is stored as ligand positions so the ligand machinery draws it
             // (see _materialiseSidechains), but that is an implementation
@@ -3210,10 +3978,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     return Array.from(seen);
                 }
             }
-            // a lone atom with no bonds still belongs to its parsed group
-            const obj = this.currentObjectName
-                ? this.objectsData[this.currentObjectName] : null;
-            const groups = obj && obj.ligandGroups;
+            // a lone atom with no bonds still belongs to its parsed group -
+            // ITS object's, in merged indices, or a click on the second
+            // structure's ion is matched against the first structure's groups
+            const groups = this.mergedLigandGroups();
             if (groups && groups.size) {
                 for (const members of groups.values()) {
                     if (members.indexOf(i) >= 0) return members.slice();
@@ -3275,6 +4043,345 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
         }
 
+        // ====================================================================
+        // CLIP, THE WAY PyMOL DOES IT
+        //
+        // A slab in CAMERA space: keep what lies between clipFar and clipNear
+        // along the view's own z, and cut everything else. Not a selection and
+        // not a visibility state - the geometry is CUT, so a ribbon that
+        // crosses the plane is drawn up to it and stops, and the interior it
+        // exposes is open to the camera. That is what "clip" means in PyMOL,
+        // and it is why this lives in the draw rather than in the mask.
+        //
+        // Being camera space it follows the view for nothing: turn the
+        // structure and the slab stays where the camera is, which is the whole
+        // point of clipping into something.
+        //
+        // Nothing is committed and nothing is remembered per object: switch it
+        // off and the drawing is whole again.
+        // ====================================================================
+
+        /**
+         * How far the drawing reaches from the view centre, in Angstrom: the
+         * furthest position, plus what the STYLE adds around it.
+         *
+         * A radius, and deliberately not the view's depth extent. The extent
+         * changes as the structure turns - a molecule seen end-on is deeper
+         * than the same molecule side-on - so a slab set from it starts cutting
+         * the moment you rotate, without anyone touching a control. That is
+         * what "resetting doesn't recover everything" was: reset restored the
+         * extent OF THAT VIEW, and the next rotation ate into the structure
+         * again. A radius cannot do that: it is the same number from every
+         * angle, so a slab set to it cuts nothing until a slider is moved.
+         *
+         * The pad is the style's own reach past the positions: a ribbon is
+         * drawn lineWidth Angstrom wide about its backbone and a tube has a
+         * radius, so a slab tight to the ATOMS would shave the surface drawn
+         * around them.
+         */
+        _clipReach() {
+            this._ensureRotated();
+            const n = this.coords ? this.coords.length : 0;
+            const rc = this.rotatedCoords;
+            if (!n || !rc || rc.length < n) return 0;
+            let r2 = 0;
+            for (let i = 0; i < n; i++) {
+                const c = rc[i];
+                const d = c.x * c.x + c.y * c.y + c.z * c.z;
+                if (d > r2) r2 = d;
+            }
+            if (!(r2 > 0)) return 0;
+            return Math.sqrt(r2) + Math.max(2, 2 * (this.lineWidth || 3));
+        }
+
+        /**
+         * The structure's actual depth range IN THIS VIEW - what the control's
+         * track spans, so that moving a knob cuts something immediately.
+         *
+         * Not the same as the rest state: that is a radius, deliberately, so
+         * that rotating cannot start a cut on its own. The radius is bigger
+         * than this whenever the structure is wider than it is deep, and a
+         * track drawn to the radius spends its first stretch crossing empty
+         * space - which is what "the endpoints do not hide anything when I move
+         * them" is. So the track measures the view and the ENDS mean off: a
+         * knob at its limit is stored as the rest state, not as this number.
+         */
+        clipViewExtent() {
+            this._ensureRotated();
+            const n = this.coords ? this.coords.length : 0;
+            const rc = this.rotatedCoords;
+            if (!n || !rc || rc.length < n) return null;
+            let lo = Infinity; let hi = -Infinity;
+            for (let i = 0; i < n; i++) {
+                const z = rc[i].z;
+                if (z < lo) lo = z;
+                if (z > hi) hi = z;
+            }
+            if (!(hi >= lo)) return null;
+            // NO PAD. The rest state pads, because a slab tight to the ATOMS
+            // would shave the surface drawn around them - but the track is
+            // where the knobs travel, and padding it spends the first stretch
+            // of that travel on empty space: 6 Angstrom of a 36 Angstrom
+            // structure, during which moving the knob visibly did nothing. A
+            // knob at the end is off anyway (see the caller), so the end has no
+            // shaving to avoid; one step in cuts the front of the drawing,
+            // which is what a knob at the front of the structure should do.
+            return { far: lo, near: hi };
+        }
+
+        /** A slab that holds the whole structure however it is turned. */
+        clipSlabDefault() {
+            const R = this._clipReach();
+            if (!(R > 0)) return null;
+            return { far: -R, near: R };
+        }
+
+        /**
+         * THE SLAB THAT HOLDS THE SELECTION - what Auto sets.
+         *
+         * A cut is nearly always wanted around something: you pick a site and
+         * you want the rest of the structure out of the way. Doing that by hand
+         * means dragging two knobs against a picture that changes as you drag,
+         * and the answer is already known - the selection has a depth range in
+         * this view, and the slab is that range with room to breathe.
+         *
+         * WITH NOTHING SELECTED IT IS THE REST STATE, which cuts nothing from
+         * any angle. That is the same answer the Reset button used to give, so
+         * Auto replaces it rather than sitting beside it: no selection, no
+         * context, and the only sensible context-free slab is all of it.
+         *
+         * The set is expanded the way Orient expands it (framingPositions): a
+         * residue's side-chain atoms and a ligand's other atoms belong to the
+         * thing you picked, and hidden ones do not.
+         *
+         * THICK ENOUGH TO SURVIVE A ROTATION. The obvious slab is the
+         * selection's depth range in this view, and it is wrong the moment the
+         * model turns: a site lying flat in the screen plane has almost no
+         * depth, so that slab is a few Angstrom thick, and a quarter turn
+         * stands the site up on end and cuts it in half.
+         *
+         * The selection's RADIUS does not turn. Half the thickness is the
+         * distance from the selection's centre to the furthest thing in it, so
+         * the slab holds the whole of it whatever angle it is seen from - the
+         * same reason a bounding sphere is used for framing rather than a
+         * bounding box.
+         *
+         * Its CENTRE is still this view's: a slab is camera space and its
+         * depth has to come from somewhere. That part goes stale on a rotation
+         * about anything other than the selection itself, which is what makes
+         * this a button rather than a mode - and pressing Orient first pins
+         * the view to the selection, after which it does not move at all.
+         */
+        clipSlabForSelection(set) {
+            const base = this.clipSlabDefault();
+            this.clipAuto = null;
+            const raw = set || (this.selectionInk ? this.selectionInk()
+                : this.residueSelection);
+            const sel = this.framingPositions
+                ? this.framingPositions(raw) : raw;
+            if (!sel || !sel.size) return base;
+            this._ensureRotated();
+            const rc = this.rotatedCoords;
+            const n = this.coords ? this.coords.length : 0;
+            if (!rc || !n) return base;
+            // The centre, and then the furthest thing from it. In MODEL space,
+            // where neither number depends on the view at all: a distance
+            // survives a rotation, and a centre that is remembered as
+            // coordinates can be re-projected at any angle. That is what makes
+            // the slab TRACK - see _refreshAutoClip.
+            const co = this.coords;
+            let cx = 0; let cy = 0; let cz = 0; let m = 0;
+            for (const i of sel) {
+                if (!(i >= 0 && i < n) || !co[i]) continue;
+                cx += co[i].x; cy += co[i].y; cz += co[i].z; m++;
+            }
+            if (!m) return base;
+            cx /= m; cy /= m; cz /= m;
+            let r2 = 0;
+            for (const i of sel) {
+                if (!(i >= 0 && i < n) || !co[i]) continue;
+                const dx = co[i].x - cx; const dy = co[i].y - cy;
+                const dz = co[i].z - cz;
+                const d = dx * dx + dy * dy + dz * dz;
+                if (d > r2) r2 = d;
+            }
+            // ROOM TO BREATHE. A position is a point and the thing drawn at it
+            // has a radius, so a slab through the extreme atoms cuts the very
+            // residues it was asked to show. Half the line width clears the
+            // geometry and the rest is context - enough to see what the site
+            // sits in, not so much that the cut stops being one.
+            const pad = 1.5 + 0.5 * (this.lineWidth || 3);
+            const half = Math.sqrt(r2) + pad;
+            // REMEMBERED, so the slab can follow. Pressing Auto and then
+            // rotating used to leave the cut where the selection HAD been, and
+            // pressing it again gave a different answer at every angle - the
+            // depth of the thing had changed and the slab had not. Held as a
+            // point and a radius rather than as two planes, because that is
+            // the part of the answer that does not depend on the view.
+            this.clipAuto = { x: cx, y: cy, z: cz, half };
+            const view = this._autoClipDepth();
+            return (view === null) ? base : { near: view + half, far: view - half };
+        }
+
+        /**
+         * AUTO: fit the slab to the selection and keep it there.
+         *
+         * The one entry point, because the tracking has to survive the set:
+         * setClipSlab drops it (a knob dragged wins over a slab computed), and
+         * this is the one caller that means the opposite.
+         */
+        autoClip(set) {
+            const slab = this.clipSlabForSelection(set);
+            if (!slab) return null;
+            const keep = this.clipAuto;
+            this.setClipSlab(slab.near, slab.far);
+            this.clipAuto = keep;
+            return slab;
+        }
+
+        /**
+         * The remembered auto-clip centre's depth IN THIS VIEW, by the same two
+         * steps _rotateCoords applies to every position: the object's own
+         * best_view rotation, then the user's, about the view centre. One point
+         * rather than the whole array, so this is a handful of multiplies and
+         * can run every frame.
+         */
+        _autoClipDepth() {
+            const a = this.clipAuto;
+            if (!a) return null;
+            const object = this.objectsData
+                ? this.objectsData[this.currentObjectName] : null;
+            let x = a.x; let y = a.y; let z = a.z;
+            const oR = (object && object.rotation_matrix && object.center)
+                ? object.rotation_matrix : null;
+            if (oR) {
+                const oc = object.center;
+                const dx = x - oc[0]; const dy = y - oc[1]; const dz = z - oc[2];
+                x = oR[0][0] * dx + oR[0][1] * dy + oR[0][2] * dz + oc[0];
+                y = oR[1][0] * dx + oR[1][1] * dy + oR[1][2] * dz + oc[1];
+                z = oR[2][0] * dx + oR[2][1] * dy + oR[2][2] * dz + oc[2];
+            }
+            const c = this._computeViewCentre(object);
+            const m = this.viewerState.rotation;
+            if (!m) return null;
+            return m[2][0] * (x - c.x) + m[2][1] * (y - c.y) + m[2][2] * (z - c.z);
+        }
+
+        /**
+         * KEEP AN AUTO SLAB ON ITS SELECTION. Called once per frame, before
+         * anything reads the planes.
+         *
+         * A slab is camera space and the thing it was cut around is not, so a
+         * rotation moves one and not the other: the cut slid off the site, and
+         * pressing Auto again gave a different pair of planes at every angle
+         * because the depth of the selection had changed underneath it. The
+         * thickness never needed to change - a radius does not rotate - only
+         * where the slab sits, and that is one point re-projected.
+         *
+         * Dropped the moment the slab is set by hand (see setClipSlab): a knob
+         * dragged is an answer given, and it must not be overwritten on the
+         * next frame.
+         */
+        _refreshAutoClip() {
+            if (!this.clipAuto || this.clipNear === null) return;
+            const z = this._autoClipDepth();
+            if (z === null) return;
+            this.clipNear = z + this.clipAuto.half;
+            this.clipFar = z - this.clipAuto.half;
+        }
+
+        /**
+         * Set the slab. near is the plane closer to the camera (larger z), far
+         * the one further away; near <= far is refused rather than swapped,
+         * because a slab of nothing is a drawing of nothing and reads as a bug.
+         * Pass nulls to clip nothing.
+         */
+        setClipSlab(near, far) {
+            // A SLAB SET BY HAND IS AN ANSWER GIVEN, and the next frame must
+            // not overwrite it: any explicit set drops the auto tracking. Auto
+            // itself goes through autoClip, which puts it back afterwards.
+            this.clipAuto = null;
+            if (near === null || far === null) {
+                this.clipNear = null;
+                this.clipFar = null;
+            } else {
+                const nz = Number(near); const fz = Number(far);
+                if (!isFinite(nz) || !isFinite(fz)) return;
+                const MIN = 0.5;
+                this.clipNear = Math.max(nz, fz + MIN);
+                this.clipFar = Math.min(fz, this.clipNear - MIN);
+            }
+            // written through to the object as well, so switching away and back
+            // finds it where it was left
+            const obj = this.objectsData && this.objectsData[this.currentObjectName];
+            if (obj && obj.viewerState) {
+                obj.viewerState.clipNear = this.clipNear;
+                obj.viewerState.clipFar = this.clipFar;
+                obj.viewerState.clipFade = this.clipFade;
+            }
+            this.render('clip slab');
+        }
+
+        // NUMBERS, not "not null". A renderer built before this existed - a
+        // saved state, the lifted class the tests build - has neither field at
+        // all, and `undefined !== null` is true, which turned a viewer with no
+        // slab into one that clipped everything.
+        clipSlabOn() {
+            return typeof this.clipNear === 'number' && typeof this.clipFar === 'number';
+        }
+
+        /**
+         * Set the soft edge, as a fraction of the slab's thickness. 0 is a
+         * hard cut. Clamped to 1: a fade wider than the slab itself leaves
+         * nothing at full strength anywhere, which reads as a bug rather than
+         * as a setting.
+         */
+        setClipFade(f) {
+            const v = Number(f);
+            if (!isFinite(v)) return;
+            this.clipFade = Math.max(0, Math.min(1, v));
+            const obj = this.objectsData && this.objectsData[this.currentObjectName];
+            if (obj && obj.viewerState) obj.viewerState.clipFade = this.clipFade;
+            this.render('clip fade');
+        }
+
+        /**
+         * The soft edge in ANGSTROM - what the shaders and the 2D paths want.
+         * Zero whenever there is no slab to be soft about.
+         */
+        clipFadeWidth() {
+            if (!this.clipSlabOn()) return 0;
+            const f = (typeof this.clipFade === 'number') ? this.clipFade : 0;
+            if (!(f > 0)) return 0;
+            return Math.max(0, (this.clipNear - this.clipFar)) * f;
+        }
+
+        /**
+         * How much of this view-space depth survives the clip: 1 inside the
+         * slab, 0 past the fade, a straight ramp between. THE one test, so the
+         * 2D paths and the shaders cannot drift apart about where the planes
+         * are or how soft they are.
+         */
+        clipCoverage(z) {
+            if (!this.clipSlabOn()) return 1;
+            const d = Math.min(this.clipNear - z, z - this.clipFar);
+            if (d >= 0) return 1;
+            const w = this.clipFadeWidth();
+            if (!(w > 0)) return 0;
+            return Math.max(0, 1 + d / w);
+        }
+
+        /**
+         * Is this depth inside the slab enough to be treated as there? Drawing
+         * asks clipCoverage, because it can draw a ghost; picking and the
+         * cheap culls ask this, because a click cannot land on half a residue.
+         * Half covered is the line.
+         */
+        clipAccepts(z) {
+            if (!this.clipSlabOn()) return true;
+            return this.clipCoverage(z) >= 0.5;
+        }
+
         /**
          * The side-chain table, rewritten for an extracted sub-structure.
          *
@@ -3324,93 +4431,39 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         _remapObjectState(src, dst, selectedIndices) {
             if (!src || !dst) return;
-            const renumber = new Map();
+            const map = new Map();
             for (let i = 0; i < selectedIndices.length; i++) {
-                renumber.set(selectedIndices[i], i);
+                map.set(selectedIndices[i], i);
             }
-            // position sets: sidechains, elements, bases
-            for (const key of ['sidechains', 'elements', 'bases']) {
-                const set = src[key];
-                if (!(set instanceof Set)) continue;
-                const out = new Set();
-                for (const i of set) {
-                    const to = renumber.get(i);
-                    if (to !== undefined) out.add(to);
-                }
-                // An empty result is NOT the same as absent for every one of
-                // these - null means ALL for bases and elements and NONE for
-                // side chains - so an empty set is stored as empty rather than
-                // collapsed to null, which would invert two of the three.
-                dst[key] = out;
-            }
-            // forced secondary structure: position -> letter
-            if (src.sse) {
-                const out = {};
-                for (const k of Object.keys(src.sse)) {
-                    const to = renumber.get(Number(k));
-                    if (to !== undefined) out[to] = src.sse[k];
-                }
-                dst.sse = Object.keys(out).length ? out : null;
-            }
-            // COLOUR. Only the `position` map inside it is keyed by index; the
-            // rest of the structure - an object-wide mode or literal the
-            // per-residue colours sit on top of - is not, and is carried
-            // through untouched so a copy keeps the same base to override.
-            if (src.color) {
-                if (src.color.type === 'advanced' && src.color.value) {
-                    const value = { ...src.color.value };
-                    if (value.position) {
-                        const out = {};
-                        for (const k of Object.keys(value.position)) {
-                            const to = renumber.get(Number(k));
-                            if (to !== undefined) out[to] = value.position[k];
-                        }
-                        if (Object.keys(out).length) value.position = out;
-                        else delete value.position;
-                    }
-                    dst.color = Object.keys(value).length
-                        ? { type: 'advanced', value } : null;
-                } else {
-                    // a mode or a literal applies to the whole object either way
-                    dst.color = src.color;
-                }
-            }
-            // per-residue side-chain colour, keyed by owner position
-            if (src.sidechainColor) {
-                const out = {};
-                for (const k of Object.keys(src.sidechainColor)) {
-                    const to = renumber.get(Number(k));
-                    if (to !== undefined) out[to] = src.sidechainColor[k];
-                }
-                dst.sidechainColor = Object.keys(out).length ? out : null;
-            }
-            // contacts come in two shapes. [i, j, w, colour?] is indices and
-            // renumbers; [chain, res, chain, res, w, colour?] names residues
-            // and survives a copy untouched - but only if both of its ends
-            // came with it, or it resolves to nothing on every frame load and
-            // warns to the console for the life of the object.
-            if (Array.isArray(src.contacts) && src.contacts.length) {
-                const kept = [];
-                const survives = new Set();
-                for (const i of selectedIndices) {
-                    const chain = this.chains && this.chains[i];
-                    const res = this.residueNumbers && this.residueNumbers[i];
-                    if (chain !== undefined && res !== undefined) survives.add(chain + ':' + res);
-                }
-                for (const c of src.contacts) {
-                    if (!Array.isArray(c)) continue;
-                    if (typeof c[0] === 'number' && typeof c[1] === 'number') {
-                        const a = renumber.get(c[0]);
-                        const b = renumber.get(c[1]);
-                        if (a === undefined || b === undefined) continue;
-                        kept.push([a, b, ...c.slice(2)]);
-                    } else if (typeof c[0] === 'string' && c.length >= 4) {
-                        if (!survives.has(c[0] + ':' + c[1])) continue;
-                        if (!survives.has(c[2] + ':' + c[3])) continue;
-                        kept.push(c.slice());
-                    }
-                }
-                dst.contacts = kept.length ? kept : null;
+            this._renumberObjectState(src, dst, map, selectedIndices);
+        }
+
+        /**
+         * RENUMBER EVERY PIECE OF PER-OBJECT STATE, from one field list.
+         *
+         * This was written out field by field - a paragraph each for the
+         * position sets, the SSE map, the colour tree, the side-chain colours
+         * and the contacts - which is five chances to forget one, and the
+         * bonds were forgotten for as long as they have existed. The list is
+         * OBJECT_STATE now, and each field says how it renumbers.
+         *
+         * `dst` may be `src` itself, or a scratch object copied over it
+         * afterwards, which is what a Delete does: the remap reads while it
+         * writes, and there the source and the destination are the same
+         * object.
+         *
+         * @param {Map<number, number>} map old position -> new position
+         * @param {Array<number>} selected the positions that survive, in order
+         */
+        _renumberObjectState(src, dst, map, selected) {
+            const ctx = { map, selected, renderer: this };
+            for (const field of OBJECT_STATE) {
+                if (!field.remap) continue;
+                const out = field.remap(src[field.key], ctx);
+                // undefined means "this object has none of that" - leave the
+                // destination alone rather than writing an absence, which for
+                // half of these fields means the opposite of nothing
+                if (out !== undefined) dst[field.key] = out;
             }
         }
 
@@ -3439,7 +4492,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // build against the one the source had, and a caller that passed
             // neither would get a table that renumbers cleanly and draws
             // nothing - which is the bug this exists to fix.
-            const localFrame = window.py2dmolCartoon && window.py2dmolCartoon.localFrame;
+            const C = window.py2dmolCartoon;
+            const localFrame = C && C.localFrame;
+            // A NUCLEIC TRACE STEPS 5.5-6.5 A, and localFrame's default range is
+            // the peptide's 3.0-4.2 - so every nucleotide read as a chain break
+            // here, every row was dropped as "unframable at source", and a
+            // copied RNA arrived with no bases at all. The range is the one the
+            // table was BUILT with; anything else and the coefficients mean
+            // something different in the copy from what they meant here.
+            const nucLo = C && C.NUCLEIC_STEP_MIN;
+            const nucHi = C && C.NUCLEIC_STEP_MAX;
+            const types = this.positionTypes || [];
+            // ...asked of the SOURCE index either way: a destination anchor is
+            // the same residue, just renumbered.
+            const isNuc = (which, i) => {
+                const src = which === 's' ? i : selectedIndices[i];
+                return types[src] === 'D' || types[src] === 'R';
+            };
             const nSrc = srcCoords.length;
             const nDst = dstCoords.length;
             const srcAt = (i) => ({ x: srcCoords[i][0], y: srcCoords[i][1], z: srcCoords[i][2] });
@@ -3451,13 +4520,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (!frameCache.has(key)) {
                     const at = which === 's' ? srcAt : dstAt;
                     const n = which === 's' ? nSrc : nDst;
-                    frameCache.set(key,
-                        (localFrame && localFrame(at, n, i, fbuf, null)) ? fbuf.slice() : null);
+                    const nuc = isNuc(which, i);
+                    const ok = localFrame && (nuc
+                        ? localFrame(at, n, i, fbuf, null, nucLo, nucHi)
+                        : localFrame(at, n, i, fbuf, null));
+                    frameCache.set(key, ok ? fbuf.slice() : null);
                 }
                 return frameCache.get(key);
             };
             const pos = []; const frameOf = []; const coef = [];
-            const names = []; const elements = [];
+            const names = []; const elements = []; const onBackbone = [];
             const rowOf = new Map();          // old table row -> new table row
             for (let k = 0; k < sc.pos.length; k++) {
                 const owner = renumber.get(sc.pos[k]);
@@ -3494,6 +4566,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
                 names.push(sc.names[k]);
                 elements.push(sc.elements[k]);
+                // ...and whether this row is a backbone atom kept on purpose -
+                // proline's ring-closing N. Dropped here, a copied proline goes
+                // back to diving into the ribbon.
+                onBackbone.push((sc.onBackbone && sc.onBackbone[k]) ? 1 : 0);
             }
             if (!pos.length) return null;
             // bonds are TABLE ROWS, not positions, so they renumber separately
@@ -3520,27 +4596,362 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 toBackbone: new Int32Array(toBackbone),
                 names,
                 elements,
+                onBackbone: new Uint8Array(onBackbone),
             };
         }
 
-        extractSelection() {
+        /**
+         * DELETE THE SELECTED RESIDUES from this object, in place.
+         *
+         * The object stays the object: same name, same entry in the list, same
+         * camera, same frame, same everything except the residues that are
+         * gone. It is Hide with the positions actually removed - and it looks
+         * the same while it happens, because nothing switches and nothing is
+         * rebuilt around it.
+         *
+         * The frames come from the shared subset builder, which is also what
+         * Copy uses, so there is one implementation of "these positions,
+         * renumbered" rather than two that can drift. Everything keyed by
+         * position index travels through the same remap Copy uses: side chains,
+         * bases, per-residue colours, contacts, the MSA columns, and the
+         * visibility mask.
+         *
+         * Destructive in the session only: nothing is written to disk.
+         */
+        _deleteSelection() {
+            const name = this.currentObjectName;
+            const object = name ? this.objectsData[name] : null;
+            if (!object || !object.frames || !object.frames.length) return false;
+            const sel = this.residueSelection;
+            if (!sel || !sel.size) {
+                console.warn('Nothing selected - nothing to delete.');
+                return false;
+            }
+            const first = object.frames[0];
+            const n = (first.coords || []).length;
+            const keep = [];
+            for (let i = 0; i < n; i++) if (!sel.has(i)) keep.push(i);
+            if (!keep.length) {
+                console.warn('That would delete every residue - use Clear All instead.');
+                return false;
+            }
+            if (keep.length === n) return false;              // nothing selected here
+
+            // WHERE EACH SURVIVOR ENDS UP, for everything that is keyed by
+            // position index rather than carried in the frames.
+            const newIndexOf = new Map();
+            for (let k = 0; k < keep.length; k++) newIndexOf.set(keep[k], k);
+
+            const frames = this._subsetFrames(object, keep);
+            if (!frames.length) return false;
+
+            // ...the pose, through the same remap Copy uses. Into a scratch
+            // object first: the remap reads the source while it writes, and the
+            // source here is the destination.
+            const moved = {};
+            this._remapObjectState(object, moved, keep);
+            for (const key of Object.keys(moved)) object[key] = moved[key];
+
+            // ...the MSA columns for the residues that are left
+            if (object.msa && window.MSA && typeof window.MSA.extractSubset === 'function') {
+                const holder = { frames: frames, msa: null };
+                window.MSA.extractSubset(object, holder, first, keep);
+                object.msa = holder.msa || null;
+            }
+
+            object.frames = frames;
+            this._recomputeObjectStats(object, false);        // ...but do not move the camera
+            // ...AND THE LIGAND GROUPS, which are position indices like
+            // everything else here and are computed nowhere but addFrame - so
+            // an edit that rewrote the frames in place left them pointing at
+            // whatever had moved into those slots. Cut one chain out of a
+            // structure with a haem in each and the ones that were left drew
+            // as loose spheres and stopped collapsing to one token in the
+            // strip. Rebuilt from the frame rather than renumbered: the map is
+            // derived from the frame in the first place, and there is one
+            // function that does it.
+            // (the ligand groups need no upkeep: they are derived from the
+            // frames, which have just been replaced - see ligandGroupsForFrame)
+            this._mergedLigCache = null;
+            // (the object's own bond list is renumbered with everything else
+            // keyed by position - see OBJECT_STATE)
+
+            // THE MASK IS POSITION INDICES TOO. Renumbered rather than reset:
+            // a delete is not a reason to un-hide the chain you were hiding.
+            const vm = this.visibilityModel;
+            if (vm && vm.positions && vm.positions.size) {
+                const next = new Set();
+                for (const i of vm.positions) {
+                    const at = newIndexOf.get(i);
+                    if (at !== undefined) next.add(at);
+                }
+                vm.positions = next;
+            }
+            if (object.visibilityState && object.visibilityState.positions) {
+                const next = new Set();
+                for (const i of object.visibilityState.positions) {
+                    const at = newIndexOf.get(i);
+                    if (at !== undefined) next.add(at);
+                }
+                object.visibilityState.positions = next;
+            }
+
+            // the selection named the residues that are gone
+            this.clearResidueSelection();
+            this._invalidateSegmentCache();
+            this._invalidateShadowCache();
+            this.lastShadowRotationMatrix = null;
+            if (window.py2dmolCartoonGPU) window.py2dmolCartoonGPU.invalidate();
+            // ...and the frame reloads where it was, which is what makes this
+            // look like a hide rather than a reload
+            const at = (this.currentFrame >= 0 && this.currentFrame < frames.length)
+                ? this.currentFrame : 0;
+            this.setFrame(at);
+            this.updateUIControls();
+            return true;
+        }
+
+        /**
+         * THE FRAMES OF A SUBSET, position by position - the half of Copy that
+         * Delete needs too.
+         *
+         * Lifted out of extractSelection unchanged rather than paraphrased: it
+         * is the third field-by-field frame build in this codebase and the one
+         * that has silently dropped side chains twice, so there is exactly one
+         * of it. `keep` is sorted position indices; the frames come back
+         * renumbered to match, and nothing is installed anywhere.
+         */
+        /**
+         * The object's own measurements - centre, extent, spread - recomputed
+         * over every frame it holds. Lifted out of addFrame so that anything
+         * which CHANGES the frames can refresh them, and taking a flag for the
+         * one part that is not a measurement: addFrame recentres the camera on
+         * what it just loaded, and a delete must not.
+         */
+        _recomputeObjectStats(object, moveCamera = true) {
+            if (!object || !object.frames) return;
+            // Recompute global center and extent across all frames (handles overlay/non-overlay)
+            let globalCenter = new Vec3(0, 0, 0);
+            let totalCount = 0;
+            for (const frame of object.frames) {
+                if (frame && frame.coords) {
+                    for (let i = 0; i < frame.coords.length; i++) {
+                        const c = frame.coords[i];
+                        globalCenter = globalCenter.add(new Vec3(c[0], c[1], c[2]));
+                        totalCount++;
+                    }
+                }
+            }
+            if (totalCount > 0) {
+                globalCenter = globalCenter.mul(1 / totalCount);
+            }
+
+            // Recalculate maxExtent and standard deviation using the global center
+            let maxDistSq = 0;
+            let sumDistSq = 0;
+            let positionCount = 0;
+            for (const frame of object.frames) {
+                if (frame && frame.coords) {
+                    for (let i = 0; i < frame.coords.length; i++) {
+                        const c = frame.coords[i];
+                        const coordVec = new Vec3(c[0], c[1], c[2]);
+                        const centeredCoord = coordVec.sub(globalCenter);
+                        const distSq = centeredCoord.dot(centeredCoord);
+                        if (distSq > maxDistSq) maxDistSq = distSq;
+                        sumDistSq += distSq;
+                        positionCount++;
+                    }
+                }
+            }
+            object.maxExtent = Math.sqrt(maxDistSq);
+            // Calculate standard deviation: sqrt(mean of squared distances)
+            object.stdDev = positionCount > 0 ? Math.sqrt(sumDistSq / positionCount) : 0;
+            object.center = [globalCenter.x, globalCenter.y, globalCenter.z];
+            if (moveCamera) {
+                this.viewerState.center = { x: globalCenter.x, y: globalCenter.y, z: globalCenter.z };
+            }
+            object.totalPositions = totalCount;
+            object.globalCenterSum = new Vec3(globalCenter.x * totalCount, globalCenter.y * totalCount, globalCenter.z * totalCount);
+        }
+
+        _subsetFrames(object, keep) {
+            const selectedIndices = keep;
+            const selectedIndicesSet = new Set(keep);
+            const out = [];
+        // Extract all frames, not just the current one
+        for (let frameIndex = 0; frameIndex < object.frames.length; frameIndex++) {
+            const frame = object.frames[frameIndex];
+            if (!frame || !frame.coords) {
+                continue; // Skip invalid frames
+            }
+
+            // Resolve inherited plddt and PAE data before extracting
+            const resolvedPlddt = this._resolvePlddtData(object, frameIndex);
+            const resolvedPae = window.PAE ? window.PAE.resolveData(object, frameIndex) : null;
+
+            // Use resolved data if available, otherwise use frame's own data
+            const sourcePlddt = resolvedPlddt !== null ? resolvedPlddt : frame.plddts;
+            const sourcePae = resolvedPae !== null ? resolvedPae : frame.pae;
+
+            // Extract frame data for selected positions
+            const extractedFrame = {
+                coords: [],
+                // the file this frame came from: a copy is the same frames
+                // with fewer positions, so it is still that file's frame
+                name: frame.name,
+                chains: frame.chains ? [] : undefined,
+                plddts: sourcePlddt ? [] : undefined,
+                position_types: frame.position_types ? [] : undefined,
+                position_names: frame.position_names ? [] : undefined,
+                // a ligand atom's own name and element, where the frame has
+                // them - a copy of a ligand that lost these would lose its
+                // element colours with them
+                position_atoms: frame.position_atoms ? [] : undefined,
+                position_elements: frame.position_elements ? [] : undefined,
+                residue_numbers: frame.residue_numbers ? [] : undefined,
+                pae: undefined, // Will be handled separately
+                bonds: undefined, // Will be handled separately
+                // Keyed by position index, so a copy has to renumber it -
+                // see _remapSidechains. Named here because this object is
+                // built field by field and anything left out is dropped in
+                // silence, which is how the copy came to have no side
+                // chains at all. FILLED IN BELOW, once the coordinates
+                // exist: the remap has to ask whether the COPY can build a
+                // local frame at each anchor, and it cannot answer that
+                // against coordinates that have not been extracted yet.
+                sidechains: null,
+            };
+
+            // Extract data for each selected position
+            for (const idx of selectedIndices) {
+                if (idx >= 0 && idx < frame.coords.length) {
+                    extractedFrame.coords.push(frame.coords[idx]);
+
+                    if (frame.chains && idx < frame.chains.length) {
+                        extractedFrame.chains.push(frame.chains[idx]);
+                    }
+                    if (sourcePlddt && idx < sourcePlddt.length) {
+                        extractedFrame.plddts.push(sourcePlddt[idx]);
+                    }
+                    if (frame.position_types && idx < frame.position_types.length) {
+                        extractedFrame.position_types.push(frame.position_types[idx]);
+                    }
+                    if (frame.position_names && idx < frame.position_names.length) {
+                        extractedFrame.position_names.push(frame.position_names[idx]);
+                    }
+                    if (frame.position_atoms && idx < frame.position_atoms.length) {
+                        extractedFrame.position_atoms.push(frame.position_atoms[idx]);
+                    }
+                    if (frame.position_elements && idx < frame.position_elements.length) {
+                        extractedFrame.position_elements.push(frame.position_elements[idx]);
+                    }
+                    if (frame.residue_numbers && idx < frame.residue_numbers.length) {
+                        extractedFrame.residue_numbers.push(frame.residue_numbers[idx]);
+                    }
+                }
+            }
+
+            extractedFrame.sidechains = this._remapSidechains(
+                frame.sidechains, selectedIndices, frame.coords, extractedFrame.coords);
+
+            // Filter PAE matrix if present (use resolved PAE data)
+            // PAE can be Uint8Array (flattened, scaled x8) or 2D array (legacy)
+            if (sourcePae) {
+                const isUint8 = sourcePae instanceof Uint8Array;
+                const is2DArray = Array.isArray(sourcePae) && sourcePae.length > 0 && Array.isArray(sourcePae[0]);
+                const isFlatArray = Array.isArray(sourcePae) && sourcePae.length > 0 && !Array.isArray(sourcePae[0]);
+
+                if (isUint8 || isFlatArray) {
+                    // Uint8Array or flat array format: flattened N x N matrix
+                    // Calculate N from the original PAE size
+                    const originalN = Math.round(Math.sqrt(sourcePae.length));
+                    const newN = selectedIndices.length;
+
+                    // Create new flattened PAE array for extracted selection
+                    const newPAE = new Uint8Array(newN * newN);
+
+                    for (let i = 0; i < newN; i++) {
+                        for (let j = 0; j < newN; j++) {
+                            const originalI = selectedIndices[i];
+                            const originalJ = selectedIndices[j];
+
+                            // Bounds check
+                            if (originalI < originalN && originalJ < originalN) {
+                                const originalIdx = originalI * originalN + originalJ;
+                                newPAE[i * newN + j] = sourcePae[originalIdx];
+                            } else {
+                                newPAE[i * newN + j] = 0; // Default value
+                            }
+                        }
+                    }
+
+                    extractedFrame.pae = newPAE;
+                } else if (is2DArray) {
+                    // Legacy 2D array format
+                    const newPAE = [];
+                    for (let i = 0; i < selectedIndices.length; i++) {
+                        const row = [];
+                        for (let j = 0; j < selectedIndices.length; j++) {
+                            const originalI = selectedIndices[i];
+                            const originalJ = selectedIndices[j];
+                            if (originalI < sourcePae.length && originalJ < sourcePae[originalI].length) {
+                                row.push(sourcePae[originalI][originalJ]);
+                            } else {
+                                row.push(0); // Default value if out of bounds
+                            }
+                        }
+                        newPAE.push(row);
+                    }
+                    extractedFrame.pae = newPAE;
+                }
+            }
+
+            // Filter bonds if present
+            if (frame.bonds && Array.isArray(frame.bonds) && frame.bonds.length > 0) {
+                const selectedIndicesSet = new Set(selectedIndices);
+                // Create mapping from original indices to new indices
+                const indexMap = new Map();
+                for (let newIdx = 0; newIdx < selectedIndices.length; newIdx++) {
+                    indexMap.set(selectedIndices[newIdx], newIdx);
+                }
+
+                // Extract bonds where both endpoints are in selection
+                const extractedBonds = [];
+                for (const [idx1, idx2] of frame.bonds) {
+                    if (selectedIndicesSet.has(idx1) && selectedIndicesSet.has(idx2)) {
+                        const newIdx1 = indexMap.get(idx1);
+                        const newIdx2 = indexMap.get(idx2);
+                        extractedBonds.push([newIdx1, newIdx2]);
+                    }
+                }
+                if (extractedBonds.length > 0) {
+                    extractedFrame.bonds = extractedBonds;
+                }
+            }
+
+            out.push(extractedFrame);
+        }
+            return out;
+        }
+
+        _extractSelection() {
             // Check if we have a current object and frame
             if (!this.currentObjectName) {
                 console.warn("No object loaded. Cannot extract selection.");
-                return;
+                return null;
             }
 
             const object = this.objectsData[this.currentObjectName];
             if (!object || !object.frames || object.frames.length === 0) {
                 console.warn("No frames available. Cannot extract selection.");
-                return;
+                return null;
             }
 
             // Use first frame to determine selection (selection is frame-independent)
             const firstFrame = object.frames[0];
             if (!firstFrame || !firstFrame.coords) {
                 console.warn("First frame has no coordinates. Cannot extract selection.");
-                return;
+                return null;
             }
 
             // THE SELECTION, and only the selection. Copy used to fall back to
@@ -3556,7 +4967,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             if (selectedPositions.size === 0) {
                 console.warn("Nothing selected - select a region in the sequence view first.");
-                return;
+                return null;
             }
 
             // Convert to sorted array for consistent ordering
@@ -3634,144 +5045,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Create new object
             this.addObject(extractName);
 
-            // Extract all frames, not just the current one
-            for (let frameIndex = 0; frameIndex < object.frames.length; frameIndex++) {
-                const frame = object.frames[frameIndex];
-                if (!frame || !frame.coords) {
-                    continue; // Skip invalid frames
-                }
-
-                // Resolve inherited plddt and PAE data before extracting
-                const resolvedPlddt = this._resolvePlddtData(object, frameIndex);
-                const resolvedPae = window.PAE ? window.PAE.resolveData(object, frameIndex) : null;
-
-                // Use resolved data if available, otherwise use frame's own data
-                const sourcePlddt = resolvedPlddt !== null ? resolvedPlddt : frame.plddts;
-                const sourcePae = resolvedPae !== null ? resolvedPae : frame.pae;
-
-                // Extract frame data for selected positions
-                const extractedFrame = {
-                    coords: [],
-                    chains: frame.chains ? [] : undefined,
-                    plddts: sourcePlddt ? [] : undefined,
-                    position_types: frame.position_types ? [] : undefined,
-                    position_names: frame.position_names ? [] : undefined,
-                    residue_numbers: frame.residue_numbers ? [] : undefined,
-                    pae: undefined, // Will be handled separately
-                    bonds: undefined, // Will be handled separately
-                    // Keyed by position index, so a copy has to renumber it -
-                    // see _remapSidechains. Named here because this object is
-                    // built field by field and anything left out is dropped in
-                    // silence, which is how the copy came to have no side
-                    // chains at all. FILLED IN BELOW, once the coordinates
-                    // exist: the remap has to ask whether the COPY can build a
-                    // local frame at each anchor, and it cannot answer that
-                    // against coordinates that have not been extracted yet.
-                    sidechains: null,
-                };
-
-                // Extract data for each selected position
-                for (const idx of selectedIndices) {
-                    if (idx >= 0 && idx < frame.coords.length) {
-                        extractedFrame.coords.push(frame.coords[idx]);
-
-                        if (frame.chains && idx < frame.chains.length) {
-                            extractedFrame.chains.push(frame.chains[idx]);
-                        }
-                        if (sourcePlddt && idx < sourcePlddt.length) {
-                            extractedFrame.plddts.push(sourcePlddt[idx]);
-                        }
-                        if (frame.position_types && idx < frame.position_types.length) {
-                            extractedFrame.position_types.push(frame.position_types[idx]);
-                        }
-                        if (frame.position_names && idx < frame.position_names.length) {
-                            extractedFrame.position_names.push(frame.position_names[idx]);
-                        }
-                        if (frame.residue_numbers && idx < frame.residue_numbers.length) {
-                            extractedFrame.residue_numbers.push(frame.residue_numbers[idx]);
-                        }
-                    }
-                }
-
-                extractedFrame.sidechains = this._remapSidechains(
-                    frame.sidechains, selectedIndices, frame.coords, extractedFrame.coords);
-
-                // Filter PAE matrix if present (use resolved PAE data)
-                // PAE can be Uint8Array (flattened, scaled x8) or 2D array (legacy)
-                if (sourcePae) {
-                    const isUint8 = sourcePae instanceof Uint8Array;
-                    const is2DArray = Array.isArray(sourcePae) && sourcePae.length > 0 && Array.isArray(sourcePae[0]);
-                    const isFlatArray = Array.isArray(sourcePae) && sourcePae.length > 0 && !Array.isArray(sourcePae[0]);
-
-                    if (isUint8 || isFlatArray) {
-                        // Uint8Array or flat array format: flattened N x N matrix
-                        // Calculate N from the original PAE size
-                        const originalN = Math.round(Math.sqrt(sourcePae.length));
-                        const newN = selectedIndices.length;
-
-                        // Create new flattened PAE array for extracted selection
-                        const newPAE = new Uint8Array(newN * newN);
-
-                        for (let i = 0; i < newN; i++) {
-                            for (let j = 0; j < newN; j++) {
-                                const originalI = selectedIndices[i];
-                                const originalJ = selectedIndices[j];
-
-                                // Bounds check
-                                if (originalI < originalN && originalJ < originalN) {
-                                    const originalIdx = originalI * originalN + originalJ;
-                                    newPAE[i * newN + j] = sourcePae[originalIdx];
-                                } else {
-                                    newPAE[i * newN + j] = 0; // Default value
-                                }
-                            }
-                        }
-
-                        extractedFrame.pae = newPAE;
-                    } else if (is2DArray) {
-                        // Legacy 2D array format
-                        const newPAE = [];
-                        for (let i = 0; i < selectedIndices.length; i++) {
-                            const row = [];
-                            for (let j = 0; j < selectedIndices.length; j++) {
-                                const originalI = selectedIndices[i];
-                                const originalJ = selectedIndices[j];
-                                if (originalI < sourcePae.length && originalJ < sourcePae[originalI].length) {
-                                    row.push(sourcePae[originalI][originalJ]);
-                                } else {
-                                    row.push(0); // Default value if out of bounds
-                                }
-                            }
-                            newPAE.push(row);
-                        }
-                        extractedFrame.pae = newPAE;
-                    }
-                }
-
-                // Filter bonds if present
-                if (frame.bonds && Array.isArray(frame.bonds) && frame.bonds.length > 0) {
-                    const selectedIndicesSet = new Set(selectedIndices);
-                    // Create mapping from original indices to new indices
-                    const indexMap = new Map();
-                    for (let newIdx = 0; newIdx < selectedIndices.length; newIdx++) {
-                        indexMap.set(selectedIndices[newIdx], newIdx);
-                    }
-
-                    // Extract bonds where both endpoints are in selection
-                    const extractedBonds = [];
-                    for (const [idx1, idx2] of frame.bonds) {
-                        if (selectedIndicesSet.has(idx1) && selectedIndicesSet.has(idx2)) {
-                            const newIdx1 = indexMap.get(idx1);
-                            const newIdx2 = indexMap.get(idx2);
-                            extractedBonds.push([newIdx1, newIdx2]);
-                        }
-                    }
-                    if (extractedBonds.length > 0) {
-                        extractedFrame.bonds = extractedBonds;
-                    }
-                }
-
-                // Add extracted frame to new object
+            // the frames themselves, built by the shared subset builder
+            for (const extractedFrame of this._subsetFrames(object, selectedIndices)) {
                 this.addFrame(extractedFrame, extractName);
             }
 
@@ -3793,64 +5068,104 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
-            // Switch to the extracted object (synchronously)
-            // This properly sets currentObjectName, exits overlay mode if needed, and invalidates caches
-            this._switchToObject(extractName);
+            this._showObject(extractName);
+            return extractName;
+        }
 
-            // Load the first frame to populate coords and render the molecule
+        /**
+         * PUT AN OBJECT ON SCREEN, whole: switch to it, load its first frame,
+         * and bring everything that has its own copy of the data along - the
+         * PAE panel, the scatter plot, the object dropdown, the sequence strip.
+         *
+         * Lifted out of extractSelection so Cut can end the same way. Cut makes
+         * the copy, goes BACK to the source to take the residues out of it, and
+         * has to land on the new object afterwards; without this it would be a
+         * second copy of a dozen lines that were already easy to get wrong.
+         */
+        _showObject(name) {
+            // synchronous: sets currentObjectName, leaves overlay mode if it is
+            // on, and invalidates the caches
+            this._switchToObject(name);
             this.setFrame(0);
-
-            // CRITICAL: Update PAE renderer with the new object's PAE data
-            // The PAE renderer stores its own copy of paeData, so we must call setData()
-            // with the extracted object's PAE before calling render()
-            const extractedObj = this.objectsData[extractName];
-            if (window.PAE && extractedObj) {
-                window.PAE.updateFrame(this, extractedObj, 0);
-            }
-            if (this.paeRenderer && this.paeRenderer.render) {
-                this.paeRenderer.render();
-            }
-
-            // Update scatter visibility and data for extracted object
+            // The PAE renderer keeps its own copy of the matrix, so it is told
+            // rather than left to notice.
+            const obj = this.objectsData[name];
+            if (window.PAE && obj) window.PAE.updateFrame(this, obj, 0);
+            if (this.paeRenderer && this.paeRenderer.render) this.paeRenderer.render();
             this.updateScatterContainerVisibility();
-
-            // Update object dropdown to reflect the change
-            if (this.objectSelect) {
-                this.objectSelect.value = extractName;
-            }
-
-            // Reset selection to show all positions in extracted object
+            if (this.objectSelect) this.objectSelect.value = name;
+            // everything visible, since nothing here has been hidden yet
             this.setVisibility({
-                positions: new Set(),
-                chains: new Set(),
-                paeBoxes: [],
-                visibilityMode: 'default'
+                positions: new Set(), chains: new Set(), paeBoxes: [],
+                visibilityMode: 'default',
             });
-
             // DROP THE SELECTION. It holds position indices into the object
-            // that was current when the drag happened, and the extracted copy
-            // is now current - the same indices name different residues there,
+            // that was current when the drag happened, and a different object
+            // is current now - the same indices name different residues there,
             // or none at all. Carrying it over made a second Copy extract a
             // slice of the first copy rather than the region the user could
             // see highlighted.
             this.clearResidueSelection();
-
-            // Update UI controls to reflect new object
             this.updateUIControls();
-
-            // Force sequence viewer to rebuild for the new object
             if (typeof window !== 'undefined' && window.SEQ && window.SEQ.buildView) {
-                // Clear sequence viewer cache to force rebuild
-                if (window.SEQ.clear) {
-                    window.SEQ.clear();
-                }
-                // Rebuild sequence view for the new extracted object
+                if (window.SEQ.clear) window.SEQ.clear();
                 window.SEQ.buildView();
             }
+        }
 
+        /**
+         * CUT: the copy Copy makes, minus the residues from where they came.
+         *
+         * Not a button that presses the other two, because the order is the
+         * whole difficulty. Copy switches to the new object, and Delete works
+         * on whatever is current - so pressing them in sequence deletes the
+         * copy out of itself and leaves the original untouched, which is the
+         * opposite of a cut. This goes back to the source with the selection it
+         * had, takes them out there, and then lands on the piece that was cut.
+         *
+         * @returns {object|null} {name, removed} or null if there was nothing
+         *          to cut
+         */
+        _cutSelection() {
+            const src = this.currentObjectName;
+            const sel = (this.residueSelection && this.residueSelection.size)
+                ? new Set(this.residueSelection) : null;
+            if (!src || !sel) {
+                console.warn('Nothing selected - nothing to cut.');
+                return null;
+            }
+            const made = this._extractSelection();
+            if (!made) return null;
+            // ...back to where they came from, with the selection that named
+            // them, and out
+            this._switchToObject(src);
+            this.setResidueSelection(sel);
+            const removed = this._deleteSelection() ? sel.size : 0;
+            this._showObject(made);
+            return { name: made, removed };
         }
 
 
+
+        /**
+         * MOVE TO A FRAME DURING PLAYBACK, loading whatever that means.
+         *
+         * Three cases, and every animation and recording path needs all three:
+         * in overlay mode every frame is already in the array and loading one
+         * would destroy the merge; with several objects merged, the merge is
+         * rebuilt so the OTHER objects stay on screen; otherwise the frame is
+         * loaded as it always was. Each of these call sites used to test the
+         * overlay alone, so playing an animation with two objects up dropped
+         * one of them on the first tick.
+         */
+        _loadFrameForPlayback(frameIndex) {
+            if (this.overlayState && this.overlayState.enabled) return;
+            if ((this.multiState && this.multiState.enabled) || this._mergeWanted()) {
+                this._applyShownObjects(true);
+                return;
+            }
+            this._loadFrameData(frameIndex, true);
+        }
 
         // Set the current frame and render it
         setFrame(frameIndex, skipRender = false) {
@@ -3873,6 +5188,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (!this.currentObjectName) {
                 this.currentFrame = -1;
                 this.coords = [];
+                this._invalidateScreenProjection();
+                this._loadedKey = null;
                 clearCanvas();
                 if (this.paeRenderer) { this.paeRenderer.setData(null); }
                 this.updateUIControls();
@@ -3886,6 +5203,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.currentFrame = -1;
                 this.viewerState.currentFrame = -1;
                 this.coords = [];
+                this._invalidateScreenProjection();
+                this._loadedKey = null;
                 clearCanvas();
                 if (this.paeRenderer) { this.paeRenderer.setData(null); }
                 this.updateUIControls();
@@ -3900,7 +5219,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._invalidateShadowCache();
             this.lastShadowRotationMatrix = null;
 
-            // Commit 4: Make setFrame overlay-aware
+            // Make setFrame overlay-aware
             // In overlay mode, DON'T reload frame data (would destroy merged data)
             // Just update display and render
             if (this.overlayState.enabled) {
@@ -3910,6 +5229,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (!skipRender) {
                     this.render('setFrame-overlay');
                 }
+            } else if (this.multiState.enabled || this._mergeWanted()) {
+                // SEVERAL OBJECTS: the merge is rebuilt, not replaced by one
+                // frame. This object stepping a frame changes its share of the
+                // array and nothing else's, and loading the frame on its own
+                // would drop every other object off the screen - which is what
+                // switching the current object does, since that is a switch
+                // followed by setFrame(0). It is also how the merge STARTS:
+                // the second object to load makes drawnObjects answer with two
+                // names, and the next frame load builds it.
+                this._applyShownObjects(skipRender);
             } else {
                 // Normal mode: load individual frame data
                 this._loadFrameData(frameIndex, true); // Load without render
@@ -4221,17 +5550,35 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const containerElement = this.canvas ? this.canvas.closest('.py2dmol-container') ||
                 this.canvas.parentElement?.closest('#mainContainer')?.parentElement : null;
 
-            // Count number of objects
-            const objectCount = Object.keys(this.objectsData).length;
-
-            // Handle object selection dropdown visibility
+            // THE OBJECT ROW IS ALWAYS THERE. It used to appear only with a
+            // second object, on the reasoning that there is nothing to pick
+            // between with one - but the row is now what the panels below it
+            // act on: the picker names the object whose style, clip and
+            // settings the rest of the panel is editing. A control that
+            // appears once a second file loads makes that relationship
+            // invisible until then, and Multi unavailable for the one object
+            // that IS loaded.
             if (this.objectSelect) {
-                // Hide object dropdown if only 1 object
-                const objectSelectParent = this.objectSelect.closest('.toggle-item') ||
-                    this.objectSelect.parentElement;
-                if (objectSelectParent) {
-                    objectSelectParent.style.display = (objectCount <= 1) ? 'none' : 'flex';
-                }
+                // The picker is not shown at all any more - the strip's
+                // sections say which object you are working on, and clicking
+                // in one is how you change it. The element stays because
+                // everything drives the current object through it.
+                // ...found the way the picker is: within this viewer's own
+                // container if it lives there, and from the document only when
+                // the page holds exactly one of them. Several viewers can share
+                // a document, and the first match would be another's.
+                const doc = this.objectSelect.ownerDocument || document;
+                const only = (id) => {
+                    const mine = containerElement && containerElement.querySelector('#' + id);
+                    if (mine) return mine;
+                    const all = doc.querySelectorAll('#' + id);
+                    return all.length === 1 ? all[0] : null;
+                };
+                const row = only('objectRow');
+                if (row) row.style.display = 'flex';
+                // ...the LIST still follows the mode, and the mode is the
+                // button's business: hiding it here on a count would close a
+                // list the user had opened.
 
                 // Also handle container visibility (for backward compatibility)
                 if (containerElement) {
@@ -4386,7 +5733,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         /**
          * Merge a range of frames into a single coordinate/property set with frameIdMap tracking.
-         * This is the SINGLE SOURCE OF TRUTH for frame merging logic (Commit 2 refactor).
+         * This is the SINGLE SOURCE OF TRUTH for frame merging logic.
          * Used by both toggleOverlay() and addFrame() to ensure consistent behavior.
          *
          * @param {Object} object - The object containing frames to merge
@@ -4430,6 +5777,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const mergedChains = [];
             const mergedPositionTypes = [];
             const mergedPositionNames = [];
+            // ligand atom names and elements, blank-filled for the frames that
+            // have none so the merged arrays stay in step with the coordinates
+            const mergedPositionAtoms = [];
+            const mergedPositionElements = [];
             const mergedResidueNumbers = [];
             const mergedBonds = [];
             const frameIdMap = [];
@@ -4466,10 +5817,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const residueNumbers = frame.residue_numbers && frame.residue_numbers.length === frameAtomCount ?
                     frame.residue_numbers : Array.from({ length: frameAtomCount }, (_, i) => i + 1);
 
-                mergedPlddts.push(...plddts);
-                mergedPositionTypes.push(...positionTypes);
-                mergedPositionNames.push(...positionNames);
-                mergedResidueNumbers.push(...residueNumbers);
+                // ONE AT A TIME, not spread: `out.push(...src)` passes every
+                // element as an argument and blows the stack between 100k and
+                // 125k of them. A capsid overlaid on itself reaches that on its
+                // own, and the failure is a thrown RangeError in the middle of
+                // a load, not a slow frame.
+                const append = (out, src) => {
+                    for (let k = 0; k < src.length; k++) out.push(src[k]);
+                };
+                append(mergedPlddts, plddts);
+                append(mergedPositionTypes, positionTypes);
+                append(mergedPositionNames, positionNames);
+                append(mergedPositionAtoms, (frame.position_atoms
+                    && frame.position_atoms.length === frameAtomCount
+                    ? frame.position_atoms : Array(frameAtomCount).fill('')));
+                append(mergedPositionElements, (frame.position_elements
+                    && frame.position_elements.length === frameAtomCount
+                    ? frame.position_elements : Array(frameAtomCount).fill('')));
+                append(mergedResidueNumbers, residueNumbers);
 
                 // Preserve original chain IDs from this frame
                 for (let i = 0; i < frameAtomCount; i++) {
@@ -4503,8 +5868,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 chains: mergedChains,
                 position_types: mergedPositionTypes,
                 position_names: mergedPositionNames,
+                position_atoms: mergedPositionAtoms,
+                position_elements: mergedPositionElements,
                 residue_numbers: mergedResidueNumbers,
-                pae: this.pae || null,
+                // NO PAE ACROSS FRAMES. A matrix is a square over one
+                // structure's residues, and an overlay holds several frames of
+                // it at once; there is no such thing over the lot. This read
+                // `this.pae`, which nothing has ever assigned - a dead
+                // reference that reads as if the renderer kept one.
+                pae: null,
                 bonds: mergedBonds.length > 0 ? mergedBonds : null,
                 frameIdMap: frameIdMap,
                 autoColor: autoColor,
@@ -4514,13 +5886,464 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
+         * ONE OBJECT'S FRAME, WITH EVERYTHING IT INHERITS RESOLVED.
+         *
+         * A frame stores only what changed: plddts, PAE and bonds may live on
+         * the object or on an earlier frame instead. Both the single-object
+         * load and the multi-object merge need the resolved article, so it is
+         * built in one place.
+         */
+        _resolvedFrame(object, frameIndex) {
+            const data = object?.frames?.[frameIndex];
+            if (!data) return null;
+            const resolvedPlddt = this._resolvePlddtData(object, frameIndex);
+            const resolvedPae = window.PAE ? window.PAE.resolveData(object, frameIndex)
+                : (data.pae || null);
+            const resolved = {
+                ...data,
+                plddts: resolvedPlddt ?? data.plddts ?? null,
+                pae: resolvedPae !== null ? resolvedPae : data.pae,
+                // THE FRAME'S OWN BONDS COME FIRST. This asked the object
+                // and nothing else, so the frame's list - the one _subsetFrames
+                // renumbers when a Cut or a Delete rewrites the positions - was
+                // never read: after cutting a chain out, the object still held
+                // the bonds of the structure that was there before, and every
+                // ligand in what was left drew as loose atoms with its sticks
+                // either gone or joining the wrong pair. The object's list
+                // stays as the fallback for frames that carry none of their
+                // own, which is most of a trajectory.
+                bonds: (data.bonds && data.bonds.length) ? data.bonds
+                    : (object.bonds || null)
+            };
+            return object.alignTransform ? this._transformedFrame(resolved, object.alignTransform)
+                : resolved;
+        }
+
+        /**
+         * ONE OBJECT'S FRAME, MOVED BY ITS ALIGNMENT.
+         *
+         * WHERE AN OBJECT SITS IS STILL THE FILE'S BUSINESS - the coordinates
+         * on disk are never rewritten. An alignment is a rigid motion held on
+         * the object as {t, u} and applied HERE, on the way to the screen,
+         * which buys three things a rewrite would not: aligning again starts
+         * from the original coordinates rather than compounding, undoing is
+         * dropping a field, and a re-fetch of the object does not silently
+         * revert it.
+         *
+         * It is applied in _resolvedFrame because that is the ONE place both
+         * the single-object load and the multi-object merge pass through. Doing
+         * it in the merge alone would have left an aligned object shown BY
+         * ITSELF drawn where the file put it, which is the same picture as "the
+         * alignment was forgotten".
+         *
+         * SIDE CHAINS COME ALONG FOR FREE, almost. They are stored as
+         * coefficients in a local frame built from the backbone (see
+         * _mergeSidechainTables), and a rigid motion of the backbone carries
+         * that frame with it - so most of the table needs nothing. The
+         * exception is rows with frameOf === -1, whose coefficients are a WORLD
+         * offset from the owner because the copy they came from was too short
+         * to be framed. A world offset has to be rotated by hand; left alone,
+         * those atoms would keep the old orientation while their residue turned.
+         */
+        _transformedFrame(frame, xf) {
+            const t = xf.t; const u = xf.u;
+            const fc = frame.coords || [];
+            const coords = new Array(fc.length);
+            for (let i = 0; i < fc.length; i++) {
+                const c = fc[i];
+                if (!c) { coords[i] = c; continue; }
+                const x = c[0]; const y = c[1]; const z = c[2];
+                coords[i] = [
+                    t[0] + u[0] * x + u[1] * y + u[2] * z,
+                    t[1] + u[3] * x + u[4] * y + u[5] * z,
+                    t[2] + u[6] * x + u[7] * y + u[8] * z
+                ];
+            }
+            let sidechains = frame.sidechains;
+            if (sidechains && sidechains.frameOf && sidechains.coef) {
+                let loose = false;
+                for (let k = 0; k < sidechains.frameOf.length; k++) {
+                    if (sidechains.frameOf[k] === -1) { loose = true; break; }
+                }
+                if (loose) {
+                    const coef = Float32Array.from(sidechains.coef);
+                    for (let k = 0; k < sidechains.frameOf.length; k++) {
+                        if (sidechains.frameOf[k] !== -1) continue;
+                        const x = coef[k * 3]; const y = coef[k * 3 + 1]; const z = coef[k * 3 + 2];
+                        coef[k * 3] = u[0] * x + u[1] * y + u[2] * z;
+                        coef[k * 3 + 1] = u[3] * x + u[4] * y + u[5] * z;
+                        coef[k * 3 + 2] = u[6] * x + u[7] * y + u[8] * z;
+                    }
+                    sidechains = { ...sidechains, coef };
+                }
+            }
+            return { ...frame, coords, sidechains };
+        }
+
+        /**
+         * The frame an object is PARKED ON - live for the current object,
+         * saved for every other. Read by the merge and by the aligner, which
+         * must agree: aligning a trajectory on frame 12 and drawing frame 0
+         * would superpose one thing and show another.
+         */
+        _parkedFrameIndex(name) {
+            const object = this.objectsData?.[name];
+            if (!object || !object.frames?.length) return -1;
+            const idx = (name === this.currentObjectName)
+                ? this.currentFrame
+                : (object.viewerState?.currentFrame ?? 0);
+            return Math.max(0, Math.min(idx | 0, object.frames.length - 1));
+        }
+
+        /**
+         * ALIGN OTHER OBJECTS ONTO THE CURRENT SELECTION.
+         *
+         * The reference is THE SELECTED RESIDUES, not the object they are in:
+         * picking one chain of a complex, or one domain of a chain, aligns
+         * everything else onto that much and nothing more. Their coordinates
+         * are read from the MERGED array - where they are on screen right now,
+         * alignment and all - so aligning B onto A and then C onto A puts all
+         * three in one frame of reference rather than two.
+         *
+         * The reference object is whichever object owns the selection, found
+         * with ownerOf, and it never moves. A selection spanning two objects is
+         * refused rather than guessed at: there is no single thing to align to.
+         *
+         * @param {'all'|'visible'} mode  every loaded object, or only the drawn
+         * @returns {Promise<{ref, refLen, results, skipped, inWorker}>}
+         */
+        async alignToSelection(mode) {
+            if (!window.Align) throw new Error('the aligner is not loaded');
+            const sel = this.residueSelection;
+            if (!sel || sel.size === 0) throw new Error('nothing is selected');
+
+            // WHOSE selection is it? One object's, or this cannot run.
+            let refName = null;
+            for (const i of sel) {
+                const owner = this.ownerOf(i);
+                const name = owner ? owner.name : this.currentObjectName;
+                if (refName === null) refName = name;
+                else if (refName !== name) {
+                    throw new Error('the selection spans more than one object');
+                }
+            }
+            if (!refName) throw new Error('nothing is selected');
+
+            // The reference, out of the merged array: exactly the selected
+            // C-alphas, in position order, as ONE chain. A selection crossing a
+            // chain break is the user's to make - it is still a set of points
+            // to superpose onto.
+            // ...as ONE chain: chainsOf is told nothing about chain ids, so every
+            // selected C-alpha lands in the same bucket whatever chain it is in.
+            const refChains = window.Align.chainsOf(
+                this.coords, this.positionTypes, null, sel);
+            if (!refChains.length) {
+                throw new Error(`the selection has fewer than ${window.Align.MIN_CHAIN} protein residues`);
+            }
+            const ref = { flat: refChains[0].flat, len: refChains[0].len };
+
+            const pool = (mode === 'visible')
+                ? this.drawnObjects()
+                : Object.keys(this.objectsData || {});
+            const targets = [];
+            const skipped = [];
+            for (const name of pool) {
+                if (name === refName) continue;
+                const idx = this._parkedFrameIndex(name);
+                if (idx < 0) continue;
+                // ...THE COORDINATES ON DISK, not the ones on screen. Aligning
+                // an object a second time must start where its file put it,
+                // or every run compounds on the last.
+                const frame = this.objectsData[name].frames[idx];
+                const fc = frame.coords || [];
+                if (!fc.length) continue;
+                const chains = window.Align.chainsOf(fc, frame.position_types,
+                    frame.chains || null, null);
+                if (!chains.length) { skipped.push(name); continue; }
+                targets.push({ name, chains });
+            }
+            if (!targets.length) {
+                throw new Error(skipped.length
+                    ? 'no other object has a protein chain to align'
+                    : 'there is nothing else to align');
+            }
+
+            const out = await window.Align.superpose({ ref, targets },
+                (done, total) => { if (this.onAlignProgress) this.onAlignProgress(done, total); });
+            for (const r of (out.results || [])) {
+                this.setAlignTransform(r.name, { t: r.t, u: r.u, ref: refName, tm: r.tm });
+            }
+            this._reapplyAfterAlign();
+            return { ref: refName, refLen: ref.len, results: out.results || [],
+                skipped, inWorker: out.inWorker };
+        }
+
+        /** Hang a rigid motion on an object, or drop it with null. */
+        setAlignTransform(name, xf) {
+            const object = this.objectsData?.[name];
+            if (!object) return false;
+            if (xf) object.alignTransform = xf;
+            else delete object.alignTransform;
+            return true;
+        }
+
+        /** Every object back where its file put it. */
+        clearAlignments() {
+            let n = 0;
+            for (const name of Object.keys(this.objectsData || {})) {
+                if (this.objectsData[name].alignTransform) {
+                    delete this.objectsData[name].alignTransform;
+                    n++;
+                }
+            }
+            if (n) this._reapplyAfterAlign();
+            return n;
+        }
+
+        /** Is anything currently moved off its file coordinates? */
+        anyAlignment() {
+            return Object.keys(this.objectsData || {})
+                .some(n => !!this.objectsData[n].alignTransform);
+        }
+
+        /**
+         * Rebuild the picture after the coordinates moved - WITHOUT re-framing.
+         * The reference did not move, so the camera still holds what it held;
+         * re-framing here would zoom out over structures that have just been
+         * brought together, which is the opposite of what was asked for.
+         */
+        _reapplyAfterAlign() {
+            this._invalidateSegmentCache();
+            if (this.multiState && this.multiState.enabled) {
+                this._applyShownObjects(false, { reframe: false });
+            } else {
+                this._loadFrameData(this.currentFrame >= 0 ? this.currentFrame : 0, true);
+                this.render('aligned');
+            }
+        }
+
+        /**
+         * SEVERAL OBJECTS AS ONE COORDINATE ARRAY.
+         *
+         * The overlay merges the frames of one object (_mergeFrameRange); this
+         * merges the current frame of several objects, and the two are
+         * deliberately the same shape. Downstream nothing knows the difference:
+         * one array of positions, one bond list with the indices offset, and a
+         * map saying where each position came from - handed to the cartoon as a
+         * bonding group, exactly as frameIdMap is, so nothing joins across
+         * sources.
+         *
+         * That the merge is real and not a composite is what buys shadowing,
+         * depth sorting, picking and both GPU paths with no new code. The price
+         * is that ONE style draws the lot; see MULTI_OBJECT_PLAN.md.
+         *
+         * @param {string[]} names - objects to merge, in drawing order
+         * @returns {Object|null} merged data, plus sourceIdMap (position ->
+         *   index into sourceNames), sourceNames and sourceOffsets
+         */
+        _mergeObjects(names) {
+            const list = (names || []).filter(
+                n => this.objectsData?.[n]?.frames?.length);
+            if (!list.length) return null;
+
+            const coords = [];
+            const plddts = [];
+            const chains = [];
+            const positionTypes = [];
+            const positionNames = [];
+            const positionAtoms = [];
+            const positionElements = [];
+            const residueNumbers = [];
+            const bonds = [];
+            const sourceIdMap = [];
+            const sourceOffsets = [];
+            const sourceNames = [];
+            // ...and which frame each was taken from, so the colour hierarchy
+            // can ask a source's OWN frame for a frame-level colour
+            const sourceFrames = [];
+            const sourceAutoColors = [];
+            const sideRows = [];
+            let firstPae;
+
+            for (const name of list) {
+                const object = this.objectsData[name];
+                // The frame each object is PARKED ON. The current object's is
+                // live in this.currentFrame; every other object's was saved
+                // when it was switched away from.
+                const frameIdx = this._parkedFrameIndex(name);
+                if (frameIdx < 0) continue;
+
+                const frame = this._resolvedFrame(object, frameIdx);
+                if (!frame) continue;
+
+                const fc = frame.coords || [];
+                const n = fc.length;
+                if (!n) continue;
+
+                const offset = coords.length;
+                const src = sourceNames.length;
+                sourceNames.push(name);
+                sourceOffsets.push(offset);
+                sourceFrames.push(frameIdx);
+
+                const fill = (arr, fallback) => (arr && arr.length === n) ? arr : fallback();
+                // APPENDED ONE AT A TIME, not spread. `out.push(...src)` passes
+                // every element as an argument and blows the stack somewhere
+                // between 100k and 125k of them - which a capsid or a ribosome
+                // reaches on its own, and this is the path that puts two of
+                // them in one array. Measured: 100,000 fine, 125,000 throws.
+                const append = (out, src) => {
+                    for (let k = 0; k < src.length; k++) out.push(src[k]);
+                };
+                const fChains = fill(frame.chains, () => Array(n).fill('A'));
+
+                for (let i = 0; i < n; i++) {
+                    coords.push(fc[i]);
+                    sourceIdMap.push(src);
+                    chains.push(fChains[i] || 'A');
+                }
+                append(plddts, fill(frame.plddts, () => Array(n).fill(50.0)));
+                append(positionTypes, fill(frame.position_types, () => Array(n).fill('P')));
+                append(positionNames, fill(frame.position_names, () => Array(n).fill('UNK')));
+                append(positionAtoms, fill(frame.position_atoms, () => Array(n).fill('')));
+                append(positionElements, fill(frame.position_elements, () => Array(n).fill('')));
+                append(residueNumbers, fill(frame.residue_numbers,
+                    () => Array.from({ length: n }, (_, i) => i + 1)));
+
+                for (const b of (frame.bonds || [])) {
+                    bonds.push([b[0] + offset, b[1] + offset]);
+                }
+                sideRows.push({ table: frame.sidechains || null, offset });
+                if (firstPae === undefined) firstPae = frame.pae || null;
+                // EACH OBJECT RESOLVES ITS OWN AUTO COLOUR, from its own
+                // chains and its own PAE - a monomer rainbows, a complex
+                // colours by chain, a predicted model by confidence, exactly
+                // as each would on its own. One answer for the whole merge
+                // made a dimer beside a monomer look like neither.
+                const ownChains = new Set(fChains);
+                sourceAutoColors.push(
+                    (frame.pae && frame.pae.length) ? 'plddt'
+                        : (ownChains.size > 1 ? 'chain' : 'rainbow'));
+            }
+
+            if (!coords.length) return null;
+
+            // PAE is a matrix over ONE structure's residues; there is no such
+            // thing across two. Kept when a single object is merged so that
+            // path stays identical to loading it on its own, dropped otherwise
+            // rather than quietly indexed into the wrong rows.
+            const pae = (sourceNames.length === 1) ? (firstPae || null) : null;
+
+            let autoColor;
+            if (pae && pae.length > 0) autoColor = 'plddt';
+            else if (new Set(chains).size > 1) autoColor = 'chain';
+            else autoColor = 'rainbow';
+
+            return {
+                coords,
+                plddts,
+                chains,
+                position_types: positionTypes,
+                position_names: positionNames,
+                position_atoms: positionAtoms,
+                position_elements: positionElements,
+                residue_numbers: residueNumbers,
+                pae,
+                bonds: bonds.length > 0 ? bonds : null,
+                sidechains: this._mergeSidechainTables(sideRows),
+                sourceIdMap,
+                sourceNames,
+                sourceOffsets,
+                sourceFrames,
+                sourceAutoColors,
+                autoColor
+            };
+        }
+
+        /**
+         * The side tables of the merged objects, concatenated.
+         *
+         * Every index in a table is relative to its own object: `pos` and
+         * `frameOf` are positions, `bonds` and `toBackbone` are ROWS of the
+         * table itself. Both get their own offset. Without this a merged view
+         * would grow side chains on the wrong residues rather than none.
+         *
+         * @param {Array<{table: Object|null, offset: number}>} parts
+         */
+        _mergeSidechainTables(parts) {
+            const live = parts.filter(p => p.table && p.table.pos && p.table.pos.length);
+            if (!live.length) return null;
+            if (live.length === 1 && live[0].offset === 0) return live[0].table;
+
+            const pos = []; const frameOf = []; const coef = [];
+            const bonds = []; const toBackbone = []; const onBackbone = [];
+            const names = []; const elements = [];
+            let rowBase = 0;
+            for (const { table, offset } of live) {
+                const rows = table.pos.length;
+                for (let i = 0; i < rows; i++) {
+                    pos.push(table.pos[i] + offset);
+                    frameOf.push(table.frameOf[i] + offset);
+                    onBackbone.push(table.onBackbone ? table.onBackbone[i] : 0);
+                    names.push(table.names[i]);
+                    elements.push(table.elements[i]);
+                }
+                for (let i = 0; i < table.coef.length; i++) coef.push(table.coef[i]);
+                for (let i = 0; i < table.bonds.length; i++) bonds.push(table.bonds[i] + rowBase);
+                for (let i = 0; i < table.toBackbone.length; i++) {
+                    toBackbone.push(table.toBackbone[i] + rowBase);
+                }
+                rowBase += rows;
+            }
+            return {
+                pos: new Int32Array(pos),
+                frameOf: new Int32Array(frameOf),
+                coef: new Float32Array(coef),
+                bonds: new Int32Array(bonds),
+                toBackbone: new Int32Array(toBackbone),
+                names,
+                elements,
+                onBackbone: new Uint8Array(onBackbone)
+            };
+        }
+
+        /**
+         * THE OVERLAY BUTTON SAYS WHETHER OVERLAY IS ON.
+         *
+         * It used to be styled inside the toggle, which was the only thing that
+         * could change the state - until showing several objects started
+         * putting the overlay down on its way in. The button then stayed lit
+         * over a view that was not overlaid, which is worse than no indicator:
+         * pressing it again would have turned overlay ON and read as off.
+         */
+        _syncOverlayButton() {
+            if (!this.overlayButton) return;
+            const on = !!(this.overlayState && this.overlayState.enabled);
+            this.overlayButton.classList.toggle('btn-primary', on);
+            this.overlayButton.classList.toggle('btn-secondary', !on);
+        }
+
+        /**
          * Atomically enter overlay mode for the current object.
          * Merges all frames and loads the merged data.
-         * This is the SINGLE PATH to enter overlay mode (Commit 3 refactor).
+         * This is the SINGLE PATH to enter overlay mode.
          */
         _enterOverlayMode(object, skipRender = false) {
             if (!object || object.frames.length === 0) {
                 return false;
+            }
+
+            // THE TWO MERGES ARE EXCLUSIVE - the object merge puts one frame of
+            // several objects in the array, this one puts every frame of one.
+            // Entering here with the other still on left a coordinate array
+            // described by two maps at once: sourceGroups would answer with the
+            // frames while every per-object set was still read at merge
+            // offsets. The objects are put down first, and the shown set is
+            // left alone so leaving overlay can pick them back up.
+            if (this.multiState && this.multiState.enabled) {
+                const keep = Array.from(this.shownObjects);
+                this.setShownObjects([this.currentObjectName], true);
+                this._overlaySuspendedShow = keep;
             }
 
             // Merge all frames
@@ -4534,6 +6357,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.overlayState.frameIdMap = merged.frameIdMap;
             this.overlayState.autoColor = merged.autoColor;
             this.lastOperationMode = 'overlay-enter';
+            this._syncOverlayButton();
 
             // Disable speed button in overlay mode (no animation)
             if (this.speedButton) {
@@ -4556,7 +6380,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         /**
          * Atomically exit overlay mode and return to single frame view.
          * Clears all overlay state and loads the target frame.
-         * This is the SINGLE PATH to exit overlay mode (Commit 3 refactor).
+         * This is the SINGLE PATH to exit overlay mode.
          */
         _exitOverlayMode(object, targetFrame = 0, skipRender = false) {
             if (!object || object.frames.length === 0) {
@@ -4571,6 +6395,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.overlayState.frameIdMap = null;
             this.overlayState.autoColor = null;
             this.lastOperationMode = 'overlay-exit';
+            this._syncOverlayButton();
 
             // Re-enable speed button when exiting overlay mode
             if (this.speedButton) {
@@ -4581,6 +6406,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Invalidate segment cache (critical after exiting overlay)
             this._invalidateSegmentCache();
+
+            // ...and pick the objects back up, if entering overlay put them
+            // down. Not when the object merge itself is what asked to leave -
+            // it is about to load its own array, and re-merging here would have
+            // the two calling each other.
+            const resume = this._overlaySuspendedShow;
+            this._overlaySuspendedShow = null;
+            if (resume && resume.length > 1 && !this._leavingOverlayForMerge) {
+                this.overlayState.enabled = false;
+                this.setShownObjects(resume.filter((n) => this.objectsData[n]), skipRender);
+                return true;
+            }
 
             // Load the target single frame (NOT merged)
             this._loadFrameData(targetFrame, skipRender);
@@ -4600,7 +6437,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const object = this.objectsData[this.currentObjectName];
             if (!object || object.frames.length === 0) return;
 
-            // Use atomic state transition methods (Commit 3)
+            // Use atomic state transition methods
             if (!this.overlayState.enabled) {
                 // Enter overlay mode using unified method
                 this._enterOverlayMode(object, false);
@@ -4610,17 +6447,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this._exitOverlayMode(object, targetFrame, false);
             }
 
-            // Update overlay button styling - checkbox style
-            if (this.overlayButton) {
-                if (this.overlayState.enabled) {
-                    this.overlayButton.classList.remove('btn-secondary');
-                    this.overlayButton.classList.add('btn-primary');
-                } else {
-                    this.overlayButton.classList.remove('btn-primary');
-                    this.overlayButton.classList.add('btn-secondary');
-                }
-            }
-
+            this._syncOverlayButton();
             this.updateUIControls();
         }
 
@@ -4634,10 +6461,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // If we're at the last frame and not recording, reset to first frame for looping
             if (!this.isRecording && this.currentFrame >= object.frames.length - 1) {
                 this.currentFrame = 0;
-                // In overlay mode, don't reload frame data (would destroy merged data)
-                if (!this.overlayState.enabled) {
-                    this._loadFrameData(0, true); // Load without render
-                }
+                this._loadFrameForPlayback(0);
             }
 
             this.isPlaying = true;
@@ -4665,10 +6489,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                         // Update the frame index - render loop will pick it up
                         this.currentFrame = nextFrame;
-                        // In overlay mode, don't reload frame data (would destroy merged data)
-                        if (!this.overlayState.enabled) {
-                            this._loadFrameData(nextFrame, true); // Load without render
-                        }
+                        this._loadFrameForPlayback(nextFrame);
                         this.updateUIControls(); // Update slider
                     } else {
                         this.stopAnimation();
@@ -4716,12 +6537,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 return;
             }
 
-            // Load and render current frame
-            // In overlay mode, don't reload frame data (would destroy merged data)
-            if (!this.overlayState.enabled) {
-                this._loadFrameData(currentFrame, true); // Load without render
+            // Load and render current frame - see _loadFrameForPlayback
+            this._loadFrameForPlayback(currentFrame);
+            // The sink renders when it is recording at its own size (see
+            // _makeVideoSink); rendering here as well would draw every frame
+            // twice, and on the GPU path at two different sizes, which rebuilds
+            // the mesh both times.
+            if (this._recSpin) {
+                this.viewerState.rotation = multiplyMatrices(
+                    rotationMatrixY((2 * Math.PI * this._recSpin.turns * currentFrame)
+                        / this._recSpin.n),
+                    this._recSpin.R0);
             }
-            this.render();
+            if (!this._recSink || !this._recSink.rendersItself) this.render();
             this.lastRenderedFrame = currentFrame;
             this.updateUIControls();
 
@@ -4738,10 +6566,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (this.updateCompositeCanvas) {
                     this.updateCompositeCanvas();
                 }
+                // ...and hand the frame over. The stream used to be left to
+                // sample the canvas on its own clock, which is why every frame
+                // had to be held on screen for 50 ms whatever the frame rate
+                // asked for; the sink takes the frame that was just rendered.
+                if (this._recSink) this._recSink.frame();
 
-                // Give MediaRecorder time to capture (MediaRecorder captures at 30fps = ~33ms per frame)
-                // Use animationSpeed or minimum 50ms to ensure capture
-                const captureDelay = Math.max(50, this.animationSpeed);
+                // PACED BY THE FRAME RATE THAT WAS ASKED FOR. A recording is
+                // timestamped by the wall clock, so how long each frame is held
+                // here IS the frame rate of the file - and this used to hold
+                // each one for the viewer's animation speed instead, which has
+                // nothing to do with the FPS box. Floored at 60 fps: past that
+                // the render cannot keep up and the pacing stops meaning
+                // anything.
+                const fps2 = (this._recSink && this._recSink.fps) || 30;
+                const captureDelay = Math.max(1000 / 60, 1000 / fps2);
 
                 this.recordingFrameSequence = setTimeout(() => {
                     // Advance to next frame
@@ -4753,16 +6592,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         // Toggle recording
-        toggleRecording() {
+        toggleRecording(opts) {
             if (this.isRecording) {
                 this.stopRecording();
             } else {
-                this.startRecording();
+                this.startRecording(opts);
             }
         }
 
         // Start recording animation
-        startRecording() {
+        startRecording(opts) {
             // Check if we have frames to record
             if (!this.currentObjectName) {
                 console.warn("Cannot record: No object loaded");
@@ -4785,17 +6624,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Stop any existing animation first
             this.stopAnimation();
 
-            // Clean up any existing recording state first
-            if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-                try {
-                    this.mediaRecorder.stop();
-                } catch (e) {
-                    console.warn("Error stopping existing recorder:", e);
-                }
+            // Clean up any recording still standing
+            if (this._recSink) {
+                try { this._recSink.cancel(); } catch (e) { /* already gone */ }
+                this._recSink = null;
             }
-            this._stopRecordingTracks();
-            this.mediaRecorder = null;
-            this.recordedChunks = [];
 
             // Set recording state
             this.isRecording = true;
@@ -4824,8 +6657,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 scatterContainer.style.display !== 'none' &&
                 this.scatterRenderer;
 
-            // Capture stream from canvas at 30fps for smooth playback
-            const fps = 30;
+            // The panel's settings drive this recording too - format, size,
+            // frame rate and bitrate all come from captureOpts through the
+            // shared sink. It used to be a fourth copy of the MediaRecorder
+            // dance, hard-coded to 30 fps and 20 Mbps.
+            const vopts = Object.assign(this.captureOpts(), opts || {});
+            const fps = Math.max(5, Math.min(60, Number(vopts.fps) || 30));
+            // ...AND IT CAN TURN WHILE IT PLAYS, if that is what was asked for.
+            // One revolution over the whole trajectory, driven per frame like
+            // the other two recorders drive theirs, rather than left to
+            // auto-rotate's wall clock - so the file does not depend on how
+            // fast this machine happens to render.
+            this._recSpin = vopts.spin
+                ? { R0: this.viewerState.rotation.map((row) => [...row]),
+                    n: Math.max(2, object.frames.length), was: this.autoRotate,
+                    turns: Math.max(1, Math.min(10, Number(vopts.rotations) || 1)) }
+                : null;
+            if (this._recSpin) this.autoRotate = false;
 
             if (hasScatter) {
                 // Create composite canvas for both molecular viewer and scatter plot
@@ -4859,54 +6707,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     ctx.drawImage(scatterCanvas, molWidth, 0, scatterScaledWidth, scatterScaledHeight);
                 };
 
-                // Capture stream from composite canvas
-                // Note: composite is updated on-demand in recordFrameSequence() after each render
-                this.recordingStream = this.recordingCompositeCanvas.captureStream(fps);
-            } else {
-                // No scatter plot - capture only the molecular viewer canvas
-                this.recordingStream = this.canvas.captureStream(fps);
-            }
-
-            // Set up MediaRecorder with very low compression (very high quality)
-            const options = {
-                mimeType: 'video/webm;codecs=vp9', // VP9 for better quality
-                videoBitsPerSecond: 20000000 // 20 Mbps for very high quality (very low compression)
-            };
-
-            // Fallback to VP8 if VP9 not supported
-            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options.mimeType = 'video/webm;codecs=vp8';
-                options.videoBitsPerSecond = 15000000; // 15 Mbps for VP8
-            }
-
-            // Fallback to default if neither supported
-            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options.mimeType = 'video/webm';
-                options.videoBitsPerSecond = 15000000;
             }
 
             try {
-                this.mediaRecorder = new MediaRecorder(this.recordingStream, options);
-
-                this.mediaRecorder.ondataavailable = (event) => {
-                    if (event.data && event.data.size > 0) {
-                        this.recordedChunks.push(event.data);
-                    }
-                };
-
-                this.mediaRecorder.onstop = () => {
-                    this.finishRecording();
-                };
-
-                this.mediaRecorder.onerror = (event) => {
-                    console.error("MediaRecorder error:", event.error);
-                    this.isRecording = false;
-                    this.updateUIControls();
-                    alert("Recording error: " + event.error.message);
-                };
-
-                // Start recording
-                this.mediaRecorder.start(100); // Collect data every 100ms
+                // A COMPOSITE IS RECORDED AS IT IS. The scatter plot beside the
+                // structure is a second canvas drawn into a third; re-rendering
+                // that at a larger size would mean re-rendering the scatter
+                // too, which is not this renderer's to do. So the size option
+                // applies to the plain path and the composite records at the
+                // size it composites at.
+                this._recSink = this._makeVideoSink(Object.assign({}, vopts, {
+                    fps,
+                    sourceCanvas: hasScatter ? this.recordingCompositeCanvas : null,
+                }));
+                if (!this._recSink) throw new Error('no recorder for this format');
 
                 // Update UI to show recording state
                 this.updateUIControls();
@@ -4961,60 +6775,38 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Stop animation (this also clears interval timer)
             this.stopAnimation();
 
-            // Stop MediaRecorder
-            if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-                this.mediaRecorder.stop();
-            }
-
-            // Stop stream
-            this._stopRecordingTracks();
-
-            // Clean up composite canvas if it exists
-            this.updateCompositeCanvas = null;
-            this.recordingCompositeCanvas = null;
+            // Hand the frames over. finishRecording is the callback rather
+            // than a MediaRecorder event, so the GIF path - which has no
+            // recorder to fire one - ends the same way.
+            const sink = this._recSink;
+            this._recSink = null;
+            if (sink) sink.finish((blob, ext) => this.finishRecording(blob, ext, sink));
+            else this.finishRecording(null, null, null);
         }
 
         // Finish recording and download file
-        finishRecording() {
-            if (this.recordedChunks.length === 0) {
-                console.warn("No video data recorded");
-                this.isRecording = false;
-                this.mediaRecorder = null;
-                if (this.recordingStream) {
-                    this.recordingStream.getTracks().forEach(track => track.stop());
-                    this.recordingStream = null;
-                }
-
-                // Clean up composite canvas if it exists
-                this.updateCompositeCanvas = null;
-                this.recordingCompositeCanvas = null;
-
-                // Ensure animation is stopped and state is clean
-                this.stopAnimation();
-                // Reset currentFrame to last valid frame before updating UI
-                const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                if (object && object.frames.length > 0) {
-                    this.currentFrame = Math.max(0, object.frames.length - 1);
-                }
-                this.updateUIControls();
-                return;
+        finishRecording(blob, ext, sink) {
+            this._captureBusy = false;
+            // put the view back where the recording found it, and hand rotation
+            // back to whoever had it
+            if (this._recSpin) {
+                this.viewerState.rotation = this._recSpin.R0.map((row) => [...row]);
+                this.autoRotate = this._recSpin.was;
+                this._recSpin = null;
+            }
+            if (blob) {
+                const frames = (this.recordingEndFrame || 0) + 1;
+                this._deliverVideo(blob, ext, 'Frames',
+                    `${frames} frames`
+                    + (sink ? `, ${sink.width}x${sink.height}${sink.note}` : ''));
+            } else {
+                this._captureStatus('No video data recorded', true);
+                if (this._savePanel) this._pauseForSavePanel();
             }
 
-            // Create blob from recorded chunks
-            const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
-            const filename = `py2dmol_animation_${this.currentObjectName || 'recording'}_${Date.now()}.webm`;
-
-            // Download video directly
-            this._downloadVideo(blob, filename);
-
-
             // Clean up all recording state
-            this.recordedChunks = [];
             this.isRecording = false;
-            this.mediaRecorder = null;
-            this._stopRecordingTracks();
-
-            // Clean up composite canvas if it exists
+            this._recSink = null;
             this.updateCompositeCanvas = null;
             this.recordingCompositeCanvas = null;
 
@@ -5037,6 +6829,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Reset data
             this.objectsData = {};
             this.currentObjectName = null;
+            // ...and what was on screen with it. A shown set naming objects
+            // that no longer exist would have the next load open into a merge
+            // of one, and the merge state itself would outlive its array.
+            this.shownObjects = new Set();
+            this._framedObjects = new Set();
+            this.multiState.enabled = false;
+            this.multiState.sourceIdMap = null;
+            this.multiState.sourceNames = null;
+            this.multiState.sourceOffsets = null;
+            this.multiState.sourceFrames = null;
+            this.multiState.stats = null;
+            this._sourceGroupsCache = null;
+            this._mergedSetCache = null;
+            this._mergedLigCache = null;
 
             // Reset object dropdown
             if (this.objectSelect) {
@@ -5069,8 +6875,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.viewerState = {
                 rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
                 zoom: 1.0,
-                // seeded from the control, not hardcoded: a new object must not
-                // silently discard the ortho setting the viewer is already on
+                // seeded from the control - see the first of these three defaults
                 ortho: this.orthoSlider ? parseFloat(this.orthoSlider.value) : 1,
                 focalLength: 200.0,
                 center: null,
@@ -5181,8 +6986,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         _materialiseSidechains(data) {
             const sc = data.sidechains;
-            const obj = this.objectsData?.[this.currentObjectName];
-            const show = obj && obj.sidechains;
+            // in merged indices when several objects are on screen
+            const show = this.shownSidechainSet();
             this.sidechainMap = null;
             // Drop anything a PREVIOUS materialisation added. Visibility sets
             // outlive a frame load, so turning side chains off would otherwise
@@ -5228,9 +7033,37 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const at = (i) => ({ x: data.coords[i][0], y: data.coords[i][1], z: data.coords[i][2] });
             const fr = [0, 0, 0, 0, 0, 0, 0, 0, 0];
             const frames = new Map();
+            // A NUCLEIC TRACE STEPS FURTHER. localFrame's default range is the
+            // peptide's, and a base rebuilt through it lands nowhere: the frame
+            // fails, the atom is dropped, and the table looks empty. Same range
+            // the table was BUILT with, or the coefficients mean something else
+            // here than they did there.
+            const C0 = window.py2dmolCartoon;
+            const nucLo = C0 && C0.NUCLEIC_STEP_MIN;
+            const nucHi = C0 && C0.NUCLEIC_STEP_MAX;
+            // THE TYPES OF THE FRAME BEING MATERIALISED, not the renderer's.
+            //
+            // this.positionTypes still describes the array that is being
+            // REPLACED - setCoords has not run yet - so on any load that
+            // changes the shape of the array it answers about the wrong
+            // structure. Leaving Multi with a nucleic object on screen is that
+            // case: the types were the merged array's, so index 3 of the RNA
+            // read as some protein residue of the object beside it, the base
+            // was rebuilt through the peptide's step range, localFrame failed
+            // for every one of them, and all 347 atoms were dropped in
+            // silence - the bases the user had just switched to full atoms
+            // simply were not drawn.
+            //
+            // The frame carries its own types, exactly as long as its
+            // coordinates. There is nothing to be out of step with.
+            const posTypes = data.position_types || this.positionTypes || [];
             const frameAt = (i) => {
                 if (!frames.has(i)) {
-                    frames.set(i, localFrame(at, n, i, fr, null) ? fr.slice() : null);
+                    const nuc = posTypes[i] === 'D' || posTypes[i] === 'R';
+                    const ok = nuc
+                        ? localFrame(at, n, i, fr, null, nucLo, nucHi)
+                        : localFrame(at, n, i, fr, null);
+                    frames.set(i, ok ? fr.slice() : null);
                 }
                 return frames.get(i);
             };
@@ -5241,13 +7074,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // it does not warn, and it does not fail. Missing plddts that way
             // filled every position with 50, the low-confidence band, and an
             // AlphaFold model turned entirely red the moment a side chain was
-            // shown. The five here are exactly the five _setDataField handles;
-            // adding a sixth there means adding it here.
+            // shown. The ones here are exactly the ones _setDataField handles;
+            // adding another there means adding it here.
             const coords = data.coords.slice();
             const types = (data.position_types || []).slice();
             const chains = (data.chains || []).slice();
             const names = (data.position_names || []).slice();
             const numbers = (data.residue_numbers || []).slice();
+            // Only present where a ligand was loaded. Left empty otherwise
+            // rather than grown to the coordinate count: _setDataField would
+            // take a short array for a missing one and fill in the default,
+            // which is the same blank.
+            const atomNames = (data.position_atoms || []).slice();
+            const atomEls = (data.position_elements || []).slice();
             const plddts = data.plddts ? data.plddts.slice() : null;
             const bondsOut = (data.bonds || []).slice();
             // position index -> {anchor, cx, cy, cz}, so the cartoon can put
@@ -5286,6 +7125,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 chains.push(chains[owner] !== undefined ? chains[owner] : '');
                 names.push(names[owner] !== undefined ? names[owner] : '');
                 numbers.push(numbers[owner] !== undefined ? numbers[owner] : 0);
+                // The table knows this atom's name and element; the arrays are
+                // where every other consumer looks for them. Both are dropped
+                // from a SAVED table - see trimSidechainTable - so a reloaded
+                // session leaves these blank and the side chain colours from
+                // sidechainMap.el instead, which is where it always came from.
+                if (atomNames.length) atomNames.push((sc.names && sc.names[k]) || '');
+                if (atomEls.length) atomEls.push((sc.elements && sc.elements[k]) || '');
                 // pLDDT is a per-RESIDUE confidence, so an atom of that residue
                 // carries the residue's own value - which also keeps a side
                 // chain the same colour as the backbone it grows out of.
@@ -5295,7 +7141,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // has it, but by the time a segment is coloured the table row
                 // is long gone and only the position index remains.
                 map.set(idx, { anchor, cx, cy, cz, owner,
-                    el: (sc.elements && sc.elements[k]) || '' });
+                    el: (sc.elements && sc.elements[k]) || '',
+                    // a backbone atom kept on purpose - proline's ring-closing
+                    // N. The drawing lifts it onto the ribbon's surface; every
+                    // other consumer uses the atom where it was measured.
+                    bb: (sc.onBackbone && sc.onBackbone[k]) ? 1 : 0 });
                 idxOf.set(k, idx);
             }
             if (!idxOf.size) return data;
@@ -5307,6 +7157,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // in a set that was written before they existed. That is invisible
             // from every angle except the screen, so it is done here, next to
             // the append, rather than left to a caller to remember.
+            // one rule, three callers - see withSidechainAtoms. The map is
+            // not on the renderer yet at this point in the load, so it is
+            // handed in.
             const follow = (set) => {
                 if (!set || !set.size) return;
                 for (const [idx, e] of map) {
@@ -5415,6 +7268,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 ...data,
                 coords, position_types: types, chains,
                 position_names: names, residue_numbers: numbers, bonds: bondsOut,
+                position_atoms: atomNames.length ? atomNames : data.position_atoms,
+                position_elements: atomEls.length ? atomEls : data.position_elements,
                 plddts: plddts || data.plddts,
             };
         }
@@ -5436,28 +7291,34 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     data.position_names,
                     data.residue_numbers,
                     skipRender,
-                    data.bonds
+                    data.bonds,
+                    data.position_atoms,
+                    data.position_elements
                 );
             } else {
                 console.warn(`[_loadDataIntoRenderer] No data to load: coords=${data?.coords?.length}`);
             }
         }
 
-        setCoords(coords, plddts, chains, positionTypes, hasPAE = false, positionNames, residueNumbers, skipRender = false, bonds = null) {
+        setCoords(coords, plddts, chains, positionTypes, hasPAE = false, positionNames, residueNumbers, skipRender = false, bonds = null, positionAtoms = null, positionElements = null) {
             // Invalidate shadow cache when coordinates change (different geometry needs new shadows)
             this._invalidateShadowCache();
             this.lastShadowRotationMatrix = null;
 
             this.coords = coords;
 
-            // Set bonds from parameter or from object's stored bonds
+            // WHAT THE FRAME RESOLVED TO, and nothing written back.
+            //
+            // This used to store the bonds it was handed onto the current
+            // object, which made object.bonds a cache pretending to be data:
+            // the object's list was rewritten on every load, so an edit that
+            // left it in the old numbering was quietly healed the next time a
+            // frame came through - until a path came along where no frame
+            // carried bonds of its own and the stale list was all there was.
+            // The object's list is DECLARED now (addFrame writes it, an edit
+            // renumbers it) and read as a fallback in _resolvedFrame.
             if (bonds !== null && bonds !== undefined) {
-                // Frame has explicit bonds - use them
                 this.bonds = bonds;
-                // Store in object for reuse
-                if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
-                    this.objectsData[this.currentObjectName].bonds = bonds;
-                }
             } else if (this.currentObjectName && this.objectsData[this.currentObjectName] && this.objectsData[this.currentObjectName].bonds) {
                 // No bonds for this frame - use object's stored bonds
                 this.bonds = this.objectsData[this.currentObjectName].bonds;
@@ -5476,7 +7337,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Map entropy to structure if entropy mode is active
             if (this.colorMode === 'entropy' && this.currentObjectName && this.objectsData[this.currentObjectName] && window.MSA) {
-                this.entropy = window.MSA.mapEntropyToStructure(this.objectsData[this.currentObjectName], this.currentFrame >= 0 ? this.currentFrame : 0);
+                this.entropy = this.entropyForDrawn();
                 this._updateEntropyOptionVisibility();
             } else {
                 // Clear entropy when not in entropy mode
@@ -5494,12 +7355,31 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._setDataField('positionTypes', 'cachedPositionTypes', positionTypes, n, (n) => Array(n).fill('P'));
             this._setDataField('positionNames', 'cachedPositionNames', positionNames, n, (n) => Array(n).fill('UNK'));
             this._setDataField('residueNumbers', 'cachedResidueNumbers', residueNumbers, n, (n) => Array.from({ length: n }, (_, i) => i + 1));
+            // Blank everywhere but a ligand atom, which is the only position
+            // that stands for one atom of the file rather than a whole residue.
+            this._setDataField('positionAtoms', 'cachedPositionAtoms', positionAtoms, n, (n) => Array(n).fill(''));
+            this._setDataField('positionElements', 'cachedPositionElements', positionElements, n, (n) => Array(n).fill(''));
 
             // Calculate what 'auto' should resolve to
             // Priority: plddt (if PAE present) > chain (if multi-chain) > rainbow
             // In overlay mode, use merged auto color based on all frames
             const uniqueChains = new Set(this.chains);
-            if (this.overlayState.enabled && this.overlayState.autoColor) {
+            if (this.multiState && this.multiState.enabled) {
+                // EACH OBJECT KEEPS ITS OWN SCHEME. A monomer rainbows, a
+                // complex colours by chain, a predicted model by confidence -
+                // the same answer each would get on its own, resolved per
+                // source in _mergeObjects and read back through
+                // _autoColorFor. What is left here is the fallback for
+                // anything that asks without a position, and for it the merge
+                // as a whole answers by object.
+                // ...and when only ONE object is drawn through the merge -
+                // which happens whenever the object on screen is not the one
+                // being edited - it is coloured as itself, not as "object 0 of
+                // one", which would be a single flat colour.
+                const own = this.multiState.sourceAutoColors;
+                this.resolvedAutoColor = (own && own.length === 1)
+                    ? own[0] : 'object';
+            } else if (this.overlayState.enabled && this.overlayState.autoColor) {
                 this.resolvedAutoColor = this.overlayState.autoColor;
             } else {
                 if (hasPAE) {
@@ -5522,29 +7402,59 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.chainIndexMap = new Map();
             // Track which chains contain only ligands (no P/D/R atoms)
             this.ligandOnlyChains = new Set();
+            // ...keyed by SOURCE AND CHAIN when several objects are merged, so
+            // two structures that both have a chain A do not share its colour.
+            // Null otherwise, and then the key is the plain id - see
+            // chainColorKeyAt.
+            {
+                // KEYED BY OBJECT NAME once more than one object is loaded, so
+                // an object's colours do not move when another is switched on
+                // or off. Never for the overlay: it puts every frame of ONE
+                // object in the array, and chain A is the same chain A in all
+                // of them - keyed per frame it would come out a different
+                // colour in each, which the overlay has never looked like.
+                const ms = this.multiState;
+                const loaded = Object.keys(this.objectsData || {});
+                const grp = (ms && ms.enabled) ? this.sourceGroups() : null;
+                const nameOf = (i) => {
+                    if (grp && ms.sourceNames) {
+                        const s = grp[i];
+                        if (s >= 0 && s < ms.sourceNames.length) return ms.sourceNames[s];
+                    }
+                    return this.currentObjectName;
+                };
+                this._chainColorKeys = (loaded.length > 1)
+                    ? this.chains.map((c, i) => nameOf(i) + '|' + (c || 'A'))
+                    : null;
+            }
             if (this.chains.length > 0) {
-                // Use a sorted list of unique chain IDs to ensure a consistent order
-                const sortedUniqueChains = [...uniqueChains].sort();
-                for (const chainId of sortedUniqueChains) {
-                    if (chainId && !this.chainIndexMap.has(chainId)) {
-                        this.chainIndexMap.set(chainId, this.chainIndexMap.size);
+                // Every chain of every LOADED object, in load order - see
+                // _buildChainIndexMap. Not just the drawn ones, or an object's
+                // colours would move as its neighbours came and went.
+                this._buildChainIndexMap();
+                const sortedUniqueChains = [...this.chainIndexMap.keys()];
+
+                // WHICH CHAINS ARE LIGAND-ONLY: one pass over the positions,
+                // not one pass PER CHAIN.
+                //
+                // This asked, for every chain, "does any position in it carry a
+                // polymer type" by scanning the whole position list - so it
+                // cost chains x positions. On a capsid that is 1,356 chains
+                // against 313,236 positions: 425 million string comparisons,
+                // and 3.6 s of a 16 s load, all of it inside setCoords.
+                //
+                // The question is per POSITION, not per chain: walk the
+                // positions once, note the chain of each polymer one, and any
+                // chain not noted is ligand-only. Same answer, O(n + chains).
+                const polymerChains = new Set();
+                for (let i = 0; i < n; i++) {
+                    const type = this.positionTypes[i];
+                    if (type === 'P' || type === 'D' || type === 'R') {
+                        polymerChains.add(this.chainKeyAt(i));
                     }
                 }
-
-                // Check each chain to see if it contains only ligands
                 for (const chainId of sortedUniqueChains) {
-                    let hasNonLigand = false;
-                    for (let i = 0; i < n; i++) {
-                        if (this.chains[i] === chainId) {
-                            const type = this.positionTypes[i];
-                            if (type === 'P' || type === 'D' || type === 'R') {
-                                hasNonLigand = true;
-                                break;
-                            }
-                        }
-                    }
-                    // If chain has no P/D/R atoms, it's ligand-only
-                    if (!hasNonLigand) {
+                    if (!polymerChains.has(chainId)) {
                         this.ligandOnlyChains.add(chainId);
                     }
                 }
@@ -5553,86 +7463,58 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // No longer need polymerPositionIndices - all positions are treated the same
             // (One position = one position, no distinction between polymer/ligand)
 
-            // Pre-calculate per-chain indices for rainbow coloring (N-to-C)
-            // Include ligands in ligand-only chains for rainbow coloring
+            // WHERE EACH RESIDUE SITS ALONG ITS CHAIN, and how long that
+            // chain is - one walk, because the second answer falls out of the
+            // first. The index counts 0, 1, 2... along each chain, so the
+            // rainbow's range for that chain is 0 to the last index it handed
+            // out; it was recomputed by a second pass over every position that
+            // could only ever arrive at the same two numbers, and both passes
+            // built a chain key per position to do it.
+            //
+            // A MERGED VIEW RAMPS EACH SOURCE ON ITS OWN - each frame of a
+            // trajectory, or each object, running its own blue-to-red rather
+            // than taking a slice of one ramp spread over the lot. Two copies
+            // of the same protein should look like two copies of it. So the
+            // count along a chain restarts at each source, and the scales are
+            // kept per source; with one source they are kept per chain, and
+            // the other table is left null so nothing reads the wrong one.
             this.perChainIndices = new Array(n);
-            const chainIndices = {}; // Temporary tracker
-            let lastFrame = -1; // Track frame changes for overlay mode
-
+            const chainIndices = {};        // running count, per chain
+            const groups = this.sourceGroups();
+            let lastFrame = -1;             // the source the walk is inside
+            const scales = {};              // src -> chain -> {min, max}
+            this.sourceRainbowScales = groups ? scales : null;
+            this.chainRainbowScales = groups ? null : {};
+            const scaleFor = (src, chainId) => {
+                if (groups) {
+                    const bySrc = scales[src] || (scales[src] = {});
+                    return bySrc[chainId]
+                        || (bySrc[chainId] = { min: 0, max: 0 });
+                }
+                return this.chainRainbowScales[chainId]
+                    || (this.chainRainbowScales[chainId] = { min: 0, max: 0 });
+            };
             for (let i = 0; i < n; i++) {
                 const type = this.positionTypes[i];
-                const chainId = this.chains[i] || 'A';
-                const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
-
-                // In overlay mode, reset chain indices when frame changes
-                if (this.overlayState.enabled && this.overlayState.frameIdMap) {
-                    const currentFrame = this.overlayState.frameIdMap[i];
-                    if (currentFrame !== lastFrame) {
-                        // Frame changed, reset all chain counters
-                        for (const key in chainIndices) {
-                            chainIndices[key] = 0;
-                        }
-                        lastFrame = currentFrame;
-                    }
+                const chainId = this.chainKeyAt(i);
+                const src = groups ? groups[i] : 0;
+                // Chain A of the second source is not a continuation of
+                // chain A of the first, so the count along it starts again.
+                if (groups && src !== lastFrame) {
+                    for (const key in chainIndices) chainIndices[key] = 0;
+                    lastFrame = src;
                 }
-
-                if (type === 'P' || type === 'D' || type === 'R' || (type === 'L' && isLigandOnlyChain)) {
-                    if (chainIndices[chainId] === undefined) {
-                        chainIndices[chainId] = 0;
-                    }
-                    this.perChainIndices[i] = chainIndices[chainId];
-                    chainIndices[chainId]++;
-                } else {
-                    this.perChainIndices[i] = 0; // Default for ligands in mixed chains
+                const counts = (type === 'P' || type === 'D' || type === 'R'
+                    || (type === 'L' && this.ligandOnlyChains.has(chainId)));
+                if (!counts) {
+                    this.perChainIndices[i] = 0;   // a ligand in a mixed chain
+                    continue;
                 }
-            }
-
-            // Pre-calculate rainbow scales
-            // In overlay mode: per-frame scales (each frame gets own 0-100% gradient)
-            // In normal mode: global scales
-            if (this.overlayState.enabled && this.overlayState.frameIdMap) {
-                // Per-frame rainbow scales
-                this.frameRainbowScales = {};
-                for (let i = 0; i < this.positionTypes.length; i++) {
-                    const type = this.positionTypes[i];
-                    const chainId = this.chains[i] || 'A';
-                    const frameIdx = this.overlayState.frameIdMap[i];
-                    const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
-
-                    if (type === 'P' || type === 'D' || type === 'R' || (type === 'L' && isLigandOnlyChain)) {
-                        // Initialize frame scale if needed
-                        if (!this.frameRainbowScales[frameIdx]) {
-                            this.frameRainbowScales[frameIdx] = {};
-                        }
-                        if (!this.frameRainbowScales[frameIdx][chainId]) {
-                            this.frameRainbowScales[frameIdx][chainId] = { min: Infinity, max: -Infinity };
-                        }
-                        const colorIndex = this.perChainIndices[i];
-                        const scale = this.frameRainbowScales[frameIdx][chainId];
-                        scale.min = Math.min(scale.min, colorIndex);
-                        scale.max = Math.max(scale.max, colorIndex);
-                    }
-                }
-                // Keep chainRainbowScales as null in overlay mode to avoid confusion
-                this.chainRainbowScales = null;
-            } else {
-                // Global rainbow scales (normal mode)
-                this.chainRainbowScales = {};
-                for (let i = 0; i < this.positionTypes.length; i++) {
-                    const type = this.positionTypes[i];
-                    const chainId = this.chains[i] || 'A';
-                    const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
-
-                    if (type === 'P' || type === 'D' || type === 'R' || (type === 'L' && isLigandOnlyChain)) {
-                        if (!this.chainRainbowScales[chainId]) {
-                            this.chainRainbowScales[chainId] = { min: Infinity, max: -Infinity };
-                        }
-                        const colorIndex = this.perChainIndices[i];
-                        const scale = this.chainRainbowScales[chainId];
-                        scale.min = Math.min(scale.min, colorIndex);
-                        scale.max = Math.max(scale.max, colorIndex);
-                    }
-                }
+                if (chainIndices[chainId] === undefined) chainIndices[chainId] = 0;
+                const at = chainIndices[chainId]++;
+                this.perChainIndices[i] = at;
+                const scale = scaleFor(src, chainId);
+                if (at > scale.max) scale.max = at;
             }
 
             // Pre-allocate rotatedCoords array
@@ -5641,7 +7523,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             // Check if we can reuse cached segment indices (bonds don't change within a frame)
+            // ...AND THE ARRAY IT WAS BUILT FROM, by identity. The frame and
+            // the object name do not describe the coordinate array once
+            // several objects can be merged into it, or once side chains can
+            // be appended to it: both leave that pair unchanged. Every path
+            // that replaces the array does build a NEW one (see
+            // _loadDataIntoRenderer), so a pointer comparison is exact - and
+            // it cannot be forgotten the way an explicit invalidation can.
+            //
+            // The explicit invalidations stay: they are for the other
+            // direction, where the array is the same and the segments are not
+            // - a contact added, a bond list changed, the backbone hidden.
             const canUseCache = this.cachedSegmentIndices !== null &&
+                this.cachedSegmentIndicesCoords === this.coords &&
                 this.cachedSegmentIndicesFrame === this.currentFrame &&
                 this.cachedSegmentIndicesObjectName === this.currentObjectName &&
                 this.cachedSegmentIndices.length > 0;
@@ -5671,6 +7565,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                 const ligandIndicesByChain = new Map(); // Group ligands by chain
                 const chainPolymerBounds = new Map(); // Track first/last polymer per chain
+                // Nothing joins across sources - see sourceGroups().
+                const srcGroups = this.sourceGroups();
 
                 // Helper function to check if position type is polymer (for rendering only)
                 const isPolymer = (type) => (type === 'P' || type === 'D' || type === 'R');
@@ -5686,7 +7582,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 for (let i = 0; i < n; i++) {
                     if (isPolymerArr[i]) {
                         const type = this.positionTypes[i];
-                        const chainId = this.chains[i] || 'A';
+                        // PER (OBJECT, CHAIN). The first and last polymer of
+                        // "chain A" decide whether it closes head to tail; by
+                        // bare id that ran from one object's first residue to
+                        // another object's last, and the ring it tested for
+                        // spanned two structures.
+                        const chainId = this.chainKeyAt(i);
 
                         // Track first and last polymer index per chain
                         if (!chainPolymerBounds.has(chainId)) {
@@ -5702,13 +7603,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                                 const samePolymerType = (type1 === type2) ||
                                     ((type1 === 'D' || type1 === 'R') && (type2 === 'D' || type2 === 'R'));
 
-                                // In overlay mode, also check that both atoms are in the same frame
-                                let sameFrame = true;
-                                if (this.overlayState.enabled && this.overlayState.frameIdMap) {
-                                    sameFrame = this.overlayState.frameIdMap[i] === this.overlayState.frameIdMap[i + 1];
-                                }
+                                // ...and that both ends came from the same
+                                // source - the same frame of a trajectory, or
+                                // the same object of a multi-object view.
+                                const sameSource = !srcGroups
+                                    || srcGroups[i] === srcGroups[i + 1];
 
-                                if (samePolymerType && this.chains[i] === this.chains[i + 1] && sameFrame) {
+                                if (samePolymerType && this.chains[i] === this.chains[i + 1] && sameSource) {
                                     const start = this.coords[i];
                                     const end = this.coords[i + 1];
                                     const distSq = start.distanceToSq(end);
@@ -5729,8 +7630,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                             }
                         }
                     } else if (this.positionTypes[i] === 'L') {
-                        // Group ligand indices by chain
-                        const chainId = this.chains[i] || 'A';
+                        // Group ligand indices by chain - PER OBJECT, or the
+                        // fallback below bonds one structure's ligand atoms to
+                        // another's whenever both call the chain A.
+                        const chainId = this.chainKeyAt(i);
                         if (!ligandIndicesByChain.has(chainId)) {
                             ligandIndicesByChain.set(chainId, []);
                         }
@@ -5770,7 +7673,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                                         idx2: lastIdx,
                                         colorIndex: this.perChainIndices[firstIdx],
                                         origIndex: firstIdx,
-                                        chainId: chainId,
+                                        // the BARE id here, like every other
+                                        // segment: segInfo.chainId is only ever
+                                        // compared between segments that share
+                                        // a position, which are in the same
+                                        // object by construction, and a key
+                                        // among bare ids would read as a
+                                        // different chain at every joint.
+                                        chainId: this.chains[firstIdx] || 'A',
                                         type: type1,
                                         len: Math.sqrt(distSq)
                                     });
@@ -5805,13 +7715,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                             continue;
                         }
 
-                        // In overlay mode, skip bonds between different frames
-                        if (this.overlayState.enabled && this.overlayState.frameIdMap) {
-                            const frame1 = this.overlayState.frameIdMap[idx1];
-                            const frame2 = this.overlayState.frameIdMap[idx2];
-                            if (frame1 !== frame2) {
-                                continue;
-                            }
+                        // A bond never spans two sources - two frames of a
+                        // trajectory, or two objects.
+                        if (srcGroups && srcGroups[idx1] !== srcGroups[idx2]) {
+                            continue;
                         }
 
                         const start = this.coords[idx1];
@@ -5869,8 +7776,45 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // and require every atom to have at least one. Partial
                 // connectivity falls through and is supplemented by distance,
                 // which the dedupe above keeps from restating what we have.
-                const fileKnowsIt = (indices) => {
+                //
+                // ASKED OF THE BOND LIST ONCE, not once per ligand. Walking
+                // every bond to answer for one ligand is fine for a structure
+                // with a haem in it and quadratic for one with thousands:
+                // 7Y7A has ~8,800 ligand groups and 223,276 bonds, which is
+                // two billion comparisons inside setCoords. Instead every bond
+                // is looked at once and charged to the group both its ends sit
+                // in, which is the same question read from the other side.
+                const objLigGroups = this.mergedLigandGroups();
+                let touchedByGroup = null;
+                if (objLigGroups?.size > 0) {
+                    const groupOf = new Map();
+                    let shared = false;
+                    for (const [key, idxs] of objLigGroups.entries()) {
+                        for (const i of idxs) {
+                            if (groupOf.has(i)) { shared = true; break; }
+                            groupOf.set(i, key);
+                        }
+                        if (shared) break;
+                    }
+                    // A position in two groups at once would be charged to only
+                    // one of them here, so that case keeps the old walk.
+                    if (!shared) {
+                        touchedByGroup = new Map();
+                        for (const [b1, b2] of (this.bonds || [])) {
+                            const g = groupOf.get(b1);
+                            if (g === undefined || g !== groupOf.get(b2)) continue;
+                            let s = touchedByGroup.get(g);
+                            if (!s) { s = new Set(); touchedByGroup.set(g, s); }
+                            s.add(b1); s.add(b2);
+                        }
+                    }
+                }
+                const fileKnowsIt = (indices, groupKey) => {
                     if (!indices || indices.length < 2) return false;
+                    if (touchedByGroup && groupKey !== undefined) {
+                        const s = touchedByGroup.get(groupKey);
+                        return !!s && s.size === new Set(indices).size;
+                    }
                     const inGroup = new Set(indices);
                     const touched = new Set();
                     for (const [b1, b2] of (this.bonds || [])) {
@@ -5881,11 +7825,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
                     return touched.size === inGroup.size;
                 };
-                const obj = this.objectsData[this.currentObjectName];
-                if (obj?.ligandGroups?.size > 0) {
+                if (objLigGroups?.size > 0) {
                     // Use ligand groups: only compute distances within each group
-                    for (const [groupKey, ligandPositionIndices] of obj.ligandGroups.entries()) {
-                        if (fileKnowsIt(ligandPositionIndices)) continue;
+                    for (const [groupKey, ligandPositionIndices] of objLigGroups.entries()) {
+                        if (fileKnowsIt(ligandPositionIndices, groupKey)) continue;
                         // Compute pairwise distances only within this ligand group
                         for (let i = 0; i < ligandPositionIndices.length; i++) {
                             for (let j = i + 1; j < ligandPositionIndices.length; j++) {
@@ -5942,7 +7885,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                                         idx2: idx2,
                                         colorIndex: 0,
                                         origIndex: idx1,
-                                        chainId: chainId, // Use the chainId from the map key
+                                        // the BARE id, like every other segment
+                                        // - the map key carries the object now
+                                        chainId: this.chains[idx1] || 'A',
                                         type: 'L',
                                         len: Math.sqrt(distSq)
                                     });
@@ -5980,12 +7925,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
                 }
 
-                // Add contact segments from object-level contacts
-                if (this.currentObjectName) {
-                    const object = this.objectsData[this.currentObjectName];
+                // Add contact segments from object-level contacts.
+                // PER OBJECT, EACH IN ITS OWN NUMBERING. A contact is either a
+                // pair of position indices, which belong to the object that
+                // stored them, or a pair of chain+residue references, which
+                // must be looked up among THAT object's positions - both
+                // structures have a chain A, and an unwindowed search finds
+                // whichever comes first in the merged array.
+                for (const cName of this.drawnObjects()) {
+                    const object = this.objectsData[cName];
+                    const win = this.localRangeOf(cName);
                     if (object && object.contacts && Array.isArray(object.contacts) && object.contacts.length > 0) {
                         for (const contact of object.contacts) {
-                            const resolved = this._resolveContactToIndices(contact, n);
+                            const resolved = this._resolveContactToIndices(contact, n, win);
 
                             if (resolved && resolved.idx1 >= 0 && resolved.idx1 < n &&
                                 resolved.idx2 >= 0 && resolved.idx2 < n && resolved.idx1 !== resolved.idx2) {
@@ -6043,11 +7995,25 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // regardless of whether they were loaded from cache or newly computed.
             if (this.currentFrame >= 0 && this.currentObjectName) {
                 this.cachedSegmentIndices = this.segmentIndices.map(seg => ({ ...seg }));
+                this.cachedSegmentIndicesCoords = this.coords;
                 this.cachedSegmentIndicesFrame = this.currentFrame;
                 this.cachedSegmentIndicesObjectName = this.currentObjectName;
             }
 
-            // [OPTIMIZATION] Ensure static adjacency list and arrays exist
+            // WHICH POSITIONS ARE LONE ATOMS - bonded to nothing, so drawn as a
+            // ball of their element's van der Waals radius rather than as a
+            // segment of anything. The click target and the selection band are
+            // sized from that (see projectPosition and radiusAt), so this has
+            // to be true of whatever list we ended up with: taken from
+            // segmentIndices rather than from the loop that builds them,
+            // because the CACHED branch above skips that loop entirely and a
+            // set left over from the previous structure sizes the wrong things.
+            this._loneAtoms = new Set();
+            for (const sg of this.segmentIndices) {
+                if (sg && sg.idx1 === sg.idx2) this._loneAtoms.add(sg.idx1);
+            }
+
+            // Ensure static adjacency list and arrays exist
             // This must run regardless of whether we used cache or generated segments
             const numSegments = this.segmentIndices.length;
             const numPositions = this.coords.length;
@@ -6081,6 +8047,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     this.screenX = new Float32Array(numPositions);
                     this.screenY = new Float32Array(numPositions);
                     this.screenRadius = new Float32Array(numPositions);
+                    // ...and HOW BIG THE THING IS ACTUALLY DRAWN, which is a
+                    // different question from how big a click target it wants
+                    // and is what anything MARKING it has to measure off.
+                    this.screenDrawRadius = new Float32Array(numPositions);
                     this.screenValid = new Int32Array(numPositions);
                 }
 
@@ -6105,11 +8075,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.colors = this._calculateSegmentColors();
             this.colorsNeedUpdate = false;
 
-            // Pre-calculate pLDDT colors
-            this.plddtColors = this._calculatePlddtColors();
-            this.plddtColorsNeedUpdate = false;
+            // NOT THE pLDDT COLOURS. The draw path builds them itself the
+            // moment the colour mode actually asks for them - it has to, since
+            // the mode can change without the coordinates changing - so doing
+            // it here as well is a second pass over every position for an
+            // array most structures never read. Marked stale instead.
+            this.plddtColors = [];
+            this.plddtColorsNeedUpdate = true;
 
-            // [PATCH] Apply initial mask and render once
+            // Apply initial mask and render once
             // Don't render before applying mask - _composeAndApplyMask will handle rendering
             this._composeAndApplyMask(skipRender);
 
@@ -6125,25 +8099,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 return;
             }
 
-            const data = object.frames[frameIndex];
-
-            // Resolve inherited plddt and PAE data
-            const resolvedPlddt = this._resolvePlddtData(object, frameIndex);
-            const resolvedPae = window.PAE ? window.PAE.resolveData(object, frameIndex) : (data.pae || null);
-
-            // Get bonds from object-level if available
-            const resolvedBonds = object.bonds || null;
-
-            // Create resolved data object (use resolved values if frame doesn't have its own)
-            const resolvedData = {
-                ...data,
-                plddts: resolvedPlddt ?? data.plddts ?? null,
-                pae: resolvedPae !== null ? resolvedPae : data.pae,
-                bonds: resolvedBonds
-            };
+            // Inherited plddt, PAE and bonds resolved in the one place the
+            // merge reads them from too.
+            const resolvedData = this._resolvedFrame(object, frameIndex);
+            if (!resolvedData) return;
 
             // Load 3D data (with skipRender option)
             this._loadDataIntoRenderer(resolvedData, skipRender);
+            this._noteArrayLoaded();
 
             // Load PAE data (use resolved value)
             if (window.PAE) {
@@ -6173,7 +8136,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Map entropy to structure if entropy mode is active
             if (this.colorMode === 'entropy' && this.currentObjectName && this.objectsData[this.currentObjectName] && window.MSA) {
-                this.entropy = window.MSA.mapEntropyToStructure(this.objectsData[this.currentObjectName], this.currentFrame >= 0 ? this.currentFrame : 0);
+                this.entropy = this.entropyForDrawn();
                 this._updateEntropyOptionVisibility();
             }
         }
@@ -6202,7 +8165,26 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
         }
 
-        _getEffectiveColorMode() {
+        /**
+         * WHAT 'auto' MEANS FOR ONE POSITION.
+         *
+         * With several objects merged it is not one answer: each resolved its
+         * own from its own chains and its own PAE when the merge was built, so
+         * a monomer beside a dimer rainbows while the dimer colours by chain -
+         * which is what each of them looks like on its own, and what was asked
+         * for. Without a position to go on, the merge answers by object.
+         */
+        _autoColorFor(i) {
+            const ms = this.multiState;
+            if (i !== undefined && ms && ms.enabled && ms.sourceAutoColors) {
+                const g = this.sourceGroups();
+                const s = g ? g[i] : -1;
+                if (s >= 0 && ms.sourceAutoColors[s]) return ms.sourceAutoColors[s];
+            }
+            return this.resolvedAutoColor || 'rainbow';
+        }
+
+        _getEffectiveColorMode(atIndex) {
             const validModes = getAllValidColorModes();
 
             // Check for object-level color mode first
@@ -6211,8 +8193,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (objectColorMode && validModes.includes(objectColorMode)) {
                     // If object color mode is 'auto', resolve to calculated mode
                     if (objectColorMode === 'auto') {
-                        const resolved = this.resolvedAutoColor || 'rainbow';
-                        return resolved;
+                        return this._autoColorFor(atIndex);
                     }
                     return objectColorMode;
                 }
@@ -6226,8 +8207,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // If 'auto', resolve to the calculated mode
             if (this.colorMode === 'auto') {
-                const resolved = this.resolvedAutoColor || 'rainbow';
-                return resolved;
+                return this._autoColorFor(atIndex);
             }
 
             return this.colorMode;
@@ -6287,12 +8267,56 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * side chain that turned grey when you coloured its residue would lose
          * the thing the colour was for.
          */
+        static get SELECTION_BAND() { return selectionBandFor; }
+
         static get ELEMENT_COLORS() {
             return {
                 N: { r: 51, g: 51, b: 255 },      // blue
                 O: { r: 255, g: 76, b: 76 },      // red
                 S: { r: 229, g: 198, b: 64 },     // gold
                 SE: { r: 240, g: 161, b: 54 },    // a warmer gold
+                // THE REST IS PYMOL'S TABLE, read off layer1/Color.cpp and
+                // converted from its 0..1 floats - so a reader who knows PyMOL
+                // already knows these colours. The four above turn out to be
+                // PyMOL's too (nitrogen 0.2/0.2/1, oxygen 1/0.3/0.3, sulfur
+                // 0.9/0.775/0.25); only selenium differs, and that one is kept
+                // as it is - PyMOL's is a flat orange, this is warmer and reads
+                // beside the gold sulfur it usually accompanies.
+                //
+                // The metals are the reason this table grew. A lone ion takes
+                // its colour from here (idx1 === idx2, so both `halves` agree
+                // and _segmentElementColor returns it) - and with no entry it
+                // fell back to the position's own colour, so a zinc came out
+                // whatever the ligand palette handed it: orange in one chain,
+                // green in the next, which says nothing about what it is.
+                H: { r: 230, g: 230, b: 230 },   // 0.9 grey, not white
+                P: { r: 255, g: 128, b: 0 },      // orange
+                F: { r: 179, g: 255, b: 255 },   // pale cyan, PyMOL's
+                CL: { r: 31, g: 240, b: 31 },     // green
+                BR: { r: 166, g: 41, b: 41 },
+                I: { r: 148, g: 0, b: 148 },
+                // group 1 and 2: violet and green, the CPK convention
+                NA: { r: 171, g: 92, b: 242 },
+                K: { r: 143, g: 64, b: 212 },
+                MG: { r: 138, g: 255, b: 0 },
+                CA: { r: 61, g: 255, b: 0 },
+                // ...and the transition metals, which is what a structure
+                // usually has one of
+                MN: { r: 156, g: 122, b: 199 },
+                FE: { r: 224, g: 102, b: 51 },    // rust
+                CO: { r: 240, g: 144, b: 160 },
+                NI: { r: 80, g: 208, b: 80 },
+                CU: { r: 200, g: 128, b: 51 },    // copper
+                ZN: { r: 125, g: 128, b: 176 },   // silver, slightly blue
+                MO: { r: 84, g: 181, b: 181 },
+                CD: { r: 255, g: 217, b: 143 },
+                PT: { r: 208, g: 208, b: 224 },
+                AU: { r: 255, g: 209, b: 35 },    // gold, and actually gold
+                HG: { r: 184, g: 184, b: 208 },
+                // CARBON IS DELIBERATELY ABSENT and must stay absent: a null
+                // sends the atom to its residue's own colour, so a coloured
+                // side chain stays coloured with only its heteroatoms standing
+                // out. Adding C here would repaint every ligand mid-grey.
             };
         }
 
@@ -6322,21 +8346,75 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * that was coloured stays coloured, with only its heteroatoms standing
          * out. That is PyMOL's colour-by-element too.
          */
+        /**
+         * This position's element, whatever kind of position it is.
+         *
+         * Two sources, because there are two kinds of atom in the array. An
+         * appended side-chain atom carries its element in sidechainMap, put
+         * there when the table was materialised; a LIGAND atom is a position of
+         * the file's own, and its element was read off the file at capture and
+         * kept in positionElements. Everything else - an alpha carbon, a C4' -
+         * stands for a whole residue rather than an atom and has none.
+         */
+        elementAt(index) {
+            const e = this.sidechainMap && this.sidechainMap.get(index);
+            if (e) return (e.el || '').toUpperCase();
+            const el = this.positionElements && this.positionElements[index];
+            return el ? el.toUpperCase() : '';
+        }
+
+        /**
+         * Which position owns this atom's element switch. A side-chain atom is
+         * switched with its residue, so it answers with the owner; a ligand
+         * atom is its own, since a ligand is selected atom by atom.
+         */
+        _elementOwnerOf(index) {
+            const e = this.sidechainMap && this.sidechainMap.get(index);
+            return e ? e.owner : index;
+        }
+
+        /**
+         * Every position whose element could be coloured: the residues with a
+         * side chain, plus the ligand atoms that know what they are.
+         *
+         * Cached against the two things it is built from - the side-chain table
+         * and the element array - because it is asked on every selection change
+         * and both are replaced wholesale rather than edited.
+         */
+        elementOwners() {
+            const sc = this.sidechains;
+            const els = this.positionElements;
+            if (this._elOwnersScFor !== sc || this._elOwnersElFor !== els) {
+                this._elOwnersScFor = sc;
+                this._elOwnersElFor = els;
+                const out = new Set(sc && sc.pos ? sc.pos : []);
+                const types = this.positionTypes || [];
+                if (els) {
+                    for (let i = 0; i < els.length; i++) {
+                        if (els[i] && types[i] === 'L' && !(this.sidechainMap
+                            && this.sidechainMap.has(i))) out.add(i);
+                    }
+                }
+                this._elOwners = out.size ? out : null;
+            }
+            return this._elOwners;
+        }
+
         _segmentElementHalves(segInfo) {
-            const map = this.sidechainMap;
-            if (!map) return null;
-            const a = map.get(segInfo.idx1);
-            const b = map.get(segInfo.idx2);
-            if (!a || !b) return null;
-            // ...unless this residue's elements were switched off. Absent means
+            const ea = this.elementAt(segInfo.idx1);
+            const eb = this.elementAt(segInfo.idx2);
+            if (!ea && !eb) return null;
+            // ...unless these atoms' elements were switched off. Absent means
             // ON for everything, so a structure nobody has touched keeps them.
-            const obj = this.currentObjectName
-                ? this.objectsData[this.currentObjectName] : null;
-            const only = obj && obj.elements instanceof Set ? obj.elements : null;
-            if (only && !only.has(a.owner)) return null;
+            // Asked per END rather than for the bond: a ligand atom answers for
+            // itself, so the two ends of a bond can be switched separately, and
+            // half of one is still worth drawing.
+            // per object, in merged indices - see mergedObjectSet
+            const only = this.mergedObjectSet('elements');
+            const on = (i) => !only || only.has(this._elementOwnerOf(i));
             const T = this.constructor.ELEMENT_COLORS;
-            const ca = T[(a.el || '').toUpperCase()] || null;
-            const cb = T[(b.el || '').toUpperCase()] || null;
+            const ca = (ea && on(segInfo.idx1)) ? (T[ea] || null) : null;
+            const cb = (eb && on(segInfo.idx2)) ? (T[eb] || null) : null;
             if (!ca && !cb) return null;
             return { a: ca, b: cb };
         }
@@ -6396,9 +8474,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         _sidechainColorOf(atomIndex) {
             const e = this.sidechainMap && this.sidechainMap.get(atomIndex);
             if (!e) return null;
-            const obj = this.currentObjectName
-                ? this.objectsData[this.currentObjectName] : null;
-            const hex = obj && obj.sidechainColor && obj.sidechainColor[e.owner];
+            // per object, keyed by ITS position numbers
+            const own = this.ownerOf(e.owner);
+            const obj = this.objectsData[own ? own.name : this.currentObjectName];
+            const at = own ? own.local : e.owner;
+            const hex = obj && obj.sidechainColor && obj.sidechainColor[at];
             return hex ? hexToRgb(hex) : null;
         }
 
@@ -6415,6 +8495,318 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * @returns {Set<number>|null} owning position indices, or null if the
          *          structure carries no side-chain data at all
          */
+        /**
+         * Is this segment part of a side chain rather than the backbone?
+         *
+         * One endpoint in the side-chain map is enough, which is what keeps the
+         * CA-CB bond: CA is a base position and CB an appended one, so the bond
+         * that anchors a side chain counts as side chain and the atom it hangs
+         * from stays on screen. A contact is not backbone either - it is an
+         * annotation between two residues and has nothing to do with the fold.
+         */
+        _isSidechainSegment(segInfo) {
+            if (!segInfo) return false;
+            if (segInfo.type === 'C') return true;
+            const sc = this.sidechainMap;
+            if (!sc || !sc.size) return false;
+            return sc.has(segInfo.idx1) || sc.has(segInfo.idx2);
+        }
+
+        /**
+         * EVERY RESIDUE WITHIN `cutoff` ANGSTROM OF THIS ONE, atom to atom.
+         *
+         * The same question PyMOL answers with `byres (all within 5 of sele)`,
+         * and it has to be asked of ATOMS: a 5 A neighbourhood measured between
+         * trace points is not a contact shell, it is a list of residues whose
+         * CAs happen to be close, and it misses the side chain reaching past
+         * them - which is the whole reason anyone asks.
+         *
+         * The atoms exist whether or not they are DRAWN. A side chain is a
+         * table of coefficients in the residue's own frame (see
+         * _materialiseSidechains); this rebuilds them for the test and throws
+         * them away, so a neighbourhood is the same before and after anyone
+         * turns side chains on.
+         *
+         * Two passes, because rebuilding every side chain in a 300,000-residue
+         * assembly to answer a question about twelve of them is not a search,
+         * it is a rebuild. The first bins TRACE points and keeps anything whose
+         * trace is within cutoff + 2 x SIDECHAIN_REACH; the second rebuilds
+         * only those and measures exactly.
+         *
+         * The seed comes back with the answer, as PyMOL's byres does.
+         *
+         * `opts.sidechainsOnly` measures SIDE CHAIN TO SIDE CHAIN, with the
+         * trace atom left out of both ends - the CA of a protein, the C4' of a
+         * nucleotide. A backbone runs past everything it folds against, so an
+         * any-atom shell around a binding-site residue is half main chain; this
+         * asks the other question, which is which residues have their SIDE
+         * CHAINS near each other. A residue with no side-chain atoms at all
+         * (glycine, or anything in a backbone-only model) is not in the answer,
+         * because it has nothing to measure.
+         *
+         * A LIGAND KEEPS EVERY ATOM in that mode. It has no backbone to leave
+         * out - each of its heavy atoms is a position of its own - so what an
+         * interaction with a ligand means is any of those against a side chain
+         * or against another ligand.
+         */
+        residuesWithin(seed, cutoff, opts) {
+            const scOnly = !!(opts && opts.sidechainsOnly);
+            const out = new Set(seed || []);
+            const co = this.coords;
+            const n = co ? co.length : 0;
+            const cut = Number(cutoff);
+            if (!n || !out.size || !isFinite(cut) || cut <= 0) return out;
+            const xyz = (i) => {
+                const c = co[i];
+                if (!c) return null;
+                return Array.isArray(c) ? c : [c.x, c.y, c.z];
+            };
+            // ---- pass 1: trace points, on a grid ----------------------------
+            const REACH = SIDECHAIN_REACH_A;
+            const coarse = cut + 2 * REACH;
+            const cell = Math.max(coarse, 1e-3);
+            const key = (x, y, z) => x + ',' + y + ',' + z;
+            const cellOf = (p) => [Math.floor(p[0] / cell), Math.floor(p[1] / cell),
+                Math.floor(p[2] / cell)];
+            // KEPT BETWEEN CALLS. Binning every position is the whole cost on a
+            // large assembly - 313,236 of them on 3J3Q, 40 ms of a 48 ms search
+            // - and growing a shell means asking again and again against the
+            // same coordinates. Keyed by the array's identity and the cell
+            // size: viewer-mol only ever ASSIGNS coords, so an unchanged
+            // pointer is an unchanged structure.
+            let g = this._nearGrid;
+            if (!g || g.src !== co || g.cell !== cell || g.n !== n) {
+                const bins0 = new Map();
+                for (let i = 0; i < n; i++) {
+                    const p = xyz(i);
+                    if (!p) continue;
+                    const c = cellOf(p);
+                    const k = key(c[0], c[1], c[2]);
+                    let arr = bins0.get(k);
+                    if (!arr) { arr = []; bins0.set(k, arr); }
+                    arr.push(i);
+                }
+                g = { src: co, cell, n, bins: bins0 };
+                this._nearGrid = g;
+            }
+            const bins = g.bins;
+            const near = new Set();
+            const coarse2 = coarse * coarse;
+            for (const i of out) {
+                const p = xyz(i);
+                if (!p) continue;
+                const c = cellOf(p);
+                for (let dx = -1; dx <= 1; dx++) {
+                    for (let dy = -1; dy <= 1; dy++) {
+                        for (let dz = -1; dz <= 1; dz++) {
+                            const arr = bins.get(key(c[0] + dx, c[1] + dy, c[2] + dz));
+                            if (!arr) continue;
+                            for (const j of arr) {
+                                if (out.has(j)) continue;
+                                const q = xyz(j);
+                                if (!q) continue;
+                                const ddx = p[0] - q[0]; const ddy = p[1] - q[1];
+                                const ddz = p[2] - q[2];
+                                if (ddx * ddx + ddy * ddy + ddz * ddz <= coarse2) near.add(j);
+                            }
+                        }
+                    }
+                }
+            }
+            if (!near.size) return out;
+            // ---- pass 2: every atom of the seed against every atom of those --
+            const atomsFor = this._atomsOfResidues(new Set([...out, ...near]));
+            const cut2 = cut * cut;
+            // index 0 of every list is the trace point itself, so leaving the
+            // backbone out is a slice rather than a second pass over the table.
+            //
+            // A LIGAND IS ALL SIDE CHAIN. Its atoms are positions in their own
+            // right - no trace point, no backbone - so slicing one off would
+            // throw away a real atom, and a single-atom ligand would drop out
+            // of the search altogether. An interaction with a ligand is any of
+            // its heavy atoms against a side chain or another ligand, which is
+            // what this leaves.
+            const ptypes = this.positionTypes || [];
+            const atomsOf = (i) => {
+                const list = atomsFor.get(i);
+                if (!list) return null;
+                if (!scOnly || ptypes[i] === 'L') return list;
+                return list.length > 1 ? list.slice(1) : null;
+            };
+            const seedAtoms = [];
+            for (const i of out) {
+                const list = atomsOf(i);
+                if (list) for (const p of list) seedAtoms.push(p);
+            }
+            if (!seedAtoms.length) return out;
+            for (const j of near) {
+                const list = atomsOf(j);
+                if (!list) continue;
+                let hit = false;
+                for (const q of list) {
+                    for (const p of seedAtoms) {
+                        const dx = p[0] - q[0]; const dy = p[1] - q[1]; const dz = p[2] - q[2];
+                        if (dx * dx + dy * dy + dz * dz <= cut2) { hit = true; break; }
+                    }
+                    if (hit) break;
+                }
+                if (hit) out.add(j);
+            }
+            // A LIGAND COMES BACK WHOLE. Each of its heavy atoms is a position
+            // of its own, so a side chain reaching one corner of a benzamidine
+            // would otherwise select that corner - a single atom floating in
+            // the middle of a molecule nobody asked to take apart. The same
+            // expansion a click on one of its atoms gets.
+            const groups = this.mergedLigandGroups();
+            if (groups && groups.size && typeof expandLigandSelection === 'function') {
+                for (const i of expandLigandSelection(out, groups)) out.add(i);
+            }
+            return out;
+        }
+
+        /**
+         * Every atom of each of these residues, in world space: the position
+         * itself, plus its side-chain table rows rebuilt through the frame they
+         * were measured in - drawn or not. Keyed by residue.
+         */
+        _atomsOfResidues(want) {
+            const co = this.coords;
+            const out = new Map();
+            if (!co || !want || !want.size) return out;
+            const xyz = (i) => {
+                const c = co[i];
+                if (!c) return null;
+                return Array.isArray(c) ? c : [c.x, c.y, c.z];
+            };
+            for (const i of want) {
+                const p = xyz(i);
+                if (p) out.set(i, [p]);
+            }
+            const sc = this.sidechains;
+            const C = (typeof window !== 'undefined') ? window.py2dmolCartoon : null;
+            const localFrame = C && C.localFrame;
+            if (!sc || !sc.pos || !localFrame) return out;
+            const n = co.length;
+            const at = (i) => {
+                const p = xyz(i);
+                return p ? { x: p[0], y: p[1], z: p[2] } : { x: 0, y: 0, z: 0 };
+            };
+            const types = this.positionTypes || [];
+            const fr = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+            const frames = new Map();
+            const frameAt = (i) => {
+                if (!frames.has(i)) {
+                    const nuc = types[i] === 'D' || types[i] === 'R';
+                    const ok = nuc
+                        ? localFrame(at, n, i, fr, null, C.NUCLEIC_STEP_MIN, C.NUCLEIC_STEP_MAX)
+                        : localFrame(at, n, i, fr, null);
+                    frames.set(i, ok ? fr.slice() : null);
+                }
+                return frames.get(i);
+            };
+            for (let k = 0; k < sc.pos.length; k++) {
+                const owner = sc.pos[k];
+                if (!out.has(owner)) continue;
+                const anchor = sc.frameOf[k];
+                const f = anchor >= 0 ? frameAt(anchor) : null;
+                if (anchor >= 0 && !f) continue;
+                const o = at(anchor >= 0 ? anchor : owner);
+                const cx = sc.coef[k * 3]; const cy = sc.coef[k * 3 + 1];
+                const cz = sc.coef[k * 3 + 2];
+                out.get(owner).push(f ? [
+                    o.x + f[0] * cx + f[3] * cy + f[6] * cz,
+                    o.y + f[1] * cx + f[4] * cy + f[7] * cz,
+                    o.z + f[2] * cx + f[5] * cy + f[8] * cz,
+                ] : [o.x + cx, o.y + cy, o.z + cz]);
+            }
+            return out;
+        }
+
+        /**
+         * The positions to FRAME a set on: every atom of the things it names.
+         *
+         * A residue is ONE position here - the trace point - so orienting on a
+         * single residue framed a single point and fell back to the 8 Angstrom
+         * floor, pointing the camera at a CA with the side chain the user was
+         * looking at hanging off to one side. Its atoms exist as positions
+         * whenever the side chain is drawn (they are appended: see
+         * _materialiseSidechains), and they are what the residue actually
+         * occupies, so the framing takes them.
+         *
+         * A ligand is the same argument one level up: its atoms are separate
+         * positions and picking one means the ligand, so the rest of the group
+         * comes too.
+         *
+         * Framing only. The SELECTION is untouched - what is selected is what
+         * the user picked, and the panel, Copy and Delete all read that.
+         */
+        framingPositions(set) {
+            if (!set || !set.size) return set;
+            const out = new Set(set);
+            const sc = this.sidechainMap;
+            if (sc && sc.size) {
+                for (const [idx, e] of sc) {
+                    if (e && out.has(e.owner)) out.add(idx);
+                }
+            }
+            const groups = this.mergedLigandGroups();
+            if (groups && groups.size && typeof expandLigandSelection === 'function') {
+                for (const i of expandLigandSelection(out, groups)) out.add(i);
+            }
+            // ...and nothing that is not on screen: a hidden atom is not part
+            // of what the view is being framed on
+            const vis = this.visiblePositions;
+            if (vis) for (const i of out) if (!vis.has(i)) out.delete(i);
+            return out.size ? out : set;
+        }
+
+        /**
+         * WHICH RESIDUES ARE DRAWN WITHOUT THEIR BACKBONE.
+         *
+         * Hiding a residue takes its side chain with it; this takes the ribbon
+         * (or the tube) and LEAVES the side chain, which is how you look at a
+         * binding site without the fold in front of it. Per residue and per
+         * object, beside `sidechains` and `bases` and for the same reason -
+         * position indices only mean anything against the object they were set
+         * on. Empty or missing means the whole backbone is drawn.
+         */
+        backboneHiddenSet() {
+            const set = this.mergedObjectSet('hiddenBackbone');
+            return (set instanceof Set && set.size) ? set : null;
+        }
+
+        /** Is this position's backbone hidden? */
+        backboneHiddenAt(i) {
+            const set = this.backboneHiddenSet();
+            return !!set && set.has(i);
+        }
+
+        /**
+         * Hide or show the backbone of these positions. Returns false when
+         * nothing changed, so the caller can skip the redraw.
+         */
+        setBackboneHiddenFor(positions, hidden) {
+            let changed = false;
+            // A selection can reach two objects at once in a merged view, and
+            // each keeps its own set in its own numbering - see writeGroups.
+            for (const g of this.writeGroups(positions)) {
+                const cur = g.object.hiddenBackbone instanceof Set
+                    ? new Set(g.object.hiddenBackbone) : new Set();
+                let mine = false;
+                for (const i of g.positions) {
+                    if (hidden ? !cur.has(i) : cur.has(i)) mine = true;
+                    if (hidden) cur.add(i); else cur.delete(i);
+                }
+                if (!mine) continue;
+                changed = true;
+                // A NEW SET EVERY TIME, like the visibility mask: both mesh
+                // signatures compare it by identity, so editing one in place
+                // would leave the GPU redrawing the cached backbone.
+                g.object.hiddenBackbone = cur.size ? cur : null;
+            }
+            return changed;
+        }
+
         sidechainOwners() {
             const sc = this.sidechains;
             if (!sc || !sc.pos || !sc.pos.length) return null;
@@ -6434,12 +8826,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
-         * Is there anything here whose elements could be coloured? Side-chain
-         * atoms are the only things that carry an element, so the row is
-         * offered exactly where the Side chains row is.
+         * Is there anything here whose elements could be coloured? A residue
+         * with a side chain, or a ligand atom that knows what element it is -
+         * see elementOwners. Everything else is a position standing for a whole
+         * residue, which has no single element to colour by.
          */
         hasElementsFor(positions) {
-            return this.hasSidechainsFor(positions);
+            const owners = this.elementOwners();
+            if (!owners) return false;
+            for (const i of positions) if (owners.has(i)) return true;
+            return false;
         }
 
         /**
@@ -6455,22 +8851,32 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * @returns {boolean} whether anything changed and a redraw is due
          */
         setElementsFor(positions, on) {
-            const obj = this.currentObjectName
-                ? this.objectsData[this.currentObjectName] : null;
-            if (!obj) return false;
-            const owners = this.sidechainOwners();
+            const owners = this.elementOwners();
             if (!owners) return false;
-            let cur;
-            if (obj.elements instanceof Set) cur = new Set(obj.elements);
-            else cur = new Set(owners);
             let changed = false;
-            for (const i of positions) {
-                if (!owners.has(i)) continue;
-                if (on ? !cur.has(i) : cur.has(i)) changed = true;
-                if (on) cur.add(i); else cur.delete(i);
+            for (const g of this.writeGroups(positions)) {
+                const { off, end } = this.localRangeOf(g.name);
+                let cur;
+                if (g.object.elements instanceof Set) {
+                    cur = new Set(g.object.elements);
+                } else {
+                    // this object's own element owners, in its own numbering
+                    cur = new Set();
+                    for (const o of owners) {
+                        if (o >= off && o < end) cur.add(o - off);
+                    }
+                }
+                let mine = false;
+                for (const i of g.positions) {
+                    if (!owners.has(i + off)) continue;
+                    if (on ? !cur.has(i) : cur.has(i)) mine = true;
+                    if (on) cur.add(i); else cur.delete(i);
+                }
+                if (!mine) continue;
+                changed = true;
+                g.object.elements = cur;
             }
             if (!changed) return false;
-            obj.elements = cur;
             // colours are cached; this changes them
             this.colorsNeedUpdate = true;
             this.plddtColorsNeedUpdate = true;
@@ -6492,6 +8898,84 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * selection - it just sat there offering four states none of which
          * could apply.
          */
+        /**
+         * WHICH SECONDARY STRUCTURE THESE POSITIONS ARE FORCED TO.
+         *
+         * Three answers, because a selection is a set: one letter if every
+         * protein position in it is forced to that letter, 'none' if not one of
+         * them is forced - the state a structure nobody has touched is in - and
+         * '' if they disagree, which is a state of its own and not a letter.
+         *
+         * Only 'P' positions count. A nucleotide is never assigned a letter and
+         * cannot be forced to one, so a selection of a duplex plus one helix
+         * would otherwise read as mixed for a reason the user cannot act on.
+         */
+        forcedSseFor(positions) {
+            const single = this.currentObjectName
+                ? this.objectsData[this.currentObjectName] : null;
+            const t = this.positionTypes || [];
+            let seen = null;
+            let n = 0;
+            for (const i of positions) {
+                if (t[i] !== 'P') continue;
+                n++;
+                // sse is a map keyed by position, per object, so a merged
+                // index has to be resolved back to the object that wrote it
+                const o = this.ownerOf(i);
+                const ov = (o ? this.objectsData[o.name]?.sse : single && single.sse) || null;
+                const at = o ? o.local : i;
+                const letter = (ov && ov[at]) || 'none';
+                if (seen === null) seen = letter;
+                else if (seen !== letter) return '';
+            }
+            return n ? seen : 'none';
+        }
+
+        /**
+         * What the ASSIGNMENT makes of these positions, where the drawing has
+         * already worked it out. Read off the cache the cartoon pass fills, and
+         * '' when there is none: running the assignment from here would put a
+         * whole SS pipeline behind a panel refresh, and on a capsid that is a
+         * second of it for a word in a menu.
+         */
+        /**
+         * WHAT THE ASSIGNMENT SAYS these residues are - one letter, or '' when
+         * they disagree or nothing can be said.
+         *
+         * ASKED FOR, not scavenged. This used to read the two SS caches and
+         * give up when both were absent, which is most of the time: they are
+         * built during a render and _invalidateSegmentCache drops them, so
+         * adding a contact or showing a side chain emptied them. The panel's
+         * control then said "Helix" after one click and "DSSP" after the next
+         * with nothing about the structure having changed - the instability
+         * was in the question, not the answer. The cartoon module computes it
+         * on a miss and caches it the same way the colour path does.
+         */
+        assignedSseFor(positions) {
+            const n = this.coords ? this.coords.length : 0;
+            let sec = (this._cartoonSec && this._cartoonSec.length === n)
+                ? this._cartoonSec
+                : ((this._ssColorSec && this._ssColorSec.length === n)
+                    ? this._ssColorSec : null);
+            if (!sec) {
+                const C = (typeof window !== 'undefined') ? window.py2dmolCartoon : null;
+                if (C && C.secondaryFor && n) {
+                    const built = C.secondaryFor(this);
+                    if (built && built.length === n) sec = built;
+                }
+            }
+            if (!sec) return '';
+            const t = this.positionTypes || [];
+            let seen = null;
+            for (const i of positions) {
+                if (t[i] !== 'P') continue;
+                const letter = sec[i] || 'C';
+                if (seen === null) seen = letter;
+                else if (seen !== letter) return '';
+            }
+            return seen || '';
+        }
+
         hasSseFor(positions) {
             const t = this.positionTypes;
             if (!t) return false;
@@ -6523,27 +9007,39 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * @returns {boolean} whether anything changed and a redraw is due
          */
         setBasesFor(positions, on) {
-            const obj = this.currentObjectName
-                ? this.objectsData[this.currentObjectName] : null;
-            if (!obj) return false;
             const t = this.positionTypes || [];
-            const isBase = (i) => t[i] === 'D' || t[i] === 'R';
-            let cur;
-            if (obj.bases instanceof Set) {
-                cur = new Set(obj.bases);
-            } else {
-                cur = new Set();
-                for (let i = 0; i < t.length; i++) if (isBase(i)) cur.add(i);
-            }
             let changed = false;
-            for (const i of positions) {
-                if (!isBase(i)) continue;
-                if (on ? !cur.has(i) : cur.has(i)) changed = true;
-                if (on) cur.add(i); else cur.delete(i);
+            for (const g of this.writeGroups(positions)) {
+                // MATERIALISED PER OBJECT. The set has to start full or hiding
+                // three bases would hide all but three - and "full" is that
+                // object's own nucleotides, not every nucleotide on screen.
+                const { off, end } = this.localRangeOf(g.name);
+                const isBase = (local) => {
+                    const at = local + off;
+                    return t[at] === 'D' || t[at] === 'R';
+                };
+                let cur;
+                if (g.object.bases instanceof Set) {
+                    cur = new Set(g.object.bases);
+                } else {
+                    cur = new Set();
+                    // end is Infinity for a lone object - see localRangeOf
+                    const stop = Math.min(end, t.length);
+                    for (let i = off; i < stop; i++) {
+                        if (t[i] === 'D' || t[i] === 'R') cur.add(i - off);
+                    }
+                }
+                let mine = false;
+                for (const i of g.positions) {
+                    if (!isBase(i)) continue;
+                    if (on ? !cur.has(i) : cur.has(i)) mine = true;
+                    if (on) cur.add(i); else cur.delete(i);
+                }
+                if (!mine) continue;
+                changed = true;
+                g.object.bases = cur;
             }
-            if (!changed) return false;
-            obj.bases = cur;
-            return true;
+            return changed;
         }
 
         /**
@@ -6565,22 +9061,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * leave a stale picture behind - the next update just re-snapshots.
          */
         beginSelectionPreview() {
-            const c = this.canvas;
-            if (!c || !c.width || !c.height) return false;
-            if (typeof document === 'undefined' || !document.createElement) return false;
-            if (!this._previewCanvas) this._previewCanvas = document.createElement('canvas');
-            const snap = this._previewCanvas;
-            if (snap.width !== c.width || snap.height !== c.height) {
-                snap.width = c.width;
-                snap.height = c.height;
-            }
-            const sctx = snap.getContext('2d');
-            if (!sctx) return false;
-            sctx.setTransform(1, 0, 0, 1, 0, 0);
-            sctx.clearRect(0, 0, snap.width, snap.height);
-            sctx.drawImage(c, 0, 0);
-            this._previewLive = true;
-            return true;
+            // Kept as the public way in, but the snapshot itself is taken by
+            // the render (_snapshotCleanFrame) - which is the only moment the
+            // canvas holds the molecule and nothing else. Capturing here would
+            // take the last frame's overlays with it.
+            if (this._previewLive) return true;
+            this.render('selection preview snapshot');
+            return !!this._previewLive;
         }
 
         /**
@@ -6589,20 +9076,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * has to decide which path it is on.
          */
         updateSelectionPreview(set) {
-            if (!this._previewLive && !this.beginSelectionPreview()) {
-                this._selectionPreview = set || null;
-                this.render('selection preview');
-                return;
-            }
             this._selectionPreview = set || null;
-            const ctx = this.ctx || (this.canvas && this.canvas.getContext('2d'));
-            if (!ctx) return;
-            ctx.save();
-            ctx.setTransform(1, 0, 0, 1, 0, 0);
-            ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-            ctx.drawImage(this._previewCanvas, 0, 0);
-            ctx.restore();
-            this._paintSelectionHalo(ctx, this._exportPxScale || 1);
+            // ONE compositor for everything drawn on top of the molecule: the
+            // preview is a selection that has not been committed, and it lands
+            // on the same clean frame the hover marks do.
+            this._repaintOverlays();
         }
 
         /** Drop the preview; the next real render draws the committed selection. */
@@ -6634,17 +9112,195 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * the flattened, projected coordinates), so it sits on the ribbon you
          * can see rather than on the raw trace.
          */
-        _paintSelectionHalo(ctx, pxScale = 1) {
-            // a live drag preview wins: it is what the user is pointing at
+        /**
+         * Keep the finished molecule frame, overlays not yet painted, so that a
+         * change to what is MARKED does not have to redraw what is DRAWN.
+         *
+         * Not during a gesture: mid-drag the picture is superseded a frame
+         * later, and the copy would be paid for on every frame of a rotation
+         * for a hover that cannot happen while the pointer is holding the
+         * canvas. The gesture just leaves no snapshot, and the first hover
+         * afterwards pays one ordinary render to make one.
+         */
+        _snapshotCleanFrame(ctx) {
+            this._previewLive = false;
+            if (this._exportPxScale) return;
+            const c = this.canvas;
+            if (!c || !c.width || !c.height) return;
+            if (!ctx || ctx.canvas !== c) return;              // an export target
+            if (this.isDragging || this.isZooming || this.isOrientAnimating) return;
+            if (typeof document === 'undefined' || !document.createElement) return;
+            if (!this._previewCanvas) this._previewCanvas = document.createElement('canvas');
+            const snap = this._previewCanvas;
+            if (snap.width !== c.width || snap.height !== c.height) {
+                snap.width = c.width;
+                snap.height = c.height;
+            }
+            const sctx = snap.getContext('2d');
+            if (!sctx) return;
+            sctx.setTransform(1, 0, 0, 1, 0, 0);
+            sctx.clearRect(0, 0, snap.width, snap.height);
+            sctx.drawImage(c, 0, 0);
+            this._previewLive = true;
+        }
+
+        /**
+         * WHAT IS HOVERED, from whoever knows - the sequence strip, today.
+         * `atoms` are position indices to mark, `info` is {lines: [...]} for the
+         * corner tooltip, or null for neither. Repaints the overlays over the
+         * clean frame; falls back to an ordinary render when there is no
+         * snapshot to blit.
+         */
+        setHover(atoms, info) {
+            const next = (atoms && atoms.size) ? atoms : null;
+            const had = !!(this.highlightedAtoms && this.highlightedAtoms.size)
+                || !!this.hoverInfo;
+            this.highlightedAtoms = next;
+            // the singular field is the older API for the same thing; a set
+            // arriving here supersedes it, or the two disagree on screen
+            this.highlightedAtom = null;
+            this.hoverInfo = (info && info.text) ? info : null;
+            if (!next && !this.hoverInfo && !had) return;      // nothing to undraw
+            this._repaintOverlays();
+        }
+
+        /** Blit the clean frame back and put the overlays on it. */
+        _repaintOverlays() {
+            const ctx = this.ctx || (this.canvas && this.canvas.getContext('2d'));
+            if (!ctx || !this._previewLive || !this._previewCanvas) {
+                this.render('overlay repaint');
+                return;
+            }
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+            ctx.drawImage(this._previewCanvas, 0, 0);
+            ctx.restore();
+            this._paintOverlays(ctx, this._exportPxScale || 1);
+        }
+
+        /**
+         * EVERYTHING THAT SITS ON TOP OF THE MOLECULE, in one pass at the end
+         * of the frame: the selection band, then the hover marks and their
+         * tooltip.
+         *
+         * This used to be two canvases. The hover half lived on a second canvas
+         * the sequence viewer owned and painted on its own schedule, which is
+         * how it went out of step with the picture underneath: that paint
+         * resized its canvas and read getBoundingClientRect twice - a forced
+         * synchronous layout per frame - so the frame skipped it during a drag,
+         * a zoom and the orient fly-to, and skipped it BEFORE the clear. The
+         * marks stayed where they were while the structure turned under them,
+         * and a settle timer put them right afterwards. Painted here they are
+         * the same frame, from the same projection, and cannot disagree.
+         */
+        _paintOverlays(ctx, pxScale = 1, fromRender = false) {
+            // THE CLEAN FRAME, taken here because here is the only moment it
+            // exists: the molecule is finished and nothing has been drawn on
+            // top of it yet. Hover marks and the drag preview then repaint by
+            // blitting it back, which costs the same on a hexapeptide and a
+            // ribosome. Snapshotting lazily at the START of a gesture (what
+            // beginSelectionPreview did on its own) catches the canvas WITH the
+            // last frame's overlays already on it, and bakes them in.
+            if (fromRender) this._snapshotCleanFrame(ctx);
+            // ONE BAND, ONE COLOUR, for the selection and whatever is hovered.
+            // Two marks in two styles asked the reader to learn which yellow
+            // meant what; the same band for both says "this is the thing you
+            // mean" whichever way you pointed at it. Drawn as a UNION rather
+            // than one over the other: the colour is translucent, so anything
+            // stroked twice comes out darker, and hovering a residue that is
+            // already selected would stain it.
+            //
+            // NOT IN AN EXPORT, the hover half. The selection is something the
+            // user asked to have marked and belongs in a saved image; where the
+            // pointer happens to be does not - and an export renders from its
+            // own context, with nobody to move the pointer off first.
             const sel = this._selectionPreview
                 || (this.selectionInk ? this.selectionInk() : this.residueSelection);
+            const hov = this._exportPxScale ? null : this.hoverSet();
+            let band = sel;
+            if (hov && hov.size) {
+                band = new Set(hov);
+                if (sel) for (const i of sel) band.add(i);
+            }
+            this._paintSelectionHalo(ctx, pxScale, band);
+            if (!this._exportPxScale) this._paintHoverReadout(ctx, pxScale);
+        }
+
+        /** The hovered positions, from either field, or null. */
+        hoverSet() {
+            if (this.highlightedAtoms && this.highlightedAtoms.size) {
+                return this.highlightedAtoms;
+            }
+            if (this.highlightedAtom !== null && this.highlightedAtom !== undefined) {
+                return new Set([this.highlightedAtom]);
+            }
+            return null;
+        }
+
+        /**
+         * WHAT IS UNDER THE POINTER, named: "A GLY 39", bottom left, one line.
+         *
+         * No box behind it. A panel with a label per line was more furniture
+         * than the three words need, and it sat in the bottom RIGHT, which is
+         * where the structure usually is once it has been oriented on
+         * something. The colour follows the paper instead of a background
+         * plate: dark text on white, light on the 3d preset's black.
+         */
+        _paintHoverReadout(ctx, pxScale = 1) {
+            const text = this.hoverInfo && this.hoverInfo.text;
+            if (!text) return;
+            const H = this.displayHeight || (this.canvas ? this.canvas.height : 0);
+            // NO setTransform HERE. The app has already scaled this context by
+            // the device ratio, and everything else on this canvas - the halo,
+            // the structure itself - is drawn through it in DISPLAY pixels.
+            // Resetting the transform threw that scale away: on a 2x screen the
+            // text came out half size and "the bottom" landed in the middle of
+            // the canvas, which is exactly how it was reported. There is no
+            // pxScale here because this never runs in an export.
+            ctx.save();
+            ctx.font = '14px monospace';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'bottom';
+            ctx.fillStyle = (this.backgroundColor === '#000000')
+                ? HOVER_TEXT_DARK_CSS : HOVER_TEXT_LIGHT_CSS;
+            ctx.fillText(text, HOVER_TEXT_MARGIN, H - HOVER_TEXT_MARGIN);
+            ctx.restore();
+        }
+
+        _paintSelectionHalo(ctx, pxScale = 1, set = null) {
+            // a live drag preview wins: it is what the user is pointing at
+            const sel = set || this._selectionPreview
+                || (this.selectionInk ? this.selectionInk() : this.residueSelection);
             if (!sel || !sel.size) return;
+            // Only now, and only because there IS a selection to place. On the
+            // GPU tube path the frame did not project anything; this is where
+            // that debt is settled, and it is settled once per frame at most.
+            this._ensurePickProjection();
             const fid = this.screenFrameId;
             const sx = this.screenX; const sy = this.screenY;
             const sr = this.screenRadius; const sv = this.screenValid;
             if (!sx || !sv) return;
-            const drawn = (i) => i >= 0 && i < sv.length && sv[i] === fid && sel.has(i);
-            const idx = Array.from(sel).filter(drawn);
+            // A SELECTED RESIDUE INCLUDES ITS SIDE CHAIN, wherever one is drawn.
+            // Picking a residue selects the residue - one position - and its
+            // atoms are appended positions of their own, so the band stopped at
+            // the backbone and the side chain the user was looking at was the
+            // one part of it left unmarked. Marked here rather than added to
+            // the SELECTION, which stays what was picked: Copy, Delete and the
+            // panel all read that, and they mean the residue.
+            const scOwned = this.sidechainMap;
+            let marks = sel;
+            if (scOwned && scOwned.size) {
+                let extra = null;
+                for (const [idx0, e] of scOwned) {
+                    if (!e || !sel.has(e.owner) || sel.has(idx0)) continue;
+                    if (!extra) extra = new Set(sel);
+                    extra.add(idx0);
+                }
+                if (extra) marks = extra;
+            }
+            const drawn = (i) => i >= 0 && i < sv.length && sv[i] === fid && marks.has(i);
+            const idx = Array.from(marks).filter(drawn);
             if (!idx.length) return;
             idx.sort((a, b) => a - b);
             const chains = this.chains;
@@ -6653,31 +9309,63 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // THE BAND FOLLOWS WHAT IS ACTUALLY CONNECTED.
             //
             // A backbone is a linear chain, so consecutive residues of the same
-            // chain join up. A SIDE CHAIN is not: it is a tree - a leucine
-            // branches at CG - and its atoms are appended positions whose index
-            // order says nothing about which are bonded. Joining those by index
-            // would draw a bond from CD1 to CD2 that does not exist, and would
-            // run a band from the last atom of one residue's side chain to the
-            // first of the next straight through empty space. So side-chain
-            // atoms are joined along their BONDS instead - the same
-            // connectivity the sticks themselves are drawn from.
+            // chain join up. AN ATOM IS NOT: a side chain is a tree - a leucine
+            // branches at CG - and a ligand is whatever the chemistry says,
+            // with its atoms sitting in the array in the order the file listed
+            // them. Index order says nothing about which of those are bonded.
+            // Joining them by index draws a bond from CD1 to CD2 that does not
+            // exist, runs a band from the last atom of one side chain to the
+            // first of the next straight through empty space, and - reported
+            // on 3PTB - joins a calcium ion to the first carbon of a
+            // benzamidine that is 20 A away, because they are neighbours in the
+            // array. So every atom position is joined along its BONDS instead,
+            // the same connectivity the sticks themselves are drawn from.
+            //
+            // Type 'L' is the test rather than the side-chain map: an appended
+            // side-chain atom and a ligand atom of the file's own are both
+            // atoms, and only one of the two is in that map.
             const edges = [];
             const touched = new Set();
             const addEdge = (a, b) => {
                 edges.push(a, b);
                 touched.add(a); touched.add(b);
             };
+            const types = this.positionTypes || [];
+            const isAtom = (i) => types[i] === 'L' || !!(sc && sc.has(i));
             for (let k = 1; k < idx.length; k++) {
                 const a = idx[k - 1]; const b = idx[k];
                 if (b !== a + 1) continue;                     // a gap
-                if (sc && (sc.has(a) || sc.has(b))) continue;   // bonds decide these
-                if (chains && chains[a] !== chains[b]) continue;
+                if (isAtom(a) || isAtom(b)) continue;          // bonds decide these
+                // ...and never across the join between two objects, which
+                // consecutive indices with the same chain id would otherwise
+                // be: see chainKeyAt.
+                if (chains && this.chainKeyAt(a) !== this.chainKeyAt(b)) continue;
                 addEdge(a, b);
             }
-            if (sc && sc.size && this.bonds) {
+            if (this.bonds) {
                 for (const [a, b] of this.bonds) {
                     if (!drawn(a) || !drawn(b)) continue;
-                    if (!sc.has(a) && !sc.has(b)) continue;
+                    if (!isAtom(a) && !isAtom(b)) continue;
+                    addEdge(a, b);
+                }
+            }
+
+            // A SELECTED CONTACT IS MARKED ALONG ITS LINE. Selecting a contact
+            // selects the pair it joins, and marking two residues at opposite
+            // ends of a structure says nothing about which contact was meant -
+            // there may be several between the same chains. The band runs along
+            // the contact itself, from the same edge list, so it composites in
+            // one stroke with the rest and cannot double-darken where it meets
+            // a marked residue.
+            const segsC = this.segmentIndices;
+            if (segsC) {
+                for (let i = 0; i < segsC.length; i++) {
+                    const sg = segsC[i];
+                    if (!sg || sg.type !== 'C') continue;
+                    const a = sg.contactIdx1; const b = sg.contactIdx2;
+                    if (a === undefined || b === undefined) continue;
+                    if (!sel.has(a) || !sel.has(b)) continue;
+                    if (!drawn(a) || !drawn(b)) continue;
                     addEdge(a, b);
                 }
             }
@@ -6694,21 +9382,105 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // flat. That is also why an isolated atom is a ZERO-LENGTH segment
             // rather than a filled arc - with a round cap it draws the same
             // circle, but inside the same path and the same single stroke.
-            let w = 0;
-            for (const i of idx) w = Math.max(w, sr[i] || 2);
-            ctx.lineWidth = 2 * ((SELECTION_HALO_PX * pxScale) + w);
-            ctx.beginPath();
+            // EACH PART GETS THE BAND ITS OWN THICKNESS ASKS FOR. One width for
+            // the whole selection is the max over it, so a side chain - a stick
+            // a third the backbone's width - was marked with the backbone's
+            // band and disappeared inside it. The width is a function of the
+            // radius, so the edges are bucketed by the width they want and each
+            // bucket is stroked once.
+            // THE PICKING RADIUS IS NOT THE DRAWN ONE, anywhere. screenRadius is
+            // a residue-sized CLICK TARGET - the same 5.29 px for a CA as the
+            // 5.33 for the CD1 hanging off it - and banding at face value made
+            // the mark heavier than the thing it marks. The side chains were
+            // the loud case, because their sticks really are half the width;
+            // the backbone was over-banded by the same rule and looked normal
+            // only because it had always looked like that.
+            //
+            // So one fraction, everywhere: the band is measured off half the
+            // picking radius, which puts it around the ribbon rather than over
+            // it and takes the default view from 24.9 px to 12.5.
+            // ONE QUESTION, ASKED ONCE: how big is this position drawn. The
+            // projection answers it (screenDrawRadius) - exactly for a lone
+            // atom, and by the old half-the-click-target estimate for a ribbon,
+            // which is what this fraction always meant. Asking it here instead
+            // needs a branch per kind of thing, and a metal was the first kind
+            // the estimate was wrong about rather than the only one.
+            const sdr = this.screenDrawRadius;
+            const radiusAt = (i) => (sdr && sdr[i])
+                || ((sr[i] || 2) * SELECTION_HALO_RADIUS_FRAC);
+            // ...AND WHAT AN ORDINARY RESIDUE MEASURES AT THIS VIEW, which is
+            // what sets how far the mark sticks out. The two are the same
+            // number for a residue and differ for anything drawn at a size of
+            // its own: a zinc's ball is 6.89 px where the residue radius is
+            // 1.86, so a margin taken from the ball's own radius made the ring
+            // around a metal three and a half times the ring around the chain
+            // next to it - the same 1.3, meaning something different because
+            // the radius under it meant something different.
+            const refAt = (i) => (sr[i] || 2) * SELECTION_HALO_RADIUS_FRAC;
+            const bandFor = (r, ref) => selectionBandFor(r, pxScale, ref);
+            // ...QUANTISED, so a hundred residues do not become a hundred
+            // strokes: half a pixel is finer than the eye reads on a band.
+            const bucketOf = (r, ref) => Math.round(bandFor(r, ref) * 2) / 2;
+            const groups = new Map();
+            const addTo = (key, fn) => {
+                let g = groups.get(key);
+                if (!g) { g = []; groups.set(key, g); }
+                g.push(fn);
+            };
+            // an edge takes the THINNER of its two ends: the band has to sit
+            // inside the thicker one rather than swallow the thinner
             for (let k = 0; k + 1 < edges.length; k += 2) {
-                ctx.moveTo(sx[edges[k]], sy[edges[k]]);
-                ctx.lineTo(sx[edges[k + 1]], sy[edges[k + 1]]);
+                const a = edges[k]; const b = edges[k + 1];
+                const r = Math.min(radiusAt(a), radiusAt(b));
+                addTo(bucketOf(r, Math.min(refAt(a), refAt(b))), (c) => {
+                    c.moveTo(sx[a], sy[a]); c.lineTo(sx[b], sy[b]);
+                });
             }
             for (const i of idx) {
                 if (touched.has(i)) continue;
+                const r = radiusAt(i);
                 // a hair of length, so a round cap has something to cap
-                ctx.moveTo(sx[i], sy[i]);
-                ctx.lineTo(sx[i] + 0.01, sy[i]);
+                addTo(bucketOf(r, refAt(i)), (c) => {
+                    c.moveTo(sx[i], sy[i]); c.lineTo(sx[i] + 0.01, sy[i]);
+                });
             }
-            ctx.stroke();
+            // ONE COMPOSITE, HOWEVER MANY WIDTHS. A translucent colour darkens
+            // wherever two strokes overlap - a backbone band and the side-chain
+            // band leaving it would show a blot at every CA - so the widths are
+            // drawn OPAQUE into a scratch layer and that layer is composited
+            // once. Same flat wash as the single stroke this replaces, without
+            // being held to a single width.
+            const one = groups.size <= 1;
+            let lctx = ctx;
+            let layer = null;
+            if (!one && typeof document !== 'undefined' && ctx.canvas) {
+                layer = this._haloLayer
+                    || (this._haloLayer = document.createElement('canvas'));
+                if (layer.width !== ctx.canvas.width || layer.height !== ctx.canvas.height) {
+                    layer.width = ctx.canvas.width; layer.height = ctx.canvas.height;
+                }
+                lctx = layer.getContext('2d');
+                lctx.setTransform(1, 0, 0, 1, 0, 0);
+                lctx.clearRect(0, 0, layer.width, layer.height);
+                if (ctx.getTransform) {
+                    const m = ctx.getTransform();
+                    lctx.setTransform(m.a, m.b, m.c, m.d, m.e, m.f);
+                }
+                lctx.strokeStyle = SELECTION_HALO_SOLID_CSS;
+                lctx.lineJoin = 'round';
+                lctx.lineCap = 'round';
+            }
+            for (const [width, fns] of groups) {
+                lctx.lineWidth = width;
+                lctx.beginPath();
+                for (const fn of fns) fn(lctx);
+                lctx.stroke();
+            }
+            if (layer) {
+                ctx.setTransform(1, 0, 0, 1, 0, 0);
+                ctx.globalAlpha = SELECTION_HALO_ALPHA;
+                ctx.drawImage(layer, 0, 0);
+            }
             ctx.restore();
         }
 
@@ -6774,8 +9546,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (resolvedMode && resolvedMode !== 'auto' && resolvedMode !== this.colorMode) {
                 effectiveColorMode = resolvedMode;
             } else if (!effectiveColorMode || effectiveColorMode === 'auto' || resolvedMode === 'auto') {
-                // Resolve 'auto' to actual mode (chain/rainbow/plddt)
-                effectiveColorMode = this._getEffectiveColorMode();
+                // Resolve 'auto' to actual mode - and to THIS POSITION'S, which
+                // in a merged view is its own object's answer
+                effectiveColorMode = this._getEffectiveColorMode(atomIndex);
             }
 
             // If we have a resolved literal color, use it immediately (highest priority)
@@ -6818,8 +9591,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // No entropy data for this position (ligand, RNA/DNA, or unmapped) - use default grey
                     color = DEFAULT_GREY;
                 }
+            } else if (effectiveColorMode === 'object') {
+                // One colour per object, from the chain palette, chosen by LOAD
+                // ORDER - not by position in the merge, which changes whenever
+                // something is switched on or off and would repaint the objects
+                // that stayed. A ligand is grey everywhere else; here it
+                // belongs to an object like everything else does, and greying
+                // it would hide which.
+                const owner = this.ownerOf(atomIndex);
+                const loaded = Object.keys(this.objectsData || {});
+                const at = Math.max(0, loaded.indexOf(
+                    owner ? owner.name : this.currentObjectName));
+                const colorArray = this.colorblindMode ? chainColorsColorblind : chainColors;
+                color = hexToRgb(colorArray[at % colorArray.length]);
             } else if (effectiveColorMode === 'chain') {
-                const chainId = this.chains[atomIndex] || 'A';
+                // by SOURCE and chain: both objects have a chain A
+                const chainId = this.chainKeyAt(atomIndex);
                 if (isLigand && !this.ligandOnlyChains.has(chainId)) {
                     // Ligands in chains with P/D/R positions are grey
                     color = DEFAULT_GREY;
@@ -6855,13 +9642,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     color = DEFAULT_GREY;
                 } else {
                     // Regular positions get rainbow color
-                    const chainId = this.chains[atomIndex] || 'A';
+                    const chainId = this.chainKeyAt(atomIndex);
 
                     // In overlay mode, use per-frame scales; otherwise use global scales
                     let scale = null;
-                    if (this.overlayState.enabled && this.overlayState.frameIdMap && this.frameRainbowScales) {
-                        const frameIdx = this.overlayState.frameIdMap[atomIndex];
-                        scale = this.frameRainbowScales[frameIdx] && this.frameRainbowScales[frameIdx][chainId];
+                    const rgroups = this.sourceGroups();
+                    if (rgroups && this.sourceRainbowScales) {
+                        const src = rgroups[atomIndex];
+                        scale = this.sourceRainbowScales[src] && this.sourceRainbowScales[src][chainId];
                     } else {
                         scale = this.chainRainbowScales && this.chainRainbowScales[chainId];
                     }
@@ -6883,11 +9671,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         // Get chain color for a given chain ID (for UI elements like sequence viewer)
-        getChainColorForChainId(chainId) {
+        getChainColorForChainId(chainId, objectName) {
             if (!this.chainIndexMap || !chainId) {
                 return DEFAULT_GREY; // Default lightened gray
             }
-            const chainIndex = this.chainIndexMap.get(chainId) || 0;
+            // The strip belongs to ONE object - the current one unless told
+            // otherwise - so a bare chain id is that object's chain id, and in
+            // a merged view it has to be keyed with the object to find the
+            // colour that chain is actually drawn in.
+            const key = this.chainKeyFor(chainId, objectName);
+            const chainIndex = (this.chainIndexMap.has(key)
+                ? this.chainIndexMap.get(key)
+                : this.chainIndexMap.get(chainId)) || 0;
             const colorArray = this.colorblindMode ? chainColorsColorblind : chainColors;
             const hex = colorArray[chainIndex % colorArray.length];
             return hexToRgb(hex);
@@ -6899,9 +9694,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const m = this.segmentIndices.length;
             if (m === 0) return [];
 
-            // In overlay mode with frame-level colors, let each atom determine its own color mode
-            // Otherwise cache the effective color mode to avoid recalculating for every position
-            let usePerAtomColorMode = this.overlayState.enabled && this.overlayState.frameIdMap;
+            // A merged view colours per source, so each atom resolves its own
+            // mode; otherwise the effective mode is cached rather than asked
+            // again for every position.
+            let usePerAtomColorMode = !!this.sourceGroups();
             if (!effectiveColorMode && !usePerAtomColorMode) {
                 effectiveColorMode = this._getEffectiveColorMode();
             }
@@ -7043,8 +9839,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * @param {Array} contact - Contact specification: [idx1, idx2, weight, color?] or [chain1, res1, chain2, res2, weight, color?]
          * @returns {{idx1: number, idx2: number, weight: number, color: {r: number, g: number, b: number}|null}|null} Resolved indices, weight, and color or null if invalid
          */
-        _resolveContactToIndices(contact, maxIndex = null) {
+        _resolveContactToIndices(contact, maxIndex = null, window = null) {
             if (!contact || !Array.isArray(contact)) return null;
+            // The slice of the array belonging to the object that stored this
+            // contact - the whole array when nothing is merged.
+            const off = window ? window.off : 0;
+            const stop = window ? window.end : Infinity;
 
             // Extract weight and color
             let weight = 1.0;
@@ -7056,7 +9856,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (contact.length >= 4 && typeof contact[3] === 'object' && contact[3] !== null) {
                     color = contact[3]; // Color object {r, g, b}
                 }
-                return { idx1: contact[0], idx2: contact[1], weight: weight, color: color };
+                const i1 = contact[0] + off;
+                const i2 = contact[1] + off;
+                if (i1 >= stop || i2 >= stop) return null;
+                return { idx1: i1, idx2: i2, weight: weight, color: color };
             } else if (contact.length >= 5 && typeof contact[0] === 'string') {
                 // Chain + residue format: [chain1, res1, chain2, res2, weight, color?]
                 const [chain1, res1, chain2, res2] = contact;
@@ -7067,13 +9870,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                 // Find position indices matching chain+residue
                 // Only search in original structure positions (before intermediate positions were added)
-                const searchLimit = maxIndex !== null ? maxIndex : this.chains.length;
+                const searchLimit = Math.min(
+                    maxIndex !== null ? maxIndex : this.chains.length, stop);
                 let idx1 = -1, idx2 = -1;
 
                 // Debug: log available chains and residue ranges for first failed contact
                 let debugLogged = false;
 
-                for (let i = 0; i < searchLimit; i++) {
+                for (let i = off; i < searchLimit; i++) {
                     // Skip intermediate positions (they have residueNumber = -1)
                     if (this.residueNumbers[i] === -1) continue;
 
@@ -7167,9 +9971,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // off a full-width backbone. This is what "side chains do not work
             // in tube mode" looked like: they were drawn all along, just far
             // too faint to read as part of the structure. See SIDECHAIN_WIDTH.
-            if (type === 'L' && this.sidechainMap && this.sidechainMap.size
-                && (this.sidechainMap.has(segInfo.idx1)
-                    || this.sidechainMap.has(segInfo.idx2))) {
+            // ...AND THE BOND THAT JOINS IT TO THE BACKBONE IS PART OF IT.
+            //
+            // This asked for type 'L' as well, and the CA-CB bond is not: it
+            // runs [owner, CB], the owner is a protein position, and the
+            // segment builder takes the most restrictive of the two types - so
+            // that one link came out 'P' and took the BACKBONE's full width
+            // while every other bond in the same side chain took 0.5. Half the
+            // side chain drawn at twice the weight of the rest of it, and
+            // most visible in tube mode where the backbone is thickest.
+            //
+            // Asked through _isSidechainSegment, which is the same question
+            // the drawing and the visibility mask already ask, so the three
+            // cannot drift apart again. Contacts never reach here - type 'C'
+            // returns above.
+            if (this._isSidechainSegment && this._isSidechainSegment(segInfo)) {
                 return SIDECHAIN_WIDTH;
             }
 
@@ -7487,22 +10303,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
 
-        // Helper method to stop recording tracks
-        _stopRecordingTracks() {
-            if (this.recordingStream) {
-                this.recordingStream.getTracks().forEach(track => track.stop());
-                this.recordingStream = null;
-            }
-        }
-
         // Update cached canvas dimensions (call on resize)
         _updateCanvasDimensions() {
             this.displayWidth = parseInt(this.canvas.style.width) || this.canvas.width;
             this.displayHeight = parseInt(this.canvas.style.height) || this.canvas.height;
-
-            // Update highlight overlay canvas size to match (managed by sequence viewer)
-            if (window.SEQ && window.SEQ.updateHighlightOverlaySize) {
-                window.SEQ.updateHighlightOverlaySize();
+            // EVERY NUMBER IN THE CAPTURE PANEL IS DERIVED FROM THIS. The image
+            // size, the recording sizes, the whole Video menu - all computed
+            // when the panel was built, and all wrong the moment the window is
+            // dragged wider. Rebuilt rather than patched: the panel is a dozen
+            // elements, its state lives in _captureOpts, and there is no
+            // half-edited field to lose.
+            if (this._savePanel && this._saveAnchor && !this._captureBusy) {
+                this._rebuildSavePanel(true);      // every size in it just changed
             }
         }
 
@@ -7528,6 +10340,524 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         _inertiaAllowed() {
             return this.smoothAnimationOk();
+        }
+
+        /**
+         * Will the GPU draw this frame? Asked by anything that budgets a frame,
+         * because the answer changes what a frame COSTS by more than an order of
+         * magnitude and every cost heuristic here predates it.
+         *
+         * The conditions are the two draw hooks' own, kept together so they
+         * cannot drift: the flag, a working WebGL2, and an entry point for the
+         * current style. Still a guess and not a promise - the hook may decline
+         * the frame for a reason only it can see (a lost context, an export
+         * canvas) - so callers must stay correct if it turns out wrong. Every
+         * caller does: they choose between two ways of drawing the same picture.
+         */
+        /* THE GPU TUBE FRAME, and everything it needs to draw one.
+         *
+         * The 2D tube pass and this one want almost disjoint things. The 2D
+         * pass needs a depth order, per-endpoint cap flags and a projected
+         * screen position for every atom, because it strokes the picture itself
+         * with a painter that has no depth buffer. The GPU needs the segment
+         * list, the colours and the view scale, and derives the rest on the
+         * card. This method is that short list; the long one below it is what
+         * the 2D pass still runs when this returns false.
+         *
+         * Returns false for anything it cannot do - no WebGL2, a lost context,
+         * an export context - having done no work worth speaking of, so the
+         * caller falls through to the full path unharmed.
+         */
+        /* WILL THE GPU TUBE PATH TAKE THIS FRAME? Asked before the rotation
+         * loop, which is why it cannot simply be "did _tubeGPUFrame succeed".
+         * It repeats the refusals _tubeGPUFrame itself makes, and like
+         * _gpuWillDraw it is a guess: being wrong costs one rotation done late
+         * rather than early, never a wrong picture.
+         */
+        _tubeGPUWillTake(ctx) {
+            return this.style !== 'cartoon' && this._gpuWillTake(ctx);
+        }
+
+        /* The same question for either style, and the one the CLEAR depends on.
+         * Same standing as _gpuWillDraw: a guess made before the attempt, whose
+         * cost when wrong is a repaint, never a wrong picture.
+         */
+        _gpuWillTake(ctx, style) {
+            if (this.useGPU !== true) return false;
+            // DRAW IS A 2D EFFECT, so the frame has to be a 2D one.
+            //
+            // The build-up is three layers in an illustrator's order - graphite
+            // under-drawing, colour wash, ink line - revealed along the chain by
+            // a pen whose pace follows the local curvature, and all of it is
+            // canvas compositing in viewer-cartoon.js. The GPU knows nothing
+            // about it, so with the GPU on it simply drew the finished picture
+            // and the animation ran invisibly: measured 33% of the way through a
+            // build-up, the canvas held 99.5% of the finished ink.
+            //
+            // The reveal itself would port (a pen position against each
+            // instance's residue is one uniform and one comparison); the
+            // watercolour is the work - off-register washes, bleed, grain. Until
+            // someone does that, Draw takes the 2D path and hands it back when
+            // it is switched off.
+            if (this.drawMode) return false;
+            const G = window.py2dmolCartoonGPU;
+            if (!G) return false;
+            if ((style || this.style) === 'cartoon') {
+                if (typeof G.render !== 'function' || !window.py2dmolCartoon) return false;
+            } else if (typeof G.renderTube !== 'function') return false;
+            // A 2D CANVAS IS A 2D CANVAS, the screen's or an export's. It used
+            // to insist on the screen one, which is why Capture was always the
+            // 2D drawing however the viewer was drawn: saveImage renders into a
+            // canvas of its own at k times the size, and that is a display of
+            // k times the density as far as this stage is concerned. An SVG
+            // context is still refused - there is no vector to hand back from a
+            // raster - and so is a buffer the driver will not make that big,
+            // which the GPU module checks for itself.
+            if (!ctx || !ctx.canvas || !ctx.drawImage || ctx.getSerializedSvg) return false;
+            return true;
+        }
+
+        /* THE POINT THE VIEW TURNS ABOUT. O(1), and separate from the rotation
+         * because a pan reads _viewCenter on the next gesture whether or not
+         * anything was rotated this frame.
+         */
+        _computeViewCentre(object) {
+            const globalCenter = (object && object.totalPositions > 0)
+                ? object.globalCenterSum.mul(1 / object.totalPositions) : new Vec3(0, 0, 0);
+            const c = this.viewerState.center || globalCenter;
+            // A pan MOVES this point; remember it so the first drag has
+            // something to move even when the view is still on the default
+            // (null) centre.
+            this._viewCenter = { x: c.x, y: c.y, z: c.z };
+            return c;
+        }
+
+        /* EVERY POSITION INTO VIEW SPACE: the object's own rotation_matrix
+         * (best_view) first, then the user's. Lifted out of _renderToContext
+         * unchanged so that the GPU tube path can decide not to call it.
+         */
+        _rotateCoords(object, c) {
+            this._rotPending = false;
+            while (this.rotatedCoords.length < this.coords.length) {
+                this.rotatedCoords.push(new Vec3(0, 0, 0));
+            }
+            const m = this.viewerState.rotation;
+            const objectRotation = (object && object.rotation_matrix && object.center)
+                ? object.rotation_matrix : null;
+            const objectCenter = (object && object.center) ? object.center : null;
+            for (let i = 0; i < this.coords.length; i++) {
+                let v = this.coords[i];
+
+                // Step 1: Apply object-level rotation (best_view) if present
+                if (objectRotation && objectCenter) {
+                    const cx = v.x - objectCenter[0];
+                    const cy = v.y - objectCenter[1];
+                    const cz = v.z - objectCenter[2];
+                    const rotX = objectRotation[0][0] * cx + objectRotation[0][1] * cy + objectRotation[0][2] * cz;
+                    const rotY = objectRotation[1][0] * cx + objectRotation[1][1] * cy + objectRotation[1][2] * cz;
+                    const rotZ = objectRotation[2][0] * cx + objectRotation[2][1] * cy + objectRotation[2][2] * cz;
+                    v = new Vec3(rotX + objectCenter[0], rotY + objectCenter[1], rotZ + objectCenter[2]);
+                }
+
+                // Step 2: Apply user rotation
+                const subX = v.x - c.x, subY = v.y - c.y, subZ = v.z - c.z;
+                const out = this.rotatedCoords[i];
+                out.x = m[0][0] * subX + m[0][1] * subY + m[0][2] * subZ;
+                out.y = m[1][0] * subX + m[1][1] * subY + m[1][2] * subZ;
+                out.z = m[2][0] * subX + m[2][1] * subY + m[2][2] * subZ;
+            }
+        }
+
+        /* SETTLE A DEFERRED ROTATION. Called by everything that reads
+         * rotatedCoords on a GPU frame: picking, the selection halo, and
+         * renderApp when it rebuilds the cartoon mesh. Cheap and idempotent -
+         * a no-op unless a frame actually skipped the loop.
+         */
+        _ensureRotated() {
+            if (!this._rotPending) return;
+            const object = this.objectsData[this.currentObjectName];
+            if (object) this._rotateCoords(object, this._computeViewCentre(object));
+            else this._rotPending = false;
+        }
+
+        /* PAY FOR THE SCREEN POSITIONS AT THE MOMENT SOMETHING READS THEM.
+         *
+         * On the GPU tube path the frame leaves an IOU rather than a
+         * projection: rotatedCoords may be a view out of date and screenX and
+         * friends may be unwritten. There are exactly two readers in the
+         * codebase - pickResidueAt and _paintSelectionHalo - and both call this
+         * first. A no-op on every other path, where the 2D pass has already
+         * filled both as a side effect of drawing.
+         */
+        _ensurePickProjection() {
+            this._ensureRotated();
+            const p = this._pickPending;
+            if (p) {
+                this._pickPending = null;
+                this._projectForPicking(p.dw, p.dh, p.scale);
+            }
+        }
+
+        /**
+         * THE POSITIONS ONE STYLE DRAWS, and only those: an object's own
+         * positions, intersected with whatever the visibility mask allows.
+         *
+         * CACHED, because both painters key their geometry on the mask BY
+         * IDENTITY - a fresh Set every frame is a rebuilt mesh every frame.
+         * The answer depends on the drawn set, the mask and the array, and on
+         * nothing else; all three are only ever replaced, never edited.
+         */
+        _styleMaskFor(names, slot, baseMask) {
+            const cache = this._styleMaskCache || (this._styleMaskCache = {});
+            // THE MASK THE FRAME STARTED WITH, passed in - not the live one.
+            // The live one is being SWAPPED as each painter takes its turn, so
+            // asking for the second painter's share while the first painter's
+            // is installed intersected one object's positions with another
+            // object's, and came out empty: the tube half of the frame simply
+            // did not draw.
+            const vis = baseMask === undefined ? this.visiblePositions : baseMask;
+            const key = names.join(',');
+            const hit = cache[slot];
+            if (hit && hit.vis === vis && hit.arr === this.coords && hit.key === key) {
+                return hit.out;
+            }
+            const own = this.positionsOfObjects(names);
+            let out = own;
+            if (vis) {
+                out = new Set();
+                for (const i of own) if (vis.has(i)) out.add(i);
+            }
+            cache[slot] = { vis, arr: this.coords, key, out };
+            return out;
+        }
+
+        /**
+         * TWO PAINTERS, ONE FRAME.
+         *
+         * An object carries its own style, so a merge can hold a ribosome
+         * drawn as a tube beside a peptide drawn as a ribbon. The two are
+         * different geometry models and stay different - but on the GPU they
+         * write into the same framebuffer with the same depth buffer, so
+         * interleaving them is free and exact: nearer wins, per pixel, with no
+         * sorting anywhere. (The 2D path cannot do this. Its painter resolves
+         * overlap by paint order, and two independent sorts cannot be merged
+         * without one depth-sorted stream across both models - which is the
+         * problem PAINT_ORDER.md records every attempt at.)
+         *
+         * Each painter is shown only its own objects, by swapping the
+         * visibility mask for the duration: both of them already build their
+         * geometry from that mask and key it on the mask's contents, so
+         * subsetting comes for free and each keeps its own mesh.
+         *
+         * ONE DEPTH RANGE FOR BOTH. Each model normally maps view z through
+         * its OWN bounding range, and two different ranges are two different
+         * depth scales - the picture would sort by which model a pixel came
+         * from rather than by depth. The range handed to both is the drawn
+         * extent, which contains everything either of them can draw.
+         */
+        /**
+         * THE STYLE THE PICTURE IS DRAWN IN.
+         *
+         * `this.style` is the style of the object being EDITED - what the
+         * Style panel describes and what a switch back to single-object mode
+         * restores. It is not always what is on screen: light one eye on an
+         * object you are not editing and the picture is that object's, so it
+         * is drawn the way THAT object wants to be drawn.
+         *
+         * With two styles among the drawn objects there is no single answer
+         * and the mixed path takes the frame; this returns the edited object's
+         * so that everything downstream still has one to fall back on.
+         */
+        _drawStyle() {
+            const groups = this.drawnStyleGroups();
+            if (groups.size === 1) return groups.keys().next().value;
+            return this.style;
+        }
+
+        _mixedGPUFrame(ctx, displayWidth, displayHeight, colors, object, groups) {
+            const G = window.py2dmolCartoonGPU;
+            if (!G || !G.render || !G.renderTube || !window.py2dmolCartoon) return false;
+            if (!ctx || !ctx.canvas || !ctx.drawImage || ctx.getSerializedSvg) return false;
+            const cartoonNames = groups.get('cartoon') || [];
+            const tubeNames = groups.get('tube') || [];
+            if (!cartoonNames.length || !tubeNames.length) return false;
+            const framed = this.drawnStats() || object;
+            // ...AND NO WIDER THAN IT HAS TO BE. Every depth bias in both
+            // shaders - the outline's, the tube's skirt and caps - is a
+            // constant in NDC, so widening the range makes each of them stand
+            // for a LARGER distance in Angstrom. Measured on 1TIM + 1UBQ with
+            // a range 20% too wide: the cartoon's outline lost to the tube
+            // behind it over a fifth of the pixels where the two overlap.
+            // maxExtent is already the bounding radius of what is drawn; the
+            // margin covers a capsule's bulge and a ribbon's thickness.
+            const R = ((framed && framed.maxExtent > 0) ? framed.maxExtent : 30) + 4;
+            const z = [-R, R];
+            const keep = this.visiblePositions;
+            // ...AND EACH PAINTER DRAWS WITH ITS OWN STYLE'S SETTINGS. The
+            // thickness, the outline, the detail and the rest are single
+            // fields on the renderer holding whatever the style you last
+            // SELECTED left there - so with a tube object picked, the cartoon
+            // half of the picture was drawn with tube's numbers. Each style
+            // keeps its own set (see STYLE_SETTINGS); the frame installs one
+            // for each pass and puts back what it found.
+            const keepStyle = this.style;
+            this._keepStyleSettings(keepStyle);
+            let prev = null;
+            let drew = false;
+            try {
+                this.visiblePositions = this._styleMaskFor(cartoonNames, 'cartoon', keep);
+                this.style = 'cartoon';
+                prev = this._installStyleProfile('cartoon');
+                const okC = G.render(this, ctx, displayWidth, displayHeight, colors,
+                    { keep: false, blit: false, z });
+                this.visiblePositions = this._styleMaskFor(tubeNames, 'tube', keep);
+                this.style = 'tube';
+                this._installStyleProfile('tube');
+                // ...and it only KEEPS the frame if there is one to keep
+                const okT = this._tubeGPUFrame(ctx, displayWidth, displayHeight,
+                    colors, object, { keep: !!okC, blit: true, z });
+                // the tube declining after the cartoon drew would leave the
+                // frame on the offscreen canvas and never on the page
+                if (okC && !okT) G.blit(ctx);
+                drew = !!okC || !!okT;
+                // WHICH HALF DREW, for the probes: two painters that decline
+                // silently are indistinguishable from one that drew badly.
+                if (typeof window !== 'undefined') {
+                    window.__mixedFrame = { cartoon: !!okC, tube: !!okT,
+                        nCartoon: this._styleMaskFor(cartoonNames, 'cartoon', keep).size,
+                        nTube: this._styleMaskFor(tubeNames, 'tube', keep).size };
+                }
+            } finally {
+                this.visiblePositions = keep;
+                this.style = keepStyle;
+                this._restoreStyleProfile(prev);
+            }
+            return drew;
+        }
+
+        _tubeGPUFrame(ctx, displayWidth, displayHeight, colors, object, compose) {
+            const G = window.py2dmolCartoonGPU;
+            if (!G || !G.renderTube) return false;
+            // the same refusals renderTube makes, asked before spending
+            // anything: an SVG export wants the vector the 2D pass produces,
+            // and there is none in a raster. A PNG export is a canvas like any
+            // other and the GPU draws it - see _gpuWillTake.
+            if (!ctx || !ctx.canvas || !ctx.drawImage || ctx.getSerializedSvg) return false;
+
+            const segments = this.segmentIndices;
+            const n = segments ? segments.length : 0;
+            if (!n) return false;
+
+            // WHICH SEGMENTS ARE DRAWN - and in no particular order, which is
+            // the whole point of being here. The 2D pass sorts this list back
+            // to front because its painter has nothing else to resolve overlap
+            // with; the GPU has a depth buffer.
+            //
+            // KEPT BETWEEN FRAMES. The answer depends on the mask and the
+            // segment list and on nothing else - not on the view - so turning
+            // the model does not change it. Rescanning anyway cost 2.5 ms of a
+            // 20 ms frame at 320,000 positions.
+            //
+            // Pointer comparison is exact here: viewer-mol.js only ever
+            // ASSIGNS visiblePositions (null, a new Set, or a freshly combined
+            // one) and rebuilds segmentIndices into a new array. Neither is
+            // edited in place, so an unchanged pointer is an unchanged answer.
+            const vis = this.visiblePositions;
+            // ...and the backbone switch, which changes WHICH segments are in
+            // the list. Left out of the key the cached order outlived the
+            // toggle and the backbone stayed on screen until something else
+            // invalidated it.
+            const noBB = this.backboneHiddenSet();
+            let order = this._gpuTubeOrder;
+            let cnt;
+            if (order && this._gpuTubeVisSrc === vis && this._gpuTubeSegSrc === segments
+                    && this._gpuTubeSegN === n && this._gpuTubeNoBB === noBB) {
+                cnt = this._gpuTubeCount;
+            } else {
+                if (!order || order.length < n) order = this._gpuTubeOrder = new Int32Array(n);
+                cnt = 0;
+                for (let i = 0; i < n; i++) {
+                    const s = segments[i];
+                    let ok;
+                    if (noBB && !this._isSidechainSegment(s)
+                            && noBB.has(s.idx1) && noBB.has(s.idx2)) {
+                        ok = false;
+                    } else if (!vis) {
+                        ok = true;
+                    } else if (s.type === 'C' && s.contactIdx1 !== undefined
+                            && s.contactIdx2 !== undefined) {
+                        // a contact is visible with its ORIGINAL endpoints, not
+                        // the intermediate positions it was expanded into
+                        ok = vis.has(s.contactIdx1) && vis.has(s.contactIdx2);
+                    } else {
+                        ok = vis.has(s.idx1) && vis.has(s.idx2);
+                    }
+                    if (ok) order[cnt++] = i;
+                }
+                this._gpuTubeVisSrc = vis;
+                this._gpuTubeNoBB = noBB;
+                this._gpuTubeSegSrc = segments;
+                this._gpuTubeSegN = n;
+                this._gpuTubeCount = cnt;
+            }
+            if (!cnt) return false;
+
+            // THE VIEW SCALE, the one number from the block below that is still
+            // needed up here: the GPU draws with it and a pan drag converts
+            // screen pixels to Angstroms with it. Arithmetic, not a pass.
+            const framed = this.drawnStats() || object;
+            const maxExtent = (framed && framed.maxExtent > 0) ? framed.maxExtent : 30.0;
+            const extent = this.viewerState.extent || maxExtent;
+            const padding = 0.9;
+            const baseScale = Math.min((displayWidth * padding) / (extent * 2),
+                (displayHeight * padding) / (extent * 2));
+            const scale = baseScale * this.viewerState.zoom;
+            this._viewScale = scale;
+            const pxScale = this._exportPxScale || 1;
+
+            // renderShadows is FALSE and not a question. The CPU occlusion pass
+            // is what this path exists to not run; the GPU computes its own from
+            // a depth prepass, at a cost that follows pixels rather than
+            // segments.
+            if (!G.renderTube(this, ctx, displayWidth, displayHeight, {
+                order, count: cnt, segments, segData: this.segData, colors,
+                shadows: null, tints: null, renderShadows: false,
+                outlineWidthPx: this.relativeOutlineWidth * pxScale,
+                // ...one painter of a composed frame, when it is one
+                compose: compose || null,
+            })) return false;
+
+            // NOT PROJECTED NOW. Nothing in the picture needs screen
+            // positions - the card has them - and the two things that do
+            // (pickResidueAt, _paintSelectionHalo) run on an event, not on a
+            // frame. What is recorded is enough to do it when one of them asks.
+            this._pickPending = { dw: displayWidth, dh: displayHeight, scale };
+            return true;
+        }
+
+        /* SCREEN POSITIONS FOR EVERYTHING THAT IS NOT THE PICTURE - picking,
+         * the selection halo, the sequence overlay. The 2D pass writes these as
+         * a side effect of projecting each segment's endpoints; nothing on the
+         * GPU path projects on the CPU at all, so they are written here.
+         *
+         * A flat loop over positions rather than a walk over segment endpoints
+         * with a per-position "did I already do this one" test: same answer,
+         * and it was 6.3 ms of a 60 ms frame done the other way. The cartoon
+         * path has its own version of this (projectPositions in
+         * viewer-cartoon-gpu.js) for the same reason.
+         */
+        /**
+         * HOW BIG POSITION i IS ON SCREEN - the two answers, from one place.
+         *
+         *   drawn  the radius of the thing that is actually painted. What
+         *          anything MARKING the position measures off.
+         *   pick   the radius that counts as a hit, which is deliberately
+         *          bigger than the drawn thing for a ribbon: a residue is a
+         *          click target the size of a residue, not the width of the
+         *          tape drawn through it.
+         *
+         * The two differ, and confusing them is what put a selection band
+         * through the middle of a metal: the band took the picking radius and
+         * halved it, which is a fair estimate of a RIBBON's width and simply
+         * wrong for a ball drawn at a known radius.
+         *
+         * A LONE ATOM IS THE CASE THE ESTIMATE CANNOT COVER. It is not a
+         * segment of anything - it is drawn as a ball of its element's van der
+         * Waals radius, a zinc 1.39 A against a potassium's 2.75 - so its size
+         * comes from the element and follows the zoom, and there is nothing to
+         * estimate. Everything else keeps the old estimate exactly.
+         *
+         * Here rather than in either caller because there are TWO projections
+         * (this and projectPosition, the older per-position one) and they had
+         * already drifted: sizing a metal in one of them left the other
+         * handing out the width of a bond.
+         */
+        _positionRadiiPx(i, base, wm, pe, scale) {
+            const lone = this._loneAtoms;
+            if (lone && lone.has(i) && this.elementAt) {
+                const api = typeof window !== 'undefined' && window.py2dmolCartoon;
+                const el = this.elementAt(i);
+                if (el && api && api.loneAtomRadiusA) {
+                    const d = api.loneAtomRadiusA(el) * scale * pe;
+                    return { drawn: d, pick: Math.max(2, d) };
+                }
+            }
+            const pick = Math.max(2, base * wm * 0.5 * pe);
+            return { drawn: pick * SELECTION_HALO_RADIUS_FRAC, pick };
+        }
+
+        /**
+         * THE SCREEN POSITIONS DESCRIBE A PICTURE THAT IS NO LONGER THERE.
+         *
+         * screenX/Y and friends are written once per drawn frame and stamped
+         * with screenFrameId; everything that reads them (pickResidueAt, the
+         * selection halo) checks the stamp. A frame that draws NOTHING never
+         * runs the projection loop, so the stamps from the last real frame
+         * stayed valid and the picker went on answering out of them: with every
+         * object switched off, clicking blank canvas selected a residue, and
+         * double-clicking it selected a whole chain of a molecule that was not
+         * on screen.
+         *
+         * Bumping the id is the whole invalidation - every stamp is now stale.
+         * The pending GPU projection has to go with it, or _ensurePickProjection
+         * would re-stamp the very coordinates being retired.
+         */
+        _invalidateScreenProjection() {
+            this.screenFrameId++;
+            this._pickPending = null;
+        }
+
+        _projectForPicking(displayWidth, displayHeight, scale) {
+            const np = this.coords.length;
+            const sx = this.screenX; const sy = this.screenY;
+            const sr = this.screenRadius; const sv = this.screenValid;
+            const sdr = this.screenDrawRadius;
+            if (!sx || !sv || sx.length < np) return;
+            const rotated = this.rotatedCoords;
+            this.screenFrameId++;
+            const fid = this.screenFrameId;
+            const cx = displayWidth / 2;
+            const cy = displayHeight / 2;
+            const persp = isPerspective(this.viewerState);
+            const fl = this.viewerState.focalLength;
+            const base = this.lineWidth * scale;
+            const types = this.positionTypes;
+            const tw = this.typeWidthMultipliers;
+            const mask = this.visiblePositions;
+            // A SELECTED POSITION IS PROJECTED WHETHER OR NOT IT IS DRAWN. The
+            // band over it is a UI indicator, not part of the molecule: it says
+            // where the selection is, and a selection you have hidden is
+            // precisely the one you need told about. Over nothing, if that is
+            // what is there.
+            const marked = this.selectionInk ? this.selectionInk() : this.residueSelection;
+            const wanted = (i) => !mask || mask.has(i) || (marked && marked.has(i));
+            for (let i = 0; i < np; i++) {
+                if (!wanted(i)) { sv[i] = 0; continue; }
+                const v = rotated[i];
+                let pe = 1;
+                if (persp) {
+                    const dz = fl - v.z;
+                    if (dz <= 0.1) { sv[i] = 0; continue; }
+                    pe = fl / dz;
+                }
+                const wm = (types && tw && tw[types[i]]) || 0.5;
+                sx[i] = cx + v.x * scale * pe;
+                sy[i] = cy - v.y * scale * pe;
+                const rr = this._positionRadiiPx(i, base, wm, pe, scale);
+                sr[i] = rr.pick;
+                if (sdr) sdr[i] = rr.drawn;
+                sv[i] = fid;
+            }
+        }
+
+        _gpuWillDraw() {
+            if (this.useGPU !== true) return false;
+            if (this.drawMode) return false;      // see _gpuWillTake
+            const G = window.py2dmolCartoonGPU;
+            if (!G || typeof G.available !== 'function' || !G.available()) return false;
+            return this.style === 'cartoon'
+                ? (typeof G.render === 'function' && !!window.py2dmolCartoon)
+                : typeof G.renderTube === 'function';
         }
 
         /**
@@ -7561,7 +10891,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
                 }
             }
-            if (visible > this.LARGE_MOLECULE_CUTOFF) return false;
+            // THE SEGMENT FLOOR IS A COST MODEL FOR THE 2D PATH, and it stops
+            // being true the moment the GPU is drawing. A thousand segments is
+            // roughly where a canvas repaint stops keeping up; the GPU draws
+            // 3431 of them in ~3 ms, so the count says nothing about whether
+            // this structure can hold a frame rate. Left in, the floor vetoed
+            // inertia and turned the orient fly-to into a jump on anything past
+            // the cutoff - and switching side chains on is enough to cross it,
+            // which is exactly what "acceleration is disabled during
+            // interactions" looked like from the outside.
+            //
+            // The MEASURED test below still applies, to both backends. That one
+            // is honest: it asks what frames actually cost on this machine at
+            // this canvas size, which is the question, and it will veto a GPU
+            // frame too if the GPU turns out to be slow here.
+            if (!this._gpuWillDraw() && visible > this.LARGE_MOLECULE_CUTOFF) return false;
             return !this._frameOverBudget();
         }
 
@@ -7617,6 +10961,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         render(reason = 'Unknown') {
+            // A STYLE BEING SET WITHOUT DRAWING. _switchToObject restores an
+            // object's style before its frames are loaded, so anything drawn
+            // here is built out of the PREVIOUS object's coordinates and thrown
+            // away a moment later - see setStyle's quiet flag.
+            if (this._quietStyle || this._switchQuiet) return;
+            // An auto slab follows its selection through a rotation; everything
+            // below reads the planes, so it is brought up to date first.
+            this._refreshAutoClip();
             if (this.currentFrame < 0) {
                 // Clear canvas if no frame is set
                 this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
@@ -7627,7 +10979,1459 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         // Core rendering logic - can render to any context (canvas, SVG, etc.)
+        /**
+         * WHICH OBJECTS THIS FRAME DRAWS, in the order they are drawn.
+         *
+         * One, today - and the callers ask through here rather than reading
+         * currentObjectName so that the day it returns several, they already
+         * do the right thing. `shownObjects` is the set the object list will
+         * write to; anything not in objectsData is ignored rather than
+         * dropped, because an object can be deleted while the set remembers
+         * it.
+         */
+        drawnObjects() {
+            const all = this.objectsData || {};
+            const names = Object.keys(all);
+            const want = this.shownObjects;
+            if (want) {
+                // AN EMPTY SET IS AN ANSWER: everything switched off, nothing on
+                // screen. Only a set that names objects which have all been
+                // deleted is stale, and falls through to the default.
+                if (!want.size) return [];
+                // the load order, so the list and the painting agree
+                const out = names.filter((n) => want.has(n));
+                if (out.length) return out;
+            }
+            // NULL MEANS THE ONE BEING EDITED, and that is the resting state:
+            // one object on screen, chosen with the dropdown, exactly as it has
+            // always been. Showing several is something the user asks for, by
+            // pressing All or lighting an eye in the list - never something
+            // that happens to them because a second file was loaded.
+            return this.currentObjectName ? [this.currentObjectName] : [];
+        }
+
+        /**
+         * WHOSE MATRIX THE PAE PANEL IS SHOWING, or null for none.
+         *
+         * A PAE matrix is a square over ONE structure's residues; there is no
+         * such thing across two, and a row of it means a residue only once you
+         * know which object it counts from. The panel was wired to the object
+         * last LOADED and nothing re-asked when the drawn set changed, so
+         * loading a structure with no PAE, then a prediction with one, then
+         * hiding the prediction, left its matrix on screen describing residues
+         * that were not - and a box drawn on it selected the other object's.
+         *
+         * IN MULTI THERE IS NO PANEL AT ALL. Not "the one object that has a
+         * matrix", which is defensible and still leaves the reader working out
+         * which structure in front of them the square belongs to. Multi is the
+         * mode for looking at several things at once; the matrix belongs to
+         * one, so it waits until the viewer is back to one.
+         *
+         * Outside Multi it is what it has always been: the object on screen,
+         * when that object has a matrix.
+         */
+        paeObjectName() {
+            const P = (typeof window !== 'undefined') ? window.PAE : null;
+            if (!P) return null;
+            // the shown set is a Set in Multi and null in the ordinary mode -
+            // see setShownObjects
+            if (this.shownObjects instanceof Set) return null;
+            const cur = this.currentObjectName;
+            const o = cur && this.objectsData ? this.objectsData[cur] : null;
+            return (o && P.hasData(o)) ? cur : null;
+        }
+
+        /**
+         * THE PER-OBJECT STATE TABLE, for the app's session save and restore.
+         * One list, walked by every lifecycle operation - see OBJECT_STATE.
+         */
+        objectStateToJSON(object) { return objectStateToJSON(object); }
+
+        objectStateFromJSON(object, saved) { objectStateFromJSON(object, saved); }
+
+        /**
+         * WHAT THE COORDINATE ARRAY IS SUPPOSED TO HOLD, as a string.
+         *
+         * Everything that builds the array - a frame load, a merge, an empty
+         * canvas - records this afterwards in `_loadedKey`, and anything
+         * thinking of skipping the work compares the two. The alternative,
+         * which is what was here, is to REASON about it: "one object, and it
+         * is the one being edited, so the ordinary path must already have it
+         * loaded". That was true from every direction but one - the array had
+         * just been emptied on purpose by switching every object off - and
+         * lighting the eye again then drew nothing at all, for good.
+         *
+         * A recorded fact cannot be wrong in that way. It can only be
+         * incomplete, so it names everything that decides the CONTENTS: which
+         * objects, which frame of each, whether the overlay merge is up, and
+         * how many side chains are materialised into it (they are appended
+         * positions, so they change the array's length).
+         *
+         * It deliberately does NOT try to cover colours, contacts or anything
+         * else that changes the picture without changing the array. Those
+         * paths reload through reloadDrawn, which does not consult this.
+         */
+        _arrayKey() {
+            const ov = !!(this.overlayState && this.overlayState.enabled);
+            const parts = [];
+            for (const n of this.drawnObjects()) {
+                const o = this.objectsData[n];
+                const f = (n === this.currentObjectName)
+                    ? this.currentFrame
+                    : ((o && o.viewerState && o.viewerState.currentFrame) || 0);
+                parts.push(n + '#' + f);
+            }
+            const sc = this.shownSidechainSet ? this.shownSidechainSet() : null;
+            return (ov ? 'overlay|' : 'frames|') + parts.join(',')
+                + '|sc' + (sc ? sc.size : 0);
+        }
+
+        /**
+         * WHAT THE ARRAY HOLDS AND WHAT IS IN IT - the one statement anything
+         * caching something derived from the coordinates should key on.
+         *
+         * `_arrayKey` names the objects, their frames and the appended atoms;
+         * three samples stand in for the coordinates themselves, which the
+         * names cannot see MOVE - a live-mode replace() and an alignment both
+         * do exactly that, same objects, same frame, same length. Every cache
+         * that used to write out its own version of this list disagreed with
+         * the others in some small way: the GPU mesh key kept only the array's
+         * length, the tube's kept its identity (which is a different array for
+         * the same picture, so every eye toggle rebuilt), and the secondary
+         * structure's could not see a coordinate swap at all - which is why
+         * _invalidateSegmentCache has to reach in and clear it by hand.
+         */
+        _coordsKey() {
+            const co = this.coords;
+            const n = co ? co.length : 0;
+            let s = '';
+            for (const i of [0, n >> 1, n - 1]) {
+                const p = n ? co[i] : null;
+                if (p) s += (((p.x + p.y * 3 + p.z * 7) * 1000) | 0) + ',';
+            }
+            return this._arrayKey() + '|' + n + ':' + s;
+        }
+
+        /**
+         * HOW LONG THE ARRAY IS BEFORE THE SIDE-CHAIN ATOMS. Everything keyed
+         * by residue counts up to here; the atoms live past it.
+         */
+        _baseCount() {
+            const n = this.coords ? this.coords.length : 0;
+            const map = this.sidechainMap;
+            return (map && map.size) ? Math.max(0, n - map.size) : n;
+        }
+
+        /** Record what was just loaded. Called by everything that builds it. */
+        _noteArrayLoaded() {
+            this._loadedKey = this._arrayKey();
+            // ...AND THAT THE CAMERA HAS NOW SEEN THESE OBJECTS. Anything that
+            // has been in the array has been framed for once; switching its
+            // eye afterwards must leave the camera exactly where it is, so
+            // that things appear and disappear where they are rather than the
+            // picture rescaling under the pointer. Only a file just LOADED is
+            // new to the camera - addObject drops its name from this - and
+            // only that widens the view.
+            for (const n of this.drawnObjects()) this._framedObjects.add(n);
+        }
+
+        /**
+         * WHICH OBJECTS ARE ON SCREEN. The list UI writes here.
+         *
+         * Names not loaded are ignored rather than an error - an object can be
+         * deleted while a saved session still names it. An empty set, or one
+         * naming nothing that exists, falls back to the current object: the
+         * viewer never shows nothing because a list went stale.
+         *
+         * @returns {boolean} whether the picture changed
+         */
+        setShownObjects(names, skipRender = false, opts = {}) {
+            const all = this.objectsData || {};
+            const before = this.drawnObjects().join(' ');
+            // NULL RESETS TO THE DEFAULT - the object being edited, on its own.
+            // An array is authoritative, including an empty one, which is every
+            // object switched off and an empty canvas.
+            if (names === null || names === undefined) {
+                this.shownObjects = null;
+            } else {
+                const live = names.filter((n) => all[n]);
+                // A LIST THAT NAMES ONLY OBJECTS WHICH ARE GONE is stale - a
+                // restored session, a deleted object - and means the default,
+                // not "show nothing". Asking for nothing is passing nothing.
+                this.shownObjects = (names.length && !live.length)
+                    ? null : new Set(live);
+            }
+            const after = this.drawnObjects().join(' ');
+            if (before === after) return false;
+            this._applyShownObjects(skipRender, opts);
+            return true;
+        }
+
+        /**
+         * LEAVE MULTI, KEEPING WHAT YOU WERE LOOKING AT.
+         *
+         * Two questions have separate answers in Multi - what is on screen is
+         * the eyes, what is being edited is where you last clicked in the
+         * strip - and they are allowed to disagree: you can be looking at one
+         * structure while editing another. Dropping back to one object at a
+         * time has to reconcile them, and it used to do it by keeping the
+         * EDITED one, so pressing Multi off swapped the picture for a
+         * different structure. Everything that structure had - its side
+         * chains, its colours, its hidden backbone - went off screen with it,
+         * which reads exactly like the choices not being recovered.
+         *
+         * What you were looking at wins. The edited object keeps the job when
+         * it is one of the things on screen; otherwise the first drawn object
+         * takes it. With nothing on screen at all there is nothing to keep, so
+         * the edited object is what comes back.
+         *
+         * @returns {string|null} an object the caller must switch to, or null
+         *   when the edited object was already the right answer
+         */
+        leaveMultiObject() {
+            const drawn = this.drawnObjects();
+            const keep = (drawn.indexOf(this.currentObjectName) >= 0)
+                ? this.currentObjectName : drawn[0];
+            this.shownObjects = null;
+            if (!keep || keep === this.currentObjectName) {
+                this._applyShownObjects(false, { reframe: true });
+                return null;
+            }
+            // THE MERGE IS OVER BEFORE THE SWITCH, so the switch is a real one:
+            // _switchToObject deliberately freezes the camera, the clip, the
+            // style and the mask while several objects are on screen, and the
+            // object being switched TO here is the only one left.
+            this._dropMergeState();
+            return keep;
+        }
+
+        /**
+         * Load whatever drawnObjects() now says, as ONE coordinate array.
+         *
+         * One object is loaded exactly as it always was - the merge path is not
+         * entered at all, so the ordinary single-object case cannot be slowed
+         * down or subtly changed by code it never runs.
+         */
+        _applyShownObjects(skipRender = false, opts = {}) {
+            const names = this.drawnObjects();
+            const ms = this.multiState;
+            // AN EMPTY CANVAS HAS NO CAMERA WORTH HOLDING. Everything below
+            // holds the view still for an object it has already framed, so
+            // that an eye makes things appear and disappear where they are -
+            // but that argument is about a picture you can see. With nothing
+            // on screen there is no "where they are", and the first eye lit
+            // was left drawing into whatever framing the last thing happened
+            // to use: switch a ribosome and a peptide both off, light the
+            // ribosome, and it was drawn at the peptide's scale, 3,200 px off
+            // the side of a 1,200 px canvas. A blank window, with the object
+            // reported as drawn.
+            //
+            // Asked of the coordinate array rather than of the bookkeeping:
+            // the array is what is on screen.
+            const wasEmpty = !(this.coords && this.coords.length);
+            const reframe = !!opts.reframe || wasEmpty;
+
+            // NOTHING ON SCREEN, because every object was switched off. The
+            // coordinate array is emptied rather than the objects unloaded:
+            // the panels, the sequence strip and the picker all go on working
+            // on the object being edited, and lighting an eye brings it back.
+            if (!names.length) {
+                this._dropMergeState();
+                this.coords = [];
+                this.segmentIndices = [];
+                this._invalidateScreenProjection();
+                this._invalidateSegmentCache();
+                this._invalidateShadowCache();
+                this._noteArrayLoaded();
+                this._syncPaeToDrawn();
+                if (!skipRender) this.render('nothing shown');
+                return;
+            }
+
+            // ONE OBJECT, AND IT IS THE ONE BEING EDITED: the ordinary path,
+            // untouched. Any other single object goes through the merge, which
+            // is what knows how to draw an object that is not the current one.
+            if (names.length === 1 && names[0] === this.currentObjectName) {
+                // ...IF THE ARRAY ALREADY HOLDS IT. Asked of the record of
+                // what was last loaded (see _arrayKey), not reasoned about
+                // from which path we are on: reasoning is what left this
+                // returning without loading anything after every object had
+                // been switched off, so lighting an eye again drew nothing at
+                // all, for good.
+                if (!ms.enabled) {
+                    if (this._loadedKey === this._arrayKey()) return;
+                    // ...and from an empty canvas, framed on what is coming
+                    // back, for the reason given at the top of this method.
+                    const own = this.objectsData[this.currentObjectName];
+                    if (reframe && own && own.center) {
+                        this.viewerState.center = { x: own.center[0],
+                            y: own.center[1], z: own.center[2] };
+                        this.viewerState.extent = own.maxExtent || null;
+                    }
+                    this._loadFrameData(this.currentFrame >= 0 ? this.currentFrame : 0,
+                        skipRender);
+                    // ...AND THE MASK FROM THIS OBJECT'S OWN RECORD. The live
+                    // one describes the array that was just replaced: showing
+                    // a 68-residue structure and then a 574-residue one left
+                    // it naming positions 0..67, and two thirds of the second
+                    // structure was simply not drawn.
+                    this._applyRecordVisibility(skipRender);
+                    return;
+                }
+                const carriedOut = this._selectionAsOwners();
+                this._dropMergeState();
+                this._invalidateSegmentCache();
+                this._invalidateShadowCache();
+                // ...AND THE CAMERA HOLDS STILL, unless this object is new to
+                // it or the caller asked. Switching every eye off but one is
+                // an eye being switched, and an eye makes things appear and
+                // disappear where they are: re-framing here was the last place
+                // the picture still jumped, because dropping to one object
+                // takes this branch rather than the merge below. Leaving Multi
+                // passes reframe, and then a camera set to hold two structures
+                // does not leave the one that is left small and off to a side.
+                const one = this.currentObjectName;
+                const back = this.objectsData[one];
+                if (back && back.center
+                        && (reframe || !this._framedObjects.has(one))) {
+                    this.viewerState.center = { x: back.center[0], y: back.center[1],
+                        z: back.center[2] };
+                    this.viewerState.extent = back.maxExtent || null;
+                }
+                // THE FRAME IS HELD BACK UNTIL THE STATE IS WHOLE. Loading
+                // with a render of its own painted the picture before the
+                // selection had been carried across and before the mask had
+                // been composed, so leaving Multi with a selection dropped its
+                // highlight until something else happened to redraw - measured
+                // at 8,946 yellow pixels missing, and they stayed missing.
+                this._loadFrameData(this.currentFrame, true);
+                this._restoreSelectionFromOwners(carriedOut);
+                // ...and the mask from this object's own record, for the same
+                // reason as the branch above: the live one is a set of indices
+                // into the merged array that has just been replaced, so a
+                // residue hidden in the merge would hide whichever residue of
+                // this object now has that number.
+                this._applyRecordVisibility(true);
+                this._syncPaeToDrawn();
+                if (!skipRender) this.render('one object again');
+                return;
+            }
+
+            // THE TWO MERGES ARE EXCLUSIVE. Overlay puts every frame of one
+            // object in the array; this puts one frame of every shown object.
+            // Both at once is a cross product nobody asked for, and one
+            // sourceGroups() answer cannot describe it.
+            if (this.overlayState.enabled) {
+                const cur = this.objectsData[this.currentObjectName];
+                this._leavingOverlayForMerge = true;
+                try {
+                    if (cur) this._exitOverlayMode(cur, this.currentFrame, true);
+                } finally {
+                    this._leavingOverlayForMerge = false;
+                }
+            }
+
+            // WHAT EACH OBJECT HAD HIDDEN is read from its own record, which
+            // every visibility change keeps up to date in that object's own
+            // numbering - see _saveVisibilityToObjects. Snapshotting the LIVE
+            // mask here instead looked equivalent and was not: on a plain load
+            // the mask still describes the object that was on screen a moment
+            // ago while currentObjectName is already the new one, so the whole
+            // of the old object's mask was attributed to the new one and the
+            // old one vanished from the picture with its eye showing open.
+            const sameSources = !!(ms.enabled && ms.sourceNames
+                && ms.sourceNames.length === names.length
+                && ms.sourceNames.every((n, k) => n === names[k]));
+
+            const merged = this._mergeObjects(names);
+            if (!merged) return;
+
+            ms.enabled = true;
+            ms.sourceIdMap = merged.sourceIdMap;
+            ms.sourceNames = merged.sourceNames;
+            ms.sourceOffsets = merged.sourceOffsets;
+            ms.sourceFrames = merged.sourceFrames;
+            ms.sourceAutoColors = merged.sourceAutoColors;
+            ms.autoColor = merged.autoColor;
+            ms.stats = this._mergedStats(merged.coords);
+            // FRAME ON THE LOT WHEN SOMETHING NEW ARRIVES, and not otherwise.
+            //
+            // The camera has to move for an object it has never seen - a file
+            // just loaded is out of shot otherwise - but switching an eye is
+            // not that. Re-framing on every change to the drawn set meant the
+            // picture jumped and rescaled each time an object was switched off
+            // and on: "I want to see things appear and disappear", not zoom.
+            // A rebuild for a frame step or a side chain never re-framed, for
+            // the same reason.
+            //
+            // _framedObjects is what the camera has already accommodated;
+            // addObject drops a name from it, so a re-fetched object counts as
+            // new again.
+            const fresh = names.filter((nm) => !this._framedObjects.has(nm));
+            for (const nm of names) this._framedObjects.add(nm);
+            if (ms.stats && (reframe || fresh.length)) {
+                this.viewerState.center = { x: ms.stats.center[0],
+                    y: ms.stats.center[1], z: ms.stats.center[2] };
+                this.viewerState.extent = ms.stats.maxExtent;
+            }
+            this._sourceGroupsCache = null;
+            this._mergedSetCache = null;
+            this.lastOperationMode = 'multi-object';
+            this._invalidateSegmentCache();
+            this._invalidateShadowCache();
+            this.lastShadowRotationMatrix = null;
+            // THE SELECTION FOLLOWS ITS RESIDUES. It is a set of indices into
+            // the array being replaced, so it is carried across as (object,
+            // local index) pairs and put back where those residues have landed
+            // - anything belonging to an object that is no longer drawn is
+            // dropped, and nothing else is. Clearing outright meant that
+            // switching one object off threw away a selection made on the one
+            // still on screen.
+            const carried = sameSources ? null : this._selectionAsOwners();
+            this._loadDataIntoRenderer(merged, true);
+            this._noteArrayLoaded();
+            if (carried) this._restoreSelectionFromOwners(carried);
+            this._syncPaeToDrawn();
+            this._applyMergedVisibility(merged, skipRender);
+        }
+
+        /** Hand the PAE panel the matrix of whatever paeObjectName() names. */
+        _syncPaeToDrawn() {
+            if (window.PAE && window.PAE.syncToDrawn) window.PAE.syncToDrawn(this);
+        }
+
+        /**
+         * The name web/app.js has always called after loading or switching an
+         * object - and which nothing defined, so three call sites guarded with
+         * `typeof ... === 'function'` had been doing nothing for as long as
+         * they have existed. It is exactly the moment the panel needs asking
+         * again, so it is the sync.
+         */
+        updatePAEContainerVisibility() {
+            this._syncPaeToDrawn();
+        }
+
+        /**
+         * THE CENTRE AND SIZE OF WHAT IS ON SCREEN, which is not the current
+         * object's once more than one is drawn.
+         *
+         * The camera frames on these: the view scale divides by the extent, the
+         * shadow grid is sized by it, and the ortho slider reads the spread.
+         * Left as the current object's, a second object beside it is simply
+         * out of frame - which is what the first run of this looked like:
+         * both structures merged, mapped and coloured correctly, and LESS ink
+         * on screen than one of them alone.
+         *
+         * Shaped like an object on purpose - center, maxExtent, stdDev,
+         * totalPositions, globalCenterSum - so every reader takes it in place
+         * of one with no other change.
+         */
+        drawnStats() {
+            const ms = this.multiState;
+            if (ms && ms.enabled && ms.stats) return ms.stats;
+            return this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
+        }
+
+        /** The same numbers _recomputeObjectStats gives an object, for a merge. */
+        _mergedStats(coords) {
+            const n = coords ? coords.length : 0;
+            if (!n) return null;
+            let cx = 0; let cy = 0; let cz = 0;
+            for (let i = 0; i < n; i++) {
+                cx += coords[i][0]; cy += coords[i][1]; cz += coords[i][2];
+            }
+            cx /= n; cy /= n; cz /= n;
+            let maxSq = 0; let sumSq = 0;
+            for (let i = 0; i < n; i++) {
+                const dx = coords[i][0] - cx;
+                const dy = coords[i][1] - cy;
+                const dz = coords[i][2] - cz;
+                const d = dx * dx + dy * dy + dz * dz;
+                if (d > maxSq) maxSq = d;
+                sumSq += d;
+            }
+            return {
+                center: [cx, cy, cz],
+                maxExtent: Math.sqrt(maxSq),
+                stdDev: Math.sqrt(sumSq / n),
+                totalPositions: n,
+                globalCenterSum: new Vec3(cx * n, cy * n, cz * n)
+            };
+        }
+
+        /**
+         * EVERY SHOWN OBJECT'S OWN VISIBILITY, in merged indices.
+         *
+         * The mask is a set of position indices, and each object's was written
+         * against its own array. Loaded merged and left alone, the mask of the
+         * object that happened to be current still names 0..k - so the second
+         * object, sitting past the end of it, is entirely hidden. That is what
+         * the first working merge looked like: both structures in the array,
+         * both mapped, both coloured, and only one of them on screen.
+         *
+         * An object nobody has hidden anything in contributes all of itself.
+         */
+        /**
+         * A SET OF POSITIONS, PLUS THE SIDE-CHAIN ATOMS HANGING OFF THEM.
+         *
+         * A shown side chain is real positions APPENDED to the coordinate
+         * array, past everything the frame itself holds. Anything that talks
+         * about residues and is then used as a mask has to take them along, or
+         * the atoms are left out of the picture their residue is in.
+         *
+         * There were three copies of this rule - the materialiser's own
+         * `follow`, the panel's `withAtoms`, and the merged mask's - and the
+         * merged one did not exist at all until every side chain in a merge
+         * was found to vanish whenever an eye was clicked. One rule now, with
+         * three callers.
+         *
+         * @param {Set<number>} set
+         * @param {boolean} inPlace mutate the set given, rather than copying
+         */
+        withSidechainAtoms(set, inPlace = false) {
+            const map = this.sidechainMap;
+            if (!set || !map || !map.size) return set;
+            const out = inPlace ? set : new Set(set);
+            for (const [idx, e] of map) {
+                if (e && out.has(e.owner)) out.add(idx);
+            }
+            return out;
+        }
+
+        /**
+         * WHICH STYLE ONE OBJECT IS DRAWN IN.
+         *
+         * The style has always travelled with the object (see _switchToObject:
+         * "what is right for a ribosome is not right for the peptide beside
+         * it"), but only one of them could be on screen at a time, so the
+         * renderer kept a single `style` and swapped it on the way in and out.
+         * With several objects merged into one array they can be drawn in
+         * DIFFERENT styles at once, and this is the question the painters ask.
+         *
+         * `this.style` is still the answer for an object that has never been
+         * given one of its own - a freshly loaded file, before the size rule
+         * has had its say.
+         */
+        styleForObject(name) {
+            const o = this.objectsData && this.objectsData[name];
+            const st = o && (o.style
+                || (o.viewerState && o.viewerState.style));
+            return (st === 'cartoon' || st === 'tube') ? st : this.style;
+        }
+
+        /** ...and give one object a style of its own. */
+        setStyleForObject(name, style) {
+            const o = this.objectsData && this.objectsData[name];
+            if (!o || (style !== 'cartoon' && style !== 'tube')) return false;
+            if (o.style === style) return false;
+            o.style = style;
+            // the saved view carries it too, because that is what a switch back
+            // to single-object mode reads
+            if (o.viewerState) o.viewerState.style = style;
+            this._invalidateSegmentCache();
+            return true;
+        }
+
+        /**
+         * THE DRAWN OBJECTS, GROUPED BY THE STYLE EACH IS DRAWN IN.
+         *
+         * Two groups and never more, because there are two painters. Empty
+         * lists are kept out, so `groups.length === 1` is "one style on
+         * screen" - the ordinary case, and the only one the 2D path can draw.
+         */
+        drawnStyleGroups() {
+            const by = new Map();
+            for (const n of this.drawnObjects()) {
+                const st = this.styleForObject(n);
+                if (!by.has(st)) by.set(st, []);
+                by.get(st).push(n);
+            }
+            return by;
+        }
+
+        /**
+         * THE MERGED POSITIONS THAT BELONG TO THESE OBJECTS, side-chain atoms
+         * included - they are appended past every source's range and answer for
+         * the residue they grow out of (see withSidechainAtoms).
+         *
+         * With nothing merged the array IS one object's, so the answer is
+         * everything or nothing.
+         */
+        positionsOfObjects(names) {
+            const want = new Set(names);
+            const total = this._positionCount();
+            const ms = this.multiState;
+            const out = new Set();
+            if (!ms || !ms.enabled || !ms.sourceNames) {
+                if (want.has(this.currentObjectName)) {
+                    for (let i = 0; i < total; i++) out.add(i);
+                }
+                return out;
+            }
+            const base = this._baseCount();
+            for (let s = 0; s < ms.sourceNames.length; s++) {
+                if (!want.has(ms.sourceNames[s])) continue;
+                const from = ms.sourceOffsets[s];
+                const to = (s + 1 < ms.sourceOffsets.length)
+                    ? ms.sourceOffsets[s + 1] : base;
+                for (let i = from; i < to; i++) out.add(i);
+            }
+            return this.withSidechainAtoms(out, true);
+        }
+
+
+        /**
+         * COMPOSE THE LIVE MASK FROM THE OBJECTS' OWN RECORDS, and apply it.
+         *
+         * Called whenever the coordinate array is rebuilt - by the merge, and
+         * by the ordinary single-object path, which did NOT do this and drifted
+         * for it: show a 68-residue structure alone, switch to a 574-residue
+         * one, and the live mask still named positions 0..67, so two thirds of
+         * the second structure was invisible. The mask means nothing except
+         * against the array it was built for; the records mean something
+         * against their own object, which is why they are what survives.
+         *
+         * @param {Array<string>} names the drawn objects, in array order
+         * @param {Array<number>} offsets where each starts
+         * @param {number} n the array's length BEFORE side-chain atoms
+         */
+        _applyRecordVisibility(skipRender = false) {
+            this._composeAndApplyMask(skipRender);
+            this._syncModelToMask();
+        }
+
+        /**
+         * THE LIVE MODEL FOLLOWS THE MASK - it does not write it.
+         *
+         * `visibilityModel` is the editing buffer the selection panel, the
+         * sequence strip and the PAE matrix all read and write; the records
+         * are what survives a rebuild. After a rebuild the buffer has to
+         * describe the new array, and this is where it is brought up to date.
+         *
+         * IT USED TO GO THE OTHER WAY. The rebuild composed a mask from the
+         * records and pushed it back through setVisibility with `paeBoxes: []`
+         * - which saved it into every object's record, wiping the boxes and
+         * dropping the mode to default. A box drawn on a prediction survived
+         * exactly until the next eye click.
+         */
+        _syncModelToMask() {
+            const vm = this.visibilityModel;
+            if (!vm) return;
+            const total = (this.coords && this.coords.length) || 0;
+            vm.positions = this.visiblePositions
+                ? new Set(this.visiblePositions)
+                : (() => { const all = new Set(); for (let i = 0; i < total; i++) all.add(i); return all; })();
+            // resolved into positions above: a chain id means one thing per
+            // object and the mask spans several
+            vm.chains = new Set();
+            // ...and the BOXES stay the current object's own, because that is
+            // whose matrix the panel is showing (see paeObjectName).
+            const own = this.objectsData && this.objectsData[this.currentObjectName];
+            vm.paeBoxes = ((own && own.visibilityState && own.visibilityState.paeBoxes) || [])
+                .map((b) => ({ ...b }));
+            vm.visibilityMode = (this.visiblePositions === null) ? 'default' : 'explicit';
+        }
+
+        /** The merge's share of that: one call, from what it just built. */
+        _applyMergedVisibility(merged, skipRender = false) {
+            this._applyRecordVisibility(skipRender);
+        }
+
+
+
+        // COPY, CUT AND DELETE RUN ON ONE OBJECT AT A TIME - see
+        // _editOneObject - but a SELECTION can reach several, so each of them
+        // runs once per object the selection touches. Silently taking only the
+        // edited object's share was the alternative, and a Cut that quietly
+        // leaves half the selection behind is worse than one that refuses.
+        //
+        // Wrapped rather than taught the merge: each renumbers half a dozen
+        // things keyed by position index, all written against a single
+        // object's array.
+        //
+        // @returns {Array} what each object gave back, in drawing order
+        _perObjectEdit(fn) {
+            const names = this.objectsInSelection();
+            if (names.length <= 1) {
+                return [this._editOneObject(() => fn(), names[0])];
+            }
+            // THE SELECTION IS PUT BACK BEFORE EACH ONE. An edit consumes it -
+            // it is narrowed to that object's share, and Copy leaves its own
+            // behind - so the second object would be handed whatever the first
+            // one finished with, and get nothing of its own.
+            const carried = this._selectionAsOwners();
+            this._lastEditMade = null;
+            const out = [];
+            for (const name of names) {
+                this._restoreSelectionFromOwners(carried);
+                out.push(this._editOneObject(() => fn(), name));
+            }
+            // ...AND END ON WHAT WAS MADE, the way a single-object Copy always
+            // has: it switches to the object it makes. Each object's turn puts
+            // the edited object back so the next one starts clean, so the
+            // switch happens once, here, when they are all done.
+            if (this._lastEditMade && this.objectsData[this._lastEditMade]) {
+                this._showObject(this._lastEditMade);
+            }
+            this._lastEditMade = null;
+            return out;
+        }
+
+        extractSelection() {
+            const made = this._perObjectEdit(() => this._extractSelection())
+                .filter(Boolean);
+            // ONE NAME BACK for one object, so nothing that called this before
+            // has to change; the list is there for a caller that wants to
+            // report all of them.
+            return made.length > 1 ? made : (made[0] || null);
+        }
+
+        deleteSelection() {
+            return this._perObjectEdit(() => this._deleteSelection())
+                .some(Boolean);
+        }
+
+        cutSelection() {
+            const made = this._perObjectEdit(() => this._cutSelection())
+                .filter(Boolean);
+            if (!made.length) return null;
+            if (made.length === 1) return made[0];
+            return {
+                name: made.map((m) => m.name).join(', '),
+                names: made.map((m) => m.name),
+                removed: made.reduce((n, m) => n + (m.removed || 0), 0)
+            };
+        }
+
+        /**
+         * IS THERE MORE THAN ONE OBJECT TO DRAW? The merge is not a mode the
+         * user turns on: it is simply what drawing two things at once means,
+         * and every path that loads coordinates asks this rather than checking
+         * whether a merge happens to be up already.
+         */
+        _mergeWanted() {
+            const drawn = this.drawnObjects();
+            return drawn.length !== 1 || drawn[0] !== this.currentObjectName;
+        }
+
+        /**
+         * FILE THE LIVE MASK UNDER THE OBJECT OR OBJECTS IT DESCRIBES.
+         *
+         * Every visibility change is written through to the object, so that
+         * switching away and back finds it where it was left. With several
+         * objects merged the mask describes ALL of them, in merged indices -
+         * saved whole under whichever object happens to be current, it writes
+         * another object's hidden residues into this one's record, and reading
+         * it back hides most of the picture. Measured on a plain load of two
+         * structures: 348 positions visible out of 433, all of them the first
+         * object's, and the second invisible with its eye showing open.
+         *
+         * Each object gets its own share, in its own numbering.
+         */
+        _saveVisibilityToObjects() {
+            const vm = this.visibilityModel;
+            if (!vm) return;
+            const ms = this.multiState;
+            if (ms && ms.enabled && ms.sourceNames) {
+                for (const nm of ms.sourceNames) {
+                    const o = this.objectsData[nm];
+                    if (!o) continue;
+                    o.visibilityState = {
+                        positions: this._maskForObject(nm) || new Set(),
+                        // chain ids collide across objects, so the chain half
+                        // of a merged mask means nothing per object - it is
+                        // resolved into positions when the merge is built
+                        chains: new Set(),
+                        paeBoxes: (nm === this.currentObjectName)
+                            ? vm.paeBoxes.map((b) => ({ ...b }))
+                            : ((o.visibilityState && o.visibilityState.paeBoxes) || []),
+                        visibilityMode: vm.visibilityMode
+                    };
+                }
+                return;
+            }
+            if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
+                this.objectsData[this.currentObjectName].visibilityState = {
+                    positions: new Set(vm.positions),
+                    chains: new Set(vm.chains),
+                    paeBoxes: vm.paeBoxes.map((box) => ({ ...box })),
+                    visibilityMode: vm.visibilityMode
+                };
+            }
+        }
+
+        /**
+         * RELOAD WHAT IS DRAWN, whichever that is.
+         *
+         * Side chains, bases and elements all change the coordinate array
+         * rather than just its colours, so the panel reloads the frame after
+         * writing one. Reloading the FRAME while several objects are merged
+         * throws the other objects off the screen; the merge has its own way
+         * back in, and this is the one call the UI needs to know about.
+         */
+        reloadDrawn(skipRender = false) {
+            if ((this.multiState && this.multiState.enabled) || this._mergeWanted()) {
+                this._applyShownObjects(skipRender);
+                return;
+            }
+            this._loadFrameData(this.currentFrame >= 0 ? this.currentFrame : 0, skipRender);
+        }
+
+        /**
+         * THE SELECTION AS (OBJECT, LOCAL INDEX) PAIRS, which survive a change
+         * of array; merged indices do not.
+         */
+        _selectionAsOwners() {
+            const sel = this.residueSelection;
+            if (!sel || !sel.size) return null;
+            const out = [];
+            for (const i of sel) {
+                const o = this.ownerOf(i);
+                out.push(o ? [o.name, o.local] : [this.currentObjectName, i]);
+            }
+            return out;
+        }
+
+        /**
+         * ...and back, into whatever array is loaded now. A residue whose
+         * object is no longer drawn has no index to come back to and is
+         * dropped; everything else lands where it now lives.
+         */
+        _restoreSelectionFromOwners(pairs) {
+            if (!pairs) return;
+            const out = new Set();
+            for (const [name, local] of pairs) {
+                const off = this.sourceOffsetOf(name);
+                const drawn = this.drawnObjects();
+                if (drawn.indexOf(name) < 0) continue;
+                const at = off + local;
+                if (at >= 0 && at < this.coords.length) out.add(at);
+            }
+            this.residueSelection = out.size ? out : null;
+        }
+
+        /**
+         * The selection, restricted to one object and in ITS numbering.
+         *
+         * `residueSelection` is a set of merged indices; an edit rewrites one
+         * object's frames and knows nothing about the merge.
+         */
+        selectionForObject(name) {
+            const sel = this.residueSelection;
+            if (!sel || !sel.size) return null;
+            const ms = this.multiState;
+            if (!ms || !ms.enabled) return new Set(sel);
+            const out = new Set();
+            for (const i of sel) {
+                const o = this.ownerOf(i);
+                if (o && o.name === name) out.add(o.local);
+            }
+            return out.size ? out : null;
+        }
+
+        /**
+         * The visibility mask, likewise: one object's share, in its numbering.
+         *
+         * AN EMPTY SET IS AN ANSWER. "Nothing of this object is visible" is
+         * what Hide all gives, and it has to be distinguishable from "no mask
+         * here" - which is read as "all of it" by the caller. Null is returned
+         * only when there is no live mask at all.
+         */
+        _maskForObject(name) {
+            const set = this.visibilityModel && this.visibilityModel.positions;
+            if (!set) return null;
+            const ms = this.multiState;
+            if (!ms || !ms.enabled) return new Set(set);
+            const out = new Set();
+            for (const i of set) {
+                const o = this.ownerOf(i);
+                if (o && o.name === name) out.add(o.local);
+            }
+            return out;
+        }
+
+        /**
+         * WHICH OBJECTS A SELECTION REACHES, in drawing order.
+         *
+         * Copy, Cut and Delete are per object - each rewrites one object's
+         * frames - but a selection is not: with several structures on screen a
+         * drag, a Within, or two clicks reach into more than one of them.
+         */
+        objectsInSelection() {
+            const sel = this.residueSelection;
+            if (!sel || !sel.size) return [];
+            const seen = new Set();
+            for (const i of sel) {
+                const o = this.ownerOf(i);
+                seen.add(o ? o.name : this.currentObjectName);
+            }
+            return this.drawnObjects().filter((n) => seen.has(n));
+        }
+
+        /**
+         * RUN A STRUCTURAL EDIT ON THE CURRENT OBJECT ALONE.
+         *
+         * Copy, Cut and Delete rewrite an object's frames and renumber
+         * everything keyed to them - the mask, the side chains, the contacts,
+         * the MSA columns. All of that is written against the object's own
+         * array, and all of it would be handed merged indices instead, so
+         * Delete would remove somebody else's residues or none at all.
+         *
+         * Rather than teach each of those the merge, the merge is put down for
+         * the duration and picked up again after: the edit then runs on exactly
+         * the array it was written for. The selection and the mask are
+         * translated down with it, and the shown set is restored at the end -
+         * including the object a Copy just made, which is the one thing the
+         * user will be looking for.
+         */
+        _editOneObject(fn, name) {
+            const ms = this.multiState;
+            const editing = name || this.currentObjectName;
+            if (!ms || !ms.enabled) {
+                if (editing === this.currentObjectName) return fn();
+                // ...an object that is not the current one still has to BE the
+                // current one for the duration: every one of these paths reads
+                // currentObjectName to find the frames it rewrites.
+                const was = this.currentObjectName;
+                this.currentObjectName = editing;
+                try { return fn(); } finally { this.currentObjectName = was; }
+            }
+            const shown = this.shownObjects ? Array.from(this.shownObjects) : [];
+            const sel = this.selectionForObject(editing);
+            const mask = this._maskForObject(editing);
+
+            const wasCurrent = this.currentObjectName;
+            this.currentObjectName = editing;
+            this.setShownObjects([editing], true);
+            this.residueSelection = (sel && sel.size) ? sel : null;
+            if (this.visibilityModel) {
+                this.visibilityModel.positions = mask || new Set();
+            }
+
+            let out = null;
+            try {
+                out = fn();
+            } finally {
+                // ...and back, minus anything the edit removed, plus whatever
+                // it made: a Copy that lands off screen looks like a Copy that
+                // did not happen.
+                // ...BACK TO THE OBJECT THAT WAS BEING EDITED, so the next
+                // object's turn starts from a known place. What an edge MADE
+                // is switched to by the caller, once, after every object has
+                // had its turn - see _perObjectEdit.
+                const made = this.currentObjectName;
+                if (made && made !== editing && this.objectsData[made]) {
+                    this._lastEditMade = made;
+                }
+                if (wasCurrent && this.objectsData[wasCurrent]) {
+                    this.currentObjectName = wasCurrent;
+                }
+                const back = shown.filter((n) => this.objectsData[n]);
+                if (made && this.objectsData[made] && !back.includes(made)) {
+                    back.push(made);
+                }
+                if (back.length) this.setShownObjects(back);
+            }
+            return out;
+        }
+
+        /**
+         * WHAT COUNTS AS ONE CHAIN, ANYWHERE: colour, visibility, selection.
+         *
+         * Chain ids are only unique inside a file: put two structures on screen
+         * and both have a chain A, which under the chain scheme comes out the
+         * same colour for both - a dimer beside a dimer reading as one
+         * four-chain thing. So the key carries the OBJECT with the id.
+         *
+         * BY NAME, NOT BY POSITION IN THE MERGE. Keyed by which source it
+         * happened to be, an object's colours changed every time something else
+         * was switched on or off - it is source 0 alone and source 1 beside
+         * another, and those are different palette slots. Reported as a clash
+         * in both viewers, and it was: the same molecule, two colours, decided
+         * by what else was on screen.
+         *
+         * Plain chain ids while only ONE object is loaded, which is every
+         * single-structure session and leaves those colours exactly as they
+         * have always been.
+         *
+         * EVERYTHING that asks "is this position in that chain" asks through
+         * here - the visibility mask, the chain buttons in the strip, the PAE
+         * map. Keyed by the bare id, selecting chain A of one object selected
+         * chain A of the other, which is what a bare id MEANS once two files
+         * are on screen. `this.chains` stays the bare id: it is what the file
+         * said, and what the panel prints.
+         */
+        chainKeyAt(i) {
+            if (!this._chainColorKeys) return this.chains[i] || 'A';
+            return this._chainColorKeys[i];
+        }
+
+        /** The same key, for a chain of a named object rather than a position. */
+        chainKeyFor(chainId, objectName) {
+            const names = Object.keys(this.objectsData || {});
+            if (names.length < 2) return chainId;
+            const name = objectName || this.currentObjectName;
+            return name ? (name + '|' + chainId) : chainId;
+        }
+
+        /**
+         * A PALETTE SLOT FOR EVERY CHAIN OF EVERY LOADED OBJECT, whether or
+         * not it is on screen.
+         *
+         * Built over what is LOADED rather than what is drawn, for two
+         * reasons: an object's colours must not move when its neighbour is
+         * switched off, and the sequence strip asks for the colours of the
+         * object it is showing, which may be hidden.
+         *
+         * EACH OBJECT NUMBERS ITS OWN CHAINS FROM ZERO. The slots used to run
+         * in one sequence across every loaded object, so an object's colours
+         * depended on WHAT WAS LOADED BEFORE IT: a ribosome opened in one set
+         * of chain colours on its own and a different set if a peptide was
+         * loaded first, every chain shifted by the peptide's chain count.
+         *
+         * That running sequence was there to keep two merged objects from
+         * sharing chain colours - two molecules reading as one, which is a
+         * report of its own (see tests/multi_object.py). The two cannot both
+         * hold, and stability won: a structure has to look the same every time
+         * you open it. In a merge, telling two objects apart is what the
+         * per-object 'auto' colouring does, which is what Multi picks anyway.
+         */
+        _buildChainIndexMap() {
+            const all = this.objectsData || {};
+            const names = Object.keys(all);
+            const many = names.length > 1;
+            const map = new Map();
+            // one counter per object, so nothing an object gets depends on its
+            // neighbours - not their chain count, and not the order they loaded
+            const slots = new Map();
+            const add = (owner, key) => {
+                if (!key || map.has(key)) return;
+                const at = slots.get(owner) || 0;
+                map.set(key, at);
+                slots.set(owner, at + 1);
+            };
+            for (const name of names) {
+                const fr = all[name] && all[name].frames && all[name].frames[0];
+                const chs = (fr && fr.chains) || [];
+                for (const c of [...new Set(chs)].sort()) {
+                    add(name, many ? (name + '|' + c) : c);
+                }
+            }
+            // ...and anything the LOADED array has that frame 0 did not - a
+            // later frame with an extra chain, a side chain appended under a
+            // chain of its own. Appended after its own object's chains rather
+            // than renumbered, so nothing above moves.
+            const n = this.chains ? this.chains.length : 0;
+            for (let i = 0; i < n; i++) {
+                const key = this.chainKeyAt(i);
+                if (!key) continue;
+                const bar = key.indexOf('|');
+                add(bar > 0 ? key.slice(0, bar) : this.currentObjectName, key);
+            }
+            this.chainIndexMap = map;
+        }
+
+        /**
+         * How many positions the loaded array holds. Both arrays describe it,
+         * and the panel paths run with only the second one present.
+         */
+        _positionCount() {
+            if (this.coords && this.coords.length) return this.coords.length;
+            return this.positionTypes ? this.positionTypes.length : 0;
+        }
+
+        /**
+         * WHICH OBJECT A MERGED POSITION BELONGS TO, and where it sits in that
+         * object's own numbering.
+         *
+         * Everything an object remembers about its residues - which show side
+         * chains, which show base plates, which are hidden, what colour they
+         * were given, what secondary structure was forced on them - is a set or
+         * a map keyed by POSITION INDEX, written against that object's own
+         * array. Merged, only the first object still numbers from zero. This is
+         * the one place that knows the difference, and every reader of those
+         * sets goes through it or through mergedObjectSet below.
+         *
+         * A side-chain atom answers for the residue it grows out of: it was
+         * appended after the merge, so its own index is past every source's
+         * range and means nothing to the object it belongs to.
+         *
+         * @returns {{name, local, source, frame}|null} null when nothing is
+         *   merged, which is the caller's signal that indices are already the
+         *   object's own.
+         */
+        ownerOf(i) {
+            const ms = this.multiState;
+            if (!ms || !ms.enabled || !ms.sourceNames) return null;
+            if (this.sidechainMap && this.sidechainMap.has(i)) {
+                i = this.sidechainMap.get(i).owner;
+            }
+            const g = this.sourceGroups();
+            const s = g ? g[i] : -1;
+            if (!(s >= 0) || s >= ms.sourceNames.length) return null;
+            return {
+                name: ms.sourceNames[s],
+                local: i - ms.sourceOffsets[s],
+                source: s,
+                frame: ms.sourceFrames ? ms.sourceFrames[s] : 0
+            };
+        }
+
+        /**
+         * A PER-OBJECT SET OF POSITIONS, READ IN MERGED INDICES.
+         *
+         * The sets come in two polarities and both have to survive the merge:
+         *
+         *   'none' - null means the object has none of this (side chains, a
+         *            hidden backbone). An untouched object contributes nothing.
+         *   'all'  - null means the object has all of it (base plates, element
+         *            colours: on until somebody switches one off). An untouched
+         *            object contributes its whole range, because the merged
+         *            answer has to be a set the moment ANY object has one.
+         *
+         * Returns null only when every shown object is untouched - which is
+         * what keeps "nobody has asked" distinguishable from "everything was
+         * switched off", a distinction both polarities depend on.
+         *
+         * Cached by the identity of the sets it was built from, because the
+         * drawing asks per segment and the GPU signature asks per frame.
+         *
+         * @param {string} field  the property on the object
+         * @param {'all'|'none'} nullMeans  what an absent set means
+         */
+        /**
+         * ...and what an ABSENT set means is the field's own business, not the
+         * caller's: no side chains are shown by default while every base and
+         * every element is, so a caller passing the wrong one inverts the
+         * feature for merged objects only. The answer is in OBJECT_STATE.
+         */
+        mergedObjectSet(field, nullMeans = objectStateAbsent(field)) {
+            const ms = this.multiState;
+            if (!ms || !ms.enabled || !ms.sourceNames) {
+                const o = this.objectsData?.[this.currentObjectName];
+                const set = o && o[field];
+                return (set instanceof Set) ? set : null;
+            }
+            const parts = ms.sourceNames.map(
+                (n) => (this.objectsData[n] || {})[field]);
+            const cache = this._mergedSetCache || (this._mergedSetCache = {});
+            const hit = cache[field];
+            if (hit && hit.names === ms.sourceNames && hit.parts.length === parts.length
+                && hit.parts.every((p, k) => p === parts[k])) {
+                return hit.out;
+            }
+
+            const total = this._positionCount();
+            let touched = false;
+            const out = new Set();
+            for (let s = 0; s < ms.sourceNames.length; s++) {
+                const off = ms.sourceOffsets[s];
+                const end = (s + 1 < ms.sourceOffsets.length)
+                    ? ms.sourceOffsets[s + 1] : total;
+                const set = parts[s];
+                if (set instanceof Set) {
+                    touched = true;
+                    for (const p of set) {
+                        const at = p + off;
+                        if (at >= off && at < end) out.add(at);
+                    }
+                } else if (nullMeans === 'all') {
+                    for (let i = off; i < end; i++) out.add(i);
+                }
+            }
+            const res = touched ? out : null;
+            cache[field] = { names: ms.sourceNames, parts, out: res };
+            return res;
+        }
+
+        /**
+         * The entropy vector for what is on screen: one value per position,
+         * each object's own alignment mapped onto its own residues and the
+         * lot concatenated. One object's vector laid over a merged array
+         * would colour the second object by the first one's conservation.
+         */
+        entropyForDrawn() {
+            if (!window.MSA || !window.MSA.mapEntropyToStructure) return undefined;
+            const frame = this.currentFrame >= 0 ? this.currentFrame : 0;
+            const ms = this.multiState;
+            if (!ms || !ms.enabled || !ms.sourceNames) {
+                const o = this.objectsData?.[this.currentObjectName];
+                return o ? window.MSA.mapEntropyToStructure(o, frame) : undefined;
+            }
+            const out = [];
+            for (let s = 0; s < ms.sourceNames.length; s++) {
+                const o = this.objectsData[ms.sourceNames[s]];
+                const off = ms.sourceOffsets[s];
+                const end = (s + 1 < ms.sourceOffsets.length)
+                    ? ms.sourceOffsets[s + 1] : this._positionCount();
+                const v = o ? window.MSA.mapEntropyToStructure(
+                    o, ms.sourceFrames ? ms.sourceFrames[s] : 0) : null;
+                for (let i = off; i < end; i++) {
+                    // -1 is what the colour path reads as "no entropy here"
+                    out.push((v && v[i - off] !== undefined) ? v[i - off] : -1);
+                }
+            }
+            return out;
+        }
+
+        /**
+         * THE LIGAND GROUPS OF EVERY SHOWN OBJECT, in merged indices.
+         *
+         * A group is a Map from a key - chain, residue number, name - to the
+         * position indices of one ligand's atoms. Keys collide across objects
+         * for the same reason chain ids do, so each is prefixed with the object
+         * it came from; the indices are offset like everything else.
+         */
+        /**
+         * ONE OBJECT'S LIGAND GROUPS, derived from the frame it holds.
+         *
+         * Ask for them; do not read a field. See ligandGroupsForFrame - the
+         * answer follows the frames, so an edit cannot leave it stale.
+         */
+        ligandGroupsOf(name) {
+            const o = (typeof name === 'string') ? this.objectsData?.[name] : name;
+            const f = o && o.frames && o.frames[0];
+            return ligandGroupsForFrame(f);
+        }
+
+        mergedLigandGroups() {
+            const ms = this.multiState;
+            if (!ms || !ms.enabled || !ms.sourceNames) {
+                const g = this.ligandGroupsOf(this.currentObjectName);
+                return (g && g.size) ? g : null;
+            }
+            const parts = ms.sourceNames.map((n) => this.ligandGroupsOf(n));
+            const c = this._mergedLigCache;
+            if (c && c.names === ms.sourceNames && c.parts.length === parts.length
+                && c.parts.every((p, k) => p === parts[k])) {
+                return c.out;
+            }
+            const out = new Map();
+            for (let s = 0; s < ms.sourceNames.length; s++) {
+                const g = parts[s];
+                if (!g || !g.size) continue;
+                const off = ms.sourceOffsets[s];
+                for (const [key, idxs] of g.entries()) {
+                    out.set(ms.sourceNames[s] + '|' + key, idxs.map((i) => i + off));
+                }
+            }
+            const res = out.size ? out : null;
+            this._mergedLigCache = { names: ms.sourceNames, parts, out: res };
+            return res;
+        }
+
+        /**
+         * The object a write to these positions should land on, and the
+         * positions in ITS numbering.
+         *
+         * A panel edits whatever is selected, and in a merged view a selection
+         * can reach two objects at once. Grouped here so a setter writes each
+         * object's own set rather than pushing merged indices into one of them.
+         *
+         * @param {Iterable<number>} positions merged indices
+         * @returns {Array<{object, name, positions:number[]}>}
+         */
+        writeGroups(positions) {
+            const ms = this.multiState;
+            if (!ms || !ms.enabled || !ms.sourceNames) {
+                const name = this.currentObjectName;
+                const object = name ? this.objectsData[name] : null;
+                return object ? [{ object, name, positions: Array.from(positions) }] : [];
+            }
+            const by = new Map();
+            for (const i of positions) {
+                const o = this.ownerOf(i);
+                if (!o) continue;
+                if (!by.has(o.name)) by.set(o.name, []);
+                by.get(o.name).push(o.local);
+            }
+            const out = [];
+            for (const [name, local] of by) {
+                const object = this.objectsData[name];
+                if (object) out.push({ object, name, positions: local });
+            }
+            return out;
+        }
+
+        /**
+         * That object's positions, in ITS numbering: [0, n) for a lone object,
+         * and the slice of the merged array it occupies otherwise. Setters that
+         * materialise a full set - "every nucleotide", "every element owner" -
+         * need to do it per object, not over the whole merged array.
+         */
+        localRangeOf(name) {
+            const ms = this.multiState;
+            const total = this._positionCount();
+            // A LONE OBJECT OWNS EVERYTHING, however long the array turns out
+            // to be. Answering with a counted length instead means every path
+            // that runs before the coordinates are in - the panel's, in
+            // particular - materialises an empty set and reads as "nothing
+            // here" rather than "all of it".
+            if (!ms || !ms.enabled || !ms.sourceNames) return { off: 0, end: Infinity };
+            const s = ms.sourceNames.indexOf(name);
+            if (s < 0) return { off: 0, end: total };
+            return {
+                off: ms.sourceOffsets[s],
+                end: (s + 1 < ms.sourceOffsets.length) ? ms.sourceOffsets[s + 1] : total
+            };
+        }
+
+        /** Forget the merge, without touching what is loaded. */
+        _dropMergeState() {
+            const ms = this.multiState;
+            if (!ms) return;
+            ms.enabled = false;
+            ms.sourceIdMap = null;
+            ms.sourceNames = null;
+            ms.sourceOffsets = null;
+            ms.sourceFrames = null;
+            ms.sourceAutoColors = null;
+            ms.autoColor = null;
+            ms.stats = null;
+            this._sourceGroupsCache = null;
+            this._mergedSetCache = null;
+            this._mergedLigCache = null;
+        }
+
+        /**
+         * Where an object's positions start in the merged array. Every set
+         * that is keyed by position index - side chains, bases, elements, the
+         * selection - is written against its own object and read against this.
+         *
+         * @param {string} name
+         * @returns {number} the offset, or 0 when nothing is merged
+         */
+        sourceOffsetOf(name) {
+            const ms = this.multiState;
+            if (!ms || !ms.enabled || !ms.sourceNames) return 0;
+            const at = ms.sourceNames.indexOf(name);
+            return at < 0 ? 0 : ms.sourceOffsets[at];
+        }
+
+        /**
+         * THE RESIDUES WHOSE SIDE CHAINS ARE SWITCHED ON, in merged indices.
+         *
+         * `obj.sidechains` is a set of position indices meaningful against its
+         * own object. Merged, every object after the first sits at an offset,
+         * so read raw the second object's set would grow side chains on the
+         * FIRST object's residues - visibly, and on the wrong atoms.
+         */
+        shownSidechainSet() {
+            const ms = this.multiState;
+            if (!ms || !ms.enabled || !ms.sourceNames) {
+                const obj = this.objectsData?.[this.currentObjectName];
+                return (obj && obj.sidechains) || null;
+            }
+            const out = new Set();
+            for (let s = 0; s < ms.sourceNames.length; s++) {
+                const set = this.objectsData?.[ms.sourceNames[s]]?.sidechains;
+                if (!set) continue;
+                const off = ms.sourceOffsets[s];
+                for (const p of set) out.add(p + off);
+            }
+            return out.size ? out : null;
+        }
+
+        /**
+         * WHICH POSITIONS ARE ALLOWED TO BE PART OF THE SAME THING.
+         *
+         * The coordinate array can hold more than one structure at a time -
+         * every frame of a trajectory in overlay mode, or several objects in a
+         * multi-object view - and in both cases a position may only bond,
+         * count along a chain, and cast a shadow WITHIN its own source. The two
+         * merges therefore answer to one array here rather than each gating its
+         * own copy of those rules, which is how the overlay came to have four
+         * such gates and a fifth one it was missing.
+         *
+         * SIDE CHAINS ARE APPENDED AFTER THE MERGE, so the map is SHORTER than
+         * the coordinate array whenever any are showing. Read raw, every one of
+         * those atoms comes back undefined - which compares equal to every
+         * other undefined, so they all silently become one extra source that
+         * bonds to itself and shades itself. Each appended atom is given its
+         * owning residue's source instead, and the extension is cached against
+         * the map it was built from.
+         *
+         * @returns {Array|null} one source id per position, or null when the
+         *   array holds a single structure and every position may reach any
+         *   other.
+         */
+        sourceGroups() {
+            const n = this.coords ? this.coords.length : 0;
+            const ov = this.overlayState;
+            const ms = this.multiState;
+            let base = null;
+            if (ov && ov.enabled && ov.frameIdMap) base = ov.frameIdMap;
+            else if (ms && ms.enabled && ms.sourceIdMap) base = ms.sourceIdMap;
+            if (!base || !n) return null;
+            if (base.length === n) return base;
+            // A map LONGER than the array is stale - the merge it describes is
+            // not the one loaded - and guessing which part of it still applies
+            // would cut the structure somewhere arbitrary.
+            if (base.length > n) return null;
+
+            const c = this._sourceGroupsCache;
+            if (c && c.base === base && c.out.length === n) return c.out;
+
+            const out = base.slice ? Array.from(base) : Array.prototype.slice.call(base);
+            const map = this.sidechainMap;
+            for (let i = base.length; i < n; i++) {
+                const owner = map && map.get(i) ? map.get(i).owner : undefined;
+                // No owner means nothing here knows where the position came
+                // from; give it a source of its own rather than fold it into
+                // somebody else's, so a stray bond is visible instead of wrong.
+                out.push((owner !== undefined && owner < base.length)
+                    ? base[owner] : -(i + 1));
+            }
+            this._sourceGroupsCache = { base, out };
+            return out;
+        }
+
+        /**
+         * THE PICTURE IS DRAWN IN THE DRAWN OBJECT'S STYLE - and with that
+         * STYLE'S SETTINGS.
+         *
+         * `this.style` belongs to the object being EDITED, which is not always
+         * the object on screen: pick a tube object, then switch ITS eye off,
+         * and what is left is a cartoon while the renderer still holds tube's
+         * numbers - thickness 0, no pencil, a 3.0 outline. The cartoon was
+         * then drawn with them, which is a plain ribbon: the drawing dropped
+         * to Ribbon while the preset dropdown still said Richardson, because
+         * the preset had not changed. Only the numbers had.
+         *
+         * The mixed path already installs a profile per pass; this is the same
+         * rule for an ordinary single-style frame, which is why both go
+         * through _installStyleProfile.
+         */
         _renderToContext(ctx, displayWidth, displayHeight) {
+            const drawStyle = this._drawStyle();
+            if (drawStyle === this.style) {
+                this._drawFrame(ctx, displayWidth, displayHeight);
+                return;
+            }
+            const styleWas = this.style;
+            const profileWas = this._installStyleProfile(drawStyle);
+            this.style = drawStyle;
+            // WHAT THE FRAME WAS ACTUALLY DRAWN WITH, for the probes: the
+            // fields are put back before anything outside can read them, so
+            // there is otherwise no way to tell a Richardson from a ribbon
+            // except by looking at the pixels.
+            if (typeof window !== 'undefined') {
+                window.__drawProfile = { style: drawStyle,
+                    thickness: this.cartoonThickness, pencil: this.cartoonPencil,
+                    sheetFlat: this.cartoonSheetFlat,
+                    outline: this.relativeOutlineWidth,
+                    richardson: this.cartoonRichardson };
+            }
+            try {
+                this._drawFrame(ctx, displayWidth, displayHeight);
+            } finally {
+                this.style = styleWas;
+                this._restoreStyleProfile(profileWas);
+            }
+        }
+
+        // Core rendering logic - can render to any context (canvas, SVG, etc.)
+        _drawFrame(ctx, displayWidth, displayHeight) {
             // Clear the full canvas in device pixels, independent of current transform
             ctx.save();
             ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -7650,47 +12454,36 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 return;
             }
 
-            // Ensure rotatedCoords array is expanded to match coords
-            while (this.rotatedCoords.length < this.coords.length) {
-                this.rotatedCoords.push(new Vec3(0, 0, 0));
-            }
+            // THE VIEW CENTRE IS ALWAYS FRESH - a pan reads it on the next
+            // gesture, so it cannot be deferred with the rotation below. It is
+            // O(1); the rotation is O(positions).
+            const c = this._computeViewCentre(object);
 
-            // Use temporary center if set (for orienting to visible positions), otherwise use global center
-            const globalCenter = (object && object.totalPositions > 0) ? object.globalCenterSum.mul(1 / object.totalPositions) : new Vec3(0, 0, 0);
-            const c = this.viewerState.center || globalCenter;
-            // A pan MOVES this point; remember it so the first drag has
-            // something to move even when the view is still on the default
-            // (null) centre.
-            this._viewCenter = { x: c.x, y: c.y, z: c.z };
-
-            // Update pre-allocated rotatedCoords
-            // Apply object's rotation_matrix first (best_view), then user's rotation
-            const m = this.viewerState.rotation;
-            const objectRotation = (object && object.rotation_matrix && object.center) ? object.rotation_matrix : null;
-            const objectCenter = (object && object.center) ? object.center : null;
-
-            for (let i = 0; i < this.coords.length; i++) {
-                let v = this.coords[i];
-
-                // Step 1: Apply object-level rotation (best_view) if present
-                if (objectRotation && objectCenter) {
-                    const cx = v.x - objectCenter[0];
-                    const cy = v.y - objectCenter[1];
-                    const cz = v.z - objectCenter[2];
-                    const rotX = objectRotation[0][0] * cx + objectRotation[0][1] * cy + objectRotation[0][2] * cz;
-                    const rotY = objectRotation[1][0] * cx + objectRotation[1][1] * cy + objectRotation[1][2] * cz;
-                    const rotZ = objectRotation[2][0] * cx + objectRotation[2][1] * cy + objectRotation[2][2] * cz;
-                    v = new Vec3(rotX + objectCenter[0], rotY + objectCenter[1], rotZ + objectCenter[2]);
-                }
-
-                // Step 2: Apply user rotation
-                const subX = v.x - c.x, subY = v.y - c.y, subZ = v.z - c.z;
-                const out = this.rotatedCoords[i];
-                out.x = m[0][0] * subX + m[0][1] * subY + m[0][2] * subZ;
-                out.y = m[1][0] * subX + m[1][1] * subY + m[1][2] * subZ;
-                out.z = m[2][0] * subX + m[2][1] * subY + m[2][2] * subZ;
-
-            }
+            // ROTATING EVERY POSITION, UNLESS THE GPU IS ABOUT TO TAKE THE FRAME.
+            //
+            // Neither GPU path reads rotatedCoords to draw with. The tube's
+            // instances are model space and the vertex shader turns them; the
+            // cartoon draws a mesh that is already on the card and projects its
+            // overlay positions from its own captured copy. What still needs
+            // this array is PICKING, the selection halo, and a cartoon REBUILD
+            // - none of which happens on most frames. So it is deferred to
+            // whoever actually asks (_ensureRotated, reached through
+            // _ensurePickProjection and from renderApp's rebuild branch) rather
+            // than done 60 times a second on the chance that someone will.
+            // 4.3 ms of a 20 ms frame at 320,000 positions.
+            //
+            // A guess, like _gpuWillDraw: if the GPU then declines the frame
+            // the 2D pass below needs the array after all, and both branches
+            // settle up before falling through.
+            // WHO IS DRAWN AND HOW. The style is per object; when the drawn
+            // objects agree the frame has one style - theirs, which is not
+            // always the edited object's - and when they do not, the mixed
+            // path below draws both.
+            const groups = this.drawnStyleGroups();
+            const drawStyle = (groups.size === 1)
+                ? groups.keys().next().value : this.style;
+            const deferRot = this._gpuWillTake(ctx, drawStyle);
+            if (deferRot) this._rotPending = true; else this._rotateCoords(object, c);
             const rotated = this.rotatedCoords;
 
             // Segment generation is now just data lookup
@@ -7730,30 +12523,100 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
+            // TWO STYLES AT ONCE, when the objects on screen disagree about
+            // which one they want and the GPU is available to draw both into
+            // one depth buffer. Everything below is the single-style path, and
+            // it stays exactly as it was: this branch either draws the frame
+            // or declines, and declining means the picture is drawn in
+            // whatever style `this.style` says, as it always was.
+            if (deferRot) {
+                if (groups.size > 1
+                    && this._mixedGPUFrame(ctx, displayWidth, displayHeight,
+                        colors, object, groups)) {
+                    this.gpuDrewLastFrame = true;
+                    this._invalidateSelectionPreview();
+                    this._paintOverlays(ctx, this._exportPxScale || 1, true);
+                    return;
+                }
+            }
+
             // STYLE DELEGATION: 'cartoon' replaces the entire draw stage below.
             // The cartoon renderer (viewer-cartoon.js) reuses the rotation and
             // per-segment colors computed above, plus this renderer's projection
             // parameters, and paints its own primitives (SS ribbons + tubes).
-            if (this.style === 'cartoon'
+            if (drawStyle === 'cartoon'
                 && window.py2dmolCartoon) {
-                window.py2dmolCartoon.render(this, ctx, displayWidth, displayHeight, colors);
+                // THE GPU PATH, when it is asked for and it works. It paints
+                // the same drawing from a mesh that lives on the card, so
+                // turning the model is one draw call instead of a full repaint.
+                // Everything after it here is unchanged: the halo, the sequence
+                // overlay and both exports stay on the path they are on today,
+                // because the GPU replaces the DRAW and not the frame.
+                //
+                // It returns false rather than throwing for anything it cannot
+                // do - no WebGL2, a lost context, an export context, a shader
+                // that will not link on some driver - and the 2D renderer below
+                // then draws the frame as if the option had never been set.
+                const gpuOk = this.useGPU === true
+                    && !this.drawMode                      // see _gpuWillTake
+                    && window.py2dmolCartoonGPU
+                    && window.py2dmolCartoonGPU.render(this, ctx,
+                        displayWidth, displayHeight, colors);
+                // WHICH PATH DREW THIS FRAME. The GPU declining is silent by
+                // design - that is the point of returning false - but it makes
+                // the two paths indistinguishable from outside, and they differ
+                // by more than an order of magnitude on a large structure.
+                // Timing a render without knowing which one ran measures
+                // nothing: on a 305,000-position assembly the same operation
+                // read 740 ms and 0 ms on consecutive runs, purely because the
+                // GPU was available in one and not the other.
+                this.gpuDrewLastFrame = !!gpuOk;
+                if (!gpuOk) {
+                    // it declined: the 2D renderer below is built on rotatedCoords
+                    this._ensureRotated();
+                    window.py2dmolCartoon.render(this, ctx, displayWidth, displayHeight, colors);
+                }
                 // A real frame supersedes any snapshot taken from an older one.
                 this._invalidateSelectionPreview();
                 // over the finished drawing, so it is never occluded
-                this._paintSelectionHalo(ctx, this._exportPxScale || 1);
-                // Sequence-viewer highlight overlay, skipped during ANY active
-                // gesture. drawHighlights() resizes its overlay canvas and
-                // reads getBoundingClientRect twice, forcing a synchronous
-                // layout every call - on the web app (which has the sequence
-                // viewer) that dominated the frame. Rotation was already
-                // exempt via isDragging, but ZOOM sets isZooming instead, so
-                // wheel zoom paid it on every frame while rotation did not -
-                // exactly the "cartoon zoom lags, rotation is fine" report.
-                // Each gesture's settle timer repaints it once at the end.
-                if (!this.isDragging && !this.isZooming && !this.isOrientAnimating
-                    && window.SEQ && window.SEQ.drawHighlights) {
-                    window.SEQ.drawHighlights();
-                }
+                this._paintOverlays(ctx, this._exportPxScale || 1, true);
+                return;
+            }
+
+            // THE TUBE STYLE ON THE GPU, TAKEN BEFORE THE 2D RECKONING.
+            //
+            // It used to be taken at the bottom, beside the stroking loop it
+            // replaces, on the reasoning that everything it needs is decided by
+            // then. That was true and it was still wrong: almost nothing it
+            // needs is decided there. Measured on 4UG0 (17,789 positions), a
+            // 60 ms GPU tube frame spent 15.5 ms sorting by depth, 10.7 ms
+            // deciding which endpoints get round caps, 6.3 ms projecting
+            // positions and 3.8 ms on depth normalisation - 36 ms of a 60 ms
+            // frame computing answers the GPU throws away. The depth buffer
+            // sorts, buildTube derives its own caps from the topology, and the
+            // vertex shader projects. The actual GL work was 0.4 ms.
+            //
+            // So the branch moved up here, beside the cartoon one, and the
+            // whole block below it is now what runs only when the GPU declines
+            // the frame - which it still can, and then nothing above has been
+            // skipped that the 2D pass needs.
+            const tubeGPUTook = deferRot
+                && this._tubeGPUFrame(ctx, displayWidth, displayHeight, colors, object);
+            // see gpuDrewLastFrame in the cartoon branch: the two paths differ
+            // by more than an order of magnitude and decline silently, so a
+            // frame time means nothing without knowing which one produced it
+            // WHICH PATH DREW THIS FRAME, on every frame and not only the ones
+            // the GPU was asked about. Assigned under `if (deferRot)` it went
+            // stale the moment the GPU was switched off: the flag still said
+            // true while the 2D pass was drawing, and it is what the harnesses
+            // read to know which renderer they just measured.
+            this.gpuDrewLastFrame = deferRot ? tubeGPUTook : false;
+            if (deferRot && !tubeGPUTook) {
+                // declined - the 2D pass below reads what was skipped above
+                this._ensureRotated();
+            } else if (deferRot) {
+                this._invalidateSelectionPreview();
+                this._paintOverlays(ctx, this._exportPxScale || 1, true);
                 return;
             }
 
@@ -7764,9 +12627,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // A segment is visible if both positions are visible (or no mask = all visible)
             // For contact segments, check visibility based on original contact endpoints, not intermediate positions
             const visibleSegmentIndices = [];
+            const bbHidden = this.backboneHiddenSet();
             for (let i = 0; i < n; i++) {
                 const segInfo = segments[i];
                 let isVisible = false;
+                // the backbone switch, before the visibility mask: a hidden
+                // backbone is not a hidden RESIDUE, so its side chain stays.
+                // BOTH ends, so the cut lands at the edge of the selection
+                // rather than a residue short of it.
+                if (bbHidden && !this._isSidechainSegment(segInfo)
+                    && bbHidden.has(segInfo.idx1) && bbHidden.has(segInfo.idx2)) continue;
 
                 if (!visiblePositions) {
                     // No mask = all segments visible (including overlay mode with no selection)
@@ -7923,8 +12793,37 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
-            const renderShadows = this.shadowEnabled;
-            const maxExtent = (object && object.maxExtent > 0) ? object.maxExtent : 30.0;
+            // WILL THE GPU TAKE THIS FRAME? It changes when the occlusion is
+            // worth computing, not whether.
+            //
+            // `shadows` and `tints` ARE the style: every segment tested against
+            // everything in front of it, which is what makes a buried loop sit
+            // behind an exposed one. Nothing cheap looks like it - a depth ramp
+            // darkens the whole back of the structure including the parts that
+            // are plainly in the open - so the GPU keeps using these exact
+            // numbers rather than an approximation of them.
+            //
+            // What it does not do is recompute them mid-gesture. The pass is
+            // ~90% of a tube frame (9FOG: 67 ms against 6.8 ms without), and
+            // this is already the policy for large structures, where the
+            // occlusion is allowed to go stale during a drag and is brought up
+            // to date the moment the view settles. Occlusion changes slowly
+            // under rotation, so the staleness is nearly invisible; the cost is
+            // not. On the GPU path the drawing itself is ~1 ms, so that policy
+            // has to apply at EVERY size or the occlusion is the whole frame.
+            //
+            // Deliberately a guess, not a promise: renderTube may still decline
+            // the frame, and the 2D pass then draws with whatever these hold -
+            // possibly a gesture out of date, never wrong.
+            const gpuWillDraw = this._gpuWillDraw();
+            // The GPU computes its own occlusion now - a depth prepass and one
+            // screen-space pass, whose cost is a function of pixels rather than
+            // of segments - so the CPU pass is not just deferred but skipped.
+            // That is the whole speed argument: this pass is ~90% of a tube
+            // frame and it grows with the structure.
+            const renderShadows = this.shadowEnabled && !gpuWillDraw;
+            const framed = this.drawnStats() || object;
+            const maxExtent = (framed && framed.maxExtent > 0) ? framed.maxExtent : 30.0;
 
             const shadows = new Float32Array(n);
             const tints = new Float32Array(n);
@@ -7938,7 +12837,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const RENDER_CUTOFF = 1000000; // Fully opaque segments
 
 
-            // [OPTIMIZATION] Allocation-free sorting
+            // Allocation-free sorting
             // Sort visibleSegmentIndices in-place using zValues lookup
             // This avoids creating N objects and 2 intermediate arrays per frame
             // Sort by z-depth (back to front)
@@ -7947,7 +12846,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Use the sorted array directly
             let visibleOrder = visibleSegmentIndices;
 
-            // [OPTIMIZATION] Apply culling immediately after sorting
+            // THE CLIP SLAB, on the 2D path, is a CULL rather than a cut: a
+            // canvas paints whole segments, so one straddling a plane is kept
+            // or dropped by its own depth and the cut comes out stepped at the
+            // scale of one segment. The GPU path cuts per fragment and is
+            // exact; this is the fallback, asking the same clipAccepts.
+            //
+            // CULLED AT THE PAINT, NOT HERE. visibleOrder is what gets
+            // PROJECTED, and a position with no screen coordinates cannot carry
+            // a selection band, a hover mark or a click - so dropping clipped
+            // segments from this list made the selection vanish along with the
+            // geometry, which it must not: the band is a UI indicator drawn over
+            // the finished frame, and it says where the selection IS even when
+            // that is behind something or outside the slab.
+            const clipCull = this.clipSlabOn();
+
+            // Apply culling immediately after sorting
             // visibleOrder is sorted back-to-front (index 0 is furthest, index N-1 is closest)
             // We want to keep the END of the array (closest segments)
             const totalVisible = visibleOrder.length;
@@ -7963,7 +12877,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // We must update it so those loops only process the segments we intend to render
             const numRendered = visibleOrder.length;
 
-            // [OPTIMIZATION] Removed redundant 'order' array sorting
+            // Removed redundant 'order' array sorting
             // Previously we sorted all N segments here, but it was never used for rendering
             // This saves O(N log N) operations and significant memory allocation
 
@@ -7990,32 +12904,37 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             );
 
             if (renderShadows && !skipShadowCalc) {
-                // OVERLAY MODE: Calculate shadows per-frame independently
-                if (this.overlayState.enabled && this.overlayState.frameIdMap) {
-                    // Group segments by frame
-                    const segmentsByFrame = new Map();
-                    const frameNumPositions = new Map();
+                // A MERGED VIEW SHADES EACH SOURCE ON ITS OWN. Frames of a
+                // trajectory sit on top of each other, so a shared shadow pass
+                // has them darkening each other into mud; objects placed side
+                // by side for comparison have the same problem, and "do not
+                // cast shadow between objects" was the ask. One pass per
+                // source answers both.
+                const shadowGroups = this.sourceGroups();
+                if (shadowGroups) {
+                    const segmentsBySource = new Map();
+                    const sourceNumPositions = new Map();
 
                     for (let i = 0; i < visibleOrder.length; i++) {
                         const segIdx = visibleOrder[i];
-                        const frameIdx = this.overlayState.frameIdMap[segments[segIdx].idx1];
-                        if (!segmentsByFrame.has(frameIdx)) {
-                            segmentsByFrame.set(frameIdx, []);
-                            frameNumPositions.set(frameIdx, 0);
+                        const src = shadowGroups[segments[segIdx].idx1];
+                        if (!segmentsBySource.has(src)) {
+                            segmentsBySource.set(src, []);
+                            sourceNumPositions.set(src, 0);
                         }
-                        segmentsByFrame.get(frameIdx).push(segIdx);
+                        segmentsBySource.get(src).push(segIdx);
                     }
 
-                    // Count positions per frame
+                    // how big each source is on its own, which is what the
+                    // shadow pass sizes its grid from
                     for (let i = 0; i < this.coords.length; i++) {
-                        const frameIdx = this.overlayState.frameIdMap[i];
-                        frameNumPositions.set(frameIdx, (frameNumPositions.get(frameIdx) || 0) + 1);
+                        const src = shadowGroups[i];
+                        sourceNumPositions.set(src, (sourceNumPositions.get(src) || 0) + 1);
                     }
 
-                    // Calculate shadows for each frame independently
-                    for (const [frameIdx, frameSegments] of segmentsByFrame) {
-                        const framePositions = frameNumPositions.get(frameIdx);
-                        this._calculateFrameShadows(frameSegments, framePositions, segments, segData, maxExtent, shadows, tints);
+                    for (const [src, srcSegments] of segmentsBySource) {
+                        this._calculateFrameShadows(srcSegments, sourceNumPositions.get(src),
+                            segments, segData, maxExtent, shadows, tints);
                     }
                 }
                 // NORMAL MODE: Calculate shadows for all visible segments
@@ -8119,7 +13038,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // DETECT OUTER ENDPOINTS - For rounded edges on outer segments
             // ====================================================================
             // Build a map of position connections to identify outer endpoints
-            // [OPTIMIZATION] Phase 4: Allocation-free endpoint detection
+            // Allocation-free endpoint detection
             // Use pre-computed adjList and frame-based tracking to avoid Map/Set creation
 
             // 1. Mark visible segments in the frame tracking array
@@ -8136,7 +13055,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // 2. Pre-compute which endpoints should be rounded
             // Iterate over visible segments and check their endpoints using adjList
-            // [OPTIMIZATION] Use Uint8Array for flags instead of Map
+            // Use Uint8Array for flags instead of Map
             const segmentEndpointFlags = this.segmentEndpointFlags;
 
             for (let i = 0; i < numRendered; i++) {
@@ -8214,13 +13133,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 segmentEndpointFlags[segIdx] = flags;
             }
 
-            // [OPTIMIZATION] Phase 5: SoA Projection Loop
+            // SoA Projection Loop
             // Project all visible atoms once and store in SoA arrays
             this.screenFrameId++;
             const currentScreenFrameId = this.screenFrameId;
             const screenX = this.screenX;
             const screenY = this.screenY;
             const screenRadius = this.screenRadius;
+            const screenDrawRadius = this.screenDrawRadius;
             const screenValid = this.screenValid;
 
             // Helper to project a position if not already projected
@@ -8237,8 +13157,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     const type = this.positionTypes[idx];
                     widthMultiplier = (this.typeWidthMultipliers && this.typeWidthMultipliers[type]) || 0.5;
                 }
-                let atomLineWidth = baseLineWidthPixels * widthMultiplier;
 
+                let pe = 1;
                 if (isPerspective(this.viewerState)) {
                     const z = this.viewerState.focalLength - vec.z;
                     // Clamp z to prevent division by zero or negative values
@@ -8247,22 +13167,37 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         screenValid[idx] = 0; // Mark invalid
                         return;
                     }
-                    const perspectiveScale = this.viewerState.focalLength / z;
-                    x = centerX + (vec.x * scale * perspectiveScale);
-                    y = centerY - (vec.y * scale * perspectiveScale);
-                    atomLineWidth *= perspectiveScale;
+                    pe = this.viewerState.focalLength / z;
+                    x = centerX + (vec.x * scale * pe);
+                    y = centerY - (vec.y * scale * pe);
                 } else {
                     x = centerX + vec.x * scale;
                     y = centerY - vec.y * scale;
                 }
 
-                radius = Math.max(2, atomLineWidth * 0.5);
+                // THE SAME TWO RADII _projectForPicking uses - see
+                // _positionRadiiPx. This path used to compute its own, which is
+                // how the two came to disagree about a metal.
+                const rr = this._positionRadiiPx(idx, baseLineWidthPixels,
+                    widthMultiplier, pe, scale);
+                radius = rr.pick;
+                screenDrawRadius[idx] = rr.drawn;
 
                 screenX[idx] = x;
                 screenY[idx] = y;
                 screenRadius[idx] = radius;
                 screenValid[idx] = currentScreenFrameId;
             };
+
+            // ...and the selected positions the mask left out, for the same
+            // reason _projectForPicking does: the band over a hidden selection
+            // is the one you most need to see.
+            const markedSel = this.selectionInk ? this.selectionInk() : this.residueSelection;
+            if (markedSel && markedSel.size) {
+                for (const i of markedSel) {
+                    if (i >= 0 && i < rotated.length) projectPosition(i);
+                }
+            }
 
             // Iterate visible segments and project their endpoints
             for (let i = 0; i < numRendered; i++) {
@@ -8272,7 +13207,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 projectPosition(segInfo.idx2);
             }
 
-            // [OPTIMIZATION] Ensure highlighted atoms are projected even if not in visible segments
+            // Ensure highlighted atoms are projected even if not in visible segments
             const numPositions = rotated.length;
             if (this.highlightedAtoms && this.highlightedAtoms.size > 0) {
                 for (const idx of this.highlightedAtoms) {
@@ -8311,15 +13246,27 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             };
 
-            // [OPTIMIZATION] Simplified loop - visibleOrder is already culled
+            // THE GPU TUBE FRAME WAS OFFERED THIS FRAME AND DECLINED IT.
+            //
+            // It used to be offered here instead, which meant a frame the GPU
+            // did take had still paid for the depth sort, the cap flags and the
+            // projection above - 36 ms of a 60 ms frame on 4UG0, all of it
+            // discarded. The offer now happens before any of that
+            // (_tubeGPUFrame), so reaching this line means WebGL2 is absent,
+            // the context is lost, or this is an export - and the stroking loop
+            // below is the answer, unchanged.
+
+            // Simplified loop - visibleOrder is already culled
             // Only iterate over visible segments - no need for visibility check inside loop
             for (let i = 0; i < numRendered; i++) {
                 const idx = visibleOrder[i];
+                // ...except by the clip, which is applied here rather than to
+                // the order, so that what it cuts is still projected
+                if (clipCull && !this.clipAccepts(zValues[idx])) continue;
 
                 // Calculate opacity based on position in visibleOrder
                 // i=0 is furthest (start of sliced array), i=numRendered-1 is closest
                 // Distance from front: numRendered - 1 - i
-                const distFromFront = numRendered - 1 - i;
                 // NO IN-GEOMETRY SELECTION INK. This used to recolour the
                 // style's own outline pass, which put the selection into the
                 // depth sort: a selected residue behind anything was hidden by
@@ -8344,7 +13291,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Skip shadows/tints/depth for contact segments - keep them bright and flat
                 if (segInfo.type !== 'C') {
                     // Cache zNorm value
-                    const zNormVal = zNorm[idx];
 
                     if (renderShadows) {
                         const tintFactor = (0.50 * tints[idx]) / 3;
@@ -8500,7 +13446,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // ====================================================================
             // STORE POSITION SCREEN POSITIONS for fast highlight drawing
             // ====================================================================
-            // [OPTIMIZATION] Phase 5: Removed redundant position loop
+            // Removed redundant position loop
             // Screen positions are already computed in SoA arrays (screenX, screenY, screenRadius)
             // during the projection phase above.
             // The sequence viewer will access these arrays directly.
@@ -8508,50 +13454,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // A real frame supersedes any snapshot taken from an older one.
             this._invalidateSelectionPreview();
             // over the finished drawing, so it is never occluded
-            this._paintSelectionHalo(ctx, this._exportPxScale || 1);
-
-            // Draw highlights on overlay canvas (doesn't require full render)
-            // Highlight overlay is now managed by sequence viewer
-            // Skip drawing highlights during dragging to prevent interference
-            if (!this.isDragging && window.SEQ && window.SEQ.drawHighlights) {
-                window.SEQ.drawHighlights();
-            }
-        }
-
-        // [OPTIMIZATION] Phase 6: Public API for highlights
-        // Returns array of {x, y, radius} for currently highlighted atoms
-        // Decouples external viewers from internal SoA arrays
-        getHighlightCoordinates() {
-            const coords = [];
-            // Ensure arrays exist
-            if (!this.screenValid || !this.screenX || !this.screenY || !this.screenRadius) {
-                return coords;
-            }
-
-            const addCoord = (idx) => {
-                // Check if projected in current frame
-                if (idx >= 0 && idx < this.screenValid.length && this.screenValid[idx] === this.screenFrameId) {
-                    coords.push({
-                        x: this.screenX[idx],
-                        y: this.screenY[idx],
-                        radius: this.screenRadius[idx]
-                    });
-                }
-            };
-
-            // Add multiple highlights
-            if (this.highlightedAtoms && this.highlightedAtoms.size > 0) {
-                for (const idx of this.highlightedAtoms) {
-                    addCoord(idx);
-                }
-            }
-
-            // Add single highlight
-            if (this.highlightedAtom !== null && this.highlightedAtom !== undefined) {
-                addCoord(this.highlightedAtom);
-            }
-
-            return coords;
+            this._paintOverlays(ctx, this._exportPxScale || 1, true);
         }
 
         // Ensure the animation loop is running (without creating duplicates)
@@ -8566,21 +13469,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // 1. Handle inertia/spin - disabled during recording, large molecules, or active drag
             if (!this.isRecording && !this.isDragging) {
-                // Check if object is large (disable inertia for performance based on visible segments)
-                const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                const totalSegmentCount = object && this.segmentIndices ? this.segmentIndices.length : 0;
-                // Count visible segments for inertia determination
-                let visibleSegmentCount = totalSegmentCount;
-                if (this.visiblePositions && this.segmentIndices) {
-                    visibleSegmentCount = 0;
-                    for (let i = 0; i < this.segmentIndices.length; i++) {
-                        const seg = this.segmentIndices[i];
-                        if (this.visiblePositions.has(seg.idx1) && this.visiblePositions.has(seg.idx2)) {
-                            visibleSegmentCount++;
-                        }
-                    }
-                }
-                const enableInertia = visibleSegmentCount <= this.LARGE_MOLECULE_CUTOFF;
+                // ONE RULE FOR INERTIA, and this is not where it lives. This
+                // counted visible segments against the cutoff itself - the same
+                // arithmetic as smoothAnimationOk() but WITHOUT its measured
+                // cost test, so the two could and did disagree: _inertiaAllowed
+                // was documented as the rule while this copy quietly decided it.
+                // Asking the rule means the GPU exemption applies here too.
+                const enableInertia = this._inertiaAllowed();
 
                 if (enableInertia) {
                     const INERTIA_THRESHOLD = 0.0001; // Stop when velocity is below this
@@ -8629,8 +13524,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // But ensure it's loaded if somehow it wasn't
                     // CRITICAL FIX: In overlay mode, DON'T call _loadFrameData - it would destroy merged data!
                     // In overlay mode, merged data is already loaded, so just render it
-                    if (!this.overlayState.enabled && (this.coords.length === 0 || this.lastRenderedFrame === -1)) {
-                        this._loadFrameData(currentFrame, true); // Load without render
+                    if (this.coords.length === 0 || this.lastRenderedFrame === -1) {
+                        this._loadFrameForPlayback(currentFrame);
                     }
                     needsRender = true;
                 }
@@ -8660,11 +13555,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * opts.format    'svg' | 'svgz' | 'png'
          * opts.dpi       PNG only; CSS pixels are 96 dpi, so this is the scale
          *
-         * Detail is NOT forced up for an export. Subdivision is capped by how
-         * big a residue is in the OUTPUT (see subCapCur in viewer-cartoon.js),
-         * so a PNG at 300 dpi already gets three times the subdivision of the
-         * screen, and on a large structure the extra stations the old "max
-         * detail" option added were finer than a pixel either way.
+         * Detail is NOT forced up for an export: sampling is whatever the
+         * Detail control says, here as on screen, so what you export is what
+         * you were looking at. (It used to be capped by how big a residue came
+         * out in the OUTPUT, which meant a 300 dpi PNG quietly got three times
+         * the subdivision of the screen; that cap is gone - see subFloor in
+         * viewer-cartoon.js for why.)
          *
          * EXPORTS ARE ALWAYS TRANSPARENT, whatever the viewer background is set
          * to. A saved figure goes into a document whose page colour is not ours
@@ -8672,6 +13568,552 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * remove than a transparent one is to fill. The dark preset in
          * particular would otherwise export a black slab.
          */
+        /**
+         * WHAT THE CAPTURE PANEL REMEMBERS, and what it starts at.
+         *
+         * One object for both outputs. There used to be two - _saveOpts for the
+         * image, _videoOpts for a recording - written and defaulted in four
+         * places between them, which is how the DPI default came to be 300 in
+         * one of them and 300 spelled again in the shift-click path.
+         *
+         * dpi 200: a 1000 px canvas comes out about 2000 px, which is a figure
+         * at column width in print and a file measured in single-digit
+         * megabytes. 300 is the right number for a full-page plate and was the
+         * wrong one to reach for every time.
+         *
+         * mbps 12: A BITRATE IS A CEILING, NOT A TARGET, which is the whole
+         * reason to be generous with it. Measured on one turn at 1196x1196,
+         * 15 fps, asking for N and seeing what the encoder actually spent:
+         *
+         *      asked   spent   file    SSIM against a 40 Mbps take
+         *        2     1.07    261 kB   0.9797
+         *        5     2.59    632 kB   0.9894
+         *       10     5.04    1.2 MB   0.9967
+         *       20     9.8     2.4 MB   0.9993
+         *       40     14.7    3.6 MB   -
+         *
+         * So on flat cartoon colour the encoder stops well short of the
+         * allowance and a high ceiling costs nothing; it only spends the bytes
+         * where the picture genuinely needs them. 5 was chosen against the 20
+         * the three recorders each hard-coded, and it is fine at the size a
+         * viewer opens at - but it is thin for an upload master at 2x or 3x,
+         * where 5 Mbps over 1196x1196 at 30 fps is 0.12 bits a pixel. Anything
+         * bound for a platform is re-encoded on arrival (TikTok, Instagram and
+         * YouTube all do), and that second encode is only as good as what it
+         * is given, which is the argument for the headroom.
+         */
+        static get CAPTURE_DEFAULTS() {
+            return { format: 'png', dpi: 200,
+                seconds: 6, fps: 30, mbps: 12, container: 'webm', scale: 1,
+                rotations: 1 };
+        }
+
+        /** The panel's state, defaults filled in, so every reader agrees. */
+        captureOpts() {
+            const d = this.constructor.CAPTURE_DEFAULTS;
+            return Object.assign({}, d, this._captureOpts || {});
+        }
+
+        /**
+         * WHICH VIDEO FORMATS THIS PAGE CAN ACTUALLY WRITE.
+         *
+         * Asked of the browser and of the page, never assumed. WebM is
+         * MediaRecorder's own and is always there; MP4 is MediaRecorder's too
+         * where the build has an H.264 encoder, which recent Chrome and Safari
+         * do and Firefox does not; GIF has no native encoder at all and is
+         * offered only where py2dmolGif is loaded - web/utils.js, which is
+         * index.html and not the notebook. A format that cannot be written must
+         * not be in the menu: a recording that fails after the fact has already
+         * cost the user the take.
+         */
+        videoFormats() {
+            const ok = (m) => (typeof MediaRecorder !== 'undefined'
+                && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m));
+            const out = [];
+            const webm = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+                .find(ok);
+            if (webm) out.push({ id: 'webm', label: 'WebM', ext: 'webm', mime: webm });
+            const mp4 = ['video/mp4;codecs=avc1.42E01E', 'video/mp4;codecs=avc1', 'video/mp4']
+                .find(ok);
+            if (mp4) out.push({ id: 'mp4', label: 'MP4', ext: 'mp4', mime: mp4 });
+            if (typeof window !== 'undefined' && typeof window.py2dmolGif === 'function') {
+                out.push({ id: 'gif', label: 'GIF', ext: 'gif', mime: null });
+            }
+            // A ZIP OF PNGs IS A VIDEO FORMAT TOO - the same frames, written
+            // one file each instead of one file for all of them, which is what
+            // you want for a figure per timepoint or for handing the frames to
+            // an editor rather than a re-encode of them. It was a button of its
+            // own on the Image row that only ever wrote a trajectory; as a
+            // format it records a turn and a drawing as well, and takes its
+            // resolution from the dpi above rather than from a Size menu that
+            // would be a second way of saying the same thing.
+            if (typeof JSZip !== 'undefined') {
+                out.push({ id: 'zip', label: 'Images', ext: 'zip', mime: null });
+            }
+            return out;
+        }
+
+        videoFormatOf(id) {
+            const all = this.videoFormats();
+            return all.find((f) => f.id === id) || all[0] || null;
+        }
+
+        /**
+         * THE SIZES A RECORDING CAN BE MADE AT, in real pixels.
+         *
+         * The old answer to "what resolution is the video" was "whatever the
+         * canvas happens to be" - the backing store, which is the panel size
+         * times the device pixel ratio and never stated anywhere. It is stated
+         * now, and can be multiplied: a frame is re-rendered at the target size
+         * rather than scaled up from the screen one, the same way a 300 dpi PNG
+         * is, so a 2x recording genuinely resolves more.
+         *
+         * Even numbers, because H.264 wants both dimensions even and simply
+         * fails on a stream that is not. Capped at 4096, the level limit most
+         * hardware encoders stop at.
+         */
+        videoSizes() {
+            const c = this.canvas;
+            if (!c || !c.width) return [];
+            const out = [];
+            // SMALLER AS WELL AS LARGER. A half-size recording is a quarter of
+            // the pixels and about a quarter of the file - which is what you
+            // want for a GIF, for a slide, or for anything going into a
+            // message - and there was no way to ask for one: the recording was
+            // whatever the canvas happened to be.
+            const FRACTION = { 0.25: '1/4', 0.5: '1/2' };
+            for (const k of [0.25, 0.5, 1, 2, 4]) {
+                const w = 2 * Math.round(c.width * k / 2);
+                const h = 2 * Math.round(c.height * k / 2);
+                if (w < 64 || h < 64) continue;            // below this it is a thumbnail
+                if (k > 1 && (w > 4096 || h > 4096)) break; // the encoder level limit
+                // THE MULTIPLIER IS THE LABEL, not the pixels. The info line
+                // under the row already says what the file will be - "WebM
+                // 598x598 - 6s at 30 fps" - so spelling the same number into
+                // the menu said it twice and made the widest control in a
+                // 160px panel out of the half that was already there. And a
+                // fraction reads as a fraction: "0.25x" is a decimal doing a
+                // fraction's job, with an x repeating what the control's own
+                // name already says.
+                out.push({ scale: k, w, h, label: FRACTION[k] || String(k) });
+            }
+            return out;
+        }
+
+        // A GIF IS NOT A VIDEO FILE and cannot be treated as one: every frame
+        // is kept in memory until the palette is known, its delays are whole
+        // centiseconds so anything past ~20 fps is a lie, and 256 colours over
+        // a megapixel is a slow quantisation and a huge file. These are the
+        // limits the panel shows and the sink enforces.
+        static get GIF_LIMITS() { return { maxPx: 1024, maxFps: 20, maxFrames: 300 }; }
+
+        /**
+         * WHERE A RECORDING'S FRAMES GO. One object, three recorders, two very
+         * different destinations behind it.
+         *
+         * The turn, the drawing and the trajectory each drive their own frames
+         * for their own reasons and none of them should have to know how a file
+         * gets written. They render, then call frame(); at the end they call
+         * finish(). What that does - hand a canvas stream to MediaRecorder, or
+         * collect pixels for the GIF encoder - is decided here, once, from the
+         * panel's options.
+         *
+         * @param {object} opts - seconds/fps/mbps/container/scale, plus
+         *        sourceCanvas to record something other than the live canvas
+         *        (the trajectory recorder composites a scatter plot beside it)
+         * @returns {object|null} {frame, finish, cancel, width, height, note}
+         */
+        _makeVideoSink(opts) {
+            const o = opts || {};
+            const fmt = this.videoFormatOf(o.container);
+            if (!fmt) return null;
+            const gif = fmt.id === 'gif';
+            const zip = fmt.id === 'zip';
+            const LIM = this.constructor.GIF_LIMITS;
+            const fps = Math.max(5, Math.min(gif ? LIM.maxFps : 60, Number(o.fps) || 30));
+            const live = this.canvas;
+            const source = o.sourceCanvas || live;
+            const dispW = this.displayWidth || parseInt(live.style.width) || live.width;
+            const dispH = this.displayHeight || parseInt(live.style.height) || live.height;
+
+            // WHAT SIZE, AND WHETHER THAT NEEDS A SECOND CANVAS AT ALL.
+            // Scale 1 with no compositing records the live canvas directly -
+            // the path this always took, and the cheapest. Anything else needs
+            // its own canvas, and every frame is RE-RENDERED into it at that
+            // size rather than blown up from the screen.
+            let w = source.width; let h = source.height;
+            let note = '';
+            if (zip) {
+                // THE IMAGE ROW'S DPI, not the video Size: these frames ARE
+                // images, and two controls for one resolution is how they come
+                // to disagree.
+                const k = Math.max(36, Math.min(1200, Number(o.dpi) || 200)) / 96;
+                w = Math.max(1, Math.round(dispW * k));
+                h = Math.max(1, Math.round(dispH * k));
+                const maxPx = 16000;
+                if (w > maxPx || h > maxPx) {
+                    const f = Math.min(maxPx / w, maxPx / h);
+                    w = Math.round(w * f); h = Math.round(h * f);
+                }
+                note = `, ${Math.round(96 * w / dispW)} dpi`;
+            } else if (!o.sourceCanvas) {
+                // ...and DOWN as well as up: the clamp used to floor at 1,
+                // which silently turned every half-size recording back into a
+                // full-size one - the panel said 300x300 and the file came out
+                // 598x598.
+                const k = Math.max(0.1, Math.min(3, Number(o.scale) || 1));
+                w = 2 * Math.round(live.width * k / 2);
+                h = 2 * Math.round(live.height * k / 2);
+            }
+            if (gif) {
+                const long = Math.max(w, h);
+                if (long > LIM.maxPx) {
+                    const f = LIM.maxPx / long;
+                    w = 2 * Math.round(w * f / 2); h = 2 * Math.round(h * f / 2);
+                    note = ` (GIF capped at ${LIM.maxPx}px)`;
+                }
+            }
+            // A CUT-OUT GIF HAS TO BE RENDERED, not read off the screen: the
+            // live canvas has the paper painted into it and every pixel is
+            // opaque. So transparency forces the offscreen path even at 1x.
+            // A GIF IS ALWAYS CUT OUT. Its transparency is one palette entry
+            // rather than an alpha channel, so the edge is a hard cut - but a
+            // turn dropped onto a slide or a dark page wants that far more
+            // often than it wants a white square around the structure, and the
+            // choice was one more control on the widest row in the panel. PNG
+            // already exports this way; WebM and MP4 cannot, which is why it
+            // is not a question anywhere else either.
+            const clear = gif;
+            // A zip is always rendered: its frames are PNGs at their own size,
+            // and a PNG of the live canvas would be the screen's.
+            const offscreen = zip || clear || (w !== source.width || h !== source.height);
+            let target = source;
+            let octx = null;
+            if (offscreen) {
+                target = document.createElement('canvas');
+                target.width = w; target.height = h;
+                octx = target.getContext('2d');
+            }
+            // Re-render at the target size, exactly as the PNG export does:
+            // _exportPxScale keeps the quantities that are PIXELS by definition
+            // - outline width, selection ink - the size they are on screen,
+            // while everything measured in Angstrom follows the resolution.
+            // ONE RENDER PER FRAME, NOT TWO.
+            //
+            // The recorders used to render to the screen and then, for a scaled
+            // recording, render AGAIN into the offscreen canvas - so every
+            // frame was drawn twice at two different sizes. On the 2D path that
+            // is simply double the work (4HHB: 33 ms + 40 ms a frame). On the
+            // GPU path it is worse than double: the mesh cache is keyed on the
+            // output size, so alternating 598 px and 1196 px REBUILT THE MESH
+            // TWICE A FRAME - 91 ms a frame against about 2 for the same
+            // recording at screen size.
+            //
+            // So the offscreen render is the only one, and the screen is shown
+            // a scaled-down copy of it. That is a blit, and it costs nothing
+            // next to a render.
+            const blit = () => {
+                if (!octx || !this.ctx || !this.canvas) return;
+                const c = this.ctx;
+                c.save();
+                c.setTransform(1, 0, 0, 1, 0, 0);
+                if (this.isTransparent) c.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                else {
+                    c.fillStyle = this.backgroundColor || '#ffffff';
+                    c.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                }
+                c.drawImage(target, 0, 0, this.canvas.width, this.canvas.height);
+                c.restore();
+            };
+            const paint = () => {
+                if (!octx) return;
+                const wasClear = this.isTransparent;
+                if (clear) this.isTransparent = true;
+                octx.save();
+                octx.setTransform(1, 0, 0, 1, 0, 0);
+                if (this.isTransparent) octx.clearRect(0, 0, w, h);
+                else { octx.fillStyle = this.backgroundColor || '#ffffff'; octx.fillRect(0, 0, w, h); }
+                octx.restore();
+                const prev = this._exportPxScale;
+                this._exportPxScale = w / dispW;
+                try { this._renderToContext(octx, w, h); } finally {
+                    this._exportPxScale = prev || 1;
+                    this.isTransparent = wasClear;
+                }
+            };
+
+            const rendersItself = !!offscreen;
+            if (zip) {
+                const store = new JSZip();
+                const name = this.currentObjectName || 'viewer';
+                let n = 0; let pending = 0; let closed = null;
+                const settle = () => {
+                    if (!closed || pending) return;
+                    const done = closed; closed = null;
+                    this._captureStatus(`Zipping ${n} frames...`);
+                    store.generateAsync({ type: 'blob' })
+                        .then((blob) => done(blob, 'zip'))
+                        .catch(() => done(null, 'zip'));
+                };
+                return {
+                    width: w, height: h, fps, note, ext: 'zip', rendersItself,
+                    frame: () => {
+                        paint(); blit();
+                        n++;
+                        const at = n;
+                        pending++;
+                        // toBlob is asynchronous, so the zip cannot be closed
+                        // until the last one has come back - hence the count.
+                        target.toBlob((blob) => {
+                            if (blob) store.file(`${name}_${String(at).padStart(4, '0')}.png`, blob);
+                            pending--;
+                            settle();
+                        }, 'image/png');
+                    },
+                    cancel: () => { closed = null; },
+                    finish: (done) => { closed = done; settle(); },
+                };
+            }
+            if (gif) {
+                const shots = [];
+                const gctx = octx || source.getContext('2d');
+                return {
+                    width: w, height: h, fps, note, ext: 'gif', rendersItself,
+                    frame: () => {
+                        if (shots.length >= LIM.maxFrames) return;
+                        if (octx) { paint(); blit(); } else this.render('capture');
+                        shots.push(gctx.getImageData(0, 0, w, h).data);
+                    },
+                    cancel: () => { shots.length = 0; },
+                    finish: (done) => {
+                        if (!shots.length) { done(null); return; }
+                        // Encoding a few hundred megapixels blocks the tab, so
+                        // the status line is set BEFORE it starts rather than
+                        // after, or the only sign of life is a frozen page.
+                        this._captureStatus(`Encoding ${shots.length} GIF frames...`);
+                        setTimeout(() => {
+                            const blob = window.py2dmolGif(shots, { width: w, height: h,
+                                colors: Math.max(8, Math.min(256, Number(o.colors) || 256)),
+                                transparent: clear,
+                                delayCs: Math.max(2, Math.round(100 / fps)) });
+                            shots.length = 0;
+                            done(blob, 'gif');
+                        }, 0);
+                    },
+                };
+            }
+
+            // MANUAL CAPTURE. captureStream(fps) samples the canvas on its own
+            // clock AND accepts requestFrame, so every rendered frame went in
+            // twice over: a 6-frame trajectory came out a 12-frame video, twice
+            // the length the panel promised. With 0 the stream produces exactly
+            // the frames it is handed. Chrome, Firefox and Safari all take it;
+            // if one does not, the old behaviour is the fallback.
+            let stream;
+            try { stream = target.captureStream(0); }
+            catch (e) { stream = target.captureStream(fps); }
+            const bits = Math.max(1, Math.min(80, Number(o.mbps) || 5)) * 1000000;
+            let rec;
+            try {
+                rec = new MediaRecorder(stream, { mimeType: fmt.mime, videoBitsPerSecond: bits });
+            } catch (err) {
+                try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* gone */ }
+                return null;
+            }
+            const chunks = [];
+            let onDone = null;
+            rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+            rec.onstop = () => {
+                try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* gone */ }
+                if (onDone) {
+                    onDone(chunks.length ? new Blob(chunks, { type: fmt.mime }) : null, fmt.ext);
+                }
+            };
+            // STARTED ON THE FIRST FRAME, not before it. A recorder started
+            // while the canvas already holds the opening frame captures that
+            // state as a frame of its own, so a 6-frame trajectory came out 7
+            // frames long - the first one twice.
+            let started = false;
+            const begin = () => { if (!started) { started = true; rec.start(100); } };
+            const track = stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
+            return {
+                width: w, height: h, fps, note, ext: fmt.ext, rendersItself,
+                frame: () => {
+                    // The composite path (a scatter plot beside the structure)
+                    // has its own canvas and is drawn by the recorder, so there
+                    // is nothing to render here.
+                    if (octx) { paint(); blit(); } else if (!o.sourceCanvas) {
+                        this.render('capture');
+                    }
+                    begin();
+                    // captureStream samples the canvas on its own clock;
+                    // nudging it where supported keeps one rendered frame to
+                    // one video frame.
+                    if (track && track.requestFrame) {
+                        try { track.requestFrame(); } catch (e) { /* optional */ }
+                    }
+                },
+                cancel: () => {
+                    onDone = null;
+                    try { rec.stop(); } catch (e) { /* already stopped */ }
+                },
+                finish: (done) => {
+                    onDone = done;
+                    if (!started) { done(null, fmt.ext); return; }   // nothing was ever handed over
+                    // let the last frame land in the stream before closing
+                    setTimeout(() => { try { rec.stop(); } catch (e) { /* stopped */ } }, 1000 / fps);
+                },
+            };
+        }
+
+        /**
+         * WHAT THESE SETTINGS WILL PRODUCE, in the panel's own words, before
+         * anything is written. The Image row shows its pixel size beside the
+         * dpi; this says the same for a recording, where the size depends on
+         * the format as well as the menu (a GIF is capped, and clamped to 20
+         * fps) and nothing else in the row would show it.
+         */
+        _describeCapture() {
+            if (!this._savePanel || this._captureBusy) return;
+            const o = this.captureOpts();
+            const lines = [];
+            // THE IMAGE, in the same box as everything else. Its pixel size
+            // used to sit inline on its own row, which is a second place for
+            // the kind of thing this box exists to hold - and the row is a
+            // format, a dpi and two buttons already.
+            const dispW = this.displayWidth
+                || parseInt(this.canvas && this.canvas.style.width) || 0;
+            const dispH = this.displayHeight
+                || parseInt(this.canvas && this.canvas.style.height) || 0;
+            if (o.format === 'png') {
+                const k = o.dpi / 96;
+                lines.push(`PNG ${Math.round(dispW * k)}x${Math.round(dispH * k)}`
+                    + ` \u00b7 ${o.dpi} dpi`);
+            } else {
+                // A VECTOR HAS NEITHER. No pixels to count and no dpi to count
+                // them at - it is resolution-independent, which is the reason
+                // to pick it - so saying "598x598 at 96 dpi" described a
+                // property the file does not have.
+                lines.push(`${o.format === 'svgz' ? 'SVG.gz' : 'SVG'} \u00b7 vector`);
+            }
+            const fmt = this.videoFormatOf(o.container);
+            if (!fmt || !this._savePanel.querySelector('#saveVideoFormat')) {
+                this._captureStatus(lines.join('\n'));
+                return;
+            }
+            const sizes = this.videoSizes();
+            const z = sizes.find((q) => q.scale === Number(o.scale)) || sizes[0];
+            const gif = fmt.id === 'gif';
+            const zip = fmt.id === 'zip';
+            const LIM = this.constructor.GIF_LIMITS;
+            const fps = Math.min(o.fps, gif ? LIM.maxFps : 60);
+            // Images are sized by the dpi above, not by the Size menu - the
+            // line has to say the size the sink will actually use.
+            let w = z ? z.w : 0; let h = z ? z.h : 0;
+            if (zip) {
+                const k = (o.dpi || 200) / 96;
+                w = Math.round(dispW * k); h = Math.round(dispH * k);
+            }
+            if (gif && Math.max(w, h) > LIM.maxPx) {
+                const f = LIM.maxPx / Math.max(w, h);
+                w = 2 * Math.round(w * f / 2); h = 2 * Math.round(h * f / 2);
+            }
+            const bits = [`${fmt.label} ${w}x${h}`];
+            lines.push('');
+            // WHAT THIS COMBINATION WILL ACTUALLY PRODUCE. The four sources
+            // differ in who sets the length, so the line has to work it out
+            // rather than repeat the boxes: on F and FR the trajectory decides
+            // and the seconds are DERIVED (N frames at the chosen rate); on R
+            // and RF the seconds decide and the frame count is derived. Saying
+            // "6s" over a recording whose length the trajectory fixes is the
+            // kind of small lie that makes a panel untrustworthy.
+            const obj2 = this.currentObjectName
+                ? this.objectsData[this.currentObjectName] : null;
+            const nTraj = (obj2 && obj2.frames) ? obj2.frames.length : 0;
+            const src = o.source || '';
+            const led = (src === 'F' || src === 'FR') && nTraj > 1;
+            if (!zip) {
+                const n = led ? nTraj : Math.max(2, Math.round(o.seconds * fps));
+                const secs = led ? (nTraj / fps) : o.seconds;
+                bits.push(`${n} frames`, `${(Math.round(secs * 10) / 10)}s at ${fps} fps`);
+                if (src === 'R' || src === 'FR' || src === 'RF' || src === 'DR') {
+                    const t = Math.max(1, Math.min(10, o.rotations || 1));
+                    bits.push(`${t} turn${t === 1 ? '' : 's'}`);
+                }
+                if (src === 'RF' && nTraj > 1) bits.push(`${nTraj} model frames fitted`);
+            }
+            if (zip) {
+                // one per trajectory frame where the trajectory sets the
+                // length, and the count where it does not
+                const n = led ? `${nTraj} PNGs, one per frame`
+                    : `${o.frames || 36} PNGs`;
+                bits.push(n, `${o.dpi} dpi`);
+            } else if (gif) {
+                bits.push(`${o.colors} colours`, 'transparent');
+            } else {
+                bits.push(`${o.mbps} Mbps`);
+            }
+            lines[lines.length - 1] = bits.join(' \u00b7 ');
+            this._captureStatus(lines.join('\n'));
+        }
+
+        /** A job is running: nothing else may start until it is done. */
+        _syncCaptureButtons() {
+            if (!this._savePanel) return;
+            const busy = !!this._captureBusy;
+            for (const b of this._savePanel.querySelectorAll('button')) {
+                b.disabled = busy;
+                b.style.opacity = busy ? '0.45' : '';
+            }
+        }
+
+        /**
+         * EVERYTHING THE CAPTURE PANEL HAS TO SAY, in one line inside it.
+         *
+         * It used to talk through the page's status line: "Recording
+         * rotation... 40%", then "Turn exported to ...", from a panel that had
+         * closed itself when the recording started - so the feedback for an
+         * action appeared somewhere else, under whatever the loader said last,
+         * and on the embedded viewer there is no status line at all. One box,
+         * at the foot of the panel that started the job.
+         *
+         * The page's status line is still written when there is no panel open
+         * (the shift-click shortcut, a Python-driven save), because then it is
+         * the only place there is.
+         */
+        _captureStatus(text, isError) {
+            this._captureNote = text ? { text, error: !!isError } : null;
+            const box = this._savePanel
+                && this._savePanel.querySelector('[data-info]');
+            if (box) {
+                box.textContent = text || '';
+                box.style.color = isError ? '#b91c1c' : '#6b7280';
+                return;
+            }
+            if (typeof setStatus === 'function') setStatus(text, !!isError);
+        }
+
+        /** One place that turns a finished recording into a file on disk. */
+        _deliverVideo(blob, ext, what, detail) {
+            this._captureBusy = false;
+            // THE PANEL IS STILL OPEN, so the view goes back to being held. The
+            // record button lifts the pause to let the recorder drive its own
+            // frames, and the recorders hand auto-rotate back when they finish
+            // - so the structure started spinning again the moment a recording
+            // ended, under a panel whose whole job is to hold it still while
+            // the next take is set up.
+            if (this._savePanel) this._pauseForSavePanel();
+            if (!blob) {
+                this._captureStatus('No video data recorded', true);
+                return;
+            }
+            const filename = this._generateFilename(this.currentObjectName, ext);
+            this._triggerDownload(blob, filename);
+            const mb = (blob.size / 1048576).toFixed(1);
+            this._captureStatus(`Saved ${what.toLowerCase()}: ${detail}, ${mb} MB`);
+            if (this._savePanel) this._syncCaptureButtons();
+        }
+
         saveImage(opts) {
             const o = opts || {};
             // PNG unless asked otherwise. The panel offers SVG alongside it
@@ -8679,7 +14121,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // sub-pixel pencil and translucent stains and PNG is simply what it
             // is (see the panel for the argument).
             const format = o.format || 'png';
-            const dpi = Math.max(36, Math.min(1200, Number(o.dpi) || 300));
+            const dpi = Math.max(36, Math.min(1200, Number(o.dpi)
+                || this.constructor.CAPTURE_DEFAULTS.dpi));
 
             const prevTransparent = this.isTransparent;
             this.isTransparent = true;
@@ -8727,15 +14170,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     const objectName = this.currentObjectName;
                     out.toBlob((blob) => {
                         if (!blob) {
-                            if (typeof setStatus === 'function') setStatus('PNG export failed', true);
+                            this._captureStatus('PNG export failed', true);
                             return;
                         }
                         const filename = this._generateFilename(objectName, 'png');
                         this._triggerDownload(blob, filename);
-                        if (typeof setStatus === 'function') {
-                            setStatus(`PNG exported to ${filename} `
-                                + `(${out.width}x${out.height}, ${Math.round(k * 96)} dpi)`);
-                        }
+                        this._captureStatus(`Saved PNG: ${out.width}x${out.height}, `
+                            + `${Math.round(k * 96)} dpi, `
+                            + `${(blob.size / 1048576).toFixed(1)} MB`);
                     }, 'image/png');
                     restore();
                     return;
@@ -8758,9 +14200,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         const filename = this._generateFilename(objectName, 'svgz');
                         this._triggerDownload(
                             new Blob([gz], { type: 'image/svg+xml' }), filename);
-                        if (typeof setStatus === 'function') {
-                            setStatus(`SVGZ exported to ${filename}`);
-                        }
+                        this._captureStatus(`Saved ${filename}`);
                     }).catch(() => this._downloadSvg(svgString, objectName));
                     restore();
                     return;
@@ -8771,9 +14211,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             } catch (e) {
                 restore();
                 console.error('Failed to export image:', e);
-                const msg = `Error exporting image: ${e.message}`;
-                if (typeof setStatus === 'function') setStatus(msg, true);
-                else alert(msg);
+                this._captureStatus(`Error exporting image: ${e.message}`, true);
             }
         }
 
@@ -9006,17 +14444,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         // the video is the animation and not a second implementation of it.
         saveDrawingVideo(opts) {
             const o = opts || {};
-            const fps = Math.max(5, Math.min(60, Number(o.fps) || 30));
             const seconds = Math.max(1, Math.min(60, Number(o.seconds) || 12));
-            const N = Math.max(2, Math.round(seconds * fps));
-            // A beat of the finished picture at the end, so the file does not
-            // stop on the frame the last change landed in.
-            const TAIL = Math.round(fps * 0.6);
 
             if (typeof MediaRecorder === 'undefined' || !this.canvas
                 || !this.canvas.captureStream) {
-                const msg = 'Video recording is not supported in this browser.';
-                if (typeof setStatus === 'function') setStatus(msg, true); else alert(msg);
+                this._captureStatus('Video recording is not supported in this browser.', true);
                 return;
             }
             if (this.isRecording || this._rotationRecording || this._drawRecording) return;
@@ -9031,56 +14463,39 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // same reason the frames are: so the file does not depend on how
             // fast this machine happens to render.
             const R0 = this.viewerState.rotation.map((row) => [...row]);
-            const turning = !!this.autoRotate;
+            // ASKED FOR, NOT INFERRED. The panel offers Draw and Draw+Rotate as
+            // separate things to record; before that this read whatever
+            // auto-rotate happened to be, so which of the two you got was a
+            // side effect of a switch somewhere else on the page.
+            const turning = (o.spin === undefined) ? !!this.autoRotate : !!o.spin;
             this.autoRotate = false;
             this._drawR0 = R0;
             this._drawWasAuto = turning;
 
-            const options = { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 20000000 };
-            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options.mimeType = 'video/webm;codecs=vp8';
-                options.videoBitsPerSecond = 15000000;
-            }
-            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options.mimeType = 'video/webm';
-                options.videoBitsPerSecond = 15000000;
-            }
-
-            const stream = this.canvas.captureStream(fps);
-            const chunks = [];
-            let rec;
-            try {
-                rec = new MediaRecorder(stream, options);
-            } catch (err) {
-                this._endDrawingVideo(stream);
-                const msg = 'Failed to start recording: ' + err.message;
-                if (typeof setStatus === 'function') setStatus(msg, true); else alert(msg);
+            // the shared sink: format, size and bitrate come from the panel
+            const sink = this._makeVideoSink(o);
+            if (!sink) {
+                this._endDrawingVideo(null);
+                this._captureStatus('Failed to start recording.', true);
                 return;
             }
-            rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
-            rec.onstop = () => {
-                this._endDrawingVideo(stream);
-                if (!chunks.length) {
-                    if (typeof setStatus === 'function') setStatus('No video data recorded', true);
-                    return;
-                }
-                const blob = new Blob(chunks, { type: 'video/webm' });
-                const filename = this._generateFilename(this.currentObjectName, 'webm');
-                this._triggerDownload(blob, filename);
-                if (typeof setStatus === 'function') {
-                    setStatus(`Drawing exported to ${filename} `
-                        + `(${N + TAIL} frames, ${seconds}s at ${fps}fps)`);
-                }
-            };
-            rec.start(100);
+            const fps = sink.fps;                 // clamped for GIF - see the turn
+            const N = (o.container === 'zip')
+                ? Math.max(2, Math.min(600, Number(o.frames) || 36))
+                : Math.max(2, Math.round(seconds * fps));
+            // A beat of the finished picture at the end, so the file does not
+            // stop on the frame the last change landed in.
+            const TAIL = Math.round(fps * 0.6);
 
-            const track = stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
             let i = 0;
             const tick = () => {
                 if (i > N + TAIL) {
-                    setTimeout(() => {
-                        try { rec.stop(); } catch (e) { /* already stopped */ }
-                    }, 1000 / fps);
+                    sink.finish((blob, ext) => {
+                        this._endDrawingVideo(null);
+                        this._deliverVideo(blob, ext, 'Drawing',
+                            `${N + TAIL} frames, ${seconds}s at ${fps}fps, `
+                            + `${sink.width}x${sink.height}${sink.note}`);
+                    });
                     return;
                 }
                 // Past N the run is over; the tail frames hold the finished
@@ -9090,12 +14505,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     this.viewerState.rotation = multiplyMatrices(
                         rotationMatrixY((2 * Math.PI * i) / N), R0);
                 }
-                this.render('saveDrawingVideo');
-                if (track && track.requestFrame) {
-                    try { track.requestFrame(); } catch (e) { /* optional */ }
-                }
-                if (typeof setStatus === 'function' && i % fps === 0) {
-                    setStatus(`Recording drawing... ${Math.round((100 * i) / (N + TAIL))}%`);
+                sink.frame();          // renders, at the size being recorded
+                if (i % fps === 0) {
+                    this._captureStatus(
+                        `Recording drawing... ${Math.round((100 * i) / (N + TAIL))}%`);
                 }
                 i++;
                 this._drawTimer = setTimeout(tick, 1000 / fps);
@@ -9104,6 +14517,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         _endDrawingVideo(stream) {
+            // whatever happened, the panel is free again
+            this._captureBusy = false;
+            if (this._savePanel) this._syncCaptureButtons();
             if (this._drawTimer) { clearTimeout(this._drawTimer); this._drawTimer = null; }
             this._drawRecording = false;
             // Leave the finished painting up, exactly as a live run does.
@@ -9123,13 +14539,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         saveRotationVideo(opts) {
             const o = opts || {};
-            const fps = Math.max(5, Math.min(60, Number(o.fps) || 30));
             const seconds = Math.max(1, Math.min(60, Number(o.seconds) || 6));
-            const N = Math.max(2, Math.round(seconds * fps));
 
             if (typeof MediaRecorder === 'undefined' || !this.canvas || !this.canvas.captureStream) {
-                const msg = 'Video recording is not supported in this browser.';
-                if (typeof setStatus === 'function') setStatus(msg, true); else alert(msg);
+                this._captureStatus('Video recording is not supported in this browser.', true);
                 return;
             }
             if (this.isRecording || this._rotationRecording) return;
@@ -9143,60 +14556,62 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._rotationRecording = true;
             this.canvas.style.pointerEvents = 'none';
 
-            const options = { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 20000000 };
-            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options.mimeType = 'video/webm;codecs=vp8';
-                options.videoBitsPerSecond = 15000000;
-            }
-            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options.mimeType = 'video/webm';
-                options.videoBitsPerSecond = 15000000;
-            }
-
-            const stream = this.canvas.captureStream(fps);
-            const chunks = [];
-            let rec;
-            try {
-                rec = new MediaRecorder(stream, options);
-            } catch (err) {
-                this._endRotationVideo(R0, wasAuto, stream);
-                const msg = 'Failed to start recording: ' + err.message;
-                if (typeof setStatus === 'function') setStatus(msg, true); else alert(msg);
+            // FORMAT, SIZE AND BITRATE ARE THE PANEL'S, not this recorder's:
+            // see _makeVideoSink, which all three recorders share.
+            const sink = this._makeVideoSink(o);
+            if (!sink) {
+                this._endRotationVideo(R0, wasAuto, null);
+                this._captureStatus('Failed to start recording.', true);
                 return;
             }
-            rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
-            rec.onstop = () => {
-                this._endRotationVideo(R0, wasAuto, stream);
-                if (!chunks.length) {
-                    if (typeof setStatus === 'function') setStatus('No video data recorded', true);
-                    return;
-                }
-                const blob = new Blob(chunks, { type: 'video/webm' });
-                const filename = this._generateFilename(this.currentObjectName, 'webm');
-                this._triggerDownload(blob, filename);
-                if (typeof setStatus === 'function') {
-                    setStatus(`Video exported to ${filename} `
-                        + `(${N} frames, ${seconds}s at ${fps}fps, loops seamlessly)`);
-                }
-            };
-            rec.start(100);
+            // FRAMES FROM THE SINK'S fps, NOT THE PANEL'S. A GIF is clamped to
+            // 20 - its delays are whole centiseconds - and counting frames at
+            // the asked-for 30 would then stretch one turn into one and a half.
+            const fps = sink.fps;
+            // A ZIP OF IMAGES IS COUNTED, NOT TIMED: its own control says how
+            // many PNGs a turn should come to.
+            const N = (o.container === 'zip')
+                ? Math.max(2, Math.min(600, Number(o.frames) || 36))
+                : Math.max(2, Math.round(seconds * fps));
 
-            const track = stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
-            const step = (2 * Math.PI) / N;
+            // HOW MANY TURNS, over however many frames this recording has.
+            const turns = Math.max(1, Math.min(10, Number(o.rotations) || 1));
+            const step = (2 * Math.PI * turns) / N;
+            // ...AND THE TRAJECTORY, FITTED INTO IT. RF says "turn for this
+            // long and play the frames inside that": a trajectory longer than
+            // the recording is sampled, a shorter one holds each frame for
+            // several video frames. The frame is loaded WITHOUT rendering -
+            // the sink renders, once, at the size it is recording.
+            const object = this.currentObjectName
+                ? this.objectsData[this.currentObjectName] : null;
+            const nFrames = (o.playFrames && object && object.frames)
+                ? object.frames.length : 0;
             let i = 0;
             const tick = () => {
+                if (nFrames > 1) {
+                    const at = Math.min(nFrames - 1, Math.floor((i * nFrames) / N));
+                    if (at !== this.currentFrame) {
+                        this.currentFrame = at;
+                        this._loadFrameForPlayback(at);
+                        this.lastRenderedFrame = at;
+                    }
+                }
                 if (i >= N) {
-                    // let the last frame land in the stream before closing
-                    setTimeout(() => { try { rec.stop(); } catch (e) { /* already stopped */ } }, 1000 / fps);
+                    sink.finish((blob, ext) => {
+                        this._endRotationVideo(R0, wasAuto, null);
+                        this._deliverVideo(blob, ext, 'Turn',
+                            `${N} frames, ${seconds}s at ${sink.fps}fps, `
+                            + `${turns} turn${turns === 1 ? '' : 's'}`
+                            + (nFrames > 1 ? `, ${nFrames} model frames` : '')
+                            + `, ${sink.width}x${sink.height}${sink.note}`
+                            + ', loops seamlessly');
+                    });
                     return;
                 }
                 this.viewerState.rotation = multiplyMatrices(rotationMatrixY(i * step), R0);
-                this.render();
-                // captureStream samples the canvas on its own clock; nudging it
-                // where supported keeps one rendered frame to one video frame
-                if (track && track.requestFrame) { try { track.requestFrame(); } catch (e) { /* optional */ } }
-                if (typeof setStatus === 'function' && i % fps === 0) {
-                    setStatus(`Recording rotation... ${Math.round((100 * i) / N)}%`);
+                sink.frame();          // renders, at the size being recorded
+                if (i % sink.fps === 0) {
+                    this._captureStatus(`Recording turn... ${Math.round((100 * i) / N)}%`);
                 }
                 i++;
                 // setTimeout rather than requestAnimationFrame: the pacing has to
@@ -9208,6 +14623,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         _endRotationVideo(R0, wasAuto, stream) {
+            // whatever happened, the panel is free again
+            this._captureBusy = false;
+            if (this._savePanel) this._syncCaptureButtons();
             if (this._rotationTimer) { clearTimeout(this._rotationTimer); this._rotationTimer = null; }
             this._rotationRecording = false;
             if (stream) { try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* gone */ } }
@@ -9219,7 +14637,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.render();
         }
 
-        /** Camera button reads "Save Video" while either animation is on. */
+        /** Keeps the camera button's label and icon fixed as the mode changes. */
         _syncSaveButtonMode() {
             const b = this.saveImageButton;
             if (!b) return;
@@ -9239,230 +14657,781 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (span) {
                 let replaced = false;
                 span.childNodes.forEach((n) => {
-                    if (n.nodeType === 3 && n.textContent.trim()) { n.textContent = 'Save'; replaced = true; }
+                    if (n.nodeType === 3 && n.textContent.trim()) { n.textContent = 'Capture'; replaced = true; }
                 });
-                if (!replaced) span.appendChild(document.createTextNode('Save'));
+                if (!replaced) span.appendChild(document.createTextNode('Capture'));
             }
-            b.title = 'Save an image or a video (shift-click saves a PNG straight away)';
-            // the open panel belongs to the other mode now
+            // CAPTURE, not Save: the toolbar already has a Save, which writes
+            // the session file. Two buttons reading "Save" a few centimetres
+            // apart is a coin toss over which one keeps your work.
+            b.title = 'Capture an image or a video (shift-click saves a PNG straight away)';
+            // A MODE CHANGE CHANGES WHAT CAN BE RECORDED, so the open panel is
+            // rebuilt rather than thrown away. Switching Rotate on with Capture
+            // already open used to close the panel: the user had turned on the
+            // very thing they wanted to record and the panel vanished, so they
+            // had to open it again to find the button that had just appeared.
+            if (this._savePanel && !this._captureBusy) this._rebuildSavePanel();
+        }
+
+        /**
+         * THE CAPTURE PANEL: two blocks and a line that says what they will
+         * make. A grid of name, settings, button:
+         *
+         *   Img  Type[PNG] DPI[200]                          [Save]
+         *   ------------------------------------------------------
+         *   Vid  Type[WebM] Rec[FR]                           [ ● ]
+         *        Sec[6] FPS[30] Rot[1] Mbps[12] Size[1]
+         *   ------------------------------------------------------
+         *   PNG 1246x1246 - 200 dpi
+         *   WebM 598x598 - 20 frames - 2s at 10 fps - 1 turn - 12 Mbps
+         *
+         * WHAT CHANGED AND WHY. It used to be one row per OUTPUT, each ending
+         * in its own button and each carrying its own copy of the settings - so
+         * the frame rate for a turn and the frame rate for a drawing were
+         * different controls holding the same number, the trajectory row had no
+         * settings at all (30 fps and 20 Mbps, decided in the recorder and
+         * shown nowhere), and nothing anywhere said what resolution any of it
+         * came out at.
+         *
+         * WHAT IS OFFERED IS WHAT CAN BE MADE. Formats are asked of the browser
+         * and of the page (videoFormats), sizes of the canvas (videoSizes), and
+         * a source appears only where there is something to record: a turn
+         * needs Rotate, a drawing needs Draw, frames need a trajectory. With
+         * none of them there is no video row at all.
+         *
+         * WHICH CONTROLS SHOW follows from one question - who decides how long
+         * the recording is (see the sources) - and from the format. See
+         * syncVideo; the info line describes the answer rather than repeating
+         * the boxes.
+         */
+        _toggleSaveImagePanel(anchorEl) {
+            // OPEN MEANS BUILT, FRESH. The panel used to be built once and then
+            // shown and hidden, so everything it reads off the viewer - which
+            // sources can be recorded, how big the canvas is, whether the
+            // object has frames - was whatever was true the first time it was
+            // opened. Loading a trajectory with the panel already made left it
+            // with no Frames button until the mode happened to change and threw
+            // it away. It is a dozen elements; building it is free.
             if (this._savePanel) {
                 this._savePanel.remove();
                 this._savePanel = null;
-                b.setAttribute('aria-expanded', 'false');
-                this._uiPaused = false;
-            }
-        }
-
-        _toggleSaveImagePanel(anchorEl) {
-            if (this._savePanel) {
-                const open = this._savePanel.style.display === 'none';
-                this._savePanel.style.display = open ? 'flex' : 'none';
-                if (anchorEl) anchorEl.setAttribute('aria-expanded', String(open));
-                if (open) this._pauseForSavePanel();
-                else this._resumeFromSavePanel();
+                if (anchorEl) anchorEl.setAttribute('aria-expanded', 'false');
+                this._resumeFromSavePanel();
                 return;
             }
-            // WHAT CAN BE RECORDED FROM HERE. Three different videos, and the
-            // panel offers whichever the viewer can actually make right now:
-            //   * a drawing, if Draw is on   * a turn, if Rotate is on
-            //   * the trajectory, if the object has frames to play
-            // The last one used to belong to a separate record button in the
-            // controls bar. Two entry points for "make a video" - one of which
-            // silently did nothing on a single-frame structure - is what made
-            // this confusing, so there is one now: Save.
+            this._saveAnchor = anchorEl || this._saveAnchor;
+            this._buildSavePanel(this._saveAnchor);
+        }
+
+        /**
+         * Same panel, same options, current numbers - see
+         * _updateCanvasDimensions.
+         *
+         * @param {boolean} fresh - drop whatever the line was saying. A resize
+         *        changes every size in it, so a result from before the resize
+         *        ("Saved ... 3738x3738") is describing a file made at a size
+         *        the panel no longer offers.
+         */
+        _rebuildSavePanel(fresh) {
+            if (!this._savePanel) return;
+            // A RESULT SURVIVES THE REBUILD, A DESCRIPTION DOES NOT. "Saved
+            // turn: ... 0.1 MB" is news and has to stay; "WebM 598x598" is a
+            // description of settings against a canvas that has just changed
+            // size, and restoring it would put the old numbers back over the
+            // new ones the rebuild exists to produce.
+            const note = fresh ? null : this._captureNote;
+            const keep = note && !/^(WebM|MP4|GIF|PNG|SVG|Images)\b.*\u00b7/.test(note.text);
+            this._savePanel.remove();
+            this._savePanel = null;
+            this._buildSavePanel(this._saveAnchor);
+            if (keep) this._captureStatus(note.text, note.error);
+        }
+
+        _buildSavePanel(anchorEl) {
             const obj = this.currentObjectName
                 ? this.objectsData[this.currentObjectName] : null;
-            const canTraj = !!(obj && obj.frames && obj.frames.length > 1);
-            const video = !!this.autoRotate || !!this.drawMode;
-            if (video) this._pauseForSavePanel();
-            const prev = this._saveOpts || { format: 'png', dpi: 300 };
-            const prevV = this._videoOpts || { seconds: 6, fps: 30 };
-            // WRAPS. The embedded viewer's panel is 180px wide, and a row of
-            // two labelled numbers plus a button wants about 210 - so it hung
-            // out of the panel there while fitting fine in the standalone
-            // page's wider column. Wrapping adapts to both instead of picking
-            // one; the button simply falls to the next line when it has to.
-            const ROW = 'display:flex; align-items:center; gap:6px;'
-                + ' flex-wrap:wrap; row-gap:6px;';
-            const LBL = 'font-size:12px; flex-shrink:0;';
+            // WHAT THERE IS TO RECORD, INCLUDING THE COMBINATIONS. A
+            // trajectory can play while the view turns, and a drawing can build
+            // up while it turns - the recorders could always do both, but the
+            // panel had one button per source and no way to say "both", so the
+            // combination depended on whether Rotate happened to be on when you
+            // pressed Frames. It is a choice now, and pressing record cannot
+            // mean two things.
+            // FOUR WAYS TO PUT A TRAJECTORY AND A TURN IN ONE FILE, and the
+            // difference between them is WHO DECIDES HOW LONG IT IS:
+            //
+            //   F    the frames, played once, not turning. The trajectory
+            //        decides: N frames at the chosen rate.
+            //   R    a turn on the spot. You decide, in seconds.
+            //   FR   frames-led. Every frame is played, once, and the rotation
+            //        is fitted into however long that takes.
+            //   RF   rotation-led. The turn runs for the seconds you asked for
+            //        and the whole trajectory is fitted into it - so a long
+            //        trajectory is sampled and a short one holds frames.
+            //
+            // Which controls are worth showing follows straight from that
+            // column: Sec means something only where YOU set the length, so it
+            // is offered for R and RF and derived for the other two.
+            const spin = !!this.autoRotate;
+            const hasFrames = !!(obj && obj.frames && obj.frames.length > 1);
+            const sources = [];
+            if (hasFrames) {
+                sources.push({ id: 'F', label: 'F', spin: false, timed: false,
+                    title: 'frames once' });
+            }
+            if (hasFrames && spin) {
+                sources.push({ id: 'FR', label: 'FR', spin: true, timed: false,
+                    title: 'frames once, turning' });
+                sources.push({ id: 'RF', label: 'RF', spin: true, timed: true,
+                    title: 'timed turn, frames fitted in' });
+            }
+            if (this.drawMode) {
+                sources.push({ id: 'D', label: 'D', spin: false, timed: true,
+                    title: 'the drawing' });
+            }
+            if (this.drawMode && spin) {
+                sources.push({ id: 'DR', label: 'DR', spin: true, timed: true,
+                    title: 'the drawing, turning' });
+            }
+            if (spin) {
+                sources.push({ id: 'R', label: 'R', spin: true, timed: true,
+                    title: 'a turn' });
+            }
+            // A running animation is paused while the panel is up, so what is
+            // saved is the frame that was on screen when it was opened.
+            if (sources.length) this._pauseForSavePanel();
+            const opts = this.captureOpts();
+            const formats = this.videoFormats();
+            const sizes = this.videoSizes();
+
+            // SVG is offered on the plain panel but never with a drawing up. A
+            // vector file of a normal cartoon is the better artifact; a vector
+            // file of the drawing is not, since that look is a pencil line a
+            // fraction of a pixel wide, paint sitting off register and
+            // translucent stains.
+            const svgOk = !this.drawMode;
+
+            // WRAPS. The embedded viewer's panel is 180px wide and the
+            // standalone page's column is wider; a row that wraps fits both,
+            // where a fixed layout has to pick one and hang out of the other.
+            // ONE ROW PER SUBJECT, WRAPPING FREELY. The embedded viewer's
+            // panel is 180px wide and the standalone page's column is three
+            // times that: a row that wraps fits both, and the controls simply
+            // take a second line where they have to. What must NOT be here is
+            // anything that forces a break - a spacer with flex-grow pushed the
+            // camera button to the right edge, which in the narrow panel meant
+            // a line of its own with nothing on it.
+            // THE SETTINGS AREA IS A GRID TOO, of equal cells. As a wrapping
+            // flex line the pairs packed edge to edge at whatever width each
+            // happened to be, so nothing lined up with anything above it and a
+            // row of six controls read as a paragraph. Equal cells put every
+            // field in a column.
+            const ROW = 'display:grid; align-items:center; gap:6px;'
+                + ' grid-template-columns:repeat(auto-fill, minmax(84px, 1fr));'
+                + ' min-width:0;';
+            // ONE SIZE FOR EVERY CONTROL, and big enough to read: two rows of
+            // controls at different weights make the eye work out which number
+            // belongs to which output.
+            const H = 28;
+            // BOX-SIZING, or a field told to fill its cell overflows it by its
+            // own padding and border: 100% plus 12px of padding and 2px of
+            // frame stuck 14px out of a 160px panel.
+            const FIELD = `height:${H}px; font-size:12px; padding:0 4px;`
+                + ' border:1px solid #d1d5db; border-radius:6px; background:#fff;'
+                + ' box-sizing:border-box; flex:0 1 auto; min-width:0; max-width:100%;';
+            const NUM = FIELD + ' width:52px; padding:0 6px;';
+            const CAP = 'font-size:12px; color:#6b7280; flex:0 0 auto;';
+            // SHORT NAMES, because the column costs the same on every row and
+            // the settings beside them are what needs the width: "Image" and
+            // "Video" spent 18px of a 160px panel saying what "Img" and "Vid"
+            // say.
+            const NAME = 'font-size:12px; font-weight:600; color:#374151;'
+                + ' flex:0 0 auto; min-width:28px;';
+            const BTN = `flex:0 0 auto; padding:0 8px; height:${H}px; line-height:1;`
+                + ' cursor:pointer; font-size:12px; border:1px solid #d1d5db;'
+                + ' border-radius:6px; background:#fff; box-sizing:border-box;';
+            // THE PAGE'S OWN BUTTON, WHERE THE PAGE HAS ONE.
+            //
+            // These were styled inline because the two pages skin their
+            // buttons differently and one class renders invisible on the
+            // other - but that left Save and Turn as the only controls in the
+            // viewer that do not look like the buttons beside them, which is
+            // exactly what a button should not do. So the skin is LOOKED UP:
+            // index.html has .btn.btn-grey.btn-small, the notebook viewer has
+            // .controlButton, and both are 28px high, which is this panel's
+            // height already. A page with neither keeps the inline style.
+            const skin = ['btn btn-grey btn-small', 'controlButton'].find((c) => {
+                try {
+                    return !!document.querySelector('.' + c.trim().split(/\s+/).join('.'));
+                } catch (e) { return false; }
+            }) || '';
+            const button = (text, title) => {
+                // Only the layout is ours when the page has a skin: its height,
+                // padding, border and hover are the page's business, and
+                // repeating them here is how two buttons come to disagree.
+                const b = el('button',
+                    (skin ? 'min-width:0;' : BTN) + ' width:100%; box-sizing:border-box;', text);
+                b.type = 'button';
+                if (skin) b.className = skin;
+                if (title) b.title = title;
+                return b;
+            };
 
             const p = document.createElement('div');
             p.id = 'savePanel';
-            p.style.cssText = 'display:flex; flex-direction:column; gap:6px;'
+            // A GRID, THREE COLUMNS: what the row is, what it is set to, and
+            // the button that does it. Everything used to be one wrapping line
+            // per row, so the button sat wherever the settings left it - at the
+            // end of the line, halfway along, or on a line of its own - and
+            // the two rows lined up with each other only by accident. The
+            // action column is fixed at the right, so Save and the record dot
+            // are always in the same place, on top of each other, whatever is
+            // showing between.
+            p.style.cssText = 'display:grid;'
+                + ' grid-template-columns:auto minmax(0,1fr) auto;'
+                + ' gap:6px 8px; align-items:center;'
                 + ' box-sizing:border-box; max-width:100%;'
                 + ' border:1px solid #e5e7eb; border-radius:8px; background:#fff;'
                 + ' padding:8px; margin-top:6px;';
-            // ONE ROW PER OUTPUT, each ending in its own button: the numbers
-            // that decide a recording with a record dot after them, and the
-            // one that decides a still with a camera after that. Nothing has to
-            // be read in order or chosen between - the row you fill in is the
-            // thing you get.
-            //
-            // Glyphs rather than icon fonts: the embedded viewer does not load
-            // FontAwesome (its record button is a plain bullet), and one
-            // implementation for both pages beats two.
-            //
-            // Saving a frame while an animation runs is the point of having the
-            // camera here at all: the panel pauses whatever is running, so a
-            // half-finished drawing or a particular angle can be kept, and
-            // before it existed the only way to save one was to switch the
-            // animation off - which threw away the frame being looked at.
-            //
-            // SVG is offered on the plain panel but never with an animation up.
-            // A vector file of a normal cartoon is the better artifact; a
-            // vector file of the drawing is not, since that look is a pencil
-            // line a fraction of a pixel wide, paint sitting off register and
-            // translucent stains.
-            const svgOk = !video && !this.drawMode;
-            // ONE SIZE FOR EVERY CONTROL IN THE PANEL, and big enough to read.
-            // The numbers were 46x24 at 12px, which is a cramped target and
-            // genuinely hard to make out - worst when a video row and the still
-            // row are both up, because then the two rows sat at different
-            // weights and the eye had to work out which number belonged to
-            // which output. Same height everywhere, so the rows line up
-            // whatever combination is showing.
-            const H = 28;
-            const NUM = `width:62px; flex:0 0 auto; min-width:0; height:${H}px;`
-                + ' font-size:13px; padding:0 6px; border:1px solid #d1d5db;'
-                + ' border-radius:6px; background:#fff;';
-            const CAP = 'font-size:12px; color:#6b7280; flex:0 0 auto;';
-            // Styled inline rather than by copying the toolbar button's class:
-            // the two pages skin their buttons differently (and index.html's
-            // toggle skin lives on a span that follows a checkbox, which these
-            // do not have), so borrowing it renders one of them invisible.
-            const BTN = `flex:0 0 auto; width:${H + 8}px; min-width:0; padding:0;`
-                + ` height:${H}px; line-height:1; cursor:pointer; font-size:15px;`
-                + ' border:1px solid #d1d5db; border-radius:6px; background:#fff;';
-            // EACH ROW SAYS WHAT IT MAKES. With a video row and the still row
-            // both up, the fields alone did not say which output they belonged
-            // to - the reported "hard to see when both options are available".
-            // A fixed-width name at the head of every row lines them up and
-            // answers it without another glance.
-            const NAME = 'font-size:12px; font-weight:600; color:#374151;'
-                + ' flex:0 0 auto; width:46px;';
-            const cell = (id, label, min, max, stepv) =>
-                `<label for="${id}" style="${CAP}">${label}</label>`
-                + `<input id="${id}" type="number" min="${min}" max="${max}"`
-                + ` step="${stepv}" style="${NUM}">`;
-            let html = '';
-            if (video) {
-                html += `<div style="${ROW}">`
-                    + `<span style="${NAME}">${this.drawMode ? 'Draw' : 'Turn'}</span>`
-                    + cell('saveSecondsInput', this.drawMode ? 'Sec' : 'Turn', 1, 60, 1)
-                    + cell('saveFpsInput', 'FPS', 5, 60, 1)
-                    + '<span style="flex:1 1 auto;"></span>'
-                    + `<button data-rec style="${BTN} color:#ef4444;"`
-                    + ' title="Record to a video file"><span>&#9679;</span></button></div>';
-            }
-            if (canTraj) {
-                html += `<div style="${ROW}">`
-                    + `<span style="${NAME}">Frames</span>`
-                    + `<span style="${CAP}">${obj.frames.length}</span>`
-                    + '<span style="flex:1 1 auto;"></span>'
-                    + `<button data-traj style="${BTN} color:#ef4444;"`
-                    + ' title="Record the frames playing through, as a video">'
-                    + '<span>&#9679;</span></button></div>';
-            }
-            if (!video && svgOk) {
-                html += `<div style="${ROW}">`
-                    + `<span style="${NAME}">Format</span>`
-                    + `<select id="saveFormatSelect" style="${NUM} width:auto; flex:1 1 auto;`
-                    + ' padding-right:4px;">'
-                    + '<option value="png">PNG</option>'
-                    + '<option value="svg">SVG</option>'
-                    + '<option value="svgz">SVG.gz</option>'
-                    + '</select></div>';
-            }
-            html += `<div style="${ROW}">`
-                + `<span style="${NAME}">Image</span>`
-                + `<span data-dpicell style="${ROW}">`
-                + cell('saveDpiInput', 'DPI', 36, 1200, 12) + '</span>'
-                + '<span style="flex:1 1 auto;"></span>'
-                + `<button data-ok style="${BTN}"`
-                + ` title="${video ? 'Save the frame on screen as an image'
-                    : 'Save an image'}"><span>&#128247;</span></button></div>`;
-            p.innerHTML = html;
 
-            const row = (anchorEl && (anchorEl.closest('.toolbar-row') || anchorEl.parentElement))
-                || (this.controlsContainer || document.body);
-            row.insertAdjacentElement('afterend', p);
-
-            const fSel = p.querySelector('#saveFormatSelect');
-            const dpiIn = p.querySelector('#saveDpiInput');
-            const dpiCell = p.querySelector('[data-dpicell]');
-            const okBtn = p.querySelector('[data-ok]');
-            dpiIn.value = prev.dpi;
-            if (fSel) fSel.value = svgOk ? prev.format : 'png';
-            // In Draw mode, and for a frame grabbed mid-animation, the look is
-            // PNG's whatever was last chosen.
-            const fmtOf = () => (svgOk && fSel ? fSel.value : 'png');
-            // DPI is meaningless for a vector export, so the cell is not merely
-            // disabled there - it is not shown at all. Set display rather than
-            // `hidden`: the element carries an inline display, which outranks
-            // the user-agent [hidden] rule (the same trap the Style panel
-            // documents).
-            const syncDpi = () => {
-                dpiCell.style.display = fmtOf() === 'png' ? 'flex' : 'none';
+            const el = (tag, css, text) => {
+                const n = document.createElement(tag);
+                if (css) n.style.cssText = css;
+                if (text !== undefined) n.textContent = text;
+                return n;
             };
-            syncDpi();
-            if (fSel) fSel.addEventListener('change', syncDpi);
+            // HOW WIDE THE PANEL WILL BE, before it is in the page. Three
+            // columns fit the standalone page's 300px column and do not fit
+            // the embedded viewer's 160px one - name and button take 94 of it
+            // between them and leave the settings 40px, which is narrower than
+            // one field. So a narrow panel puts the name and the button on one
+            // line and the settings across the whole width underneath.
+            // ...AND WHICH OF THE TWO SHAPES IT TAKES IS MEASURED, not guessed.
+            // Three columns fit the standalone page's 300px column and do not
+            // fit the embedded viewer's 160px one: name and button take 94 of
+            // it between them and leave the settings 40px, narrower than one
+            // field. So the rows are BUILT first and PLACED after the panel is
+            // in the page and its width is a fact - three across where there is
+            // room, and name-and-button over settings where there is not.
+            const blocks = [];
 
-            if (video) {
-                const secIn = p.querySelector('#saveSecondsInput');
-                const fpsIn = p.querySelector('#saveFpsInput');
-                const recB = p.querySelector('[data-rec]');
-                secIn.value = prevV.seconds;
-                fpsIn.value = prevV.fps;
-                recB.addEventListener('click', (ev) => {
-                    ev.preventDefault();
-                    const vo = {
-                        seconds: Number(secIn.value) || 6,
-                        fps: Number(fpsIn.value) || 30,
-                    };
-                    this._videoOpts = vo;
-                    p.style.display = 'none';
-                    if (anchorEl) anchorEl.setAttribute('aria-expanded', 'false');
-                    // The recorders drive their own frames, so the pause the
-                    // panel put on is lifted without resuming anything.
-                    this._uiPaused = false;
-                    // Recording a drawing RESTARTS it from blank paper, so
-                    // hitting record part way through a run still gives a whole
-                    // one. Recording a rotation does not need to, since a turn
-                    // has no beginning.
-                    if (this.drawMode) this.saveDrawingVideo(vo);
-                    else this.saveRotationVideo(vo);
-                });
+            const row = (name) => {
+                const nameEl = el('span', NAME, name);
+                const controls = el('div', ROW);
+                // ONE WIDTH FOR BOTH BUTTONS. Save is a word and the record
+                // button is a dot, so left to themselves they were 45px and
+                // 28px in a column of their own - two different buttons in the
+                // same place, one above the other, not lining up with each
+                // other. The column stretches them to its width, which is the
+                // wider of the two.
+                const action = el('div', 'display:grid; gap:6px; align-items:center;'
+                    + ' justify-items:stretch;');
+                blocks.push({ kind: 'row', nameEl, controls, action });
+                // `appendChild` on the row still means "another control", which
+                // is what every caller wants; the button column is asked for
+                // by name.
+                controls.action = action;
+                controls.nameEl = nameEl;
+                return controls;
+            };
+            const menu = (id, items, value, tip) => {
+                const sel = el('select', FIELD);
+                sel.id = id;
+                if (tip) sel.title = tip;
+                for (const it of items) {
+                    const o = document.createElement('option');
+                    o.value = String(it.value);
+                    o.textContent = it.label;
+                    sel.appendChild(o);
+                }
+                sel.value = String(value);
+                return sel;
+            };
+            // A LABEL AND ITS FIELD ARE ONE THING. The row wraps - it has to,
+            // in a 160px panel - and a bare label followed by a bare input is
+            // two wrappable items, so a line break landed between them and left
+            // "FPS" hanging at the end of one line with its box at the start of
+            // the next. Each pair goes in a nowrap group, which wraps whole.
+            // SHOWING A PAIR PUTS ITS GRID BACK. `style.display = ''` removes
+            // the inline declaration - and the inline declaration is where
+            // `display:grid` lives, so hiding a pair and showing it again left
+            // it a plain block: the label and the field became inline
+            // siblings, the field kept its width:100%, and it hung its own
+            // label's width out of the panel. That is the 10-19px of overflow
+            // in a 160px panel, and it appeared only after a format change.
+            const show = (node, on) => {
+                if (node) node.style.display = on ? 'grid' : 'none';
+            };
+            const pair = (labelText, forId, control, tip) => {
+                const g = el('span', 'display:grid; align-items:center; gap:5px;'
+                    + ' grid-template-columns:34px minmax(0,1fr);'
+                    + ' min-width:0; white-space:nowrap;');
+                if (labelText) {
+                    const lab = el('label', CAP, labelText);
+                    lab.setAttribute('for', forId);
+                    if (tip) lab.title = tip;
+                    g.appendChild(lab);
+                } else {
+                    g.style.gridTemplateColumns = 'minmax(0,1fr)';
+                }
+                control.style.width = '100%';
+                g.appendChild(control);
+                return g;
+            };
+            const num = (id, label, value, min, max, tip) => {
+                const inp = el('input', NUM);
+                inp.type = 'number'; inp.id = id; inp.min = min; inp.max = max;
+                inp.step = '1'; inp.value = value;
+                if (tip) inp.title = tip;
+                return [pair(label, id, inp, tip), inp];
+            };
+
+            // ---- IMAGE -------------------------------------------------
+            // Declared with the row it belongs to: this is used while the row
+            // is built, and a `let` further down the function is a temporal
+            // dead zone - the panel threw before it appeared at all.
+            let dpiBox = null;
+            const imgRow = row('Img');
+            // PNG AND SVG. The gzipped SVG went from the menu: it is the same
+            // file through a compressor, every tool that opens an .svgz opens
+            // an .svg, and it was a third of the width of the widest control on
+            // the row for a choice nobody has to make. saveImage still writes
+            // one if it is asked for by name.
+            const fmtSel = menu('saveFormatSelect', svgOk
+                ? [{ value: 'png', label: 'PNG' }, { value: 'svg', label: 'SVG' }]
+                : [{ value: 'png', label: 'PNG' }],
+            (svgOk && opts.format !== 'svgz') ? opts.format : 'png', 'Image format');
+            // EVERY CONTROL SAYS WHAT IT IS. A bare menu reading "PNG" is
+            // only obvious while you already know what the row does, and a
+            // captioned pair is also the same SHAPE as every other pair, which
+            // is what makes the columns line up.
+            imgRow.appendChild(pair('Type', 'saveFormatSelect', fmtSel));
+            // DPI AS A LIST, not a spinner. The useful values are a short list
+            // - screen, a figure, a plate - and typing 250 into a spinner is a
+            // decision nobody has a reason to make. 200 is the default: a
+            // 1000px canvas comes out about 2000px, which is a figure at column
+            // width in print.
+            const dpiSel = menu('saveDpiInput', [
+                { value: 96, label: '96' }, { value: 150, label: '150' },
+                { value: 200, label: '200' }, { value: 300, label: '300' },
+                { value: 600, label: '600' },
+            ], opts.dpi, 'Image resolution (96 = screen)');
+            dpiBox = pair('DPI', 'saveDpiInput', dpiSel);
+            imgRow.appendChild(dpiBox);
+            // A WORD, NOT A GLYPH. The camera and the card-index emoji were
+            // small, low-contrast and rendered differently on every platform -
+            // and being the only pictures in a panel of words, they read as
+            // decoration rather than as the buttons that do the thing.
+            const okBtn = button('Save', 'Save an image');
+            imgRow.action.appendChild(okBtn);
+            // EVERY FRAME AS FILES IS A VIDEO FORMAT, not a button here - see
+            // videoFormats. It writes the same frames the recorders drive, so
+            // it belongs where the other formats are, and it records a turn or
+            // a drawing as well as a trajectory now.
+
+            const syncImg = () => {
+                show(dpiBox, fmtSel.value === 'png');
+                this._describeCapture();
+            };
+            fmtSel.addEventListener('change', syncImg);
+            dpiSel.addEventListener('change', syncImg);
+            syncImg();
+            // ...and the dpi is the Images format's size, so the video line
+            // has to follow it as well
+            dpiSel.addEventListener('change', () => { if (vFmt) commit(); });
+
+            // ---- VIDEO -------------------------------------------------
+            // A LINE BETWEEN THE TWO. They are different outputs with different
+            // buttons, and stacked without a break the panel read as one list
+            // of controls where the Image row's dpi looked like it might apply
+            // to the recording underneath it.
+            const rule = () => {
+                const hr = el('div', 'height:1px; background:#e5e7eb; margin:1px 0;');
+                blocks.push({ kind: 'span', el: hr });
+            };
+            let vFmt = null; let secIn = null; let fpsIn = null;
+            let mbpsIn = null; let sizeSel = null; let colorsSel = null;
+            let framesIn = null; let colorsBox = null; let sizeBox = null;
+            let srcSel = null; let rotIn = null;
+            let vFmtBox = null; let srcBox = null;
+            // ...assigned with the video row, called from the record row too:
+            // what the count control means depends on WHICH source is picked.
+            let syncVideo = () => {};
+            let videoRow = null;
+            if (sources.length && formats.length) {
+                rule();
+                const vRow = row('Vid');
+                videoRow = vRow;
+                vFmt = menu('saveVideoFormat', formats.map((f) => (
+                    { value: f.id, label: f.label })), opts.container, 'Video format');
+                vFmtBox = pair('Type', 'saveVideoFormat', vFmt);
+                vRow.appendChild(vFmtBox);
+                const [secL, sec] = num('saveSecondsInput', 'Sec', opts.seconds, 1, 60,
+                    'Length in seconds');
+                vRow.appendChild(secL); secIn = sec;
+                const [fpsL, fps] = num('saveFpsInput', 'FPS', opts.fps, 5, 60,
+                    'Frames per second');
+                vRow.appendChild(fpsL); fpsIn = fps;
+                // IMAGES ARE COUNTED, NOT TIMED. A zip of PNGs has no duration
+                // and no frame rate - what you want to say is how many of them
+                // - so Sec and FPS give way to one number. On the trajectory
+                // source even that is decided for you: one PNG per frame.
+                const [frL, fr] = num('saveFrameCount', 'Count', opts.frames || 36,
+                    2, 600, 'How many images');
+                vRow.appendChild(frL); framesIn = fr;
+                // HOW MANY TURNS. One is the usual answer, but a trajectory
+                // fitted into a single revolution can be too slow to read - two
+                // or three turns over the same frames give the eye a second
+                // look at every angle.
+                const [rotL, rot] = num('saveRotations', 'Rot', opts.rotations || 1,
+                    1, 10, 'Full turns');
+                vRow.appendChild(rotL); rotIn = rot;
+                const [mbL, mb] = num('saveMbpsInput', 'Mbps', opts.mbps, 1, 80,
+                    'Bitrate ceiling');
+                vRow.appendChild(mbL); mbpsIn = mb;
+                // GIF'S OWN CONTROLS, and only where GIF can be written at
+                // all: on the notebook page there is no encoder, so these are
+                // not hidden controls, they are absent ones.
+                // A GIF is a palette, not a bitrate: the size of the file is
+                // decided by how many colours it is allowed and how many
+                // pixels, so those are the two things to offer - and Mbps,
+                // which means nothing here, goes away rather than sitting
+                // greyed out pretending to be part of the format.
+                const gifOk = formats.some((f) => f.id === 'gif');
+                if (gifOk) {
+                // ...NAMED LIKE THE REST OF THE ROW. Sec, FPS, Mbps and Size
+                // all say what they are in front of the value; "256 col"
+                // repeated the unit inside every option instead, which is the
+                // only control on the row that spelled itself out four times.
+                colorsSel = menu('saveGifColors', [
+                    { value: 256, label: '256' },
+                    { value: 128, label: '128' },
+                    { value: 64, label: '64' },
+                    { value: 32, label: '32' },
+                ], opts.colors || 256, 'GIF palette size');
+                colorsBox = pair('Color', 'saveGifColors', colorsSel);
+                vRow.appendChild(colorsBox);
+                }
+                if (sizes.length) {
+                    // ...WITH ITS NAME IN FRONT OF IT, like Sec and FPS. "1x"
+                    // on its own is a multiplier of nothing stated.
+                    sizeSel = menu('saveVideoSize', sizes.map((z) => (
+                        { value: z.scale, label: z.label })), opts.scale,
+                    'Recording size');
+                    sizeBox = pair('Size', 'saveVideoSize', sizeSel);
+                    vRow.appendChild(sizeBox);
+                }
+                syncVideo = () => {
+                    const gif = vFmt.value === 'gif';
+                    const zip = vFmt.value === 'zip';
+                    const LIM = this.constructor.GIF_LIMITS;
+                    // IMAGES TAKE THEIR SIZE FROM THE DPI ABOVE, so the Size
+                    // menu goes: two controls for one resolution is how they
+                    // come to disagree. There is no bitrate in a PNG either.
+                    show(sizeBox, !zip);
+                    // ONE ROW, TWO FORMATS, and only the controls that mean
+                    // something for the one that is picked. What is shared -
+                    // how long, how fast, how big - stays put, so switching
+                    // format does not move the rest of the row about.
+                    show(mbL, !(gif || zip));
+                    // ...and the frame rate is the one control every source
+                    // needs: it is how fast the file plays, whoever decided how
+                    // many frames there are. Images have no rate at all.
+                    show(fpsL, !zip);
+                    // THE COUNT IS FOR A TURN OR A DRAWING, which have no
+                    // frames of their own to follow - it says how many PNGs to
+                    // write over one revolution. A trajectory HAS frames, and
+                    // then the answer is one image per frame and there is
+                    // nothing to ask. Reading it off the picked source rather
+                    // than off the list is the difference between "Frames: 36"
+                    // sitting beside a Frames recording, saying something that
+                    // is not true of it, and not being there at all.
+                    const pickedId = srcSel ? srcSel.value : (sources[0] || {}).id;
+                    const src = sources.find((x) => x.id === pickedId) || sources[0] || {};
+                    // SEC IS ONLY A CONTROL WHERE YOU SET THE LENGTH. On F and
+                    // FR the trajectory does: the file is N frames long at the
+                    // rate you chose, and a seconds box there would be a number
+                    // that either does nothing or silently drops frames.
+                    const timed = !!src.timed;
+                    show(secL, timed && !zip);
+                    // ...and a rotation count only where something rotates
+                    const turns = !!src.spin;
+                    show(rotL, turns);
+                    // THE IMAGE COUNT is for a recording with no frames of its
+                    // own to follow - a turn or a drawing. A trajectory has
+                    // them, and then the answer is one image per frame.
+                    const counted = zip && (pickedId === 'R' || pickedId === 'D'
+                        || pickedId === 'DR');
+                    show(frL, counted);
+                    show(colorsBox, gif);
+                    // A GIF'S LIMITS ARE APPLIED TO THE CONTROLS, not just to
+                    // the recording. The sink clamps either way, but a panel
+                    // reading 30 fps and 1194x1194 over a file that came out
+                    // 20 fps and 1024 wide is the panel lying about what it is
+                    // about to make. Whole-centisecond delays are what cap the
+                    // rate; memory is what caps the size, since every frame is
+                    // held until the palette is known.
+                    fpsIn.max = gif ? LIM.maxFps : 60;
+                    if (gif && Number(fpsIn.value) > LIM.maxFps) fpsIn.value = LIM.maxFps;
+                    if (sizeSel) {
+                        let fallback = null;
+                        for (const opt of sizeSel.options) {
+                            const z = sizes.find((q) => String(q.scale) === opt.value);
+                            const tooBig = gif && z && Math.max(z.w, z.h) > LIM.maxPx;
+                            opt.disabled = !!tooBig;
+                            if (!tooBig) fallback = opt.value;
+                        }
+                        const cur = sizeSel.selectedOptions[0];
+                        if (cur && cur.disabled && fallback !== null) sizeSel.value = fallback;
+                    }
+                };
+                if (sizeSel) sizeSel.addEventListener('change', syncVideo);
+                fpsIn.addEventListener('change', syncVideo);
+                vFmt.addEventListener('change', syncVideo);
+                syncVideo();
             }
 
-            const trajB = p.querySelector('[data-traj]');
-            if (trajB) {
-                trajB.addEventListener('click', (ev) => {
-                    ev.preventDefault();
-                    p.style.display = 'none';
-                    if (anchorEl) anchorEl.setAttribute('aria-expanded', 'false');
-                    // the recorder drives its own playback, so the panel's
-                    // pause is lifted without resuming anything
-                    this._uiPaused = false;
-                    this.toggleRecording();
+            // ---- RECORD ------------------------------------------------
+            const commit = () => {
+                this._captureOpts = Object.assign(this.captureOpts(), readVideo(), {
+                    format: fmtSel.value, dpi: Number(dpiSel.value) || 200,
                 });
+                this._describeCapture();
+            };
+            // WHAT THE CONTROLS SAY, AND WHAT WAS ALREADY SET FOR THE REST.
+            //
+            // A control that is not on the row has no value to read, and the
+            // fallbacks used to be written out here as numbers - which meant a
+            // panel opened with nothing recordable (no video row at all) wrote
+            // those numbers over the settings: the bitrate came back 5 where
+            // the default is 12, because 5 was the literal in this function.
+            // Read from the stored options instead, so an absent control
+            // leaves its setting alone.
+            const readVideo = () => {
+                const was = this.captureOpts();
+                return {
+                seconds: secIn ? Number(secIn.value) || was.seconds : was.seconds,
+                fps: fpsIn ? Number(fpsIn.value) || was.fps : was.fps,
+                mbps: mbpsIn ? Number(mbpsIn.value) || was.mbps : was.mbps,
+                container: vFmt ? vFmt.value : was.container,
+                scale: sizeSel ? Number(sizeSel.value) || was.scale : was.scale,
+                colors: colorsSel ? Number(colorsSel.value) || was.colors : was.colors,
+                // the Images format renders at the Image row's resolution, and
+                // is counted rather than timed
+                dpi: Number(dpiSel.value) || was.dpi,
+                frames: framesIn ? Number(framesIn.value) || was.frames : was.frames,
+                rotations: rotIn ? Number(rotIn.value) || was.rotations : was.rotations,
+                // WHICH OF THE FOUR, so the description can work out who sets
+                // the length. It used to be written only when record was
+                // pressed, so until then the line described the last thing
+                // recorded rather than the thing on the row.
+                //
+                // ...AND ONLY WHERE THERE WAS A CHOICE. With one source there
+                // is no menu, and writing that single option down made it look
+                // chosen: open the panel with Rotate off and the only source is
+                // F, so switching Rotate on afterwards kept F instead of
+                // landing on FR, which is what having both on means.
+                source: srcSel ? srcSel.value : (was.source || ''),
+                };
+            };
+            // WRITTEN BACK ON EVERY CHANGE, not read at the moment a button is
+            // pressed. The panel is rebuilt whenever the canvas is resized (see
+            // _updateCanvasDimensions), and a value that lived only in the DOM
+            // would be lost with it - so it lives in _captureOpts and the DOM
+            // is filled from there.
+            for (const c of [fmtSel, dpiSel, vFmt, secIn, fpsIn, mbpsIn, sizeSel,
+                colorsSel, framesIn, rotIn]) {
+                if (c) c.addEventListener('change', commit);
+            }
+            commit();
+
+            // NO SECOND NAME FOR THE SAME THING. This row used to be called
+            // Record, under a row called Video, which read as two subjects;
+            // it is the same one - the settings above, the button that uses
+            // them here - so the block is named once and this row lines its
+            // buttons up under them. With nothing recordable it is the only
+            // video row there is, and then it does say Video.
+            // THE RECORD BUTTONS GO ON THE VIDEO ROW, at the end of the
+            // controls they use. They had a row of their own called Record,
+            // which is a second name for one subject and, in a panel of
+            // wrapping rows, a line break nobody asked for. The row wraps on
+            // its own when it has to, and the button follows the settings
+            // instead of sitting under them.
+            // NO ROW WHERE THERE IS NOTHING TO RECORD. A Vid row whose only
+            // content is "you cannot" is a rule, a name and a sentence spent
+            // on an absence - and the panel is rebuilt whenever Rotate or Draw
+            // is switched on or a trajectory arrives, so the row appears the
+            // moment it can do something. The exception is a browser with no
+            // recorder at all: video is missing there for a reason worth
+            // saying, since nothing the user does will bring it back.
+            const recRow = videoRow || (!formats.length
+                ? (() => { rule(); return row('Vid'); })() : null);
+            if (!recRow) {
+                // nothing to record - the row is not there at all
+            } else if (!formats.length) {
+                recRow.appendChild(el('span', CAP, 'No video recorder in this browser'));
+            } else {
+                // ONE BUTTON, AND A MENU WHERE THERE IS A CHOICE. A row of
+                // buttons reading "Rotate", "Frames", "Draw+Rotate" is a row of
+                // sentences; the button is the verb and belongs to the row's
+                // controls, so what to record joins them as one more menu and
+                // the button is the red dot it always wanted to be.
+                if (sources.length > 1) {
+                    // BOTH, WHEN BOTH ARE ON. Switching Rotate on with a
+                    // trajectory loaded is a request to see it turning, so the
+                    // combination is what record means unless something else
+                    // was picked.
+                    const preferred = sources.find((x) => x.id === 'FR')
+                        || sources.find((x) => x.id === 'DR') || sources[0];
+                    const want = sources.some((x) => x.id === opts.source)
+                        ? opts.source : preferred.id;
+                    srcSel = menu('saveVideoSource', sources.map((x) => (
+                        { value: x.id, label: x.label })), want, 'What to record');
+                    // NEXT TO THE FORMAT, at the head of the row, because these
+                    // two are the controls that decide which of the others are
+                    // there at all. Appended at the end - where it was built -
+                    // it sat AFTER the controls it governs, so picking a source
+                    // moved the very menu you had just used: hiding Sec pulls
+                    // everything to its right two fields leftwards. The two
+                    // choosers stay put now and only the tail rearranges.
+                    srcBox = pair('Rec', 'saveVideoSource', srcSel);
+                    recRow.insertBefore(srcBox, vFmtBox ? vFmtBox.nextSibling : null);
+                }
+                const recBtn = button('\u25CF', '');
+                recBtn.dataset.rec = '1';
+                recBtn.style.color = '#ef4444';
+                const pick = () => sources.find((x) => x.id
+                    === (srcSel ? srcSel.value : sources[0].id)) || sources[0];
+                const syncRec = () => {
+                    const src = pick();
+                    recBtn.title = 'Record ' + (src.title || src.label);
+                };
+                if (srcSel) {
+                    srcSel.addEventListener('change', syncRec);
+                    // ...and the row follows the source, and so does what the
+                    // panel remembers: without the commit the description went
+                    // on describing whichever source was last RECORDED, so
+                    // picking F still read "1 turn" from the FR before it.
+                    srcSel.addEventListener('change', () => { syncVideo(); commit(); });
+                }
+                syncRec();
+                recBtn.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    if (this._captureBusy) return;
+                    // EVERY FAILURE HAS TO COME BACK HERE. Marking the panel
+                    // busy and then throwing on the way to the recorder leaves
+                    // every button disabled with no recording running and
+                    // nothing said - which is how a one-word mistake in the
+                    // sink (a missing `const zip`) read as "Capture, Rotate,
+                    // Turn does not record" and as "the GIF path is broken",
+                    // both at once, for the rest of the session.
+                    try {
+                        const src = pick();
+                        const vo = Object.assign(readVideo(), { spin: src.spin });
+                        this._captureOpts = Object.assign(this.captureOpts(), vo,
+                            { source: src.id });
+                        // THE PANEL STAYS UP while it records. It used to close
+                        // itself, which put the progress and the result
+                        // somewhere the user was no longer looking - and left
+                        // no way to see that anything was happening at all.
+                        // The recorders drive their own frames, so the pause
+                        // the panel put on is lifted without resuming anything.
+                        this._uiPaused = false;
+                        this._captureBusy = true;
+                        this._syncCaptureButtons();
+                        this._captureStatus('Recording...');
+                        // Recording a drawing RESTARTS it from blank paper, so
+                        // pressing record part way through a run still gives a
+                        // whole one. A turn has no beginning, so it does not.
+                        if (src.id === 'D' || src.id === 'DR') this.saveDrawingVideo(vo);
+                        else if (src.id === 'R' || src.id === 'RF') {
+                            // RF is the turn, with the trajectory fitted into
+                            // it - the rotation recorder already drives its own
+                            // frames on a clock, which is exactly what "fit the
+                            // frames into this many seconds" needs.
+                            this.saveRotationVideo(Object.assign({}, vo,
+                                { playFrames: src.id === 'RF' }));
+                        } else this.toggleRecording(vo);
+                    } catch (err) {
+                        this._captureBusy = false;
+                        this._syncCaptureButtons();
+                        this._captureStatus('Could not record: ' + err.message, true);
+                        throw err;      // ...and still say so in the console
+                    }
+                });
+                // ...AND THE DOT SITS WITH THEM, not at the end of the row.
+                // At the end it was the one control that moved every time: the
+                // fields to its left appear and disappear with the source and
+                // the format, so it slid about and, in a narrow panel, hopped
+                // between lines - and it is the one control you aim at. Format,
+                // source, go: the three that are always there, always in the
+                // same place, with the settings they govern behind them.
+                recRow.action.appendChild(recBtn);
             }
 
             okBtn.addEventListener('click', (e) => {
                 e.preventDefault();
-                const opts = { format: fmtOf(), dpi: Number(dpiIn.value) || 300 };
-                this._saveOpts = opts;
-                p.style.display = 'none';
-                if (anchorEl) anchorEl.setAttribute('aria-expanded', 'false');
-                this.saveImage(opts);
-                // Saving a frame is not a reason to lose the run: whatever the
-                // panel paused picks up again once the file is on its way.
-                this._resumeFromSavePanel();
+                const io = { format: fmtSel.value, dpi: Number(dpiSel.value) || 200 };
+                this._captureOpts = Object.assign(this.captureOpts(), io);
+                this.saveImage(io);
             });
+
+            // ...AND ONE LINE THAT SAYS WHAT IS HAPPENING. Everything the
+            // capture path has to say goes here - what these settings will
+            // produce, how far a recording has got, what was written - instead
+            // of into the page's status line, which is somewhere else, under
+            // whatever the loader said last, and does not exist at all in the
+            // embedded viewer.
+            // ...BEHIND A LINE OF ITS OWN. It describes both outputs and it
+            // reports whatever was last written, so sitting flush under the
+            // Video row it read as another of that row's readouts - a size for
+            // the recording rather than a size for the image above it too.
+            rule();
+            const info = el('div', 'font-size:11px; color:#6b7280; line-height:1.35;'
+                + ' overflow-wrap:anywhere; min-width:0; white-space:pre-line;');
+            info.dataset.info = '1';
+            blocks.push({ kind: 'span', el: info });
+
+            // ONE PASS OVER THE BLOCKS, in the shape the width allows.
+            const place = (narrow) => {
+                while (p.firstChild) p.removeChild(p.firstChild);
+                for (const b of blocks) {
+                    if (b.kind === 'span') {
+                        b.el.style.gridColumn = '1 / -1';
+                        p.appendChild(b.el);
+                        continue;
+                    }
+                    if (narrow) {
+                        b.controls.style.gridColumn = '1 / -1';
+                        p.appendChild(b.nameEl);
+                        p.appendChild(el('span', ''));   // the empty middle cell
+                        p.appendChild(b.action);
+                        p.appendChild(b.controls);
+                    } else {
+                        b.controls.style.gridColumn = '';
+                        p.appendChild(b.nameEl);
+                        p.appendChild(b.controls);
+                        p.appendChild(b.action);
+                    }
+                }
+            };
+            place(false);
+
+            const anchorRow = (anchorEl && (anchorEl.closest('.toolbar-row')
+                || anchorEl.parentElement))
+                || (this.controlsContainer || document.body);
+            anchorRow.insertAdjacentElement('afterend', p);
+            // ...and now its width is a fact rather than a guess
+            if (p.clientWidth && p.clientWidth < 260) place(true);
             this._savePanel = p;
             if (anchorEl) {
                 anchorEl.setAttribute('aria-controls', 'savePanel');
                 anchorEl.setAttribute('aria-expanded', 'true');
             }
+            // ...and only now, with the panel installed, can it be written to
+            syncVideo();
+            this._syncCaptureButtons();
+            this._describeCapture();
         }
 
 
@@ -9475,20 +15444,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return `py2dmol_${name}_${timestamp}.${extension}`;
         }
 
-        // Download video directly
-        _downloadVideo(blob, filename) {
-            this._triggerDownload(blob, filename);
-        }
-
         // Download SVG directly
 
         _downloadSvg(svgString, objectName) {
             const filename = this._generateFilename(objectName, 'svg');
             const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
             this._triggerDownload(blob, filename);
-            if (typeof setStatus === 'function') {
-                setStatus(`SVG exported to ${filename}`);
-            }
+            this._captureStatus(`Saved ${filename}`);
         }
 
         // Helper to trigger browser download
@@ -9541,17 +15503,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // Get device pixel ratio for high-DPI displays
     // Use devicePixelRatio for native scaling, capped at 1.5x for performance
     // Can be overridden with window.canvasDPR
-    const currentDPR = window.canvasDPR !== undefined ? window.canvasDPR : Math.min(window.devicePixelRatio || 1, 1.5);
+    // Uncapped: the display's own ratio. See the note in web/app.js - the 1.5x
+    // cap traded sharpness for paint cost, which stopped being the right trade
+    // when the GPU path took over the drawing. window.canvasDPR still overrides.
+    const currentDPR = window.canvasDPR !== undefined
+        ? window.canvasDPR : (window.devicePixelRatio || 1);
 
     // Store display dimensions as constants - these never change
     const displayWidth = config.display?.size[0] || 300;
     const displayHeight = config.display?.size[1] || 300;
-
-    const paeSize = Array.isArray(config.pae?.size) || (typeof config.pae?.size === 'object' && config.pae.size.length !== undefined)
-        ? config.pae.size[0]
-        : config.pae?.size || 300;
-    const paeDisplayWidth = paeSize;
-    const paeDisplayHeight = paeSize;
 
     // Initialize canvas with DPI scaling (before renderer creation)
     canvas.width = displayWidth * currentDPR;
@@ -9586,7 +15546,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
     }
     if (canvasContainer && window.ResizeObserver) {
-        let resizeRaf = null;
         let lastWidth = displayWidth;
         let lastHeight = displayHeight;
         const resizeObserver = new ResizeObserver(entries => {
@@ -9856,7 +15815,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Map entropy to structure if entropy mode is selected
             if (selectedMode === 'entropy' && renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName] && window.MSA) {
-                renderer.entropy = window.MSA.mapEntropyToStructure(renderer.objectsData[renderer.currentObjectName], renderer.currentFrame >= 0 ? renderer.currentFrame : 0);
+                renderer.entropy = renderer.entropyForDrawn
+                    ? renderer.entropyForDrawn()
+                    : window.MSA.mapEntropyToStructure(renderer.objectsData[renderer.currentObjectName], renderer.currentFrame >= 0 ? renderer.currentFrame : 0);
                 renderer._updateEntropyOptionVisibility();
             } else {
                 // Clear entropy when switching away from entropy mode
@@ -9886,10 +15847,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // via data-needs-ss.
     const ssPaletteBox = containerElement.querySelector('#ssPaletteButtons');
     if (ssPaletteBox) {
-        const PAL_NAMES = {
-            pymol: 'PyMOL', jmol: 'Jmol',
-            jr1: 'JR1', jr2: 'JR2',   // Jane Richardson palettes, numbered
-        };
+        const PAL_NAMES = { pymol: 'PyMOL', jmol: 'Jmol' };
         const fillRow = (el, key, pal, caret) => {
             el.textContent = '';
             for (const cls of ['C', 'H', 'E', 'N', 'L']) {
@@ -10020,6 +15978,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     if (styleSelect) {
         styleSelect.value = uiStyleOf(renderer.style);
         styleSelect.addEventListener('change', (e) => {
+            // PICKED BY HAND, and remembered as such: the loader chooses tube
+            // over cartoon for a large structure, and it must not go on
+            // choosing for someone who has said what they want.
+            renderer.styleChosen = true;
             // Cartoon's default preset is Richardson, so picking Cartoon lands
             // there; the Preset dropdown reaches Ribbon (plain cartoon) and 3D.
             renderer.setStyle(e.target.value);
@@ -10052,9 +16014,43 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const styleToggle = containerElement.querySelector('#styleToggle');
     const stylePanel = containerElement.querySelector('#stylePanel');
 
+    // HOW WIDE THE WIDTH CONTROL GOES, PER STYLE.
+    //
+    // A tube is a solid stroke and keeps reading as one when it fattens, so it
+    // goes to 5.0; the cartoon keeps the 4.7 the control has always had.
+    //
+    // The ceiling is deliberately modest, because the two renderers agree less
+    // well the wider the stroke gets. Measured on 1TIM, GPU against the 2D
+    // pass, mean absolute difference per pixel: 3.40 at width 2, 3.41 at 3,
+    // 3.85 at 4, 4.14 at 5. The visible part is the outlines: as capsules
+    // overlap more, the GPU keeps fewer of them than the 2D pass does (thin
+    // dark pixels at width 5: 7,233 against 9,913), so a wide tube reads as a
+    // smoother mass there and as a drawn one here. None of that is new - the
+    // same gap is in the pre-GPU-optimisation build at the default width - it
+    // just grows with the control, which is reason enough not to open the
+    // control very far.
+    //
+    // The VALUE comes down with the ceiling when the style changes. A slider
+    // pinned at its maximum while the renderer holds a larger number is a
+    // control that lies about the drawing, which is the same failure the
+    // LOOK_DEFAULTS table exists to prevent. Width is remembered per style
+    // now (_widthByStyle), so a tube at 5 no longer walks into a cartoon whose
+    // slider stops at 4.7 - this stays as the guard for a width arriving from
+    // anywhere else, a restored session among them.
+    const WIDTH_MAX = { tube: 5.0, cartoon: 4.7 };
+
     function syncStylePanel() {
         const style = renderer.style || 'tube';
         if (!stylePanel) return;
+        const widthSlider = stylePanel.querySelector('#lineWidthSlider');
+        if (widthSlider) {
+            const cap = WIDTH_MAX[style] || WIDTH_MAX.cartoon;
+            widthSlider.max = String(cap);
+            if (renderer.lineWidth > cap) {
+                renderer.lineWidth = cap;
+                widthSlider.value = String(cap);
+            }
+        }
         Array.prototype.forEach.call(stylePanel.children, (row) => {
             row.hidden = false;
         });
@@ -10095,7 +16091,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // Exposed so setStyle() can re-filter the rows when called programmatically.
     // Push renderer values onto the preset sliders. Registered here because
     // this is where the slider elements are in scope; called by
-    // _applyStyleDefaults on every style switch.
+    // _applyLookDefaults on every style switch.
     renderer._syncStyleControls = () => {
         const set = (el, v) => { if (el && v !== undefined) el.value = v; };
         set(lineWidthSlider, renderer.lineWidth);
@@ -10256,8 +16252,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         || containerElement.querySelector('#saveSvgButton');
     const frameSlider = containerElement.querySelector('#frameSlider');
     const frameCounter = containerElement.querySelector('#frameCounter');
-    // objectSelect is now in the sequence header, query from container
-    const objectSelect = containerElement.querySelector('#objectSelect');
+    // WHICH OBJECT IS BEING EDITED - the picker beside the sequence strip. It
+    // sits in the sequence panel, which is a sibling of the viewer container
+    // rather than inside it, so the container query comes back empty and the
+    // renderer would have no picker at all: no options, no change listener,
+    // and no way to switch objects. Falls back to the document, and stays
+    // container-first so two viewers on one page keep their own.
+    // ...and only when there is EXACTLY ONE on the page. Several viewers can
+    // share a document - see the grid - and a fallback that takes the first
+    // match would hand this renderer another viewer's picker, so both would
+    // drive the same one.
+    const objectSelect = containerElement.querySelector('#objectSelect')
+        || (function () {
+            const doc = containerElement.ownerDocument || document;
+            const all = doc.querySelectorAll('#objectSelect');
+            return all.length === 1 ? all[0] : null;
+        }());
     const speedButton = containerElement.querySelector('#speedButton');
     const rotationCheckbox = containerElement.querySelector('#rotationCheckbox');
     const lineWidthSlider = containerElement.querySelector('#lineWidthSlider');
@@ -10277,7 +16287,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             ? renderer.cartoonThickness : 0;
         thicknessSlider.addEventListener('input', (e) => {
             renderer.cartoonThickness = parseFloat(e.target.value);
-            renderer._thicknessUserSet = true;
+            // Same rule as the Width slider: only a real gesture takes the
+            // control over. Nothing dispatches a synthetic 'input' at this
+            // slider today, but the two latches are siblings and drifted once
+            // already - the guard makes that impossible rather than lucky.
+            if (e.isTrusted) renderer._thicknessUserSet = true;
             renderer.render('thicknessSlider');
         });
     }
@@ -10341,6 +16355,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             renderer.render('smoothCheckbox');
         });
     }
+    // NO GPU CONTROL HERE. `useGPU` is a rendering BACKEND and applies to
+    // both styles, so the Style panel was the wrong home for it: tagged for one
+    // style it was hidden in the other, and tagged for both it was still sitting
+    // among the things that change what the picture IS. The web app owns the
+    // control now (index.html's Use GPU, wired in web/app.js) and Python owns
+    // the flag (view(gpu=True) -> config.rendering.gpu). This file just reads it.
     const highlightSlider = containerElement.querySelector('#highlightSlider');
     if (highlightSlider) {
         highlightSlider.value = renderer.cartoonHighlight !== undefined
@@ -10363,7 +16383,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     if (outlineWidthSlider) {
         // ?? not ||: an outline deliberately set to 0 is not an unset one, and
         // || turned it back on at the default. Reachable through the 3d preset,
-        // whose outlineWidth IS 0 - _applyStyleDefaults only forces outlineMode
+        // whose outlineWidth IS 0 - _applyLookDefaults only forces outlineMode
         // to 'none' when there is no mode control, so with one present the width
         // sat at 0 while this put 1.0 on the slider.
         outlineWidthSlider.value = renderer.outlineMode === 'none'
@@ -10547,11 +16567,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const firstObjectName = (window.py2dmol_staticData && window.py2dmol_staticData[viewerId])[0].name;
                 if (renderer.objectsData[firstObjectName]?.msa?.msasBySequence &&
                     renderer.objectsData[firstObjectName]?.msa?.chainToSequence && window.MSA) {
-                    renderer.entropy = window.MSA.mapEntropyToStructure(renderer.objectsData[firstObjectName], 0);
+                    // ...through the one path, which answers for everything
+                    // drawn - here that is this object, and it stays right the
+                    // day a static page shows two.
+                    renderer.entropy = renderer.entropyForDrawn();
                     renderer._updateEntropyOptionVisibility();
                 }
 
-                // Commit 7: In overlay mode, DON'T call setFrame - it would load individual frame data
+                // In overlay mode, DON'T call setFrame - it would load individual frame data
                 // Instead, just render the merged data that's already been loaded via auto-enable
                 if (renderer.overlayState.enabled) {
                     renderer.currentFrame = 0;
@@ -10563,7 +16586,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Use requestAnimationFrame to ensure PAE renderer is initialized
                 requestAnimationFrame(() => {
                     if (window.PAE) {
-                        window.PAE.updateVisibility(renderer);
+                        window.PAE.syncToDrawn(renderer);
                     }
 
                     // Update scatter with newly loaded config
@@ -10715,7 +16738,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Update PAE container visibility once at end
             if (window.PAE) {
-                window.PAE.updateVisibility(renderer);
+                window.PAE.syncToDrawn(renderer);
             }
 
             // Update scatter plot if frames were added (may have scatter data)

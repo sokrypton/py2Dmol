@@ -385,3 +385,640 @@ that whole approach is 1.23x.
   `inkQueries`, `inkScans`, `inkCell`, `inkCells`, `inkOccRefs`).
 - `tests/make_ribosome.py` — regenerates the 4UG0 page, which was previously
   built ad hoc and could not be reproduced after a source change.
+
+## Where the time is now (Aug 2026, after the GPU work)
+
+Rendering is no longer the expensive part of this app. On an M2, 598 px:
+
+| | tube frame | cartoon frame | load to first picture |
+| --- | --- | --- | --- |
+| 1TIM (492 seg) | ~0.3 ms | 0.51 ms | 70 ms |
+| 4UG0 (17.4k seg) | 4.1 ms | 4.6 ms | 1.1 s |
+| 3J3Q (312k seg) | ~26 ms | - | **15.6 s** |
+
+**Loading a capsid is now the slowest thing in the product by two orders of
+magnitude.** 3J3Q is 242 MB of text and 2.4M atoms, and the 15.6 s splits four
+ways, none of them a silver bullet:
+
+| stage | ms | share |
+| --- | --- | --- |
+| parse, including biounit expansion | 2,823 | 18% |
+| frame loop: `convertParsedToFrameData` | 2,344 | 15% |
+| frame loop: everything else | 3,685 | 24% |
+| align and centre | 62 | - |
+| `applyPendingObjects` (i.e. `addFrame` per frame) | 4,723 | 30% |
+| first render | 1,911 | 12% |
+
+Every one of those is a pass over 2.4M atoms or 313k positions. Parse is
+already the *cheapest* of the big four, having been worked over once - which is
+worth knowing before optimising it again, as the obvious target.
+
+**How to reproduce this without touching the source.** The top-level split
+needs no instrumentation at all: `parseCIF`, `buildPendingObject` and
+`applyPendingObjects` are script-scope globals, so wrapping them from the page
+times each. Only the split *inside* the frame loop needed temporary marks, and
+those were reverted.
+
+    const o = window.buildPendingObject; let ms = 0;
+    window.buildPendingObject = function () {
+        const a = performance.now();
+        try { return o.apply(this, arguments); } finally { ms += performance.now() - a; }
+    };
+
+**CORRECTION - dropping N/C/O is NOT lossless.** An earlier note here reasoned
+that since the renderer holds C-alphas and nothing else, the backbone N, C and
+O atoms are parsed and discarded, so a parse-time filter would be free. Two
+things were wrong with that. The pixel test behind it ran on 3J3Q, whose
+residues are all standard, so it could not have detected the failure; and
+`isRealAminoAcid` falls back to a connectivity check -
+
+    residue.atoms.some(a => a.atomName === 'N')
+        && residue.atoms.some(a => a.atomName === 'CA')
+        && residue.atoms.some(a => a.atomName === 'C')
+
+- for any residue NOT in STANDARD_AMINO_ACIDS.
+
+**And the cartoon's PULCHRA reconstruction does not rescue it**, which is the
+tempting objection: the renderer does rebuild C, N and O from the C-alpha
+trace, and that is exactly why CA-only input DRAWS correctly. But the
+reconstruction answers "where is this residue's backbone", and the classifier
+is asking "is this thing a residue at all". Reconstruction presupposes the
+answer to the second question, so it cannot supply it.
+
+Measured, by renaming five residues of 4HHB chain A to an unknown code XYZ and
+loading with ligands on:
+
+| | positions | types | the XYZ residues |
+| --- | --- | --- | --- |
+| N/C present | 748 | P 574, L 174 | classified P |
+| N/C stripped | 743 | P 569, L 174 | **gone entirely** |
+
+They are not even demoted to ligands - they disappear, and every bond index
+after them shifts. The saving was 1.1 s of a 16.5 s load and is a smaller share
+of a 6.5 s one; it is not worth a filter that has to know which atoms each
+classifier reads.
+
+**What would actually move it** is the columnar atom model - the same
+conclusion the parser work reached from the other end. Four separate passes
+each walk 2.4M atom OBJECTS; the parse builds them, `convertParsedToFrameData`
+reads them into typed arrays, and the rest re-walks them for residue grouping
+and bonds. Whether that is worth doing is a design decision about the interface
+between `web/utils.js`, `web/app.js` and `viewer-mol.js`, not an optimisation.
+
+### The first thing the loader profile found: setCoords was quadratic
+
+`setCoords` cost 3.6 s of a capsid's 16 s load - 11.5 microseconds per
+position - and all of it was one loop asking, for every CHAIN, whether any
+position in it carries a polymer type:
+
+    for (const chainId of sortedUniqueChains)      // C
+        for (let i = 0; i < n; i++)                // x N
+            if (this.chains[i] === chainId) ...
+
+3J3Q is 1,356 chains and 313,236 positions: **425 million string
+comparisons**. The question is per POSITION, not per chain - walk the
+positions once, note the chain of each polymer one, and any chain not noted
+is ligand-only. O(n + chains), same answer.
+
+| | before | after |
+| --- | --- | --- |
+| `setCoords` | 3,590 ms | **355 ms** |
+| `setFrame` | 3,648 ms | 411 ms |
+| `applyPendingObjects` | 5,862 ms | 2,534 ms |
+| 3J3Q load to first picture | 16.5 s | **13.2 s** |
+| 4UG0 load to first picture | 1.10 s | 0.94 s |
+
+Verified equivalent where it actually matters: with ligands loaded, 4HHB has
+6 ligand-only chains, 1HVR 1 and 3PTB 2, and the one-pass version finds the
+same sets. Note the first check ran with ligands OFF - which is the default -
+and every structure reported zero ligand-only chains, so it proved nothing.
+A test of this needs ligands on.
+
+**Why it hid for so long**: the cost is quadratic in CHAINS, and almost
+everything has a handful. 4UG0's 81 chains cost 160 ms of its 1.1 s load and
+looked like ordinary work. Only a capsid, with more than a thousand chains,
+makes it the largest single item in the profile.
+
+### ...and the second: the frame loop converted every model twice
+
+`convertParsedToFrameData` measured 5.5 s on a capsid, against 2.8 s for the
+call that feeds the drawing. It has two call sites, and the first one converts
+the model AGAIN with `includeAllResidues=true`, then builds a residue map over
+every atom and classifies every position.
+
+All of that exists to produce one array, `originalIsLigandPosition`, which is
+read in exactly one place: the `if (paeData)` branch, to line a PAE matrix up
+with the positions it was computed for. It was being built for every structure
+whether it had a PAE or not - and most do not.
+
+Guarding the block on `paeData` takes `buildPendingObject` from 9,284 ms to
+6,500 on 3J3Q.
+
+**Testing it needed a structure with ligands AND a PAE**, which is not a
+combination that occurs naturally: AlphaFold models carry a PAE and no ligands,
+PDB entries carry ligands and no PAE. Pairing 4HHB with a synthetic 801x801 PAE
+whose values vary with both indices, and loading with ligands ON so the filter
+actually runs, gives 748 positions and 641,601 PAE bytes with checksum
+3083556608 - identical before and after. A test that skips the ligands
+checkbox proves nothing here, the same trap as the ligand-only chains above.
+
+### Where the capsid load stands
+
+| stage | before | now |
+| --- | --- | --- |
+| parse | 2,855 | 2,910 |
+| frame loop (build minus parse) | 6,181 | 3,382 |
+| `applyPendingObjects` | 4,723 | 2,299 |
+| first render | 1,911 | 1,978 |
+| **total** | **16.5 s** | **8.6 s** |
+
+4UG0 goes 1.10 s to 0.69 s. Both wins were algorithmic and neither needed the
+columnar rewrite: one loop that was quadratic in chains, and one whole pass
+that did not need to run. Profile before restructuring.
+
+### ...and the third: chem_comp_bond walked every residue to find nothing
+
+`convertParsedToFrameData` was 3.3 s on a capsid, and 2.06 s of it was the
+`chemCompBondMap` pass. It walks every residue in the structure and, for each
+bond that residue's component defines, builds three template literals to look
+two atoms up by name in `atomIdToIndex`.
+
+A protein residue contributes exactly ONE position - its CA. A nucleic one
+contributes its C4'. So both ends of an INTRA-residue bond can never be found
+for either, and the pass spends its time proving that: on 3J3Q, 313,236
+residues x ~15 bonds = 4.7 million lookups and 14 million strings, producing
+nothing.
+
+Only a ligand puts more than one atom in `coords`, so only a ligand can carry
+one of these bonds. Collecting those residues as they are built and iterating
+that list gives the same bonds over a handful of residues instead of all of
+them: `buildPendingObject` 6,469 -> 4,316 ms.
+
+Verified with ligands ON, comparing an order-independent checksum of the bond
+list before and after: 4HHB 200 bonds / 3140046280, 3PTB 9 / 2820525387,
+1HVR 52 / 1448305941, 1AOI 0. Identical.
+
+### The capsid load, end to end
+
+| stage | at the start | now |
+| --- | --- | --- |
+| fetch | 477 | 387 |
+| parse | 2,855 | 2,854 |
+| frame loop (build minus parse) | 6,181 | 1,327 |
+| `applyPendingObjects` | 4,723 | 2,328 |
+| first render | 1,911 | 1,863 |
+| **total** | **16.5 s** | **6.5 s** |
+
+4UG0 goes 1.10 s to 0.42 s. **2.5x on the capsid and none of it was the
+columnar rewrite** that was the plan going in: one loop quadratic in chains,
+one whole pass that only a PAE needs, and one pass that could not produce a
+result for 99% of what it iterated. Parse is now the largest single stage and
+is the one part that has already been optimised once.
+
+### The safe version of the N/C/O filter, and what it is actually worth
+
+The correction above rules out an unconditional filter. A CONDITIONAL one is
+safe, and the condition is the same guard that made the unconditional version
+wrong: `isRealAminoAcid` only falls back to looking for N/CA/C atoms for a
+residue NOT in `STANDARD_AMINO_ACIDS`. For a standard residue it returns at the
+name test and never reads an atom.
+
+For a standard residue, then, N/C/O/OXT are read by nothing:
+
+- the classifier short-circuits on the name;
+- `buildSidechainTable` already drops every backbone atom but CA
+  (`PROTEIN_BACKBONE_ATOMS` minus CA);
+- only its CA reaches `coords`, so nothing addressed by atom index -
+  `struct_conn`, `chem_comp_bond`, `atomIdToIndex` - could resolve to one.
+
+So `parseCIF` skips them, gated on the residue name. Verified identical:
+positions and segments on 3J3Q and 4UG0; bond count and an order-independent
+checksum on 4HHB (200 / 3140046280), 3PTB, 1HVR and 1AOI; the side-chain table
+on 4HHB (7 keys, 18,406 values, checksum 2535756989); and the XYZ case that
+broke the unconditional version still classifies as protein.
+
+**It is worth 0.56 s of a 6.5 s load, not the 38.6% the atom count suggests**,
+and where the time goes is the interesting part:
+
+| | before | after |
+| --- | --- | --- |
+| parse | 2,854 | 2,781 |
+| buildPendingObject | 4,181 | 3,821 |
+| applyPendingObjects | 2,328 | 2,129 |
+
+Dropping 38.6% of the atoms takes 73 ms off the PARSE. Nearly all the saving is
+downstream, in the passes that walk the atoms afterwards. The parse is
+dominated by scanning the text - `readCIFCols` visits every line whatever it
+decides to do with it - not by building the objects. Anyone hoping to make the
+parse itself faster should attack the scan, not the allocation.
+
+### Telling the scanner early, and what that revealed about the parse
+
+The filter above ran AFTER `readCIFCols` had read all 21 columns of `_atom_site`,
+to throw the row away. It only needs two columns - the atom name and the
+residue name - and both sit near the front, so the scanner now takes the test
+and aborts the row at column 6, returning -1. Parse 2,781 -> 2,655 ms.
+
+That number is the interesting part. Skipping ~15 columns on 38.6% of 2.4M rows
+saved 126 ms, which puts the WHOLE column scan at about 450 ms of a 2.65 s
+parse. Splitting it further:
+
+| | ms |
+| --- | --- |
+| `parseMinimalCIF_light` (the pre-scan for metadata loops) | 1,274 |
+| header, atom loop and everything after | 1,414 |
+
+**Half the parse is the pre-scan**, which walks the entire 242 MB file to find
+`struct_conn`, `chem_comp`, `chem_comp_bond` and the assembly operators - all
+tiny - and pays for `_atom_site` twice: once in `text.split(/\r?\n/)`, which
+allocates a string per line for 2.4 million lines, and again counting tokens on
+every skipped row.
+
+**Do not "fix" the token counting by advancing a line at a time.** That was
+tried earlier in this session and 4UG0 came back with 42 loops instead of 40: a
+row shorter than its header continues onto the next line, the reading path
+swallows the continuation and the skipping path did not, so a loop with
+continued rows split in two. The count is what keeps the two paths walking in
+step. Making the pre-scan cheap means not materialising the lines at all -
+walking the flat text with a cursor, the way the atom loop already does - which
+is a real change to that function, not a tweak to this branch.
+
+### The cursor pre-scan, and where the capsid load actually goes now
+
+The pre-scan was rewritten to do exactly that - walk the flat text with a
+cursor, materialising no lines - and the token counting on skipped rows moved
+out of `readCIFCols` into a dedicated `countCIFTokens`, which drops the want
+mask, the output array and the early-abort hook that a count does not need.
+The counting itself stays, for the 42-loops reason above.
+
+    3J3Q pre-scan  1,450 -> 806 ms
+    3J3Q parse     2,655 -> 2,152 ms
+
+One trap on the way in, worth naming because it failed silently: folding case
+with `c | 32` corrupts `_`, which is 95 and folds to 127. Every CIF keyword
+this function looks for ends in an underscore, so `loop_` never matched and
+the function cheerfully returned zero loops for every file on earth. Fold both
+sides or neither.
+
+With that done, 3J3Q (242 MB, 2.4M atoms, 313k positions) breaks down as:
+
+| stage | ms |
+| --- | --- |
+| pre-scan (`parseMinimalCIF_light`) | 810 |
+| metadata loops + `_atom_site` header | 185 |
+| atom row loop | 1,153 |
+| &nbsp;&nbsp;- of which tokenising | ~908 |
+| &nbsp;&nbsp;- of which building atom objects | ~270 |
+| `maybeFilterLigands` | 141 |
+| `convertParsedToFrameData` | ~490 |
+| &nbsp;&nbsp;- residue grouping | 114 |
+| &nbsp;&nbsp;- sort + nucleic resolution | 35 |
+| &nbsp;&nbsp;- classification loop | 149 |
+| &nbsp;&nbsp;- `buildSidechainTable` | 185 |
+| rest of `processFiles` | ~640 |
+| `applyPendingObjects` | 632 |
+
+Two things were measured and found NOT to be the problem, which is worth
+recording so nobody spends the afternoon on them:
+
+- **`localeCompare` in the residue sort.** It looks like the classic mistake -
+  a locale-aware comparison inside a sort over 313,000 items - and it costs
+  **17 ms**. The residues arrive very nearly sorted and there are only a few
+  hundred distinct chains.
+- **The `hasFrame` pre-pass in `buildSidechainTable`**, which calls `localFrame`
+  once per residue: **9 ms**. All 290 ms of that function was the per-residue
+  loop underneath it, and specifically its allocations.
+
+The two wins that followed both came from not allocating:
+
+- Atoms arrive in residue order, so grouping them by comparing three fields
+  against the previous atom avoids building and hashing `chain:seq:resName`
+  1.5 million times. The map stays for the atoms that interrupt a run.
+  `maybeFilterLigands` 215 -> 141, grouping 179 -> 114.
+- `buildSidechainTable` allocated ten containers per residue - two Sets, a Map,
+  an array per atom, a stack per walk - about three million objects for the
+  capsid. Hoisted into typed-array scratch that grows to the largest residue
+  and is then only cleared: 290 -> 185 ms.
+
+**Verify loader changes with the signature harness, ligands ON.** A hash over
+every coordinate, chain, type, residue name and number, the whole side-chain
+table and the bond list. With ligands off the bond list is empty and the check
+is close to vacuous - that mistake has been made twice in this codebase.
+
+### Slicing the load, and how to tell whether a progress bar is real
+
+A bar is not a UI feature. The first attempt at one appeared and sat still,
+because the load was a single synchronous block: there was no moment between
+"started" and "finished" at which the browser could paint. Making the bar
+honest meant making the loader yield, which meant `parseCIF` and
+`convertParsedToFrameData` became generators - drained whole by the
+synchronous entry points (both node tests included), or a slice at a time by
+an async drainer.
+
+**Measure what reached the screen, not what you assigned.** Sampling
+`bar.style.width` from a `setInterval` is worthless twice over: the attribute
+changes whether or not anything is painted, AND a high-priority continuation
+starves timers, so the sampler goes quiet exactly when the interesting thing
+is happening. That made a working yield look broken. Sample inside
+`requestAnimationFrame` and count DISTINCT values - a rAF callback runs when
+the browser is about to produce a frame.
+
+With that instrument, 242 MB capsid, through the real fetch button:
+
+| yield | visible steps | total |
+| --- | --- | --- |
+| none (one block) | 1 | - |
+| MessageChannel, 8 MB slices | last 700 ms painted nothing; stalls at 81% | 3,125 ms |
+| scheduler.yield, 8 MB slices | 17 | 3,125 ms |
+| setTimeout, 12 MB slices | 34 | 3,225 ms |
+| setTimeout, 3 MB slices | 47 | 3,650 ms |
+
+`MessageChannel` is the usual trick for dodging the ~4 ms timer clamp and it
+is the wrong tool here - postMessage tasks are serviced ahead of both timers
+and rendering. `scheduler.yield` continues at high priority and throttles
+rendering to ~18 fps no matter how fine the slices are. The plain timer is the
+one that lets a frame through; the slice size then buys steps at a known price,
+because a frame on this page costs around 11 ms.
+
+Also: the bar must be seen to FINISH. The last stage - setCoords and the first
+render - runs with the main thread pinned, so the last value anyone can see is
+whatever was painted before it began, around 80%, and then the bar is hidden.
+Stall-then-vanish reads as death, not arrival.
+
+### 7Y7A, and why a capsid never showed the worst bug in the loader
+
+`isResidueConnected` looks for the residues in the same chain within two of
+its own number - four candidates at most - and used to find them by walking
+the whole residue list. A standard amino acid never calls it, so 3J3Q, which
+is standard residues nearly all the way down, ran clean at 313,000 residues.
+
+7Y7A has 8,830 non-standard residues (3,540 UNK, 2,988 PEB, and a long tail of
+pigments and lipids) among 309,602, and every one of them asks - once in
+`maybeFilterLigands` and again in `convertParsedToFrameData`. Billions of
+comparisons, landing as a fifteen-second frozen block with the progress line
+stopped on "Grouping residues".
+
+    7Y7A, ligands off   32,270 -> 3,899 ms
+    worst frozen block  14,832 -> 611 ms
+
+The lesson for the next one of these: a structure being LARGE is not what
+finds quadratic behaviour in this loader, because the fast paths are keyed on
+residues being standard. A structure being UNUSUAL is. Keep a file like 7Y7A
+in the bench set alongside a capsid; they exercise different code.
+
+### Ligands ON for a structure this size: two more of the same bug
+
+7Y7A with ligands enabled is 511,958 positions, 223,276 bonds, ~8,800 ligand
+groups and 6,390 chains. Both remaining cliffs were per-ligand scans of a
+whole-structure list, exactly like isResidueConnected:
+
+- **`fileKnowsIt`** (viewer-mol.js, inside setCoords) walked every bond in the
+  structure to decide whether the file already describes ONE ligand's
+  connectivity. Two billion comparisons. Now every bond is looked at once and
+  charged to the group both its ends sit in - the same question from the other
+  side.
+- **The sequence view** rebuilt its position -> ligand-group reverse map inside
+  the per-chain loop, though it does not depend on the chain: 6,390 chains x
+  207,000 ligand positions = 1.3 billion Map writes to produce the same map
+  6,390 times.
+
+| | before | after |
+| --- | --- | --- |
+| processFiles | 17,342 ms | 3,489 ms |
+| sequence build | ~97,000 ms | 327 ms |
+
+**And a correction worth keeping, about the harness rather than the code.**
+That 97 s was first reported as a "first render". It was not: `render()`
+measures 0 ms on this structure. The harness timed `r.render()` together with
+a `setTimeout(300)` wait, and what actually ran during the wait was the
+deferred sequence build. Any figure that brackets a wait is measuring
+everything the event loop chose to do in it. Time the call, not the window.
+
+### The cartoon build's memory, and what is actually left
+
+The capsid could not enter cartoon mode. Three findings, in the order they
+mattered.
+
+**A diagnostic global was holding every face forever.** `makeResident` ended
+with `window.__faces = faces`, added during the GPU port and read by nothing -
+not the app, not the tests, not the benchmark harnesses. It pinned each face's
+four model-space corners, its outward normal and its interior flag for the life
+of the page, after the geometry had been uploaded.
+
+    cartoon build, GPU on   10,017 -> 317 bytes per position retained
+
+**Measure live data only after a real collection.** The 20 kB/position the
+memory guard was built on was garbage: `window.gc` is a silent no-op unless
+Chrome is started with `--js-flags=--expose-gc`, and without it the heap after
+a build is mostly uncollected. With a real collection the same build retains
+163 bytes per position. The guard now names the PEAK, which is the number that
+actually kills a tab, and says so.
+
+**Verify a rendering change on geometry, not on pixels - here, pixels cannot
+be measured at all.** Three runs of the SAME build gave ink counts of 660, 503
+and 486 while canvas size, zoom, extent, face count and edge count were
+identical every time. A WebGL canvas without `preserveDrawingBuffer` has been
+cleared by the time `drawImage` runs. Pinning the camera does not help. The
+usable check is the edge stage's own output: faces and edges per structure.
+
+Where the build stands, on 1OHF (135,780 positions, 1,199,700 faces):
+
+| stage | time | heap after |
+| --- | --- | --- |
+| capture (288,611 2D prims) | 2,180 ms | 147 -> 699 MB |
+| facesOf | 250 ms | -> 1,078 MB |
+| rails | 320 ms | -> 1,558 MB |
+| normals | 540 ms | -> 2,026 MB |
+| facesAndEmit | 1,050 ms | -> 2,042 MB |
+| edges | 2,600 ms | -> 2,007 MB |
+| buffers | 130 ms | -> 2,020 MB |
+
+The capsid does build now, with `cartoonForce`: 20.8 s, peak 4,160 MB against
+a ~4.3 GB limit, and then it DRAWS at 11-18 ms a frame. The guard still refuses
+it and that is right - 140 MB of headroom is not a margin.
+
+**Two things that measured as nothing, so nobody need retry them:**
+
+- Replacing the edge table's inner Map-per-vertex (about 600,000 Maps) with
+  flat arrays: 7,220-7,584 ms against 7,288-7,466, peak unchanged. Reverted.
+- The Detail control has no headroom left at this scale. detail 1, 2 and 4 all
+  produce exactly 1,199,700 faces, because the screen-space subdivision cap has
+  already driven stations to MIN_SUB.
+
+**And one that settles the direction.** Forcing a full collection between every
+stage costs 25% more time and takes the peak from 2,050 MB to 1,697 MB - only
+17%. So the peak is LIVE data, not collectable garbage, and slicing the rebuild
+to let V8 breathe cannot fix it. 12.5 kB per position is genuinely alive at the
+worst moment.
+
+That leaves two levers, and only two: make fewer faces (the structure is 8.8
+faces per position, which for a capsid is 2.7 M faces for a 600 px image - 0.06
+px per residue), or never hold them all at once (build, upload and discard per
+chain).
+
+### The interaction paths, and the one that was actually broken
+
+Nothing here had ever been timed. Swept on 7Y7A (305,004 positions, 1,792
+chains) with the GPU confirmed to have drawn:
+
+| | |
+| --- | --- |
+| render, rotate, zoom | 0 ms |
+| colour mode change | 0-44 ms |
+| select a chain / 5,000 residues | 12-17 ms |
+| showAll | 67 ms |
+| side chains on / off | 365 / 280 ms |
+| setFrame (same frame) | 214 ms |
+| SEQ buildView | 154 ms |
+
+All healthy. The side-chain toggles and setFrame cost what a full setCoords
+costs, which is what they do.
+
+**But the first run of that sweep read 740 ms for render, 1,854 ms for rotate
+and 1,900 ms for showAll**, and it was the 2D fallback: the GPU had not been
+available in that run. `useGPU` is a REQUEST, not a fact. Timing a frame
+without knowing which path drew it measures nothing, so
+`renderer.gpuDrewLastFrame` now records it - set by both branches, since the
+cartoon delegation and the tube path reach the GPU by different routes.
+
+Those 2D numbers are also worth keeping as the answer to "what does a user
+without WebGL2 get on a large structure": about 0.7-2 s per interaction.
+
+### Session files were three quarters whitespace
+
+`saveViewerState` wrote `JSON.stringify(state, null, 2)`.
+
+    1TIM     330,741 ->      81,145 bytes
+    4HHB     431,868 ->     106,309
+    1AOI     633,260 ->     158,286
+    7Y7A 211,932,481 ->  61,652,330
+
+Verified by round trip - save, load the file back the way a dropped file
+arrives, hash the restored state - identical to HEAD's restored state. Note a
+round trip is NOT lossless in either version: coordinates are rounded on save
+and MSE is normalised to MET, so the restored state differs from the loaded
+one by design. The test is that it differs by the same amount as before.
+
+**Loading a session is the fast path, and measure it COLD.** Timed in the same
+page that had just parsed the 274 MB CIF, a session load read 7.3 s and looked
+slower than re-parsing the original. It is not - that page was under heap
+pressure with a major collection pending. Each in its own fresh page, 7Y7A,
+same 305,004 positions:
+
+| | fetch | processFiles | until coords exist |
+| --- | --- | --- | --- |
+| 7Y7A.cif (274 MB) | 390 ms | 3,100 ms | 3,100 ms |
+| session (61.6 MB) | 130 ms | 170 ms | 810 ms |
+
+So a session restores in 0.94 s against 3.5 s for the file it came from, about
+4x. Note `processFiles` returns at 170 ms while the coordinates do not exist
+until 810 ms - the state loader applies asynchronously, so anything timing a
+session load has to wait for the object rather than for the call.
+
+**What is left in a session, if anyone wants to go further.** On 7Y7A the 57 MB
+payload is 43.7 MB of side-chain table: coef 17.6, bonds 10.8, pos 6.7,
+frameOf 6.7, toBackbone 1.9. Two columns are nearly free to remove and both
+need a format version:
+
+- `frameOf` equals `pos` for 99.5% of rows (1,060,359 of 1,065,107; 4UG0 is
+  99.0%), so only the exceptions need storing.
+- `pos` runs 3.8 rows deep on average (282,055 runs for 1,065,107 rows), so it
+  run-length encodes about 4:1.
+
+Together roughly 20% of the file. `coef` and `bonds` are the larger half and
+would need real encoding, not just de-duplication.
+
+### Chunking the cartoon mesh build: the design is sound, the cheap routes are not
+
+Chunking by CHAIN is exact, and this is the evidence:
+
+- **The interior weld never spans chains.** Coincident quads, hashed the way
+  the build hashes them (0.001 A): 0 cross-chain on 4HHB, 1AOI and 9FOG. So a
+  per-chunk weld is the same weld.
+- **Edges DO span chains** - 49 on 1AOI, 5 on 9FOG, 0 on 4HHB - and they are
+  real, not an artefact of attributing a piece to a chain by flooring its
+  fractional residue index: the pieces involved are 89-109 residues apart, and
+  the count of cross-chain edges between ADJACENT residues, which is what a
+  boundary mislabelling would produce, is zero. So the edge table has to stay
+  GLOBAL. That is fine - it already is, and it is what makes chunking exact
+  rather than approximate.
+- Component analysis agrees the geometry decomposes: the largest connected
+  component of the piece graph is 1.4-11% of faces. But almost no component is
+  a contiguous range of pieceIds, so the partition cannot be derived cheaply
+  from the prim stream - it has to come from chain identity.
+
+**The prize**, from the LIVE heap after each stage on 1OHF (1,199,700 faces,
+full collection between stages):
+
+| stage | live | added |
+| --- | --- | --- |
+| after facesOf | 891 MB | faces + fill buffer |
+| rails | 1,154 | +263 |
+| normals | 1,395 | +274 |
+| edges | 2,049 | +651 |
+
+Chunking moves faces, rails and normals off the peak; the fill buffer and the
+edge table stay. 2,049 -> about 880 MB, and the capsid with it.
+
+**Everything cheaper than that has now been tried and measured as nothing.**
+Recorded so nobody repeats them:
+
+| attempt | result |
+| --- | --- |
+| Release each prim as facesOf consumes it | live peak 1,697 -> 1,697. The prims are already dead before the peak. |
+| `pieceFrame.clear()` before the edge stage | 1,395 -> 1,395 at normals. The frames are reachable from the FACES; clearing the map frees nothing. |
+| Flat arrays instead of ~600k per-vertex Maps | 7,220-7,584 ms vs 7,288-7,466. No change either way. |
+| Stop allocating `[r,g,b]` per addEdge call (~4.8 M arrays) | peak 2,039 vs 2,040 MB, time unchanged. |
+
+The memory is genuinely live and genuinely needed until the end of the build.
+The only lever left is not holding all of it at once.
+
+**And there is now an instrument for attempting it**: `__fillHash` and
+`__edgeHash` pin both GPU buffers bit-for-bit, which face and edge counts do
+not, and which the pixels cannot.
+
+### Chunking the cartoon mesh build: it does not work, and here is why
+
+Built it, measured it, reverted it. The scaffolding was sound and bit-identical
+at every step - a runChunk boundary, a chunk-driven makeResident, grown output
+buffers - and the thing it exists to enable is wrong.
+
+**The interior weld is global, and not in a way chunks can respect.** It drops
+a quad that appears twice, which is how two butted solids lose the caps buried
+between them. Chunking makes each chunk weld only against itself. Measured on
+3IZG, a 60-copy assembly, 888,000 faces:
+
+| | interior faces dropped | edges emitted |
+| --- | --- | --- |
+| whole | 74,415 | 861,656 |
+| chunked by chain | 3,216 | 857,873 |
+| cut in stream order | 4,106 | 857,837 |
+
+Around 3,800 edges that should have welded away get drawn. Those are the extra
+lines across a helix and between bonds that the weld exists to remove. Raising
+the chunk size past the whole structure restores 74,415 and 861,656 exactly,
+so it is the chunking and not the grouping.
+
+**The assumption that failed** was that coincident quads never span chains. On
+single-copy structures they never do - 0 on 4HHB, 1AOI and 9FOG, which is what
+the design was built on. A biounit expansion is a different animal: the copies
+weld against each other, and no partition by chain can see both halves.
+
+**Chunks must also be whole chains, and chains are not contiguous in the prim
+stream.** Cutting where the chain key changes still splits a chain whose prims
+arrive in two runs. Gathering by chain fixes that and reorders the emission,
+which is a permutation of the fill buffer - harmless in itself, since it can
+only change which of two exactly coincident faces wins the depth test, and
+those are the faces the weld drops - but it does not save the weld either.
+
+**The exact version costs more than it saves.** A first pass computing only the
+global face-key counts would make the weld right, but it has to rebuild every
+face, so the prims must survive both passes - and the prims are 552 MB of the
+2,049 MB peak. That leaves about 23%, against roughly 55% for the version that
+breaks the weld, and 23% does not get a capsid in.
+
+So the remaining lever really is the other one: make fewer faces.
+
+Kept from the attempt: __fillHash and __edgeHash, which pin both instance
+buffers bit-for-bit. They caught the emission reordering and the broken weld,
+and neither was visible in face counts or in pixels.

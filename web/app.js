@@ -77,14 +77,47 @@ function initializeApp() {
     // Get viewer API reference
     viewerApi = window.py2dmol_viewers[window.viewerConfig.viewer_id];
 
+    // OPEN ON RICHARDSON. config.rendering.style only picks the draw path; the
+    // values that make a preset look like itself - thickness, tint, highlight,
+    // outline width, pencil, smooth - live in LOOK_DEFAULTS and are applied by
+    // setPreset. The constructor does not call it (the Python path sends those
+    // values itself), and the deferred py2dmol_cartoon_loaded route does not
+    // help here: the plugin is already loaded by DOMContentLoaded, so that
+    // event has long since fired. Without this line the page draws a cartoon
+    // wearing tube's sliders.
+    if (viewerApi?.renderer?.setPreset) viewerApi.renderer.setPreset('richardson');
+
+    // USE GPU: the rendering backend, for both styles. Hidden entirely where
+    // WebGL2 is absent - a control that cannot do anything is worse than none -
+    // and the renderer falls back to the 2D path by itself for anything the GPU
+    // declines, so this is only ever a request.
+    (() => {
+        const cb = document.getElementById('useGpuCheckbox');
+        if (!cb) return;
+        const G = window.py2dmolCartoonGPU;
+        if (!G || !G.available()) {
+            const row = document.getElementById('useGpuRow');
+            if (row && row.remove) row.remove();
+            return;
+        }
+        const apply = () => {
+            const r = viewerApi && viewerApi.renderer;
+            if (!r) return;
+            r.useGPU = cb.checked;
+            // the mesh was built from state that may have moved on while this
+            // was off, so ask for a fresh one rather than trusting it
+            G.invalidate();
+            r.render('useGpuCheckbox');
+        };
+        cb.addEventListener('change', apply);
+        apply();
+    })();
+
     // Setup MSA viewer callbacks (after viewerApi is initialized)
     if (window.MSA) {
         window.MSA.setCallbacks({
             getRenderer: () => viewerApi?.renderer || null,
             getObjectSelect: () => document.getElementById('objectSelect'),
-            highlightAtom: highlightPosition,
-            highlightAtoms: highlightPositions,
-            clearHighlight: clearHighlight,
             applySelection: applySelection,
             onMSAFilterChange: (filteredMSAData, chainId) => {
                 // Recompute properties when MSA filters change
@@ -119,15 +152,6 @@ function initializeApp() {
         });
     }
 
-    // Initialize highlight overlay after viewer is created
-    if (viewerApi?.renderer && window.SEQ && window.SEQ.drawHighlights) {
-        // Trigger initialization by calling drawHighlights (which will initialize if needed)
-        const renderer = viewerApi.renderer;
-        if (renderer.canvas) {
-            window.SEQ.drawHighlights();
-        }
-    }
-
     // Setup all event listeners
     setupEventListeners();
 
@@ -152,7 +176,12 @@ function refreshEntropyColors() {
     // Always map entropy to structure when MSA data is available
     // This ensures the entropy dropdown option becomes visible
     if (renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName] && window.MSA) {
-        renderer.entropy = window.MSA.mapEntropyToStructure(renderer.objectsData[renderer.currentObjectName], renderer.currentFrame >= 0 ? renderer.currentFrame : 0);
+        // ...for everything DRAWN, not one object: one object's alignment laid
+        // over a merged array colours the second structure by the first one's
+        // conservation. See entropyForDrawn.
+        renderer.entropy = renderer.entropyForDrawn
+            ? renderer.entropyForDrawn()
+            : window.MSA.mapEntropyToStructure(renderer.objectsData[renderer.currentObjectName], renderer.currentFrame >= 0 ? renderer.currentFrame : 0);
         if (renderer._updateEntropyOptionVisibility) renderer._updateEntropyOptionVisibility();
     }
 
@@ -204,6 +233,7 @@ function applyFiltersToAllMSAs(objectName, options = {}) {
         ? obj.msa.chainToSequence[activeChainId]
         : null;
     const activeEntropy = activeFilteredMSAData?.entropy;
+    const activeFreqs = activeFilteredMSAData?.frequencies;
 
     // Short-circuit if only one unique MSA and we already have its entropy
     const uniqueMSAs = Object.keys(obj.msa.msasBySequence);
@@ -211,6 +241,10 @@ function applyFiltersToAllMSAs(objectName, options = {}) {
         const msaEntry = obj.msa.msasBySequence[uniqueMSAs[0]];
         if (msaEntry?.msaData) {
             msaEntry.msaData.entropy = activeEntropy;
+            // the frequencies THOSE came from, or the object carries the
+            // filtered entropy beside the unfiltered counts - see the note
+            // further down, where the same pairing is kept
+            if (activeFreqs) msaEntry.msaData.frequencies = activeFreqs;
         }
         return;
     }
@@ -237,6 +271,20 @@ function applyFiltersToAllMSAs(objectName, options = {}) {
         } else {
             delete sourceData.entropy;
         }
+        // ...AND THE FREQUENCIES THEY CAME FROM. The entropy here is over the
+        // FILTERED alignment, while sourceData.frequencies were computed over
+        // every sequence in the file when the MSA was merged - two numbers on
+        // one object describing two different alignments. The logo and the PSSM
+        // read the frequencies (setMSA copies them into the displayed MSA), so
+        // the picture disagreed with the colours the structure was wearing:
+        // measured on AF-P0A8I3, column 173 read E = 0.9438 over 12,021
+        // sequences while the entropy beside it was over the 10,613 that passed
+        // the filters, where E is 0.9754.
+        if (filteredMSA.frequencies) {
+            sourceData.frequencies = filteredMSA.frequencies;
+        } else {
+            delete sourceData.frequencies;
+        }
     }
 }
 
@@ -259,6 +307,12 @@ function initializeViewerConfig() {
             shadow: true,
             outline: "full",  // "none", "partial", or "full"
             width: 3.0,
+            // The web app opens on the Richardson cartoon. The concrete slider
+            // values do not come from here - they come from LOOK_DEFAULTS, via
+            // the setPreset call in initializeApp - so this names the look and
+            // the table supplies it. Python still opens on tube.
+            style: "cartoon",
+            preset: "richardson",
             ortho: 0.5,  // Normalized 0-1 range (1.0 = full orthographic)
             // OFF here, though the renderer's own default (and Python's) is on.
             // The test is a distance one - a chain's first and last residue
@@ -292,7 +346,11 @@ function initializeViewerConfig() {
         // Web app specific settings (not part of Python config)
         ui: {
             biounit: true,
-            loadLigands: false
+            // ON BY DEFAULT, like the biological unit beside it. A ligand is
+            // usually the reason the structure is being looked at, and leaving
+            // it out silently reads as the file not having one.
+            loadLigands: true,
+            filterAdditives: true
         },
         viewer_id: "standalone-viewer-1"
     };
@@ -313,6 +371,27 @@ function initializeViewerConfig() {
     // Sync UI with config
     if (biounitEl) {
         biounitEl.checked = window.viewerConfig.ui.biounit;
+    }
+    // THE OPTIONS FOLD AWAY. They are defaults, and a default that is right
+    // does not need to be on screen - but it does need to be one click away,
+    // so the button says whether it is open both in its caret and in
+    // aria-expanded.
+    const optBtn = document.getElementById('fetchOptionsButton');
+    const optPanel = document.getElementById('fetchOptions');
+    if (optBtn && optPanel) {
+        optBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            const open = optPanel.hidden;
+            optPanel.hidden = !open;
+            optBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        });
+    }
+    const filterAddEl = document.getElementById('filterAdditivesCheckbox');
+    if (filterAddEl) {
+        filterAddEl.checked = window.viewerConfig.ui.filterAdditives !== false;
+        filterAddEl.addEventListener('change', () => {
+            window.viewerConfig.ui.filterAdditives = filterAddEl.checked;
+        });
     }
     if (loadLigandsEl) {
         loadLigandsEl.checked = window.viewerConfig.ui.loadLigands;
@@ -350,9 +429,8 @@ function initializeViewerConfig() {
             if (!renderer || !renderer.currentObjectName) return;
             if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
             renderer.cachedSegmentIndices = null;
-            if (renderer._loadFrameData) {
-                renderer._loadFrameData(renderer.currentFrame >= 0 ? renderer.currentFrame : 0);
-            }
+            // ...of whatever is DRAWN, which may be several objects
+            if (renderer.reloadDrawn) renderer.reloadDrawn();
             renderer.render('detect cyclic');
         });
     }
@@ -419,12 +497,6 @@ function showMSACanvasContainers() {
     });
 }
 
-function hideMSACanvasContainers() {
-    getMSACanvasContainers().forEach(container => {
-        container.style.display = 'none';
-    });
-}
-
 function removeMSACanvasContainers() {
     const containers = getMSACanvasContainers();
     containers.forEach(container => {
@@ -483,13 +555,68 @@ function setupEventListeners() {
     const copySelectionButton = document.getElementById('copySelectionButton');
     if (copySelectionButton) {
         copySelectionButton.addEventListener('click', () => {
-            if (viewerApi && viewerApi.renderer && viewerApi.renderer.extractSelection) {
-                viewerApi.renderer.extractSelection();
-
-                // Also apply selection to MSA viewer
-                applySelectionToMSA();
-            } else {
+            const r = viewerApi?.renderer;
+            if (!r || !r.extractSelection) {
                 console.warn("Copy selection feature not available");
+                return;
+            }
+            // A SELECTION CAN REACH SEVERAL OBJECTS, and Copy makes one new
+            // object per object it touched - so it says which, rather than
+            // leaving the user to find out that two appeared.
+            const made = r.extractSelection();
+            const names = Array.isArray(made) ? made : (made ? [made] : []);
+            if (names.length > 1) {
+                setStatus(`Copied into ${names.join(' and ')}`
+                    + ' - one object per structure the selection reached.');
+            }
+            applySelectionToMSA();
+        });
+    }
+
+    // CUT: the copy Copy makes, minus the residues from where they came. The
+    // renderer owns the order (see cutSelection - the two halves cannot simply
+    // be pressed in sequence); this reports what happened, because a cut that
+    // silently did nothing looks exactly like a copy that did.
+    const cutSelectionButton = document.getElementById('cutSelectionButton');
+    if (cutSelectionButton) {
+        cutSelectionButton.addEventListener('click', () => {
+            const r = viewerApi?.renderer;
+            if (!r || !r.cutSelection) return;
+            const made = r.cutSelection();
+            if (!made) {
+                setStatus('Select something first, then Cut moves it into a new object.');
+                return;
+            }
+            // ...one new object per structure the selection reached, named
+            setStatus(`Cut ${made.removed} residue${made.removed === 1 ? '' : 's'}`
+                + ` into ${made.name}. Reload the file to get them back.`);
+            if (window.SEQ?.buildViewDeferred || window.SEQ?.buildView) {
+                (window.SEQ.buildViewDeferred || window.SEQ.buildView)();
+            }
+            applySelectionToMSA();
+        });
+    }
+
+    // DELETE, beside Copy in the panel's corner. The renderer does the work;
+    // this only reports what happened, since a delete that silently did nothing
+    // (an empty selection, or one covering everything) is worse than a refusal.
+    const deleteSelectionButton = document.getElementById('deleteSelectionButton');
+    if (deleteSelectionButton) {
+        deleteSelectionButton.addEventListener('click', () => {
+            const r = viewerApi?.renderer;
+            if (!r || !r.deleteSelection) return;
+            const gone = r.residueSelection ? r.residueSelection.size : 0;
+            // ...from every object the selection reached, which the count
+            // already covers and the message says when it is more than one
+            const across = r.objectsInSelection ? r.objectsInSelection() : [];
+            if (r.deleteSelection()) {
+                setStatus(`Deleted ${gone} residue${gone === 1 ? '' : 's'}`
+                    + (across.length > 1 ? ` from ${across.join(' and ')}` : '')
+                    + '. Reload the file to get them back.');
+                if (window.SEQ?.buildViewDeferred || window.SEQ?.buildView) {
+                    (window.SEQ.buildViewDeferred || window.SEQ.buildView)();
+                }
+                applySelectionToMSA();
             }
         });
     }
@@ -498,6 +625,11 @@ function setupEventListeners() {
     const orientToggle = document.getElementById('orientToggle');
     const prevObjectButton = document.getElementById('prevObjectButton');
     const nextObjectButton = document.getElementById('nextObjectButton');
+
+    // CLIP. The renderer owns the planes and what they do; this is the panel
+    // that sets them. Closing the panel is what commits, so Clip reads as a
+    // mode rather than as an action - which is what it is.
+    setupClipPanel();
 
     if (orientToggle) {
         // Handle click on the label/span (not the hidden checkbox)
@@ -528,7 +660,11 @@ function setupEventListeners() {
     // Note: colorSelect event listener is handled in viewer-mol.js initializePy2DmolViewer()
     // We don't need a duplicate listener here
 
-    if (objectSelect) objectSelect.addEventListener('change', handleObjectChange);
+    if (objectSelect) {
+        objectSelect.addEventListener('change', showPickedObject);
+        objectSelect.addEventListener('change', handleObjectChange);
+    }
+    attachObjectList();
 
     // Attach sequence controls
     const sequenceView = document.getElementById('sequenceView');
@@ -642,24 +778,35 @@ function setupEventListeners() {
     // understood by resolveColorHierarchy without any new code path.
     function setSelectionColor(positions, color) {
         const renderer = viewerApi?.renderer;
-        const obj = renderer?.objectsData?.[renderer.currentObjectName];
-        if (!obj) return;
-        let value = {};
-        if (obj.color && obj.color.type === 'advanced' && obj.color.value) {
-            value = obj.color.value;
-        } else if (obj.color && obj.color.type === 'mode') {
-            // preserve an object-wide mode as the base the overrides sit on
-            value = { object: obj.color.value };
-        } else if (obj.color && obj.color.type === 'literal') {
-            value = { object: obj.color.value };
+        if (!renderer) return;
+        // EACH OBJECT'S OWN MAP, IN ITS OWN NUMBERING. A selection can reach
+        // two objects when several are on screen, and the colour is stored
+        // against the object - so writing merged indices into the current one
+        // would colour its residues instead of the ones that were picked.
+        const groups = renderer.writeGroups
+            ? renderer.writeGroups(positions)
+            : [{ object: renderer.objectsData?.[renderer.currentObjectName],
+                positions: Array.from(positions) }];
+        for (const g of groups) {
+            const obj = g.object;
+            if (!obj) continue;
+            let value = {};
+            if (obj.color && obj.color.type === 'advanced' && obj.color.value) {
+                value = obj.color.value;
+            } else if (obj.color && obj.color.type === 'mode') {
+                // preserve an object-wide mode as the base the overrides sit on
+                value = { object: obj.color.value };
+            } else if (obj.color && obj.color.type === 'literal') {
+                value = { object: obj.color.value };
+            }
+            if (!value.position) value.position = {};
+            for (const i of g.positions) {
+                if (color === null) delete value.position[i];
+                else value.position[i] = color;
+            }
+            if (Object.keys(value.position).length === 0) delete value.position;
+            obj.color = Object.keys(value).length ? { type: 'advanced', value } : null;
         }
-        if (!value.position) value.position = {};
-        for (const i of positions) {
-            if (color === null) delete value.position[i];
-            else value.position[i] = color;
-        }
-        if (Object.keys(value.position).length === 0) delete value.position;
-        obj.color = Object.keys(value).length ? { type: 'advanced', value } : null;
         renderer.colorsNeedUpdate = true;
         renderer.plddtColorsNeedUpdate = true;
         document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
@@ -681,14 +828,20 @@ function setupEventListeners() {
     // come along, which is what you would expect of a part of the same residue.
     function setSelectionSidechainColor(positions, color) {
         const renderer = viewerApi?.renderer;
-        const obj = renderer?.objectsData?.[renderer.currentObjectName];
-        if (!obj) return;
-        const map = obj.sidechainColor ? { ...obj.sidechainColor } : {};
-        for (const i of positions) {
-            if (color === null) delete map[i];
-            else map[i] = color;
+        if (!renderer) return;
+        // ...per owning object and in its numbering, like the residue colours
+        for (const g of (renderer.writeGroups ? renderer.writeGroups(positions)
+            : [{ object: renderer.objectsData?.[renderer.currentObjectName],
+                positions: Array.from(positions) }])) {
+            const obj = g.object;
+            if (!obj) continue;
+            const map = obj.sidechainColor ? { ...obj.sidechainColor } : {};
+            for (const i of g.positions) {
+                if (color === null) delete map[i];
+                else map[i] = color;
+            }
+            obj.sidechainColor = Object.keys(map).length ? map : null;
         }
-        obj.sidechainColor = Object.keys(map).length ? map : null;
         renderer.colorsNeedUpdate = true;
         renderer.plddtColorsNeedUpdate = true;
         document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
@@ -701,18 +854,25 @@ function setupEventListeners() {
     // edit invalidates cleanly.
     function setSelectionSse(positions, letter) {
         const renderer = viewerApi?.renderer;
-        const obj = renderer?.objectsData?.[renderer.currentObjectName];
-        if (!obj) return;
+        if (!renderer) return;
         // Stored on the OBJECT as `sse`, exactly where set_color puts `color`
         // and where Python's set_sse writes. It used to live on the renderer,
         // which meant it was not object-scoped: its position indices would be
-        // reinterpreted against whatever object became current.
-        const ov = obj.sse ? { ...obj.sse } : {};
-        for (const i of positions) {
-            if (letter === null) delete ov[i];
-            else ov[i] = letter;
+        // reinterpreted against whatever object became current. Written per
+        // owning object for the same reason, now that a selection can reach
+        // more than one of them at a time.
+        for (const g of (renderer.writeGroups ? renderer.writeGroups(positions)
+            : [{ object: renderer.objectsData?.[renderer.currentObjectName],
+                positions: Array.from(positions) }])) {
+            const obj = g.object;
+            if (!obj) continue;
+            const ov = obj.sse ? { ...obj.sse } : {};
+            for (const i of g.positions) {
+                if (letter === null) delete ov[i];
+                else ov[i] = letter;
+            }
+            obj.sse = Object.keys(ov).length ? ov : null;
         }
-        obj.sse = Object.keys(ov).length ? ov : null;
         // the ribbon profile is built from sec, so the cached geometry has to go
         if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
         renderer.colorsNeedUpdate = true;
@@ -738,6 +898,34 @@ function setupEventListeners() {
         if (!rn || rn[a] === undefined || rn[b] === undefined) return null;
         return [renderer.chains[a], rn[a], renderer.chains[b], rn[b]];
     };
+    /**
+     * WHICH OBJECT A CONTACT BELONGS TO - and null when the pair spans two.
+     *
+     * A contact is stored on an object as a pair of chain+residue references,
+     * and the renderer resolves it among THAT object's positions. A pair with
+     * one end in each of two structures has nowhere to live: stored on either
+     * one, the other end resolves to nothing and the line never appears. The
+     * panel refuses it out loud instead - see the contact row.
+     */
+    const contactOwnerOf = (positions) => {
+        const renderer = viewerApi?.renderer;
+        if (!renderer || !positions || positions.length !== 2) return null;
+        if (!renderer.ownerOf) return renderer.currentObjectName;
+        const a = renderer.ownerOf(positions[0]);
+        const b = renderer.ownerOf(positions[1]);
+        const an = a ? a.name : renderer.currentObjectName;
+        const bn = b ? b.name : renderer.currentObjectName;
+        return (an && an === bn) ? an : null;
+    };
+    /** ...and the pair in that object's own numbering, for the index form. */
+    const contactLocalPair = (positions) => {
+        const renderer = viewerApi?.renderer;
+        if (!renderer || !renderer.ownerOf) return positions;
+        return positions.map((i) => {
+            const o = renderer.ownerOf(i);
+            return o ? o.local : i;
+        });
+    };
     // Does this stored contact name that pair? Either way round: a contact has
     // no direction, and the user may have selected the two in any order.
     //
@@ -751,7 +939,10 @@ function setupEventListeners() {
         if (!Array.isArray(c) || c.length < 3) return false;
         if (typeof c[0] === 'number' && typeof c[1] === 'number') {
             if (!positions || positions.length !== 2) return false;
-            const [p1, p2] = positions;
+            // ...IN THE OBJECT'S OWN NUMBERING. The stored indices are that
+            // object's; the positions handed in are the renderer's, and with
+            // several objects merged those are not the same numbers.
+            const [p1, p2] = contactLocalPair(positions);
             return (c[0] === p1 && c[1] === p2) || (c[0] === p2 && c[1] === p1);
         }
         if (c.length < 4 || typeof c[0] !== 'string') return false;
@@ -766,7 +957,8 @@ function setupEventListeners() {
         ? { w: 2, col: 3 } : { w: 4, col: 5 });
     const findContact = (positions) => {
         const renderer = viewerApi?.renderer;
-        const obj = renderer?.objectsData?.[renderer.currentObjectName];
+        const owner = contactOwnerOf(positions);
+        const obj = owner ? renderer?.objectsData?.[owner] : null;
         const key = contactKeyOf(positions);
         if (!obj || !key || !Array.isArray(obj.contacts)) return null;
         const i = obj.contacts.findIndex((c) => contactMatches(c, key, positions));
@@ -780,15 +972,19 @@ function setupEventListeners() {
         // nothing at all: the contact is stored correctly, resolves correctly,
         // and never appears. Same trap the side-chain toggle hit.
         if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
-        if (renderer._loadFrameData) {
-            renderer._loadFrameData(renderer.currentFrame >= 0 ? renderer.currentFrame : 0);
-        }
+        if (renderer.reloadDrawn) renderer.reloadDrawn();
         renderer.render('selection contact');
         if (window.updateSelectionToolsState) window.updateSelectionToolsState();
     };
     function addSelectionContact(positions) {
         const renderer = viewerApi?.renderer;
-        const obj = renderer?.objectsData?.[renderer.currentObjectName];
+        const owner = contactOwnerOf(positions);
+        if (!owner) {
+            setStatus('A contact joins two residues of ONE structure - these are'
+                + ' in different objects, and there is nowhere to store it.');
+            return;
+        }
+        const obj = renderer?.objectsData?.[owner];
         const key = contactKeyOf(positions);
         if (!obj || !key) return;
         const contacts = Array.isArray(obj.contacts) ? obj.contacts.slice() : [];
@@ -848,25 +1044,34 @@ function setupEventListeners() {
     // residues; a structure with no side-chain data simply draws nothing.
     function setSelectionSidechains(positions, on) {
         const renderer = viewerApi?.renderer;
-        const obj = renderer?.objectsData?.[renderer.currentObjectName];
-        if (!obj) return;
+        if (!renderer) return;
         if (on && !renderer.sidechains) {
             setStatus('No side-chain atoms in this structure (a backbone-only model has none).');
             return;
         }
-        const cur = obj.sidechains instanceof Set ? new Set(obj.sidechains) : new Set();
         let changed = false;
-        for (const i of positions) {
-            if (on ? !cur.has(i) : cur.has(i)) changed = true;
-            if (on) cur.add(i); else cur.delete(i);
+        // per owning object, in its own numbering - see writeGroups
+        for (const g of (renderer.writeGroups ? renderer.writeGroups(positions)
+            : [{ object: renderer.objectsData?.[renderer.currentObjectName],
+                positions: Array.from(positions) }])) {
+            const obj = g.object;
+            if (!obj) continue;
+            const cur = obj.sidechains instanceof Set ? new Set(obj.sidechains) : new Set();
+            let mine = false;
+            for (const i of g.positions) {
+                if (on ? !cur.has(i) : cur.has(i)) mine = true;
+                if (on) cur.add(i); else cur.delete(i);
+            }
+            if (!mine) continue;
+            changed = true;
+            obj.sidechains = cur.size ? cur : null;
         }
         if (!changed) return;               // nothing to redraw for
-        obj.sidechains = cur.size ? cur : null;
         // The atoms become real positions, so this is a RELOAD, not a repaint:
         // _materialiseSidechains runs inside the frame load and nothing shorter
         // than that rebuilds the coordinate array it appends to.
         if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
-        renderer._loadFrameData(renderer.currentFrame >= 0 ? renderer.currentFrame : 0);
+        renderer.reloadDrawn();
         renderer.render('selection sidechains');
     }
 
@@ -879,6 +1084,111 @@ function setupEventListeners() {
     // of it does, or some does - and "some" is neither, so it reads
     // indeterminate rather than picking a side. Clicking an indeterminate box
     // checks it, so the mixture resolves by turning everything on.
+    // IS THIS ROW ABOUT A LIGAND? A ligand atom is a position of the file's
+    // own: it owns no side chain and has no base plate, so a selection made
+    // only of them reaches the side-chain row for one reason - its elements -
+    // and every control on that row then means the LIGAND rather than a side
+    // chain nothing in the selection has. One definition, read by the panel and
+    // by the handlers behind it, so the row and its controls cannot disagree
+    // about which of the two it is.
+    //
+    // A MIXED selection is a side-chain row. Renaming the row the moment one
+    // ligand atom joined a dozen residues would take the side-chain controls
+    // away from the residues that do have them.
+    function ligandRowPositions(positions) {
+        const renderer = viewerApi?.renderer;
+        if (!renderer || !positions || !positions.length) return null;
+        const t = renderer.positionTypes || [];
+        const owners = renderer.sidechainOwners ? renderer.sidechainOwners() : null;
+        const map = renderer.sidechainMap;
+        const lig = [];
+        for (const i of positions) {
+            if (owners && owners.has(i)) return null;      // a residue with a side chain
+            if (t[i] === 'D' || t[i] === 'R') return null; // a nucleotide has a plate
+            // ...and an APPENDED side-chain atom is type 'L' too, but it
+            // belongs to a residue and is switched with it
+            if (t[i] === 'L' && !(map && map.has(i))) lig.push(i);
+        }
+        return lig.length ? lig : null;
+    }
+
+    // ALL, NONE OR SOME of these positions drawn, read off the visibility mask
+    // - null there means everything is visible, which is the state a structure
+    // nobody has hidden anything in is in.
+    function visibleState(positions) {
+        const renderer = viewerApi?.renderer;
+        const vis = renderer && renderer.visiblePositions;
+        if (!vis) return true;
+        let on = 0;
+        for (const i of positions) if (vis.has(i)) on++;
+        if (!on) return false;
+        return on === positions.length ? true : null;
+    }
+
+    // WHAT THE SSE MENU SAYS. Four states - forced to helix, to sheet, to loop,
+    // or left to the assignment - and Mixed where the selection disagrees,
+    // which is a state and not a letter, so it is shown and cannot be picked.
+    //
+    // The DSSP entry carries the automatic answer in its label where the
+    // drawing already knows it ("DSSP (Helix)"), which is the difference
+    // between a state that says nothing and one that says what you are looking
+    // at. Not computed for it: see assignedSseFor.
+    function syncSseSelect(sel, renderer, picked) {
+        // WHAT THE SELECTED RESIDUES ARE, in one word. Helix, Sheet or Loop -
+        // and Mixed where they disagree.
+        //
+        // It used to say where the answer came from as well: "DSSP" when
+        // nothing had been forced, then "Helix (DSSP)". Both are the same
+        // mistake in different sizes - the control's other options are the
+        // answer, so anything about its provenance reads as a fourth kind of
+        // thing, and the longer form did not fit the 84px the row can spare.
+        // A structure is a structure whoever decided it; the menu is how you
+        // change it, and DSSP is the item that hands it back to the
+        // assignment.
+        const forced = renderer.forcedSseFor ? renderer.forcedSseFor(picked) : 'none';
+        const auto = renderer.assignedSseFor ? renderer.assignedSseFor(picked) : '';
+        const NAME = { H: 'Helix', E: 'Sheet', C: 'Loop' };
+        sel.value = forced === 'none' ? 'dssp' : forced;
+        const dssp = sel.querySelector('option[value="dssp"]');
+        if (dssp) {
+            // ...on the automatic option, because that is the one selected
+            // while nothing is forced. With something forced it goes back to
+            // naming what it DOES - the assignment is read off the array the
+            // drawing uses, which has the override baked in, so it would
+            // otherwise promise the forced letter as DSSP's own answer.
+            dssp.textContent = (forced === 'none' && NAME[auto])
+                ? NAME[auto] : 'DSSP';
+        }
+        const now = forced === 'none' ? auto : forced;
+        sel.title = forced === ''
+            ? 'The selected residues have different structures'
+            : (NAME[now] || 'The secondary structure of the selected residues');
+    }
+
+
+    /**
+     * A SHOW/HIDE PAIR: one question, two buttons, and the state on their faces.
+     *
+     * `true` fills the first button, `false` the second, and `null` - the
+     * selection disagreeing with itself - fills neither. A single switch could
+     * only show that third state as a grey smear, which is what made the panel
+     * hard to read: the control said what it would do and left you to work out
+     * what it had done.
+     *
+     * The wrapper carries `hidden` for the rows that come and go, so callers
+     * hide the pair rather than reaching for a label around a checkbox.
+     */
+    function setSelectionPair(id, state) {
+        const pair = document.getElementById(id);
+        if (!pair) return;
+        const [on, off] = pair.querySelectorAll('.selection-switch-btn');
+        if (!on || !off) return;
+        on.classList.toggle('is-on', state === true);
+        off.classList.toggle('is-on', state === false);
+        on.setAttribute('aria-pressed', state === true ? 'true' : 'false');
+        off.setAttribute('aria-pressed', state === false ? 'true' : 'false');
+    }
+
     function syncSelectionToggles(picked, none) {
         const renderer = viewerApi?.renderer;
         const obj = renderer?.objectsData?.[renderer.currentObjectName];
@@ -899,9 +1209,11 @@ function setupEventListeners() {
             return null;
         };
         if (none || !renderer || !obj) {
-            for (const id of ['sidechainShowToggle', 'elementsShowToggle',
-                'basesShowToggle', 'mainchainShowToggle', 'contactShowToggle']) {
+            for (const id of ['elementsShowToggle', 'plateShowToggle']) {
                 set(id, false);
+            }
+            for (const id of ['sidechainPair', 'mainchainPair']) {
+                setSelectionPair(id, false);
             }
             return;
         }
@@ -912,20 +1224,190 @@ function setupEventListeners() {
         // The renderer prunes them; this is the second lock on the same door.
         const nPos = renderer.coords ? renderer.coords.length : Infinity;
         const live = list.filter((i) => i < nPos);
+        // ...AND AS RESIDUES, because that is what every question on this panel
+        // is about.
+        //
+        // Showing a side chain APPENDS its atoms to the coordinate array as
+        // positions of their own, carrying their residue's chain - so selecting
+        // the chain again picks up the atoms as well as the residues. On 1YNE
+        // that is 31 residues and 347 atoms, and an atom answers each of these
+        // questions for ITSELF: it has no side chain of its own, so the row
+        // read 31 full against 347 none and came back Mixed. The controls were
+        // right about the selection and wrong about the structure - and it
+        // only happened once the atoms existed, which is to say immediately
+        // after using the control that made them.
+        const scMapT = renderer.sidechainMap;
+        const res = scMapT && scMapT.size
+            ? [...new Set(live.map((i) => {
+                const e = scMapT.get(i);
+                return e ? e.owner : i;
+            }))]
+            : live;
         const owners = renderer.sidechainOwners ? renderer.sidechainOwners() : null;
         const scAble = owners ? live.filter((i) => owners.has(i)) : [];
-        set('sidechainShowToggle', tally(scAble,
-            obj.sidechains instanceof Set ? obj.sidechains : null, false));
-        set('elementsShowToggle', tally(scAble,
-            obj.elements instanceof Set ? obj.elements : null, true));
         const t = renderer.positionTypes || [];
-        const nuc = live.filter((i) => t[i] === 'D' || t[i] === 'R');
-        set('basesShowToggle', tally(nuc,
-            obj.bases instanceof Set ? obj.bases : null, true));
-        // visibility: null means everything is visible
+        // ELEMENTS ARE NOT ONLY A SIDE-CHAIN THING. A ligand atom is a position
+        // of its own and carries its own element, so it can be coloured by it
+        // with no side chain anywhere in the selection - which is why this is
+        // tallied over the renderer's element owners rather than over scAble.
+        const elOwners = renderer.elementOwners ? renderer.elementOwners() : owners;
+        const elAble = elOwners ? live.filter((i) => elOwners.has(i)) : [];
+        const ligEl = !!(elOwners && live.some((i) => t[i] === 'L' && elOwners.has(i)));
+        // ...the set in MERGED indices, like the positions being tallied: read
+        // off the object it would be that object's own numbering, and every
+        // object after the first would answer for the wrong residues.
+        set('elementsShowToggle', tally(elAble,
+            renderer.mergedObjectSet ? renderer.mergedObjectSet('elements')
+                : (obj.elements instanceof Set ? obj.elements : null), true));
+        // ...and whether any of it is a nucleotide, which is the renderer's own
+        // question rather than a second copy of the type test
+        const hasNuc = !!(renderer.hasBasesFor && renderer.hasBasesFor(live));
+        // THE SIDE-CHAIN MODE, read back per residue and shown only when the
+        // whole selection agrees. Plate is offered only where the selection has
+        // nucleotides - a protein has no such thing, and an option that does
+        // nothing is worse than one that is not there.
+        // HOW THE SELECTION'S SIDE CHAINS ARE DRAWN, read back per residue and
+        // shown only where the whole selection agrees. One answer, two controls
+        // that can show it: a switch where there are two states and a menu
+        // where there are three.
+        // ...both in MERGED indices - see shownSidechainSet and mergedObjectSet
+        const scSet = renderer.shownSidechainSet ? renderer.shownSidechainSet()
+            : (obj.sidechains instanceof Set ? obj.sidechains : null);
+        const bSet = renderer.mergedObjectSet ? renderer.mergedObjectSet('bases')
+            : (obj.bases instanceof Set ? obj.bases : null);
+        const modeOf = (i) => {
+            if (scSet && scSet.has(i)) return 'full';
+            const isNuc = t[i] === 'D' || t[i] === 'R';
+            if (isNuc && (!bSet || bSet.has(i))) return 'plate';
+            return 'none';
+        };
+        const modes = new Set(res.map(modeOf));
+        const mode = modes.size === 1 ? [...modes][0] : '';
+        const scSel = document.getElementById('plateShowToggle');
+        const scTog = document.getElementById('sidechainPair');
+        // WHICH OF THE TWO IS ON THE ROW. A protein side chain is drawn or it
+        // is not; only a nucleotide has the plate as well, and only there is a
+        // menu worth reading. Never both - two controls for one question is
+        // what this row stopped being.
+        // BY ITS LABEL, NOT ITS CHECKBOX. The input is invisible on its own -
+        // absolutely positioned at zero opacity, with the label carrying the
+        // word - so hiding it left "Show" on the row beside the menu that had
+        // replaced it. The select IS its own visible element and hides itself.
+        // ...and on a LIGAND row the switch stays, meaning the ligand itself:
+        // drawn or not drawn, which is the same two states a protein side chain
+        // has. The menu never appears there - a ligand has no plate.
+        // SHOW FIRST, ALWAYS, AND THE STYLE AFTER IT.
+        //
+        // Every row on this panel answers "is this drawn" with a Show switch,
+        // and the side-chain row answered it with a three-way menu instead
+        // wherever the selection had a nucleotide - so the same question had
+        // two shapes depending on what you had picked, and None hid inside a
+        // list where every other row has a switch. The switch is the question
+        // now; the menu is the second question, WHICH WAY, and it appears
+        // beside it only where there is a choice to make - a nucleotide, which
+        // can be a plate or its real atoms. A protein side chain and a ligand
+        // have one way of being drawn, so they have no menu.
+        const ligPos = ligandRowPositions(live);
+        const ligShown = ligPos ? visibleState(ligPos) : false;
+        const scNothing = !scAble.length && !hasNuc;
+        if (scTog) {
+            scTog.hidden = scNothing && !ligPos;
+            setSelectionPair('sidechainPair', ligPos ? ligShown
+                : (mode === '' ? null : mode !== 'none'));
+        }
+        if (scSel) {
+            // ...and the Plate switch only while something IS drawn: a way of
+            // drawing a thing that is not drawn is a control for nothing. By
+            // its LABEL, which is what carries the word - the checkbox is
+            // invisible on its own.
+            const wrapPlate = scSel.closest ? scSel.closest('label') : null;
+            (wrapPlate || scSel).hidden = !hasNuc || mode === 'none' || mode === '';
+            // ON MEANS PLATE, off means the real atoms. Left alone while
+            // nothing is drawn, so the answer survives a switch off and on:
+            // pick atoms, hide them, show them again, and they are still atoms.
+            if (mode === 'plate' || mode === 'full') {
+                scSel.checked = mode === 'plate';
+                scSel.indeterminate = false;
+            } else if (mode === '') {
+                scSel.indeterminate = true;
+            }
+        }
+        // ELEMENT COLOURS ARE A PROPERTY OF ATOMS, so the control only makes
+        // sense while there are atoms drawn. On None there is nothing to
+        // colour, and a plate is one flat shape with no elements in it - the
+        // toggle sat there in both, doing nothing a user could see. Hidden by
+        // its LABEL, which is what carries the text: hiding the checkbox alone
+        // leaves "Elements" on the row with no control.
+        // A LIGAND'S ELEMENTS FOLLOW ITS OWN SHOW, for the same reason a side
+        // chain's follow Full: there is nothing to colour while nothing is
+        // drawn. Hidden while the ligand is off, and while the selection is
+        // half on, where the switch has no one answer to show.
+        const elTog = document.getElementById('elementsShowToggle');
+        if (elTog) {
+            const wrap = elTog.closest ? elTog.closest('label') : null;
+            (wrap || elTog).hidden = ligPos
+                ? (ligShown !== true || !ligEl) : mode !== 'full';
+        }
+        // WHAT THE ROW IS CALLED. "Side chains" over a ligand's own controls
+        // names something the selection has not got - and the swatch means the
+        // ligand's colour there, which is why it stays: see the picker's own
+        // dispatch on ligandRowPositions.
+        const scRowEl = document.getElementById('sidechainRow');
+        if (scRowEl) {
+            const lbl = scRowEl.querySelector('.selection-panel-label');
+            if (lbl) lbl.textContent = ligPos ? 'Ligand' : 'Side chains';
+            const swatch = scRowEl.querySelector('.selection-color-wrap');
+            if (swatch) swatch.hidden = false;
+            // ...and what the two controls SAY they do, since what they do
+            // changed with the row. A tooltip promising side chains over a
+            // ligand is the same wrong label as the row's own name was.
+            const tip = (el, text) => { if (el) el.title = text; };
+            tip(document.getElementById('scColorButton'), ligPos
+                ? 'Colour the selected ligand'
+                : 'Colour the selected side chains');
+            tip(scTog && scTog.closest ? scTog.closest('label') : null, ligPos
+                ? 'Draw the selected ligand'
+                : 'Draw side chains for the selected residues');
+        }
+
+        // MAIN CHAIN IS THE BACKBONE, which a ligand has not got: its Show
+        // switches a backbone that is not drawn there either way, and its
+        // swatch is the same colour the Ligand row's own swatch sets. So the
+        // whole row goes for a ligand rather than sitting there as a duplicate
+        // and a no-op.
+        const mcRow = document.getElementById('mainchainRow');
+        if (mcRow) mcRow.hidden = !!ligPos;
+        // WHETHER THE MAIN CHAIN IS DRAWN, which two separate things can
+        // answer no to, and the control has to mean both:
+        //
+        //   the per-residue switch  (backboneHiddenSet - this row's own),
+        //   and the visibility mask (a box drawn on the PAE matrix, a chain
+        //   hidden, Hide pressed on a selection).
+        //
+        // Reading only the switch, a residue hidden by a PAE box sat there
+        // saying "Show" while nothing of it was on screen - reported exactly
+        // that way. The set names what is HIDDEN, so a position in it is a
+        // toggle that is off; the mask names what is VISIBLE, and null is
+        // everything.
+        // ...over residues too: an appended atom is not a backbone position, so
+        // it is never in the hidden set, and a chain whose backbone is hidden
+        // read as Mixed as soon as its side chains were drawn.
+        const hidBB = renderer.backboneHiddenSet ? renderer.backboneHiddenSet() : null;
         const vis = renderer.visiblePositions;
-        set('mainchainShowToggle', tally(live, vis, true));
-        set('contactShowToggle', list.length === 2 && !!findContact(list));
+        const mcDrawn = (i) => (!hidBB || !hidBB.has(i)) && (!vis || vis.has(i));
+        setSelectionPair('mainchainPair', res.every(mcDrawn) ? true
+            : (res.every((i) => !mcDrawn(i)) ? false : null));
+        // THE CONTACT ROW IS ONE CONTROL PER STATE. No contact: an Add
+        // button and nothing else, because there is nothing yet to colour or
+        // to size. A contact: its own colour, its own width, and a bin - and
+        // no Add, which by then would be a button that does nothing. Which of
+        // the two is on the row is decided here; updateSelectionToolsState
+        // shows the colour and the slider by the same answer.
+        const hasContact = list.length === 2 && !!findContact(list);
+        const addBtn = document.getElementById('contactAddButton');
+        const binBtn = document.getElementById('contactDeleteButton');
+        if (addBtn) addBtn.hidden = hasContact;
+        if (binBtn) binBtn.hidden = !hasContact;
     }
 
     // Element colours, per residue. A pure repaint - the atoms and bonds are
@@ -937,18 +1419,195 @@ function setupEventListeners() {
         renderer.render('selection elements');
     }
 
-    // Base plates, per nucleotide. Unlike side chains this is a pure DRAWING
-    // change - the bases are already positions, nothing is materialised - so it
-    // is a repaint, not a frame reload.
-    function setSelectionBases(positions, on) {
+    // HOW A SELECTION'S SIDE CHAINS ARE DRAWN: none, the nucleic plate, or the
+    // real atoms. One control, because the three are alternatives - a pair of
+    // toggles cannot say "one or the other", and with the plate on its own row
+    // the panel had two rows called Side chain.
+    function setSelectionSidechainMode(positions, mode) {
         const renderer = viewerApi?.renderer;
-        if (!renderer || !renderer.setBasesFor) return;
-        if (on && renderer.cartoonBasePlates === false) {
-            setStatus('Base plates are switched off for this view.');
+        if (!renderer) return;
+        const t = renderer.positionTypes || [];
+        const nuc = positions.filter((i) => t[i] === 'D' || t[i] === 'R');
+        // the plate is nucleic only; a protein asked for it gets nothing drawn
+        // rather than a control that silently does something else
+        if (mode === 'plate' && !nuc.length) {
+            setStatus('Only nucleotides have a base plate.');
+            updateSelectionToolsState();
             return;
         }
-        if (!renderer.setBasesFor(positions, on)) return;   // nothing to redraw
-        renderer.render('selection bases');
+        if (nuc.length && renderer.setBasesFor) {
+            renderer.setBasesFor(nuc, mode === 'plate');
+        }
+        // ...and the atoms, which are a frame RELOAD rather than a repaint
+        setSelectionSidechains(positions, mode === 'full');
+        syncSelectionVisibility(positions);
+        renderer.render('selection side chain mode');
+    }
+
+    // A RESIDUE WITH NOTHING DRAWN IS HIDDEN, and one with any part drawn is
+    // not. The panel used to carry a Show toggle for the whole residue beside
+    // the per-part ones, which is a third thing to keep consistent with the
+    // other two; composing it means the mask always agrees with the picture,
+    // and Orient, the clip and picking all read the mask.
+    function syncSelectionVisibility(positions) {
+        const renderer = viewerApi?.renderer;
+        const obj = renderer?.objectsData?.[renderer.currentObjectName];
+        if (!renderer || !obj) return;
+        const t = renderer.positionTypes || [];
+        const hidBB = renderer.backboneHiddenSet ? renderer.backboneHiddenSet() : null;
+        // ...in merged indices, like the positions this walks
+        const sc = renderer.shownSidechainSet ? renderer.shownSidechainSet()
+            : (obj.sidechains instanceof Set ? obj.sidechains : null);
+        const bases = renderer.mergedObjectSet ? renderer.mergedObjectSet('bases')
+            : (obj.bases instanceof Set ? obj.bases : null);
+        const drawsSomething = (i) => {
+            if (!hidBB || !hidBB.has(i)) return true;              // backbone drawn
+            if (sc && sc.has(i)) return true;                      // real atoms
+            const isNuc = t[i] === 'D' || t[i] === 'R';
+            if (isNuc && (!bases || bases.has(i))) return true;    // plate
+            return false;
+        };
+        // ...AND THEIR ATOMS WITH THEM. A shown side chain is APPENDED to the
+        // coordinate array, and the mask is a set of position indices - so a
+        // residue marked visible without its atoms leaves them out of it, and
+        // the side chain the user just asked for is not drawn. They inherit
+        // their owner's visibility at materialisation; this keeps that true
+        // afterwards.
+        // ...the renderer's own rule, not a third copy of it - see
+        // withSidechainAtoms
+        const withAtoms = (list) => (renderer.withSidechainAtoms
+            ? [...renderer.withSidechainAtoms(new Set(list))] : list);
+        const show = []; const hide = [];
+        for (const i of positions) (drawsSomething(i) ? show : hide).push(i);
+        if (hide.length) setSelectionVisible(withAtoms(hide), false, false);
+        if (show.length) setSelectionVisible(withAtoms(show), true, false);
+    }
+
+    // WITHIN N ANGSTROM OF WHAT IS SELECTED, atom to atom. The renderer does
+    // the search (see residuesWithin); this is the button, and the reporting -
+    // a shell that found nothing has to say so, or it reads as a dead control.
+    // How near counts as an interaction, side chain to side chain. 5 A is a
+    // contact shell: a hydrogen bond is under 3.5 and a salt bridge under 4,
+    // and past about 6 the answer is everything in the neighbourhood.
+    const INTERACTION_CUTOFF_A = 5;
+
+    /**
+     * The Align row appears only when there is something to align: a second
+     * object, and a selection to align it to. The panel itself is already
+     * gated on there being a selection, so the row only has to answer the
+     * other half - and Undo appears within it whenever something is actually
+     * off its file coordinates, which is not the same question.
+     */
+    function syncAlignRow(picked, none) {
+        const row = document.getElementById('alignRow');
+        const sel = document.getElementById('alignSelect');
+        if (!row || !sel) return;
+        const r = viewerApi?.renderer;
+        const objects = r ? Object.keys(r.objectsData || {}) : [];
+        const aligned = !!(r && r.anyAlignment && r.anyAlignment());
+        const canAlign = !none && objects.length > 1 && !!window.Align;
+        row.hidden = !(canAlign || aligned);
+        for (const opt of sel.options) {
+            if (opt.value === 'none') opt.hidden = !aligned;
+            else if (opt.value) opt.hidden = !canAlign;
+        }
+    }
+
+    /**
+     * Run it, and say what happened in one line.
+     *
+     * The dropdown is disabled while it runs rather than queueing a second
+     * job: TM-align is seconds of arithmetic on a big chain, and two runs
+     * racing to write alignTransform would land in whichever order they
+     * finished in.
+     */
+    async function runAlign(mode) {
+        const r = viewerApi?.renderer;
+        const sel = document.getElementById('alignSelect');
+        if (!r) return;
+        if (mode === 'none') {
+            const n = r.clearAlignments();
+            setStatus(n ? `${n} object${n === 1 ? '' : 's'} back to file coordinates`
+                : 'nothing was aligned');
+            updateSelectionToolsState();
+            return;
+        }
+        if (sel) sel.disabled = true;
+        try {
+            setStatus('Aligning...');
+            r.onAlignProgress = (done, total) => setStatus(`Aligning ${done}/${total}...`);
+            const out = await r.alignToSelection(mode);
+            r.onAlignProgress = null;
+            // What the last run actually did, for the probe: whether it got a
+            // worker is not visible in the picture and not visible in the
+            // status line, and it is the half of this feature most likely to
+            // fail silently by falling back to the main thread for good.
+            window.__alignResult = { ref: out.ref, inWorker: out.inWorker,
+                results: out.results, skipped: out.skipped };
+            const res = out.results;
+            if (!res.length) { setStatus('nothing could be aligned', true); return; }
+            // ONE LINE, and it says the thing you would check: how good the fit
+            // is. For a single object that is its own numbers; for several it
+            // is the range, because listing four objects' scores is four lines
+            // in a panel that has room for one.
+            const fmt = (x) => x.toFixed(2);
+            if (res.length === 1) {
+                const a = res[0];
+                setStatus(`${a.name} ${a.chain} to ${out.ref}: TM ${fmt(a.tm)},`
+                    + ` RMSD ${a.rmsd.toFixed(1)} A over ${a.aligned}`);
+            } else {
+                const tms = res.map((a) => a.tm);
+                setStatus(`${res.length} objects to ${out.ref}: TM `
+                    + `${fmt(Math.min(...tms))}-${fmt(Math.max(...tms))}`);
+            }
+            updateSelectionToolsState();
+        } catch (e) {
+            r.onAlignProgress = null;
+            setStatus(String((e && e.message) || e), true);
+        } finally {
+            if (sel) sel.disabled = false;
+        }
+    }
+
+    function selectNearby(cutoff, sidechainsOnly) {
+        const renderer = viewerApi?.renderer;
+        if (!renderer || !renderer.residuesWithin) return;
+        const sel = renderer.residueSelection;
+        const seed = sel ? (sel instanceof Set ? sel : new Set(sel)) : null;
+        if (!seed || !seed.size) {
+            setStatus('Select something first, then Within finds what is near it.');
+            return;
+        }
+        const what = sidechainsOnly ? 'side chain to side chain' : 'atom to atom';
+        const found = renderer.residuesWithin(seed, cutoff, { sidechainsOnly });
+        const added = found.size - seed.size;
+        if (!added) {
+            // A SIDE-CHAIN SEARCH CAN FIND NOTHING FOR TWO REASONS, and they are
+            // not the same news: nothing near enough, or nothing to measure -
+            // a glycine, or a structure whose side chains were never captured.
+            if (sidechainsOnly && renderer.hasSidechainsFor
+                && !renderer.hasSidechainsFor([...seed])) {
+                setStatus('Nothing selected has a side chain to measure from.');
+                return;
+            }
+            setStatus(`Nothing else within ${cutoff} \u00c5 (${what}).`);
+            return;
+        }
+        renderer.setResidueSelection(found);
+        setStatus(`${added} more residue${added === 1 ? '' : 's'} within ${cutoff} \u00c5`
+            + ` ${what} - ${found.size} selected.`);
+    }
+
+    // THE BACKBONE OF THE SELECTED RESIDUES. Not the same question as hiding
+    // them: hiding takes the side chain too, and this leaves it. Stored on the
+    // OBJECT beside `sidechains` and `bases`, and a pure DRAWING change - the
+    // positions are all still there, so this is a repaint (the GPU recaptures,
+    // because prims that are not built cannot be in a mesh).
+    function setSelectionBackbone(positions, on) {
+        const renderer = viewerApi?.renderer;
+        if (!renderer || !renderer.setBackboneHiddenFor) return;
+        if (!renderer.setBackboneHiddenFor(positions, !on)) return;
+        renderer.render('selection backbone');
     }
 
     // VISIBILITY. Two things make this less obvious than it looks:
@@ -979,11 +1638,12 @@ function setupEventListeners() {
         // "no chains" under explicit - so switching to explicit while leaving
         // chains empty made every chain label render as unselected even though
         // most of the structure was still visible.
+        // BY (OBJECT, CHAIN) - see chainKeyAt. A bare id is chain A of every
+        // object on screen, so hiding one object's chain A hid the other's.
         const chains = new Set();
-        const chainOf = renderer.chains;
-        if (chainOf) {
+        if (renderer.chains) {
             for (const i of next) {
-                const c = chainOf[i];
+                const c = renderer.chainKeyAt ? renderer.chainKeyAt(i) : renderer.chains[i];
                 if (c) chains.add(c);
             }
         }
@@ -1002,6 +1662,17 @@ function setupEventListeners() {
     // else, so a click there changed a selection with no strip to show it and
     // no panel to act on it. Turned on here, where both exist.
     if (viewerApi?.renderer) viewerApi.renderer.selectionEnabled = true;
+    // A REFUSED STYLE SAYS SO. The cartoon build is refused before it can kill
+    // the tab (see _cartoonWouldFit), and the renderer warns to the console and
+    // puts the dropdown back - which from the outside is a menu that flicks
+    // back to Tube on its own. The hook exists so that whoever has a status
+    // line can use it; this is that.
+    if (viewerApi?.renderer) {
+        viewerApi.renderer.onStyleRefused = (fit) => {
+            setStatus(`Cartoon needs about ${Number(fit.needMB).toLocaleString()} MB,`
+                + ` ${Number(fit.freeMB).toLocaleString()} MB free - staying in tube`, true);
+        };
+    }
 
     function updateSelectionToolsState() {
         const tools = document.getElementById('selectionTools');
@@ -1016,12 +1687,25 @@ function setupEventListeners() {
         // louder cue than five buttons changing opacity in a header.
         const panel = document.getElementById('selectionPanel');
         if (panel) panel.hidden = none;
-        // The count is the one thing the buttons cannot tell you, and it
-        // changes what pressing them does.
+        // HOW MANY, AND ACROSS HOW MANY OBJECTS - and no more than that. The
+        // count changes what pressing a button does, so it earns its place;
+        // the residue ranges beside it ("A 11-13, 20-21; B 5, 7") did not. In
+        // a 340px panel they were set small, ran past the edge of the head and
+        // were cut short, and the tooltip that held the rest is not something
+        // anybody hovers a header for. The strip below shows what is selected,
+        // in the place made for showing it.
         const count = document.getElementById('selectionPanelCount');
         if (count) {
-            count.textContent = none ? ''
-                : `${picked.length} residue${picked.length === 1 ? '' : 's'}`;
+            if (none) {
+                count.textContent = '';
+                count.title = '';
+            } else {
+                const r = viewerApi?.renderer;
+                const across = (r && r.objectsInSelection) ? r.objectsInSelection() : [];
+                count.textContent = `${picked.length} residue${picked.length === 1 ? '' : 's'}`
+                    + (across.length > 1 ? ` in ${across.length} objects` : '');
+                count.title = '';
+            }
         }
         // A contact is a line between a PAIR: nothing to draw for one residue or
         // for five, so the row is offered only for exactly two. Within it the
@@ -1030,6 +1714,7 @@ function setupEventListeners() {
         const contactRow = document.getElementById('contactRow');
         const pair = !none && picked.length === 2;
         if (contactRow) contactRow.hidden = !pair;
+        syncAlignRow(picked, none);
         if (pair) {
             const found = findContact(picked);
             const has = !!found;
@@ -1048,41 +1733,59 @@ function setupEventListeners() {
         }
         syncSelectionToggles(picked, none);
         // The side-chain row is offered only when there is something to show:
-        // glycine has no side chain, nor does a nucleotide, nor any residue in
-        // a backbone-only model, and a control that cannot do anything is worse
-        // than no control.
+        // glycine has no side chain, nor does any residue in a backbone-only
+        // model, and a control that cannot do anything is worse than no
+        // control. A NUCLEOTIDE HAS ONE NOW - its base, in the same table -
+        // so the row appears for it too and its Plate option with it.
         const scRow = document.getElementById('sidechainRow');
         if (scRow) {
             const renderer = viewerApi?.renderer;
-            scRow.hidden = none || !renderer || !renderer.hasSidechainsFor
-                || !renderer.hasSidechainsFor(picked);
+            // hasElementsFor, not hasSidechainsFor: it answers yes for every
+            // residue with a side chain AND for a ligand atom that knows its
+            // element, which is the other reason this row has something to do.
+            scRow.hidden = none || !renderer || !renderer.hasElementsFor
+                || !renderer.hasElementsFor(picked);
         }
         // Elements rides that same row rather than gating itself: it colours
         // the atoms the row draws, so wherever there are none it is already
         // gone with them.
         //
-        // ...and the nucleic row on the same rule, from the other side: it is
-        // offered only where the selection HAS nucleotides. It is labelled
-        // "Side chain" like the row above it, because to a nucleotide a base is
-        // exactly that; they are separate rows because the two are gated from
-        // opposite sides and a mixed selection can show both.
-        const bRow = document.getElementById('basesRow');
-        if (bRow) {
-            const renderer = viewerApi?.renderer;
-            bRow.hidden = none || !renderer || !renderer.hasBasesFor
-                || !renderer.hasBasesFor(picked);
-        }
         // SSE on the same rule, from the protein side. Secondary structure is
         // a property of a protein backbone: a nucleotide is never assigned a
         // letter, so on a DNA or RNA selection this menu offered four states
         // and did nothing whichever was picked. It hides rather than
         // disabling, because the row it sits on is about the main chain and
         // stays useful - a greyed control there reads as something broken.
+        // ...AND THE LINE ONLY MEANS ANYTHING WITH SOMETHING ABOVE IT. Both
+        // property rows can go at once - a ligand takes the main chain row
+        // away, and a selection with no elements to colour takes the other -
+        // and a divider at the top of the panel is a rule under nothing.
+        const divider = document.getElementById('selActionDivider');
+        if (divider) {
+            const scR = document.getElementById('sidechainRow');
+            const mcR = document.getElementById('mainchainRow');
+            divider.hidden = none
+                || ((!scR || scR.hidden) && (!mcR || mcR.hidden));
+        }
+        // SECONDARY STRUCTURE, WHERE ANYTHING IS DRAWN FROM IT. The cartoon
+        // draws it - a helix is a coil of ribbon and a strand is an arrow -
+        // and the SS colour mode paints it in any style. The TUBE draws a tube
+        // whatever the structure is, so on a tube with any other colour mode
+        // this control changes nothing on screen: it was a menu offering four
+        // states of something invisible.
+        //
+        // It also costs: the panel reads the assignment to fill this in, and
+        // in the tube style nothing else has computed one, so every selection
+        // after an edit paid for a full SS pass - 81 ms on a ribosome. Not
+        // asking is the cheapest way to not pay.
         const ssHide = document.getElementById('selSsSelect');
         if (ssHide) {
             const renderer = viewerApi?.renderer;
-            ssHide.hidden = none || !renderer || !renderer.hasSseFor
+            const drawsSse = !!renderer
+                && (renderer.style === 'cartoon' || renderer.colorMode === 'ss');
+            ssHide.hidden = none || !renderer || !drawsSse || !renderer.hasSseFor
                 || !renderer.hasSseFor(picked);
+            if (!ssHide.hidden) syncSseSelect(ssHide, renderer, picked);
         }
         tools.classList.toggle('disabled', none);
         // Also set the real disabled property, not just the class: hiding the
@@ -1232,12 +1935,28 @@ function setupEventListeners() {
         });
         wireColorPicker({
             btnId: 'scColorButton', menuId: 'scColorMenu', swatchId: 'scColorSwatch',
-            apply: setSelectionSidechainColor,
+            // ON A LIGAND ROW THIS IS THE LIGAND'S COLOUR. A side-chain colour
+            // is stored against the OWNING residue, and a ligand atom has none
+            // - so the side-chain path silently does nothing there, which is
+            // what a swatch on that row would have looked like. The ordinary
+            // per-position colour is the one that means anything for a ligand.
+            apply: (positions, hex) => {
+                const lig = ligandRowPositions(positions);
+                if (lig) setSelectionColor(lig, hex);
+                else setSelectionSidechainColor(positions, hex);
+            },
             // an unset side chain follows its residue, so that is what it shows
             current: (positions) => {
                 const renderer = viewerApi?.renderer;
-                const obj = renderer?.objectsData?.[renderer.currentObjectName];
-                const own = obj && obj.sidechainColor && obj.sidechainColor[positions[0]];
+                const lig = ligandRowPositions(positions);
+                if (lig) return mainChainColorOf(lig);
+                // ...from the object that OWNS the residue, in its own
+                // numbering: the map is per object and the index is merged.
+                const o = renderer?.ownerOf ? renderer.ownerOf(positions[0]) : null;
+                const obj = renderer?.objectsData?.[
+                    o ? o.name : renderer.currentObjectName];
+                const at = o ? o.local : positions[0];
+                const own = obj && obj.sidechainColor && obj.sidechainColor[at];
                 return own || mainChainColorOf(positions);
             },
         });
@@ -1262,8 +1981,12 @@ function setupEventListeners() {
         if (ssSelect) {
             ssSelect.addEventListener('change', withSelection((positions) => {
                 const v = ssSelect.value;
-                if (v) setSelectionSse(positions, v === 'auto' ? null : v);
-                ssSelect.value = '';        // it is an action menu, not a state
+                // DSSP is the one that UNFORCES: null takes the override off
+                // and the assignment decides again.
+                if (v) setSelectionSse(positions, v === 'dssp' ? null : v);
+                // ...and then the menu is read back off the structure, like
+                // every other control here, rather than reset to a placeholder
+                updateSelectionToolsState();
             }));
         }
         const on = (id, fn) => {
@@ -1308,12 +2031,92 @@ function setupEventListeners() {
                 updateSelectionToolsState();
             }));
         };
-        onToggle('sidechainShowToggle', (p2, v) => setSelectionSidechains(p2, v));
+        // A PAIR IS TWO BUTTONS AND ONE QUESTION: each says which way it goes,
+        // rather than a switch that means "the other one from now". Pressing
+        // the button that is already filled is a no-op the same way asking for
+        // what you already have is - it runs, and the state comes back the
+        // same. The answer is re-read from the structure afterwards, like the
+        // switches: an action can be refused (no side-chain atoms, base plates
+        // off globally) and the buttons must then show what is drawn rather
+        // than what was asked for.
+        const onPair = (id, fn) => {
+            const pair = document.getElementById(id);
+            if (!pair) return;
+            const btns = pair.querySelectorAll('.selection-switch-btn');
+            btns.forEach((btn, k) => {
+                btn.addEventListener('click', withSelection((positions) => {
+                    fn(positions, k === 0);
+                    updateSelectionToolsState();
+                }));
+            });
+        };
         onToggle('elementsShowToggle', (p2, v) => setSelectionElements(p2, v));
-        onToggle('basesShowToggle', (p2, v) => setSelectionBases(p2, v));
-        onToggle('mainchainShowToggle', (p2, v) => setSelectionVisible(p2, v, false));
-        onToggle('contactShowToggle', (p2, v) => (v
-            ? addSelectionContact(p2) : removeSelectionContact(p2)));
+        onPair('mainchainPair', (p2, v) => {
+            setSelectionBackbone(p2, v);
+            // SHOW MEANS SHOW, whatever was hiding it. The switch alone leaves
+            // a residue that the mask excludes - one inside a PAE box's
+            // shadow, say - exactly as invisible as it was, and the button
+            // then does nothing you can see. Hide is the other way round: the
+            // switch is all it needs, and syncSelectionVisibility takes the
+            // residue out of the mask only if nothing else of it is drawn.
+            if (v) setSelectionVisible(p2, true, false);
+            syncSelectionVisibility(p2);
+        });
+        // FIND INTERACTIONS: one button, no settings. 5 A side chain to side
+        // chain is the question people actually ask of a binding site, and the
+        // any-atom half of the pair it replaces was mostly backbone running
+        // past whatever it folds against.
+        const nearBtn = document.getElementById('selectNearby');
+        if (nearBtn) {
+            nearBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                selectNearby(INTERACTION_CUTOFF_A, true);
+            });
+        }
+        // ALIGN. The dropdown is a MENU OF ACTIONS, not a setting, so it snaps
+        // back to its own label as soon as one is chosen - leaving it reading
+        // "all to this" would claim a state the app does not hold, and pressing
+        // it again would then be a no-op that looks like a repeat.
+        const alignSel = document.getElementById('alignSelect');
+        if (alignSel) {
+            alignSel.addEventListener('change', () => {
+                const mode = alignSel.value;
+                alignSel.value = '';
+                if (mode) runAlign(mode);
+            });
+        }
+        // the protein form of the same control: two states, one switch - and on
+        // a ligand row the same switch draws the ligand itself, which is the
+        // visibility mask rather than a side chain nothing there owns
+        onPair('sidechainPair', (p2, v) => {
+            const lig = ligandRowPositions(p2);
+            if (lig) { setSelectionVisible(lig, v, false); return; }
+            // SHOW MEANS "DRAWN", AND THE MENU SAYS HOW. Switching on a
+            // nucleotide brings back whichever way it was last drawn - the
+            // plate unless the menu says otherwise - rather than jumping to the
+            // atoms, which is not what a plain Show should decide.
+            const r = viewerApi?.renderer;
+            const plate = document.getElementById('plateShowToggle');
+            const nuc = !!(r && r.hasBasesFor && r.hasBasesFor(p2));
+            const style = nuc ? ((plate && !plate.checked) ? 'full' : 'plate') : 'full';
+            setSelectionSidechainMode(p2, v ? style : 'none');
+        });
+        // PLATE OR ATOMS, for a nucleotide that is being drawn at all. Show
+        // owns whether; this owns which.
+        onToggle('plateShowToggle', (p2, v) => {
+            setSelectionSidechainMode(p2, v ? 'plate' : 'full');
+        });
+        // ...and the two buttons that replace the pair, each with one job
+        const onPress = (id, fn) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener('click', withSelection((positions) => {
+                fn(positions);
+                updateSelectionToolsState();
+            }));
+        };
+        onPress('contactAddButton', (p2) => addSelectionContact(p2));
+        onPress('contactDeleteButton', (p2) => removeSelectionContact(p2));
 
         // Every surface that draws the selection listens here, so a change made
         // on ANY of them shows on all the others. The sequence strip used to be
@@ -1353,6 +2156,35 @@ function setupEventListeners() {
     if (selectAllBtn) selectAllBtn.addEventListener('click', (e) => { e.preventDefault(); setWholeSelection(true); });
     if (clearAllBtn) clearAllBtn.addEventListener('click', (e) => { e.preventDefault(); setWholeSelection(false); });
 
+    // INVERT: everything that is not selected now.
+    //
+    // Over what is on screen, not over every position the object holds - a
+    // residue the clip has cut away or a chain that is hidden is not something
+    // the viewer is offering, and sweeping it into the selection by pressing a
+    // button is how a selection comes to contain things nobody can see. With
+    // nothing selected this is Select all, which is the sensible reading of
+    // "invert nothing".
+    const invertBtn = document.getElementById('invertSelection');
+    if (invertBtn) {
+        invertBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            const renderer = viewerApi?.renderer;
+            if (!renderer || !renderer.coords) return;
+            const cur = renderer.residueSelection;
+            const visible = renderer.visiblePositions;
+            const next = new Set();
+            for (let i = 0; i < renderer.coords.length; i++) {
+                if (cur && cur.has(i)) continue;
+                if (visible && !visible.has(i)) continue;
+                if (renderer._pickable && !renderer._pickable(i)) continue;
+                next.add(i);
+            }
+            renderer.setResidueSelection(next);
+            if (window.SEQ?.updateColors) window.SEQ.updateColors();
+            renderer.render('invert selection');
+        });
+    }
+
     // Update copy selection button state when selection changes
     // Copy's enabled state is handled with the rest of the selection tools
     // (updateSelectionToolsState): it acts on the selection like they do. It
@@ -1371,6 +2203,8 @@ function setupEventListeners() {
 
 
     // Listen for the custom event dispatched by the renderer when color settings change
+    // the strip's header names the frame, so it follows the frame
+    document.addEventListener('py2dmol-frame-change', updateFrameNameLabel);
     document.addEventListener('py2dmol-color-change', () => {
         // Update colors in sequence view when color mode changes
         window.SEQ?.updateColors();
@@ -1399,8 +2233,116 @@ function setupEventListeners() {
 // UI HELPER FUNCTIONS
 // ============================================================================
 
+// WHICH STEP THE LOAD IS ON - and nothing more precise than that.
+//
+// There was a percentage here, weighted per stage and driven by the parser's
+// real position in the file. It was honest and it was not worth its keep: the
+// weights were guesses for every structure except the one they were measured
+// on, and a number that jumps 20% and then sits still tells you less than the
+// word "Building positions" does.
+//
+// The reporting exists at all only because the loader runs in slices - without
+// a yield there is no moment between "started" and "finished" at which the
+// browser could paint anything, and the line would never change.
+//
+// Nothing is shown for a load that finishes quickly. A word that flashes up and
+// vanishes reads as a glitch, and under this it is most loads.
+const STAGE_REVEAL_MS = 250;
+let stageShown = 0;
+// Set when a load has to change the style out from under the user; see
+// dropToTubeIfCartoonWontFit.
+let styleFallbackNote = '';
+let stageRevealTimer = 0;
+let stageLabel = '';
+
+function beginProgress() {
+    // ...and take it off the screen with it. The note is sticky so the messages
+    // that follow it in ITS load cannot bury it; leaving it up through the next
+    // load would have it describing a structure that is no longer there - and a
+    // quick load writes nothing over it, so nothing else would clear it.
+    if (styleFallbackNote) {
+        const el = document.getElementById('status-message');
+        if (el && el.textContent.indexOf(styleFallbackNote) >= 0) el.textContent = '';
+    }
+    styleFallbackNote = '';
+    stageLabel = '';
+    stageShown = 0;
+    if (stageRevealTimer) clearTimeout(stageRevealTimer);
+    stageRevealTimer = setTimeout(() => {
+        stageRevealTimer = 0;
+        stageShown = 1;
+        paintStage();
+    }, STAGE_REVEAL_MS);
+}
+
+function paintStage() {
+    if (!stageShown || !stageLabel) return;
+    setStatus(`${stageLabel}...`);
+}
+
+/** Name the step the load has reached. Repeats are free. */
+function setStage(label) {
+    if (!label || label === stageLabel) return;
+    stageLabel = label;
+    paintStage();
+}
+
+function endProgress(silent = false) {
+    if (stageRevealTimer) { clearTimeout(stageRevealTimer); stageRevealTimer = 0; }
+    const wasShowing = stageShown && stageLabel;
+    stageShown = 0;
+    stageLabel = '';
+    // THE LAST STEP MUST NOT BE THE LAST WORD. The final stage - setCoords and
+    // the first render - runs with the main thread pinned, so the last thing
+    // painted is whatever step had been reached before it started. Not every
+    // caller writes its own result line afterwards, and the ones that do write
+    // it after this returns, so leaving "Drawing..." on screen would strand a
+    // finished load looking stuck. silent is for setStatus, which is about to
+    // write the real message itself.
+    // ...AND IT SAYS WHAT LOADED. "Loaded." with the style note appended read
+    // as a bare "showing tube", which is an answer to a question nobody asked.
+    if (wasShowing && !silent) setStatus(loadSummary());
+}
+
+
+/**
+ * WHAT A FINISHED LOAD SAYS, in one line.
+ *
+ * It used to say "Successfully fetched and loaded 1 object(s) (1 total frame).
+ * 313,236 residues - showing tube; pick Cartoon in Style for the ribbon." -
+ * four sentences, three of them about the machinery and one telling the user
+ * which menu to open. A status line is a receipt, not a manual: what arrived,
+ * how big it is, and anything the app decided on its own.
+ *
+ * @param {string} extra a few words about the MSA, or nothing
+ */
+function loadSummary(extra) {
+    const r = viewerApi?.renderer;
+    const name = r && r.currentObjectName;
+    const n = (r && r.coords && r.coords.length) || 0;
+    const frames = (r && r.objectsData && r.objectsData[name]
+        && r.objectsData[name].frames && r.objectsData[name].frames.length) || 1;
+    const bits = [];
+    if (name) bits.push(name);
+    if (n) bits.push(`${n.toLocaleString()} residues`);
+    if (frames > 1) bits.push(`${frames} frames`);
+    if (extra) bits.push(extra);
+    return bits.join(', ') || 'Loaded.';
+}
+
+
 function setStatus(message, isError = false) {
+    // A LOAD THAT FAILED IS A LOAD THAT ENDED. Every failure path in the
+    // loader reports through here, so this is the one place that reliably
+    // catches them all - without it a later slice's percentage overwrites the
+    // error message with a claim that the load is still going.
+    if (isError && typeof endProgress === 'function') endProgress(true);
     // Check if we're on msa.html (has status-message with different styling) or index.html
+    if (styleFallbackNote && !isError) {
+        // ONE LINE, so the note joins the message rather than following it as
+        // a second sentence.
+        message = message ? `${message} - ${styleFallbackNote}` : styleFallbackNote;
+    }
     const statusElement = document.getElementById('status-message');
     if (statusElement) {
         // msa.html style
@@ -1462,7 +2404,310 @@ function updateObjectNavigationButtons() {
     }
 }
 
+
+// ============================================================================
+// THE OBJECT LIST
+// ============================================================================
+// ONE QUESTION: which objects are on screen.
+//
+// ONE OBJECT AT A TIME IS THE RESTING STATE, chosen with the dropdown in the
+// sequence header - which is how the viewer has always worked, and loading a
+// second file must not change it. Showing several is something the user asks
+// for: press All, or light an eye in the list. All is literal - every object
+// on, or every object off, and an empty canvas is a picture you are allowed to
+// ask for.
+//
+// The list used to answer a second question too - which object is CURRENT, the
+// one Copy, Delete, the side-chain toggles and the sequence strip act on - and
+// with the shown set meaning "the current object", picking one in the list took
+// the other off the screen: "when I click one it hides the other". That
+// question belongs to the picker, where the thing it governs is visible.
+
+function objectListEls() {
+    return {
+        btn: document.getElementById('objectListButton'),
+        list: document.getElementById('objectList'),
+        select: document.getElementById('objectSelect'),
+    };
+}
+
+/** Which objects are drawn right now, as a Set the rows can be built from. */
+function shownObjectSet(renderer) {
+    return new Set(renderer.drawnObjects ? renderer.drawnObjects() : []);
+}
+
+/**
+ * The Object colour mode is only offered when there is more than one object on
+ * screen. With one, it colours everything the same - a scheme with no meaning,
+ * which is worse than an absent one. Switched back to Auto if it was showing
+ * when the second object went away.
+ */
+function syncObjectColorOption() {
+    const renderer = viewerApi?.renderer;
+    const sel = document.getElementById('colorSelect');
+    if (!renderer || !sel) return;
+    const opt = sel.querySelector('option[value="object"]');
+    if (!opt) return;
+    const many = (renderer.drawnObjects ? renderer.drawnObjects().length : 1) > 1;
+    opt.hidden = !many;
+    if (!many && sel.value === 'object') {
+        sel.value = 'auto';
+        sel.dispatchEvent(new Event('change'));
+    }
+}
+
+/**
+ * IS THE VIEWER IN MULTI MODE? The renderer's shown set answers it: null is
+ * the resting state - one object on screen, the one the picker names, which is
+ * how this viewer has always worked - and a Set is Multi, whatever is in it.
+ * Nothing else records the mode, so it cannot disagree with the picture, and a
+ * restored session comes back in the mode it was saved in.
+ */
+function objectMultiOn(renderer) {
+    const r = renderer || viewerApi?.renderer;
+    return !!(r && r.shownObjects instanceof Set);
+}
+
+/**
+ * The button is a MODE, not a menu: pressed means Multi. The count is in the
+ * list below it, which is open whenever Multi is on, so the face stays the one
+ * word.
+ */
+function syncObjectListButton() {
+    const { btn, list, select } = objectListEls();
+    const renderer = viewerApi?.renderer;
+    if (!btn || !renderer) return;
+    const on = objectMultiOn(renderer);
+    const total = Object.keys(renderer.objectsData || {}).length;
+    const shown = renderer.drawnObjects ? renderer.drawnObjects().length : 1;
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.classList.toggle('is-on', on);
+    btn.title = on
+        ? `${shown} of ${total} objects on screen - click to go back to one`
+        : 'Expand: show several objects at once';
+    if (list) list.hidden = !on;
+    // THE PICKER CHOOSES WHAT YOU ARE EDITING, in both modes. It used to grey
+    // out in Multi, on the reasoning that with several objects on screen the
+    // eyes decide what is drawn and the picker had no job left. It has one:
+    // the style, the clip and the panels below all belong to ONE object, and
+    // the picker is how you say which. In Multi it changes nothing about the
+    // picture - the eyes still decide that - it changes what the controls act
+    // on.
+    if (select) {
+        select.disabled = false;
+        select.title = on
+            ? 'Which object the controls below act on - the eyes decide what is drawn'
+            : 'Which object to show and edit';
+    }
+}
+
+function renderObjectList() {
+    const { btn, list } = objectListEls();
+    const renderer = viewerApi?.renderer;
+    if (!list || !btn || !renderer) return;
+    syncObjectListButton();
+    if (list.hidden) return;
+
+    const names = Object.keys(renderer.objectsData || {});
+    const shown = shownObjectSet(renderer);
+    list.innerHTML = '';
+
+    for (const name of names) {
+        const on = shown.has(name);
+        const row = document.createElement('div');
+        row.className = 'object-list-row' + (on ? '' : ' is-hidden');
+        row.title = on ? 'Hide this object' : 'Show this object';
+
+        const eye = document.createElement('span');
+        eye.className = 'object-list-eye';
+        eye.innerHTML = on
+            ? '<i class="fa-regular fa-eye"></i>'
+            : '<i class="fa-regular fa-eye-slash"></i>';
+
+        const label = document.createElement('span');
+        label.className = 'object-list-name';
+        label.textContent = name;
+
+        // ONLY THE EYE SWITCHES IT ON AND OFF. A row that toggled anywhere
+        // along its length was one stray click away from taking a structure
+        // off the screen.
+        eye.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleObjectShown(name);
+        });
+
+        // ...AND THE NAME SELECTS IT, which is what the picker does: the
+        // object whose style and settings the panels act on. Visibility and
+        // selection are different questions and this row answers both, one
+        // per half.
+        const editing = name === renderer.currentObjectName;
+        if (editing) row.classList.add('is-editing');
+        label.title = editing
+            ? 'The controls act on this object'
+            : 'Edit this object - its style and settings';
+        label.addEventListener('click', (e) => {
+            e.stopPropagation();
+            selectObjectForEditing(name);
+        });
+
+        row.appendChild(eye);
+        row.appendChild(label);
+        list.appendChild(row);
+    }
+}
+
+/**
+ * EDIT THIS OBJECT - without changing what is on screen.
+ *
+ * Driven through the picker, like every other path that changes the current
+ * object (the renderer listens to it), so there is one way in and the two
+ * cannot disagree about which object is being edited.
+ */
+function selectObjectForEditing(name) {
+    const select = document.getElementById('objectSelect');
+    const renderer = viewerApi?.renderer;
+    if (!select || !renderer || renderer.currentObjectName === name) return;
+    if (select.value !== name) {
+        select.value = name;
+        select.dispatchEvent(new Event('change'));
+    }
+    renderObjectList();
+}
+
+/**
+ * IN MULTI, PICKING AN OBJECT SHOWS IT.
+ *
+ * The two questions the object row answers - what is DRAWN (the eyes) and what
+ * is being EDITED (the picker, or a row's name) - are deliberately separate,
+ * but only one direction of that is useful: choosing to work on something you
+ * cannot see is not a state anyone asks for. It reads as the picker being
+ * broken, because nothing happens.
+ *
+ * The other direction stays as it was: switching an eye off does NOT stop you
+ * editing that object, which is how you set its style and switch it back on to
+ * look at it.
+ *
+ * ON THE EVENT, NOT IN handleObjectChange. That function is a SYNC - the
+ * session restore calls it directly "to ensure the UI is fully updated" - and
+ * the rule there added the restored object to the shown set every time a saved
+ * session came back, which is a third object on screen that nobody asked for.
+ * A change EVENT means somebody picked.
+ */
+function showPickedObject() {
+    const renderer = viewerApi?.renderer;
+    const select = document.getElementById('objectSelect');
+    const want = select && select.value;
+    if (!renderer || !want || !objectMultiOn(renderer)) return;
+    const shown = shownObjectSet(renderer);
+    if (shown.has(want)) return;
+    shown.add(want);
+    renderer.setShownObjects(Array.from(shown));
+    afterShownObjectsChange();
+}
+
+/**
+ * WHAT FOLLOWS A CHANGE TO WHAT IS ON SCREEN.
+ *
+ * The strip is one section per drawn object, so it is rebuilt - it is not a
+ * repaint: the sections, their rows and their cells all change. The colour
+ * mode, the button and the picker follow too.
+ */
+function afterShownObjectsChange() {
+    // ...AND WHAT IS DRAWN DECIDES THE STYLE, when nobody has chosen one. Two
+    // objects on screen can be an order of magnitude more structure than
+    // either of them alone.
+    tubeByDefaultForDrawn(viewerApi?.renderer);
+    syncObjectColorOption();
+    syncObjectListButton();
+    renderObjectList();
+    const seq = window.SEQ;
+    if (seq && (seq.buildViewDeferred || seq.buildView)) {
+        (seq.buildViewDeferred || seq.buildView)();
+    }
+    updateFrameNameLabel();
+}
+
+/** Show or hide one object. Only reachable in Multi, where the eyes decide. */
+function toggleObjectShown(name) {
+    const renderer = viewerApi?.renderer;
+    if (!renderer || !renderer.setShownObjects) return;
+    const shown = shownObjectSet(renderer);
+    if (shown.has(name)) shown.delete(name);
+    else shown.add(name);
+    // ...including down to nothing: an empty list is an empty canvas, and the
+    // objects are all still there to be switched back on.
+    renderer.setShownObjects(Array.from(shown));
+    afterShownObjectsChange();
+}
+
+/**
+ * MULTI ON AND OFF.
+ *
+ * On, it opens on exactly what was already on screen - the object the picker
+ * names - so pressing the button changes the picture not at all until an eye
+ * is clicked. Off, the shown set is dropped entirely rather than trimmed to
+ * one name: null is the resting state, and an object loaded later becomes the
+ * one on screen the way it always did.
+ */
+function toggleObjectMulti() {
+    const renderer = viewerApi?.renderer;
+    if (!renderer || !renderer.setShownObjects) return;
+    if (objectMultiOn(renderer)) {
+        // ...KEEPING WHAT YOU WERE LOOKING AT, and framing on it. Switching an
+        // eye never moves the camera - things appear and disappear where they
+        // are - but leaving Multi is a mode change, and the one object that
+        // stays would otherwise sit small and off to a side in a camera set to
+        // hold several. If the object being edited is not one of the ones on
+        // screen, the picture wins and the picker follows it: see
+        // leaveMultiObject.
+        const keep = renderer.leaveMultiObject
+            ? renderer.leaveMultiObject()
+            : (renderer.setShownObjects(null, false, { reframe: true }), null);
+        if (keep) {
+            const sel = document.getElementById('objectSelect');
+            if (sel) {
+                sel.value = keep;
+                sel.dispatchEvent(new Event('change'));
+            }
+        }
+    } else {
+        const cur = renderer.currentObjectName;
+        renderer.setShownObjects(cur ? [cur] : []);
+    }
+    afterShownObjectsChange();
+}
+
+function attachObjectList() {
+    const { btn, select } = objectListEls();
+    if (!btn || !select) return;
+    btn.addEventListener('click', toggleObjectMulti);
+    // WHAT IS ON SCREEN CAN CHANGE WITHOUT A CLICK IN THIS LIST - a restored
+    // session, a Copy, the Python API - and so can which object is being
+    // edited. Both labels follow the renderer rather than the buttons.
+    document.addEventListener('py2dmol-color-change', () => {
+        syncObjectColorOption();
+        syncObjectListButton();
+        // ...and the rows themselves, which show which objects are on screen
+        renderObjectList();
+        updateFrameNameLabel();
+    });
+    // OBJECTS ARE ADDED, RENAMED AND REMOVED FROM A DOZEN PLACES - a load, a
+    // Copy, a Cut, a session restore - and every one of them goes through the
+    // select's options. Watching those is one hook instead of a dozen, and it
+    // cannot be forgotten by the next path that adds an object.
+    if (typeof MutationObserver === 'function') {
+        new MutationObserver(() => renderObjectList())
+            .observe(select, { childList: true });
+    }
+    select.addEventListener('change', () => renderObjectList());
+}
+
 function handleObjectChange() {
+    // a different object is a different set of frames, and frame 0 of the new
+    // one may be the same INDEX as the old - so no frame-change event fires
+    setTimeout(updateFrameNameLabel, 0);
+    // ...and a different object has its own clip, which the panel has to show
+    setTimeout(syncClipPanelToObject, 0);
     const objectSelect = document.getElementById('objectSelect');
 
     const selectedObject = objectSelect.value;
@@ -1487,7 +2732,10 @@ function handleObjectChange() {
         const rendererObj = viewerApi.renderer.objectsData[selectedObject];
         if (rendererObj && rendererObj.msa && rendererObj.msa.msasBySequence && rendererObj.msa.chainToSequence) {
             if (selectedObject && window.MSA) {
-                viewerApi.renderer.entropy = window.MSA.mapEntropyToStructure(rendererObj, viewerApi.renderer.currentFrame >= 0 ? viewerApi.renderer.currentFrame : 0);
+                // ...for everything DRAWN - see entropyForDrawn
+                viewerApi.renderer.entropy = viewerApi.renderer.entropyForDrawn
+                    ? viewerApi.renderer.entropyForDrawn()
+                    : window.MSA.mapEntropyToStructure(rendererObj, viewerApi.renderer.currentFrame >= 0 ? viewerApi.renderer.currentFrame : 0);
                 if (viewerApi.renderer._updateEntropyOptionVisibility) viewerApi.renderer._updateEntropyOptionVisibility();
             }
         }
@@ -1522,6 +2770,230 @@ function handleObjectChange() {
 // BEST VIEW ROTATION ANIMATION
 // ============================================================================
 
+// PyMOL's clip, as ONE control: two handles on a single track, Far on the left
+// and Near on the right. They cannot cross - the renderer keeps them half an
+// Angstrom apart - so the range always names a slab that exists.
+//
+// The travel is the structure's reach plus half of it at either end, so a
+// handle can be pushed right through (drawing nothing, a legible mistake) or
+// pulled clear of it (cutting nothing).
+// The RANGE is what this object can span - its rest state, which is the reach
+// of the structure - and the VALUES are where the planes currently are. Taking
+// the range from the current slab instead shrinks the track every time it is
+// refilled: after switching away from a clipped object and back, the handles
+// could not be pulled out past the cut they were already at.
+// THE TRACK IS THE STRUCTURE'S DEPTH IN THIS VIEW, so moving a knob cuts
+// something straight away. The ENDS mean off - a knob at its limit stores the
+// rest state (a radius) rather than this number, so parking it there cuts
+// nothing however the structure is then turned. See clipViewExtent.
+function fillClipPanel() {
+    const r = viewerApi?.renderer;
+    if (!r) return;
+    const view = r.clipViewExtent();
+    const rest = r.clipSlabDefault();
+    if (!view || !rest) return;
+    const span = view.near - view.far;
+    const lo = view.far;
+    const hi = view.near;
+    const at = { clipNear: r.clipSlabOn() ? r.clipNear : rest.near,
+        clipFar: r.clipSlabOn() ? r.clipFar : rest.far };
+    for (const id of ['clipNear', 'clipFar']) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        el.min = lo.toFixed(2);
+        el.max = hi.toFixed(2);
+        el.step = Math.max(0.05, span / 400).toFixed(3);
+        // a plane parked beyond the structure shows as a knob at the end
+        el.value = Math.max(lo, Math.min(hi, at[id])).toFixed(2);
+    }
+    // ...and the soft edge, which rides with the object like the planes do
+    // the control is a PERCENTAGE and the renderer a fraction; one conversion,
+    // here and at the listener, rather than a slider reading 0.15
+    const fade = document.getElementById('clipFadeSlider');
+    if (fade) {
+        fade.value = String(Math.round(
+            100 * (typeof r.clipFade === 'number' ? r.clipFade : 0)));
+    }
+    syncFadeEnabled();
+    showClipValues();
+}
+
+// A SOFT EDGE NEEDS AN EDGE. Clip opens with both planes parked at the rest
+// state - a radius, which holds the whole structure from any angle - so nothing
+// is outside the slab and a fade has nothing to fade: the knob moved and the
+// picture did not, which reads as a broken control rather than as an honest
+// nothing. It stays disabled until a plane is actually cutting.
+function clipCuts() {
+    const r = viewerApi?.renderer;
+    if (!r || !r.clipSlabOn()) return false;
+    const view = r.clipViewExtent();
+    if (!view) return false;
+    const EPS = 1e-6;
+    return r.clipNear < view.near - EPS || r.clipFar > view.far + EPS;
+}
+
+function syncFadeEnabled() {
+    const fade = document.getElementById('clipFadeSlider');
+    if (!fade) return;
+    const dead = !clipCuts();
+    fade.disabled = dead;
+    fade.style.opacity = dead ? '0.4' : '';
+    fade.title = dead
+        ? 'Nothing is being clipped yet - move a knob in, and Fade softens the cut'
+        : 'Soft edge: how far outside each plane the drawing fades out instead of '
+            + 'stopping. 0 is a hard cut.';
+}
+
+// The blue bar between the knobs. No figures beside it: where the knobs are is
+// the answer, and Angstrom along the camera's own depth is not a number anyone
+// reads off a slider.
+function showClipValues() {
+    const r = viewerApi?.renderer;
+    if (!r) return;
+    const bar = document.getElementById('clipSpan');
+    const near = document.getElementById('clipNear');
+    const far = document.getElementById('clipFar');
+    if (!bar || !near || !far || !r.clipSlabOn()) return;
+    const lo = parseFloat(near.min); const hi = parseFloat(near.max);
+    const at = (v) => Math.max(0, Math.min(100, 100 * (v - lo) / Math.max(1e-6, hi - lo)));
+    // from the KNOBS, which are clamped into the track - a plane parked out at
+    // the rest state belongs at the end of the bar, not off it
+    const l = at(parseFloat(far.value));
+    const rgt = at(parseFloat(near.value));
+    bar.style.left = l.toFixed(2) + '%';
+    bar.style.width = Math.max(0, rgt - l).toFixed(2) + '%';
+}
+
+// THE PANEL FOLLOWS THE OBJECT. The slab rides with the object (see
+// _switchToObject in viewer-mol.js), so switching shows the new object's own
+// clip - and an object that has never been clipped gets the rest state, which
+// cuts nothing, rather than the previous object's Angstrom.
+function syncClipPanelToObject() {
+    const panel = document.getElementById('clipPanel');
+    const cb = document.getElementById('clipCheckbox');
+    const r = viewerApi?.renderer;
+    if (!r || !cb || !panel || panel.hidden) return;
+    const slab = r.clipSlabOn()
+        ? { near: r.clipNear, far: r.clipFar }
+        : r.clipSlabDefault();
+    if (!slab) { cb.checked = false; panel.hidden = true; r.clipEditing = false; return; }
+    r.clipEditing = true;
+    r.setClipSlab(slab.near, slab.far);
+    fillClipPanel();
+}
+
+function setupClipPanel() {
+    const cb = document.getElementById('clipCheckbox');
+    const panel = document.getElementById('clipPanel');
+    if (!cb) return;
+    const push = () => {
+        const r = viewerApi?.renderer;
+        const near = document.getElementById('clipNear');
+        const far = document.getElementById('clipFar');
+        if (!r || !near || !far) return;
+        // A KNOB AT ITS END MEANS NO PLANE ON THAT SIDE. The track spans what
+        // is in front of you now; the rest state spans the structure from any
+        // angle. Storing the track's end would mean a slab tight to this view,
+        // which starts cutting the moment you turn - the fault that put the
+        // rest state on a radius in the first place.
+        const rest = r.clipSlabDefault() || { near: parseFloat(near.value), far: parseFloat(far.value) };
+        // WITHIN ONE STEP OF THE END IS AT THE END. The value is quantised to
+        // the step, so a knob dragged all the way to the right lands on 12.637
+        // against a maximum of 12.65 and an exact test never fires - which put
+        // the plane a step inside the structure and started cutting the moment
+        // it was turned.
+        const step = parseFloat(near.step) || 0;
+        const nz = parseFloat(near.value) >= parseFloat(near.max) - step
+            ? rest.near : parseFloat(near.value);
+        const fz = parseFloat(far.value) <= parseFloat(far.min) + step
+            ? rest.far : parseFloat(far.value);
+        r.setClipSlab(nz, fz);
+        // the renderer keeps the two apart rather than letting them cross, so
+        // read back what it took - clamped into the track, since a plane parked
+        // out at the rest state has no position on it
+        near.value = Math.max(parseFloat(near.min),
+            Math.min(parseFloat(near.max), r.clipNear)).toFixed(2);
+        far.value = Math.max(parseFloat(far.min),
+            Math.min(parseFloat(far.max), r.clipFar)).toFixed(2);
+        syncFadeEnabled();
+        showClipValues();
+    };
+    for (const id of ['clipNear', 'clipFar']) {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', push);
+    }
+    // THE SOFT EDGE IS A FRACTION OF THE SLAB, not an Angstrom count: the same
+    // setting then reads the same on a peptide and on a ribosome, and it does
+    // not have to be re-set every time the planes move.
+    const fadeEl = document.getElementById('clipFadeSlider');
+    if (fadeEl) {
+        fadeEl.addEventListener('input', () => {
+            const r = viewerApi?.renderer;
+            if (r && r.setClipFade) r.setClipFade(parseFloat(fadeEl.value) / 100);
+        });
+    }
+    // AUTO: THE SLAB THE SELECTION ASKS FOR, and the rest state when there is
+    // no selection to ask. It replaces Reset rather than joining it - with
+    // nothing picked the two are the same answer, and a cut is nearly always
+    // wanted around something rather than at a depth chosen by dragging.
+    const auto = document.getElementById('clipAutoButton');
+    if (auto) {
+        auto.addEventListener('click', (e) => {
+            e.preventDefault();
+            const r = viewerApi?.renderer;
+            if (!r || !r.autoClip) return;
+            // ...and it KEEPS the slab on the selection as the model turns -
+            // see _refreshAutoClip. Pressing it again at another angle used to
+            // give a different answer, because the cut had stayed where the
+            // selection had been.
+            if (!r.autoClip()) return;
+            fillClipPanel();
+        });
+    }
+    // THE BUTTON PUTS THE PANEL AWAY, IT DOES NOT UNDO THE CUT. Switching Clip
+    // off leaves the slab where it was set - which is the point of setting it.
+    cb.addEventListener('change', () => {
+        const r = viewerApi?.renderer;
+        if (!r || !r.setClipSlab) { cb.checked = false; return; }
+        if (!cb.checked) {
+            r.clipEditing = false;
+            if (panel) panel.hidden = true;
+            return;
+        }
+        // A slab needs something to cut: with nothing loaded the renderer has
+        // no reach to offer, and the control must not claim otherwise.
+        const slab = r.clipSlabOn()
+            ? { near: r.clipNear, far: r.clipFar }     // reopening: as it was left
+            : r.clipSlabDefault();
+        if (!slab) { cb.checked = false; return; }
+        r.clipEditing = true;
+        r.setClipSlab(slab.near, slab.far);
+        if (panel) panel.hidden = false;
+        fillClipPanel();
+    });
+}
+
+// WHICH FILE THE CURRENT FRAME CAME FROM, in the sequence strip's header.
+// Frames carry a name only when they were loaded from separate files (or from a
+// multi-model file); anything else leaves the label empty rather than inventing
+// one.
+function updateFrameNameLabel() {
+    const el = document.getElementById('frameNameLabel');
+    if (!el) return;
+    const r = viewerApi?.renderer;
+    const obj = r && r.objectsData ? r.objectsData[r.currentObjectName] : null;
+    const frames = obj && obj.frames;
+    if (!frames || !frames.length) { el.textContent = ''; return; }
+    // ...and only where there is more than one FRAME, since for a single
+    // structure the object picker beside it already says the same word - and
+    // with several objects it says it too, which is why the object name is not
+    // repeated here.
+    const i = (typeof r.currentFrame === 'number' && r.currentFrame >= 0) ? r.currentFrame : 0;
+    const f = frames[i];
+    el.textContent = (frames.length > 1 && f && f.name) ? f.name : '';
+    el.title = el.textContent;
+}
+
 function applyBestViewRotation(animate = true) {
     if (!viewerApi || !viewerApi.renderer) return;
     const renderer = viewerApi.renderer;
@@ -1537,67 +3009,99 @@ function applyBestViewRotation(animate = true) {
     const frame = object.frames[currentFrame];
     if (!frame || !frame.coords || frame.coords.length === 0) return;
 
-    // Ensure frame data is loaded into renderer if not already
+    // Ensure frame data is loaded into renderer if not already.
+    // Through reloadDrawn: with several objects merged, lastRenderedFrame does
+    // not track the merge, so loading "the frame" here would throw every other
+    // object off the screen on the way to orienting on them.
     if (renderer.coords.length === 0 || renderer.lastRenderedFrame !== currentFrame) {
-        renderer._loadFrameData(currentFrame, true); // Load without render
+        renderer.reloadDrawn(true); // Load without render
     }
 
-    // WHAT TO ORIENT ON, in priority order:
-    //   1. the residue SELECTION, if the user has made one - orienting on what
-    //      you just picked is the whole point of picking it
-    //   2. otherwise whatever is VISIBLE, so hiding a chain and orienting still
-    //      frames what is left rather than empty space around it
-    //   3. otherwise the entire object
-    // Selection and visibility are separate things here (see technical_readme):
-    // a selection is what you are working on, visibility is what is drawn, and
-    // only the first is a statement about where you want to be looking.
+    // WHAT TO ORIENT ON:
+    //   selection INTERSECTED WITH what is visible, or just what is visible
+    //   when nothing is selected. A hidden residue is not something you are
+    //   looking at, so it cannot pull the view towards itself either way.
+    //
+    // ASK THE MASK, NOT THE MODEL. This used to read getVisibility().positions,
+    // which is the visibility MODEL - and that field is normalised to hold
+    // every position whenever the mode is 'default'. Hide a chain (which sets
+    // .chains and leaves the mode alone) or drag a PAE box (which sets
+    // .paeBoxes and never touches .positions at all) and the field still said
+    // "all of them", so the first branch matched and Orient framed the whole
+    // structure. renderer.visiblePositions is the composed mask the renderer
+    // actually draws from: null means everything is visible, an empty Set
+    // means nothing is.
+    //
     // residueSelection is a Set, or null when nothing is selected; some paths
     // hand back an array, so normalise before asking for .size
     const rawSel = renderer.residueSelection;
     const picked = rawSel
         ? (rawSel instanceof Set ? rawSel : new Set(rawSel))
         : null;
-    const selection = renderer.getVisibility();
-    let selectedPositionIndices = null;
+    const visible = renderer.visiblePositions;   // null = everything
+    let selectedPositionIndices = null;          // null = everything
 
-    // Determine which positions to use: selected positions if available, otherwise all positions
     if (picked && picked.size > 0) {
-        selectedPositionIndices = picked;
-    } else if (selection && selection.positions && selection.positions.size > 0) {
-        // Use only selected positions
-        selectedPositionIndices = selection.positions;
-    } else if (selection && selection.visibilityMode === 'default' &&
-        (!selection.chains || selection.chains.size === 0)) {
-        // Default mode with no explicit selection: use all positions
-        selectedPositionIndices = null; // Will use all positions
-    } else if (selection && selection.chains && selection.chains.size > 0) {
-        // Chain-based selection: get all positions in selected chains
-        selectedPositionIndices = new Set();
-        for (let i = 0; i < frame.coords.length; i++) {
-            if (frame.chains && frame.chains[i] && selection.chains.has(frame.chains[i])) {
-                selectedPositionIndices.add(i);
-            }
-        }
-        // If no positions found in chains, fall back to all positions
+        selectedPositionIndices = visible
+            ? new Set([...picked].filter((i) => visible.has(i)))
+            : new Set(picked);
+        // A SELECTION THAT IS ENTIRELY HIDDEN is not a request to orient on
+        // nothing - it is stale, left behind by whatever was hidden after it
+        // was made. Fall back to what is on screen rather than returning with
+        // no coordinates and letting the button do nothing.
         if (selectedPositionIndices.size === 0) {
-            selectedPositionIndices = null;
+            selectedPositionIndices = visible ? new Set(visible) : null;
         }
-    } else {
-        // No selection or empty selection: use all positions
-        selectedPositionIndices = null;
+    } else if (visible) {
+        selectedPositionIndices = new Set(visible);
     }
+
+    // EVERY ATOM OF WHAT WAS PICKED, not one point per residue. A residue is a
+    // single position in this model, so orienting on one framed a point; its
+    // side-chain atoms and a ligand's other atoms are positions too, and they
+    // are what the thing actually occupies. See framingPositions - the
+    // selection itself is not touched.
+    if (selectedPositionIndices && renderer.framingPositions) {
+        selectedPositionIndices = renderer.framingPositions(selectedPositionIndices);
+    }
+
+    // THE LIVE COORDINATES, not the stored frame's. A shown side chain is
+    // APPENDED to the renderer's array when the frame loads, so its atoms exist
+    // at indices past the end of frame.coords, and the stored frame does not
+    // have them at all.
+    //
+    // WHENEVER THERE ARE ANY, not "when there are at least as many as the
+    // picker's object has". With several objects on screen the array holds
+    // exactly what is DRAWN, which can be far SHORTER than the object the
+    // picker names - switch the picker's object off and leave a small one on,
+    // and that test failed, so Orient swung the view onto a structure that was
+    // not on screen. The array is what is drawn; the frame is the fallback for
+    // when nothing is loaded at all.
+    const liveCoords = (renderer.coords && renderer.coords.length)
+        ? renderer.coords : (frame ? frame.coords : []);
+    if (!liveCoords.length) return;
+    const xyzAt = (i) => {
+        const c = liveCoords[i];
+        if (!c) return null;
+        return Array.isArray(c) ? c : [c.x, c.y, c.z];
+    };
 
     // Filter coordinates to only selected positions (or use all if no selection)
     let coordsForBestView = [];
     if (selectedPositionIndices && selectedPositionIndices.size > 0) {
         for (const positionIndex of selectedPositionIndices) {
-            if (positionIndex >= 0 && positionIndex < frame.coords.length) {
-                coordsForBestView.push(frame.coords[positionIndex]);
-            }
+            const c = positionIndex >= 0 ? xyzAt(positionIndex) : null;
+            if (c) coordsForBestView.push(c);
         }
     } else {
-        // No selection or all positions selected: use all coordinates
-        coordsForBestView = frame.coords;
+        // EVERYTHING THAT IS DRAWN, which with nothing selected is the whole
+        // array - one object or several, and never an object that is loaded
+        // but switched off. This used to fall back to the picker's own frame,
+        // which is a different structure the moment its eye is closed.
+        for (let i = 0; i < liveCoords.length; i++) {
+            const c = xyzAt(i);
+            if (c) coordsForBestView.push(c);
+        }
     }
 
     if (coordsForBestView.length === 0) {
@@ -2350,7 +3854,7 @@ async function addMetadataToExistingObject({ msaFiles, jsonFiles, contactFiles, 
     return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
 }
 
-function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, chainFilter) {
+async function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, chainFilter) {
     let models;
     let modresMap = null;
     let chemCompMap = null;
@@ -2368,7 +3872,10 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
         let parseResult;
 
         if (isCIF) {
-            parseResult = parseCIF(text);
+            setStage('Reading metadata');
+            await yieldToBrowser();
+            setStage('Reading atoms');
+            parseResult = await parseCIFAsync(text);
             models = parseResult.models;
             cachedLoops = parseResult.loops;
             chemCompMap = parseResult.chemCompMap;
@@ -2438,7 +3945,6 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
     let framesAdded = 0;
     const loadAsFramesCheckbox = document.getElementById('loadAsFramesCheckbox');
     const alignFramesCheckbox = document.getElementById('alignFramesCheckbox');
-    const isLoadAsFrames = loadAsFramesCheckbox ? loadAsFramesCheckbox.checked : false;
     const shouldAlign = alignFramesCheckbox ? alignFramesCheckbox.checked : false;
 
     // Check if object with same name already exists in tempBatch or pendingObjects
@@ -2466,6 +3972,53 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
         targetObject.frames.length > 0 ||
         models.length > 1);
 
+    // WHAT THE CRYSTAL BROUGHT, DROPPED BEFORE ANYTHING SEES IT. A buffer salt
+    // or a cryoprotectant is a real residue in the file and not a part of the
+    // molecule; drawn beside the one ligand that matters it has the same
+    // weight. Filtered at the ATOM list, like the ligand switch below it, so
+    // nothing downstream - positions, bonds, the sequence panel, picking -
+    // ever learns they were there. Switch it off and they all come back.
+    // See CRYSTAL_ADDITIVES in web/utils.js for what is on the list and, more
+    // importantly, what is deliberately not.
+    function maybeFilterAdditives(atoms) {
+        if (window.viewerConfig?.ui?.filterAdditives === false) return atoms;
+        const drop = window.CRYSTAL_ADDITIVES;
+        if (!drop || !drop.size) return atoms;
+        // ...AND THE IONS THERE ARE HUNDREDS OF. A single magnesium is an
+        // active site; 4UG0's 239 are the mortar a ribosome is built with.
+        // Counted per RESIDUE, and only for single-atom ones - see
+        // CROWD_ION_COUNT in web/utils.js.
+        const crowd = window.CROWD_ION_COUNT || 20;
+        const per = new Map();          // code -> { res, mono }
+        let runKey = null; let runCode = null; let runLen = 0;
+        const flush = () => {
+            if (runCode === null) return;
+            let e = per.get(runCode);
+            if (!e) { e = { res: 0, mono: true }; per.set(runCode, e); }
+            e.res++;
+            if (runLen > 1) e.mono = false;
+        };
+        for (const a of atoms) {
+            if (!a || a.record !== 'HETATM') continue;
+            const key = a.chain + ':' + a.resSeq + ':' + a.resName;
+            if (key !== runKey) { flush(); runKey = key; runCode = a.resName; runLen = 0; }
+            runLen++;
+        }
+        flush();
+        const crowded = new Set();
+        for (const [code, e] of per) {
+            if (e.mono && e.res > crowd) crowded.add(code);
+        }
+        let n = 0;
+        const kept = atoms.filter((a) => {
+            if (!a || a.record !== 'HETATM') return true;
+            if (!drop.has(a.resName) && !crowded.has(a.resName)) return true;
+            n++;
+            return false;
+        });
+        return n ? kept : atoms;
+    }
+
     function maybeFilterLigands(atoms) {
         const shouldLoadLigands = window.viewerConfig?.ui?.loadLigands ?? false;
         if (shouldLoadLigands) return atoms;
@@ -2473,19 +4026,29 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
         // Use modresMap and chemCompMap from parent scope (from parse results)
         // Group positions by residue to check for structural characteristics
         const residueMap = new Map();
+        // Grouped by RUN, not by rebuilding the key for every atom - see
+        // convertParsedToFrameData in utils.js, which groups the same way and
+        // explains why.
+        let runChain = null, runSeq = null, runName = null, residue = null;
         for (const atom of atoms) {
             if (!atom) continue;
-            const resKey = `${atom.chain}:${atom.resSeq}:${atom.resName}`;
-            if (!residueMap.has(resKey)) {
-                residueMap.set(resKey, {
-                    resName: atom.resName,
-                    record: atom.record,
-                    chain: atom.chain,
-                    resSeq: atom.resSeq,
-                    atoms: []
-                });
+            if (residue === null || atom.chain !== runChain
+                || atom.resSeq !== runSeq || atom.resName !== runName) {
+                const resKey = `${atom.chain}:${atom.resSeq}:${atom.resName}`;
+                residue = residueMap.get(resKey);
+                if (!residue) {
+                    residue = {
+                        resName: atom.resName,
+                        record: atom.record,
+                        chain: atom.chain,
+                        resSeq: atom.resSeq,
+                        atoms: []
+                    };
+                    residueMap.set(resKey, residue);
+                }
+                runChain = atom.chain; runSeq = atom.resSeq; runName = atom.resName;
             }
-            residueMap.get(resKey).atoms.push(atom);
+            residue.atoms.push(atom);
         }
 
         // Convert residueMap to array for connectivity checks
@@ -2538,90 +4101,112 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
             }
         }
 
-        // Convert original model to identify which positions are ligands
-        // This is needed to filter PAE matrix correctly
-        // We need to identify ligands in the ORIGINAL model to map PAE positions correctly
-        // IMPORTANT: includeAllResidues=true ensures ALL positions are included to match PAE matrix size
-        const originalFrameData = convertParsedToFrameData(models[i], modresMap, chemCompMap, true, conectMap, structConn, chemCompBondMap);
-
-        // Build position map from original model for classification
-        const originalResidueMap = new Map();
-        for (const atom of models[i]) {
-            if (!atom || atom.resName === 'HOH') continue;
-            const resKey = `${atom.chain}:${atom.resSeq}:${atom.resName}`;
-            if (!originalResidueMap.has(resKey)) {
-                originalResidueMap.set(resKey, {
-                    resName: atom.resName,
-                    record: atom.record,
-                    chain: atom.chain,
-                    resSeq: atom.resSeq,
-                    atoms: []
-                });
-            }
-            originalResidueMap.get(resKey).atoms.push(atom);
-        }
-
-        // Convert to array for connectivity checks
-        const originalAllResidues = Array.from(originalResidueMap.values());
-        originalAllResidues.sort((a, b) => {
-            if (a.chain !== b.chain) {
-                return a.chain.localeCompare(b.chain);
-            }
-            return a.resSeq - b.resSeq;
-        });
-
-        // Map each position in originalFrameData to its corresponding position and check if it's a ligand
+        // ONLY THE PAE NEEDS THIS, so only build it when there is a PAE.
+        //
+        // Everything down to the end of this block exists to produce
+        // originalIsLigandPosition, and that is read in exactly one place -
+        // the `if (paeData)` branch below - to line a PAE matrix up with the
+        // positions it was computed for. Building it unconditionally means a
+        // SECOND full convertParsedToFrameData over every atom, plus a residue
+        // map and a per-position classification, for every structure whether
+        // it has a PAE or not.
+        //
+        // On 3J3Q that is 2.7 s of a 13 s load: convertParsedToFrameData
+        // measured 5.5 s across both call sites against 2.8 s for the one that
+        // feeds the drawing.
+        let originalFrameData = null;
         const originalIsLigandPosition = [];
+        if (paeData) {
+            // Convert original model to identify which positions are ligands
+            // This is needed to filter PAE matrix correctly
+            // We need to identify ligands in the ORIGINAL model to map PAE positions correctly
+            // IMPORTANT: includeAllResidues=true ensures ALL positions are included to match PAE matrix size
+            originalFrameData = convertParsedToFrameData(models[i], modresMap, chemCompMap, true, conectMap, structConn, chemCompBondMap);
 
-        // Cache classification results per position to avoid re-classifying the same position
-        const residueClassificationCache = new Map(); // resKey -> {is_protein, nucleicType}
-
-        if (originalFrameData.position_types && originalFrameData.position_names && originalFrameData.residue_numbers) {
-            for (let idx = 0; idx < originalFrameData.position_types.length; idx++) {
-                const positionType = originalFrameData.position_types[idx];
-                const resName = originalFrameData.position_names[idx];
-                const resSeq = originalFrameData.residue_numbers[idx];
-                const chain = originalFrameData.chains ? originalFrameData.chains[idx] : '';
-
-                // Find the position in the original model
-                const resKey = chain + ':' + resSeq + ':' + resName;
-                const residue = originalResidueMap.get(resKey);
-
-                if (residue) {
-                    // Check cache first to avoid re-classifying the same position
-                    let classification = residueClassificationCache.get(resKey);
-                    if (!classification) {
-                        // Use the same classification logic as maybeFilterLigands (with connectivity checks)
-                        const is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, originalAllResidues);
-                        const nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, originalAllResidues);
-
-                        // Cache the result
-                        classification = { is_protein, nucleicType };
-                        residueClassificationCache.set(resKey, classification);
-                    }
-
-                    // It's a ligand if it's NOT protein AND NOT nucleic acid
-                    originalIsLigandPosition.push(!classification.is_protein && classification.nucleicType === null);
-                } else {
-                    // If we can't find the residue, use the position type as fallback
-                    originalIsLigandPosition.push(positionType === 'L');
+            // Build position map from original model for classification
+            const originalResidueMap = new Map();
+            for (const atom of models[i]) {
+                if (!atom || atom.resName === 'HOH') continue;
+                const resKey = `${atom.chain}:${atom.resSeq}:${atom.resName}`;
+                if (!originalResidueMap.has(resKey)) {
+                    originalResidueMap.set(resKey, {
+                        resName: atom.resName,
+                        record: atom.record,
+                        chain: atom.chain,
+                        resSeq: atom.resSeq,
+                        atoms: []
+                    });
                 }
+                originalResidueMap.get(resKey).atoms.push(atom);
             }
-        } else {
-            // Fallback: use position_types if available
-            originalIsLigandPosition.push(...(originalFrameData.position_types ?
-                originalFrameData.position_types.map(type => type === 'L') :
-                Array(originalFrameData.coords.length).fill(false)));
+
+            // Convert to array for connectivity checks
+            const originalAllResidues = Array.from(originalResidueMap.values());
+            originalAllResidues.sort((a, b) => {
+                if (a.chain !== b.chain) {
+                    return a.chain.localeCompare(b.chain);
+                }
+                return a.resSeq - b.resSeq;
+            });
+
+            // Map each position in originalFrameData to its corresponding position and check if it's a ligand
+            
+
+            // Cache classification results per position to avoid re-classifying the same position
+            const residueClassificationCache = new Map(); // resKey -> {is_protein, nucleicType}
+
+            if (originalFrameData.position_types && originalFrameData.position_names && originalFrameData.residue_numbers) {
+                for (let idx = 0; idx < originalFrameData.position_types.length; idx++) {
+                    const positionType = originalFrameData.position_types[idx];
+                    const resName = originalFrameData.position_names[idx];
+                    const resSeq = originalFrameData.residue_numbers[idx];
+                    const chain = originalFrameData.chains ? originalFrameData.chains[idx] : '';
+
+                    // Find the position in the original model
+                    const resKey = chain + ':' + resSeq + ':' + resName;
+                    const residue = originalResidueMap.get(resKey);
+
+                    if (residue) {
+                        // Check cache first to avoid re-classifying the same position
+                        let classification = residueClassificationCache.get(resKey);
+                        if (!classification) {
+                            // Use the same classification logic as maybeFilterLigands (with connectivity checks)
+                            const is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, originalAllResidues);
+                            const nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, originalAllResidues);
+
+                            // Cache the result
+                            classification = { is_protein, nucleicType };
+                            residueClassificationCache.set(resKey, classification);
+                        }
+
+                        // It's a ligand if it's NOT protein AND NOT nucleic acid
+                        originalIsLigandPosition.push(!classification.is_protein && classification.nucleicType === null);
+                    } else {
+                        // If we can't find the residue, use the position type as fallback
+                        originalIsLigandPosition.push(positionType === 'L');
+                    }
+                }
+            } else {
+                // Fallback: use position_types if available
+                originalIsLigandPosition.push(...(originalFrameData.position_types ?
+                    originalFrameData.position_types.map(type => type === 'L') :
+                    Array(originalFrameData.coords.length).fill(false)));
+            }
         }
 
         // Filter ligands from model
-        const model = maybeFilterLigands(models[i]);
-        const originalPositionCount = models[i].length;
-        const filteredPositionCount = model.length;
+        setStage('Grouping residues');
+        // ...but only where there is something to wait for: a trajectory runs
+        // this loop once per model, and a model can be 0.1 ms of work against a
+        // 4 ms clamped timer. See yieldIfBusy in utils.js.
+        await yieldIfBusy();
+        const model = maybeFilterLigands(maybeFilterAdditives(models[i]));
 
         // Convert parsed atoms to frame data
         // Pass conectMap (PDB) and structConn (CIF) for bond resolution
-        let frameData = convertParsedToFrameData(
+        setStage('Building positions');
+        await yieldIfBusy();
+        let frameData = await convertParsedToFrameDataAsync(
             model,
             modresMap,
             chemCompMap,
@@ -2630,6 +4215,7 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
             structConn,
             chemCompBondMap
         );
+        setStage('Preparing frames');
         if (frameData.coords.length === 0) continue;
 
         // Store PAE data
@@ -2645,7 +4231,6 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
                 // We need to filter out ligand positions from the PAE matrix
 
                 // Count total ligands identified
-                const totalLigands = originalIsLigandPosition.filter(x => x).length;
 
                 // Determine dimensions
                 const isFlat = !!paeData.buffer;
@@ -2732,6 +4317,11 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
             position_types: frameData.position_types ? [...frameData.position_types] : undefined,
             plddts: frameData.plddts ? [...frameData.plddts] : undefined,
             position_names: frameData.position_names ? [...frameData.position_names] : undefined,
+            // A LIGAND ATOM'S OWN NAME AND ELEMENT, present only where the file
+            // had a ligand in it. The element is what colour-by-element reads;
+            // the name is what the atom is called.
+            position_atoms: frameData.position_atoms ? [...frameData.position_atoms] : undefined,
+            position_elements: frameData.position_elements ? [...frameData.position_elements] : undefined,
             residue_numbers: frameData.residue_numbers ? [...frameData.residue_numbers] : undefined,
             pae: frameData.pae,
             // Carried by REFERENCE, not copied. This is a read-only table of
@@ -2744,7 +4334,14 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
             //
             // Coefficients are relative to the residue's own backbone frame, so
             // the re-centring that happens to coords below does not touch them.
-            sidechains: frameData.sidechains
+            sidechains: frameData.sidechains,
+            // WHERE THIS FRAME CAME FROM. Loading a folder of predictions as
+            // frames used to lose which file each one was: the object took one
+            // name and the frames were numbered. The strip shows this beside
+            // the frame counter, so a frame you are looking at can be named.
+            // A multi-model file adds the model's own number, since the file
+            // name alone would say the same thing for every frame in it.
+            name: models.length > 1 ? `${name} #${i + 1}` : name
         };
 
         // Only include bond data if it differs from previous frame (optimization)
@@ -2782,9 +4379,32 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
         const firstFrame = referenceFrames[0];
 
         if (firstFrame && rawFrames.length > 0) {
-            // Determine which chain to use for alignment (use first available chain from reference frame)
+            // WHICH CHAIN TO ALIGN ON. The Align chain field, when it names one
+            // the structure has; otherwise the first chain in the reference
+            // frame, which is what this always did.
+            //
+            // A name that is not there is SAID, not silently ignored: asking to
+            // align on B and getting A without being told is the kind of thing
+            // that is only noticed much later, in a figure.
             let alignmentChainId = null;
-            if (firstFrame.chains && firstFrame.chains.length > 0) {
+            const wanted = (document.getElementById('alignChainInput')?.value || '').trim();
+            if (wanted && firstFrame.chains) {
+                if (firstFrame.chains.includes(wanted)) {
+                    alignmentChainId = wanted;
+                } else {
+                    // ...case-insensitively too, since chain ids are usually
+                    // typed in whatever case is to hand
+                    const hit = firstFrame.chains.find((c) => c
+                        && c.toUpperCase() === wanted.toUpperCase());
+                    if (hit) alignmentChainId = hit;
+                }
+                if (alignmentChainId === null) {
+                    setStatus(`No chain "${wanted}" in ${targetObjectName} - aligning on `
+                        + `the first chain instead.`, true);
+                }
+            }
+            if (alignmentChainId === null
+                && firstFrame.chains && firstFrame.chains.length > 0) {
                 // Find first non-empty chain ID
                 for (let j = 0; j < firstFrame.chains.length; j++) {
                     const chainId = firstFrame.chains[j];
@@ -2868,6 +4488,39 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
     // ========================================================================
     // STEP 3: Center each frame based on first available chain
     // ========================================================================
+    // ...BUT NOT EACH FRAME SEPARATELY WHEN THEY HAVE JUST BEEN ALIGNED.
+    //
+    // Centring subtracts a frame's own centroid, which is a TRANSLATION - and
+    // an alignment is a rotation AND a translation. Doing this per frame after
+    // aligning throws the alignment's half away and puts every frame back on
+    // its own centre, so the superposition survives only where the two happen
+    // to coincide. Measured on a two-chain fixture aligned on chain B: the
+    // frame moved 14.8 A after the alignment placed it, and chain B came out
+    // 14.9 A from where it was aligned to - the whole of the error.
+    //
+    // Aligned frames are already in the reference's frame of reference, so they
+    // are shifted TOGETHER by one offset: the reference's, which is zero once
+    // the object holds a centred frame already. Unaligned trajectories keep the
+    // old per-frame centring, which is what removes their drift.
+    const alignedTogether = isTrajectory && shouldAlign;
+    let sharedOffset = null;
+    // WHERE THE OBJECT SITS IS THE FILE'S BUSINESS.
+    //
+    // Every frame used to be moved so that its first chain's centroid was at
+    // the origin, which is an alignment by another name: two structures loaded
+    // as two objects came up stacked on each other whatever their coordinates
+    // said, and a complex split across two files lost the one thing the files
+    // agreed on. Align Frames is for FRAMES - it says so - and adding an
+    // object is not adding a frame.
+    //
+    // What the centring is still for is DRIFT: frame 30 of a trajectory that
+    // has wandered off is put back beside frame 0. So the offsets are relative
+    // now - measured from the frame this object already holds, or from the
+    // first of the batch - and the first frame of a new object is not moved at
+    // all. The renderer frames the camera on each object's own centre
+    // (_recomputeObjectStats), so a structure far from the origin is drawn
+    // exactly as before.
+    let referenceCentre = null;
     // Determine which chain to use for centering
     let centeringChainId = null;
     if (rawFrames.length > 0 && rawFrames[0].chains && rawFrames[0].chains.length > 0) {
@@ -2879,6 +4532,23 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
                 break;
             }
         }
+    }
+
+    // The centroid of one frame over the centring chain, or over everything
+    // when there is no chain information - the same reckoning the loop below
+    // does, needed once more for the reference frame.
+    function centroidOfFrame(frame, chainId) {
+        if (!frame || !frame.coords || !frame.coords.length) return null;
+        let n = 0; const c = [0, 0, 0];
+        for (let j = 0; j < frame.coords.length; j++) {
+            if (chainId !== null && frame.chains && frame.chains[j] !== chainId) continue;
+            c[0] += frame.coords[j][0];
+            c[1] += frame.coords[j][1];
+            c[2] += frame.coords[j][2];
+            n++;
+        }
+        if (!n) return null;
+        return [c[0] / n, c[1] / n, c[2] / n];
     }
 
     for (let i = 0; i < rawFrames.length; i++) {
@@ -2901,7 +4571,7 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
 
         if (centeringCoords.length > 0) {
             // Compute center of centering chain (or all positions)
-            const center = [0, 0, 0];
+            let center = [0, 0, 0];
             for (const coord of centeringCoords) {
                 center[0] += coord[0];
                 center[1] += coord[1];
@@ -2910,6 +4580,26 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
             center[0] /= centeringCoords.length;
             center[1] /= centeringCoords.length;
             center[2] /= centeringCoords.length;
+
+            // WHAT THIS FRAME IS MEASURED AGAINST: the object's first frame
+            // when it has one, otherwise the first frame of this batch, which
+            // therefore does not move.
+            if (referenceCentre === null) {
+                const ref = targetObject.frames.length > 0
+                    ? targetObject.frames[0] : rawFrames[0];
+                referenceCentre = centroidOfFrame(ref, centeringChainId) || center;
+            }
+            if (alignedTogether) {
+                // Aligned frames are already in the reference's frame of
+                // reference - the rotation and the translation both - so there
+                // is nothing left to take off them.
+                if (sharedOffset === null) sharedOffset = [0, 0, 0];
+                center = sharedOffset;
+            } else {
+                center = [center[0] - referenceCentre[0],
+                    center[1] - referenceCentre[1],
+                    center[2] - referenceCentre[2]];
+            }
 
             // Subtract center from all coordinates
             for (const coord of frame.coords) {
@@ -2933,6 +4623,141 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
     }
 
     return framesAdded;
+}
+
+// THE PAGE OPENS ON CARTOON, so a structure can arrive that the cartoon build
+// cannot survive - a capsid asks for gigabytes of prims and takes the tab with
+// it. setStyle refuses that switch, but nothing refuses a structure loaded into
+// a viewer already in cartoon, which before the default changed could not
+// happen. Same test setStyle uses, same escape hatch (renderer.cartoonForce).
+// TUBE IS THE DEFAULT PAST TWO THOUSAND RESIDUES.
+//
+// Not the same rule as dropToTubeIfCartoonWontFit below, which is about a
+// cartoon that cannot be BUILT - tens of thousands of positions and a heap
+// that will not hold them. This one is about what is worth looking at: past
+// a couple of thousand residues the ribbon is a tangle at any zoom that fits
+// it on screen, it costs several times a tube to draw, and the first thing to
+// do with it is turn it down. Starting there and letting the user reach for
+// the cartoon is the better of the two wrong-by-default choices.
+//
+// It was a thousand, which took the cartoon away from structures that still
+// read perfectly well as one - a ribosomal subunit is a tangle, a couple of
+// ordinary chains is not.
+//
+// ONLY WHILE NOBODY HAS CHOSEN. Picking a style in the Style panel sets
+// renderer.styleChosen, and a restored session sets it too - a saved view says
+// what it wants. Without that, loading a second structure would undo a choice
+// made after the first.
+const BIG_STRUCTURE_RESIDUES = 2000;
+
+/**
+ * ...AND THE SAME RULE FOR WHAT IS ON SCREEN, which is not the same question
+ * once several objects can be drawn at once.
+ *
+ * The rule below decides from the object being LOADED, because it runs while
+ * that object is being switched to and the renderer's arrays still describe
+ * the previous one. In Multi that is the wrong structure to ask about: load a
+ * ribosome (tube, correctly), load a peptide beside it (cartoon, correctly for
+ * the peptide), then show both - and 17,618 positions are drawn as a ribbon
+ * because the last thing loaded was small. Measured: an eye toggle there costs
+ * 1.2 s on the GPU path and 250 ms on the CPU one, against 50-120 ms for the
+ * same pair in tube.
+ *
+ * So the drawn set gets the same rule, counted off the LIVE array - which by
+ * this point is the merge, and is exactly what will be drawn.
+ */
+function tubeByDefaultForDrawn(r) {
+    if (!r || r.cartoonForce || !r.setStyle || !r.positionsOfObjects) return;
+    const t = r.positionTypes;
+    if (!t || !t.length) return;
+    // PER OBJECT, because the style is per object: a ribosome is a tangle as a
+    // ribbon whatever it is standing next to, and the peptide beside it is not
+    // a tangle whatever IT is standing next to. Counted off the live array, so
+    // this is the structure that will actually be drawn.
+    let big = 0;
+    for (const nm of r.drawnObjects()) {
+        const o = r.objectsData[nm];
+        // hand-picked stays picked - for this object, or globally from a
+        // restored session, which says what it wants
+        if (!o || o.styleChosen || r.styleChosen) continue;
+        let n = 0;
+        for (const i of r.positionsOfObjects([nm])) {
+            const ty = t[i];
+            if (ty === 'P' || ty === 'D' || ty === 'R') n++;
+        }
+        if (!n) continue;
+        const want = n > BIG_STRUCTURE_RESIDUES ? 'tube' : 'cartoon';
+        if (r.styleForObject(nm) === want) continue;
+        r.setStyleForObject(nm, want);
+        if (want === 'tube') big = Math.max(big, n);
+    }
+    // ...and the renderer's own style follows the object being EDITED, which
+    // is what the Style panel describes and what a single-object frame draws.
+    const cur = r.styleForObject(r.currentObjectName);
+    if (cur !== r.style) r.setStyle(cur, true);
+    if (big) {
+        styleFallbackNote = 'showing tube';
+        setStatus('');
+    }
+}
+
+function tubeByDefaultIfBig(r, objectName) {
+    // A HAND-PICKED STYLE IS STICKY AND AN AUTOMATIC ONE IS NOT. Choosing in
+    // the Style panel sets styleChosen, and from then on this rule keeps out
+    // of the way for every object - a stated preference is a preference. What
+    // the rule decides on its own belongs to the structure it decided about.
+    if (!r || r.styleChosen || r.cartoonForce) return;
+    if (!r.setStyle) return;
+    // COUNTED OFF THE FRAME, not off the renderer. This runs while the object
+    // is being switched to, and renderer.positionTypes is still the PREVIOUS
+    // object's at that point - empty on the first load, so the rule read every
+    // structure as nothing and never fired. Measured on 1AOI: 0 types against
+    // the frame's 1,097.
+    const obj = r.objectsData && r.objectsData[objectName];
+    const frame = obj && obj.frames && obj.frames[0];
+    if (!frame) return;
+    // RESIDUES, not positions: a position is a residue for protein and nucleic
+    // acid, but a ligand contributes one per atom and side chains append more,
+    // so counting coordinates would put a 300-residue structure with a big
+    // ligand over the line. A frame with no types at all is all backbone.
+    const t = frame.position_types;
+    let n = 0;
+    if (t && t.length) {
+        for (let i = 0; i < t.length; i++) {
+            if (t[i] === 'P' || t[i] === 'D' || t[i] === 'R') n++;
+        }
+    } else {
+        n = (frame.coords && frame.coords.length) || 0;
+    }
+    // BOTH WAYS, which is the whole of it. This used to return unless the
+    // renderer was already on cartoon, so the first big structure switched it
+    // to tube and every structure after it stayed there however small: load a
+    // ribosome, fetch a peptide, get a tube. The decision is about the
+    // structure being loaded, so it has to be able to answer either way.
+    const want = n > BIG_STRUCTURE_RESIDUES ? 'tube' : 'cartoon';
+    if (r.style === want) return;
+    r.setStyle(want);
+    if (want === 'tube') {
+        // A NOTE, NOT A LESSON. It used to end "; pick Cartoon in Style for
+        // the ribbon", which is the app explaining its own menus on a status
+        // line - and it rode along on every load message after it.
+        styleFallbackNote = 'showing tube';
+        setStatus('');
+    }
+}
+
+function dropToTubeIfCartoonWontFit(r) {
+    if (!r || r.style !== 'cartoon' || r.cartoonForce) return;
+    if (!r._cartoonWouldFit || !r.setStyle) return;
+    const fit = r._cartoonWouldFit();
+    if (fit.ok) return;
+    r.setStyle('tube');
+    // STICKY, because this happens mid-load and the messages that come after it
+    // - "Loaded.", the fetch summary, an MSA result - would each bury it. It
+    // rides along on whatever the load ends up saying, and the next load clears
+    // it. Silently changing what the user is looking at is not an option.
+    styleFallbackNote = `cartoon needs ~${fit.needMB} MB - showing tube`;
+    setStatus('');
 }
 
 function applyPendingObjects() {
@@ -2960,6 +4785,22 @@ function applyPendingObjects() {
     for (const obj of pendingObjects) {
         if (!obj || !obj.frames || obj.frames.length === 0) continue;
 
+        // ...AND ONLY THE ONES THIS LOAD BROUGHT. `pendingObjects` accumulates
+        // across loads and is only emptied by Clear All, so this loop rebuilt
+        // EVERY object already in the viewer on every load - dropping what each
+        // one remembered: its hidden backbone, its side chains, its bases, its
+        // forced SSE, its colours, its contacts. Colour a residue, load a
+        // second file, and the colour was gone.
+        //
+        // An object already put into the renderer is left alone. A re-FETCH
+        // replaces its pending entry with a fresh one (see the splice where a
+        // batch is queued), so it is unmarked and IS rebuilt - which is what
+        // "always replace to avoid mixing data" was for.
+        if (obj._appliedToRenderer && existing.has(obj.name)) {
+            newNames.push(obj.name);
+            continue;
+        }
+
         // Always replace objects with the same name to avoid mixing data
         if (existing.has(obj.name)) {
             if (r.objectSelect) {
@@ -2978,6 +4819,7 @@ function applyPendingObjects() {
 
         // Create and feed frames (new or replaced)
         r.addObject(obj.name);
+        obj._appliedToRenderer = true;
         newNames.push(obj.name);
         for (const frame of obj.frames) {
             r.addFrame(frame, obj.name);
@@ -3013,14 +4855,21 @@ function applyPendingObjects() {
             if (width > 0 && height > 0) {
                 canvas.style.width = width + 'px';
                 canvas.style.height = height + 'px';
-                // SAME DPR POLICY as viewer-mol.js's canvas setup: capped at
-                // 1.5x for performance, overridable via window.canvasDPR.
-                // Uncapped devicePixelRatio here silently overrode that cap -
-                // on a 2x display a 600px canvas became a 1200x1200 backing
-                // store, 1.78x the pixels the rest of the app sizes for, and
-                // paint is the dominant per-frame cost.
+                // SAME DPR POLICY as viewer-mol.js's canvas setup, and the two
+                // must stay in step or the app sizes for one resolution and the
+                // renderer draws at another.
+                //
+                // THE 1.5x CAP IS GONE. It bought performance by drawing fewer
+                // pixels than the display has - on a 2x screen a 598px canvas
+                // got an 897px backing store and the result was resampled up,
+                // which is exactly the softness it looks like. That trade was
+                // worth making when every frame was a full canvas repaint; it
+                // is the wrong way round now that the GPU path draws a frame in
+                // a couple of milliseconds and paint is not the bottleneck.
+                // window.canvasDPR still overrides, so window.canvasDPR = 1.5
+                // puts the old behaviour back without a rebuild.
                 const dpr = window.canvasDPR !== undefined
-                    ? window.canvasDPR : Math.min(window.devicePixelRatio || 1, 1.5);
+                    ? window.canvasDPR : (window.devicePixelRatio || 1);
                 canvas.width = width * dpr;
                 canvas.height = height * dpr;
                 const ctx = canvas.getContext('2d');
@@ -3038,6 +4887,11 @@ function applyPendingObjects() {
         // Show the last new object
         const show = newNames[newNames.length - 1];
         if (r?._switchToObject) r._switchToObject(show);
+        tubeByDefaultIfBig(r, show);
+        dropToTubeIfCartoonWontFit(r);
+        // a new object is a new depth range, and loading one does not go
+        // through the object dropdown's change event
+        setTimeout(syncClipPanelToObject, 0);
         if (r?.objectSelect) r.objectSelect.value = show;
         if (objectSelect) objectSelect.value = show;
         if (r?.updatePAEContainerVisibility) r.updatePAEContainerVisibility();
@@ -3049,10 +4903,11 @@ function applyPendingObjects() {
         // loaded, and the switch above restores that object's own viewerState -
         // so this has to come last or it gets overwritten.
         if (r?.orthoSlider) r.orthoSlider.dispatchEvent(new Event('input'));
-        if (typeof buildView === 'function') window.SEQ?.buildView();
+        if (typeof buildView === 'function') (window.SEQ?.buildViewDeferred || window.SEQ?.buildView)?.();
         if (window.updateMSAChainSelectorIndex) window.updateMSAChainSelectorIndex();
         if (window.updateMSAContainerVisibility) window.updateMSAContainerVisibility();
         if (r?.updateUIControls) r.updateUIControls();
+        updateFrameNameLabel();
 
         // Load frame and apply best view rotation WITHOUT intermediate renders
         if (r?.setFrame) {
@@ -3069,7 +4924,7 @@ function applyPendingObjects() {
         if (r?.updatePAEContainerVisibility) r.updatePAEContainerVisibility();
         if (typeof updateObjectNavigationButtons === 'function') updateObjectNavigationButtons();
         if (window.SEQ?.clearPreview) window.SEQ.clearPreview();
-        if (typeof buildView === 'function') window.SEQ?.buildView();
+        if (typeof buildView === 'function') (window.SEQ?.buildViewDeferred || window.SEQ?.buildView)?.();
         if (window.updateMSAChainSelectorIndex) window.updateMSAChainSelectorIndex();
         if (window.updateMSAContainerVisibility) window.updateMSAContainerVisibility();
     } else {
@@ -3078,41 +4933,7 @@ function applyPendingObjects() {
     }
 }
 
-
-function updateChainSelectionUI() {
-    /* [EDIT] This function no longer builds UI (pills). 
-       It just sets the default selected state if there is truly no saved selection. */
-
-    const r = viewerApi?.renderer;
-    const name = r?.currentObjectName;
-    if (!r || !name) return;
-
-    const obj = r.objectsData?.[name];
-    if (!obj?.frames?.length) return;
-
-    const ss = r.objectsData?.[name]?.visibilityState;
-    // Only default if there is truly no user selection saved
-    const hasAnySelection =
-        ss &&
-        (
-            ss.visibilityMode !== 'default' ||
-            (ss.positions && ss.positions.size > 0) ||
-            (ss.chains && ss.chains.size > 0) ||
-            (ss.paeBoxes && ss.paeBoxes.length > 0)
-        );
-
-    if (hasAnySelection) return;
-
-    // Let the renderer compute the correct "all" internally
-    if (typeof r.showAll === 'function') {
-        r.showAll();
-    } else if (typeof r.setVisibility === 'function') {
-        // Fallback: empty/default request which the renderer normalizes to "all"
-        r.setVisibility({ visibilityMode: 'default', positions: new Set(), chains: new Set() });
-    }
-}
-
-// [NEW] This function updates the chain buttons and sequence view
+// This function updates the chain buttons and sequence view
 // based on the renderer's selection model
 function syncChainPillsToSelection() {
     // Chain buttons and sequence are now drawn on canvas, update via updateSelection
@@ -3161,40 +4982,6 @@ function applySelection(previewPositions = null) {
     if (window.updateSelectionToolsState) window.updateSelectionToolsState();
 
     // Note: updateSelection will be called via event listener
-}
-
-
-function highlightPosition(positionIndex) {
-    if (viewerApi && viewerApi.renderer) {
-        viewerApi.renderer.highlightedAtom = positionIndex;
-        viewerApi.renderer.highlightedAtoms = null; // Clear multi-position highlight
-        // Draw highlights on overlay canvas without re-rendering main scene
-        if (window.SEQ && window.SEQ.drawHighlights) {
-            window.SEQ.drawHighlights();
-        }
-    }
-}
-
-function highlightPositions(positionIndices) {
-    if (viewerApi && viewerApi.renderer) {
-        viewerApi.renderer.highlightedAtoms = positionIndices instanceof Set ? positionIndices : new Set(positionIndices);
-        viewerApi.renderer.highlightedAtom = null; // Clear single position highlight
-        // Draw highlights on overlay canvas without re-rendering main scene
-        if (window.SEQ && window.SEQ.drawHighlights) {
-            window.SEQ.drawHighlights();
-        }
-    }
-}
-
-function clearHighlight() {
-    if (viewerApi && viewerApi.renderer) {
-        viewerApi.renderer.highlightedAtom = null;
-        viewerApi.renderer.highlightedAtoms = null;
-        // Clear highlights on overlay canvas without re-rendering main scene
-        if (window.SEQ && window.SEQ.drawHighlights) {
-            window.SEQ.drawHighlights();
-        }
-    }
 }
 
 
@@ -3259,31 +5046,8 @@ if (window.SEQ) {
     window.SEQ.setCallbacks({
         getRenderer: () => viewerApi?.renderer || null,
         getObjectSelect: () => document.getElementById('objectSelect'),
-        highlightAtom: highlightPosition,
-        highlightAtoms: highlightPositions,
-        clearHighlight: clearHighlight,
         applySelection: applySelection
     });
-
-    // Initialize highlight overlay after viewer is created
-    // This will be called after initializePy2DmolViewer completes
-    function initializeHighlightOverlayIfNeeded() {
-        if (viewerApi?.renderer && window.SEQ && window.SEQ.drawHighlights) {
-            // Trigger initialization by calling drawHighlights (which will initialize if needed)
-            // But first make sure we have a renderer with canvas
-            const renderer = viewerApi.renderer;
-            if (renderer.canvas) {
-                // Force initialization by calling the internal function
-                // We'll do this by calling drawHighlights which will lazy-init
-                window.SEQ.drawHighlights();
-            }
-        }
-    }
-
-    // Initialize overlay when viewer is ready
-    if (viewerApi?.renderer) {
-        initializeHighlightOverlayIfNeeded();
-    }
 }
 
 // MSA viewer callbacks are now set up in initializeApp() after viewerApi is initialized
@@ -3595,33 +5359,6 @@ async function loadStandaloneMSA(file) {
 }
 
 /**
- * Resolve PDB ID to UniProt ID using PDBe API
- * @param {string} pdbId - 4-character PDB ID
- * @returns {Promise<string>} - UniProt ID
- */
-async function resolvePDBToUniProt(pdbId) {
-    setStatus(`Looking up UniProt ID for PDB ${pdbId}...`);
-    try {
-        const mappings = await fetchPDBeMappings(pdbId);
-        const uniprotIds = Object.values(mappings)
-            .map(m => m.uniprot_id)
-            .filter(id => id); // Filter out null/undefined
-
-        if (uniprotIds.length === 0) {
-            throw new Error(`No UniProt mapping found for PDB ID ${pdbId}`);
-        }
-
-        // Use the first UniProt ID found
-        const uniprotId = uniprotIds[0];
-        setStatus(`Found UniProt ID ${uniprotId} for PDB ${pdbId}`);
-        return uniprotId;
-    } catch (error) {
-        console.error('Error fetching PDBe mappings:', error);
-        throw error;
-    }
-}
-
-/**
  * Fetch MSA from AlphaFold DB by UniProt ID
  * @param {string} uniprotId - UniProt ID
  * @param {string} originalId - Original ID (for error messages)
@@ -3791,8 +5528,7 @@ function initializeMSAIndex() {
                         obj.msa.defaultChain = firstChain;
 
                         // Update renderer for selected chain key
-                        const currentFrameIndex = viewerApi.renderer.currentFrame || 0;
-                        viewerApi.renderer._loadFrameData(currentFrameIndex, false);
+                        viewerApi.renderer.reloadDrawn();
                     }
                 }
             }
@@ -3994,11 +5730,16 @@ async function handleFetch() {
         paeEnabled = false;
     }
 
+    beginProgress();
     try {
         const structResponse = await fetch(structUrl);
         if (!structResponse.ok) {
             throw new Error(`Failed to fetch structure (HTTP ${structResponse.status})`);
         }
+        // READ THROUGH, so the download stage is measured too. The
+        // server usually says how long the body is; when it does not, there is
+        // no honest fraction to report and the stage just names itself.
+        setStage('Downloading');
         const structText = await structResponse.text();
 
         let paeData = null;
@@ -4016,7 +5757,7 @@ async function handleFetch() {
             }
         }
 
-        const framesAdded = buildPendingObject(
+        const framesAdded = await buildPendingObject(
             structText,
             name,
             paeData,
@@ -4032,7 +5773,10 @@ async function handleFetch() {
         if (!framesAdded || tempBatch.length === 0) return;
 
         pendingObjects.push(...tempBatch);
+        setStage('Drawing');
+        await yieldToBrowser();
         applyPendingObjects();
+        endProgress();
 
         // Auto-download MSA for PDB structures (only if Load MSA is enabled)
         if (isPDB && window.MSA && loadMSA) {
@@ -4044,9 +5788,7 @@ async function handleFetch() {
 
                 if (Object.keys(siftsMappings).length === 0) {
                     setStatus(
-                        `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                        `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                        `Note: No UniProt mappings found for this PDB structure.`
+                        loadSummary('no UniProt mapping')
                     );
                 } else {
                     // Get the object that was just loaded
@@ -4197,36 +5939,26 @@ async function handleFetch() {
                                             loadMSADataIntoViewer(matchedMSA, firstMatchedChain, objectName);
 
                                             setStatus(
-                                                `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                                                `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                                                `MSA loaded for ${msaObj.availableChains.length} chain(s).`
+                                                loadSummary(`MSA on ${msaObj.availableChains.length} chain(s)`)
                                             );
                                         } else {
                                             setStatus(
-                                                `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                                                `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                                                `Warning: MSA sequences did not match any chains.`
+                                                loadSummary('MSA matched no chain')
                                             );
                                         }
                                     } else {
                                         setStatus(
-                                            `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                                            `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                                            `Warning: Could not match MSAs to chains.`
+                                            loadSummary('MSA matched no chain')
                                         );
                                     }
                                 } else {
                                     setStatus(
-                                        `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                                        `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                                        `Note: No MSAs available for mapped UniProt IDs.`
+                                        loadSummary('no MSA available')
                                     );
                                 }
                             } else {
                                 setStatus(
-                                    `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                                    `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                                    `Warning: Could not extract chain sequences for MSA matching.`
+                                    loadSummary('no chain sequences for MSA')
                                 );
                             }
                         }
@@ -4236,9 +5968,7 @@ async function handleFetch() {
                 // PDBe mappings or MSA download failed, but structure loaded successfully
                 console.warn("PDBe mappings/MSA download failed:", e);
                 setStatus(
-                    `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                    `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                    `Note: Could not load MSAs (${e.message}).`
+                    loadSummary(`MSA failed: ${e.message}`)
                 );
             }
         }
@@ -4317,7 +6047,10 @@ async function handleFetch() {
                                                 // Map entropy from MSA
                                                 if (viewerApi?.renderer && objectName) {
                                                     if (objectName && viewerApi.renderer.objectsData[objectName] && window.MSA) {
-                                                        viewerApi.renderer.entropy = window.MSA.mapEntropyToStructure(viewerApi.renderer.objectsData[objectName], viewerApi.renderer.currentFrame >= 0 ? viewerApi.renderer.currentFrame : 0);
+                                                        // ...for everything drawn - see entropyForDrawn
+                                                        viewerApi.renderer.entropy = viewerApi.renderer.entropyForDrawn
+                                                            ? viewerApi.renderer.entropyForDrawn()
+                                                            : window.MSA.mapEntropyToStructure(viewerApi.renderer.objectsData[objectName], viewerApi.renderer.currentFrame >= 0 ? viewerApi.renderer.currentFrame : 0);
                                                         if (viewerApi.renderer._updateEntropyOptionVisibility) viewerApi.renderer._updateEntropyOptionVisibility();
                                                     }
                                                 }
@@ -4335,23 +6068,17 @@ async function handleFetch() {
                                                 }
 
                                                 setStatus(
-                                                    `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                                                    `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                                                    `MSA loaded for chain ${firstMatchedChain}.`
+                                                    loadSummary(`MSA on chain ${firstMatchedChain}`)
                                                 );
                                             }
                                         } else {
                                             setStatus(
-                                                `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                                                `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                                                `Warning: MSA sequence did not match any chain.`
+                                                loadSummary('MSA matched no chain')
                                             );
                                         }
                                     } else {
                                         setStatus(
-                                            `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                                            `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                                            `Warning: Could not extract chain sequences for MSA matching.`
+                                            loadSummary('no chain sequences for MSA')
                                         );
                                     }
                                 }
@@ -4359,33 +6086,24 @@ async function handleFetch() {
                         }
                     } else {
                         setStatus(
-                            `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                            `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                            `Warning: MSA file was empty.`
+                            loadSummary('MSA file empty')
                         );
                     }
                 } else {
                     // MSA not found, but structure loaded successfully
                     setStatus(
-                        `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                        `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                        `Note: MSA not available for this structure.`
+                        loadSummary('no MSA')
                     );
                 }
             } catch (e) {
                 // MSA download failed, but structure loaded successfully
                 console.warn("MSA download failed:", e);
                 setStatus(
-                    `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                    `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
-                    `Note: Could not download MSA (${e.message}).`
+                    loadSummary('Note: Could not download MSA (${e.messag')
                 );
             }
         } else {
-            setStatus(
-                `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-                `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}).`
-            );
+            setStatus(loadSummary());
         }
 
     } catch (e) {
@@ -5089,8 +6807,12 @@ function applySelectionToMSA() {
     // was visible. Now that selecting and showing are separate acts, sourcing
     // from visibility meant the MSA dimmed to whatever happened to be on screen
     // and ignored the selection entirely.
-    const sel = renderer.residueSelection;
-    const selectedPositions = (sel && sel.size > 0) ? new Set(sel) : new Set();
+    // ...and in THIS OBJECT'S numbering: the MSA maps its columns onto the
+    // object's own frame, while the selection is against whatever is loaded,
+    // which with several objects merged is not the same array.
+    const own = renderer.selectionForObject
+        ? renderer.selectionForObject(objectName) : renderer.residueSelection;
+    const selectedPositions = (own && own.size > 0) ? new Set(own) : new Set();
 
     // Nothing selected means nothing to point at, so no dimming - NOT "dim
     // everything", which is what an empty explicit visibility selection used to
@@ -5103,14 +6825,19 @@ function applySelectionToMSA() {
         return;
     }
 
-    // Determine allowed chains
-    let allowedChains;
-    if (selection && selection.chains && selection.chains.size > 0) {
-        allowedChains = selection.chains;
-    } else {
-        // All chains allowed
-        allowedChains = new Set(renderer.chains);
+    // Determine allowed chains: the ones the SELECTION touches.
+    //
+    // This read `selection.chains`, and there is no `selection` here - the
+    // variable went when this stopped sourcing from visibility (see the note
+    // above) and the line was left behind. It threw a ReferenceError every time
+    // a selection existed, which is every time this function has anything to
+    // do, so the MSA never dimmed to the selection at all.
+    let allowedChains = new Set();
+    for (const i of selectedPositions) {
+        const c = renderer.chains && renderer.chains[i];
+        if (c) allowedChains.add(c);
     }
+    if (allowedChains.size === 0) allowedChains = new Set(renderer.chains);
 
     // Map structure positions to MSA positions for each chain
     const msaSelectedPositions = new Map(); // chainId -> Set of MSA position indices
@@ -5182,6 +6909,7 @@ function applySelectionToMSA() {
 }
 
 async function processFiles(files, loadAsFrames, groupName = null) {
+    beginProgress();
     const tempBatch = [];
     let overallTotalFramesAdded = 0;
     let paePairedCount = 0;
@@ -5440,7 +7168,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                 (groupName || cleanObjectName(structureFiles[0].name)) :
                 baseName;
 
-            const framesAdded = buildPendingObject(
+            const framesAdded = await buildPendingObject(
                 text,
                 file.name,
                 paeData,
@@ -5493,7 +7221,10 @@ async function processFiles(files, loadAsFrames, groupName = null) {
     }
 
     if (tempBatch.length > 0) pendingObjects.push(...tempBatch);
+    setStage('Drawing');
+    await yieldToBrowser();
     applyPendingObjects();
+    endProgress();
 
     // Process MSA files AFTER structures are loaded (only if Load MSA is enabled)
     if (msaFilesToProcess.length > 0 && loadMSA) {
@@ -5550,7 +7281,10 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                                     // Map entropy from MSA
                                     if (viewerApi?.renderer && currentObjectName) {
                                         if (currentObjectName && viewerApi.renderer.objectsData[currentObjectName] && window.MSA) {
-                                            viewerApi.renderer.entropy = window.MSA.mapEntropyToStructure(viewerApi.renderer.objectsData[currentObjectName], viewerApi.renderer.currentFrame >= 0 ? viewerApi.renderer.currentFrame : 0);
+                                            // ...for everything DRAWN - see entropyForDrawn
+                                            viewerApi.renderer.entropy = viewerApi.renderer.entropyForDrawn
+                                                ? viewerApi.renderer.entropyForDrawn()
+                                                : window.MSA.mapEntropyToStructure(viewerApi.renderer.objectsData[currentObjectName], viewerApi.renderer.currentFrame >= 0 ? viewerApi.renderer.currentFrame : 0);
                                             if (viewerApi.renderer._updateEntropyOptionVisibility) viewerApi.renderer._updateEntropyOptionVisibility();
                                         }
                                     }
@@ -5813,10 +7547,9 @@ async function handleZipUpload(file, loadAsFrames) {
         const paeMessage = totalPaePairedCount > 0 ?
             ` (${totalPaePairedCount} PAE matrices paired)` : '';
 
-        setStatus(
-            `Successfully loaded ${totalObjectsLoaded} new object(s) from ${file.name} ` +
-            `(${totalFramesAdded} total frame${totalFramesAdded !== 1 ? 's' : ''}${paeMessage}).`
-        );
+        setStatus(loadSummary(totalObjectsLoaded > 1
+            ? `${totalObjectsLoaded} objects${paeMessage}`
+            : (paeMessage ? paeMessage.trim().replace(/[()]/g, '') : '')));
     } catch (e) {
         console.error("ZIP processing failed:", e);
         setStatus(`Error processing ZIP file: ${file.name}. ${e.message}`, true);
@@ -5877,10 +7610,9 @@ function handleFileUpload(event) {
                 const paeMessage = stats.paePairedCount > 0 ?
                     ` (${stats.paePairedCount}/${stats.structureCount} PAE matrices paired)` : '';
 
-                setStatus(
-                    `Successfully loaded ${objectsLoaded} new object(s) from ${sourceName} ` +
-                    `(${stats.framesAdded} total frame${stats.framesAdded !== 1 ? 's' : ''}${paeMessage}).`
-                );
+                setStatus(loadSummary(objectsLoaded > 1
+                    ? `${objectsLoaded} objects${paeMessage}`
+                    : (paeMessage ? paeMessage.trim().replace(/[()]/g, '') : '')));
 
                 // Process CSV files after structure files are loaded
                 if (csvFiles.length > 0) {
@@ -6183,8 +7915,13 @@ function saveViewerState() {
 
                 // Copy other fields as-is (omit null/undefined)
                 if (frame.chains) frameData.chains = frame.chains;
+                // the file this frame came from, so a reloaded session can still
+                // say which one you are looking at
+                if (frame.name) frameData.name = frame.name;
                 if (frame.position_types) frameData.position_types = frame.position_types;
                 if (frame.residue_numbers) frameData.residue_numbers = frame.residue_numbers;
+                if (frame.position_atoms) frameData.position_atoms = frame.position_atoms;
+                if (frame.position_elements) frameData.position_elements = frame.position_elements;
                 if (frame.bonds) frameData.bonds = frame.bonds;
                 if (frame.scatter) frameData.scatter = frame.scatter;
                 if (frame.color) frameData.color = frame.color;
@@ -6283,54 +8020,38 @@ function saveViewerState() {
                 }
             }
 
-            // Add contacts data if it exists
-            if (objectData.contacts && Array.isArray(objectData.contacts) && objectData.contacts.length > 0) {
-                objToSave.contacts = objectData.contacts;
-            }
-
             // Add scatter config if it exists (camelCase internal)
             const scatterCfg = objectData.scatterConfig;
             if (scatterCfg) {
                 objToSave.scatter_config = scatterCfg;
             }
 
-            // Which residues show a side chain, and any colour of their own.
-            // A Set does not survive JSON, so it goes as an array.
-            if (objectData.sidechains && objectData.sidechains.size) {
-                objToSave.sidechains = Array.from(objectData.sidechains);
-            }
-            // Which nucleotides show a base plate. Saved whenever the set
-            // EXISTS, empty included: an empty set means "none", which is a
-            // real choice and the opposite of the absent-means-all default. The
-            // side-chain line above can test `.size` because there null and
-            // empty mean the same thing there; here they do not.
-            if (objectData.bases instanceof Set) {
-                objToSave.bases = Array.from(objectData.bases);
-            }
-            // ...and which residues show element colours. Same rule: saved
-            // whenever the set EXISTS, empty included, because absent means all.
-            if (objectData.elements instanceof Set) {
-                objToSave.elements = Array.from(objectData.elements);
-            }
-            if (objectData.sidechainColor) {
-                objToSave.sidechain_color = objectData.sidechainColor;
-            }
-
-            // Add color overrides if they exist
-            if (objectData.color) {
-                objToSave.color = objectData.color;
-            }
-            // secondary structure travels with the object, like colour
-            if (objectData.sse) {
-                objToSave.sse = objectData.sse;
+            // EVERY PIECE OF PER-OBJECT STATE KEYED BY POSITION, from the
+            // one list that names them (OBJECT_STATE in viewer-mol.js). This
+            // was seven near-identical blocks, each with its own rule about
+            // when an empty value still has to be written - and the rule is
+            // not the same for all of them: a set whose absence means ALL has
+            // to go out even when it is EMPTY, because empty means "none of
+            // them" and leaving it out means "all of them". The list carries
+            // that, so this does not have to remember it.
+            if (renderer.objectStateToJSON) {
+                Object.assign(objToSave, renderer.objectStateToJSON(objectData));
             }
 
             // Add per-object viewerState if it exists
             if (objectData.viewerState) {
                 // If this is the current object, use the live viewerState to ensure it's up-to-date
                 // (The one in objectsData is only updated when switching AWAY from the object)
-                const sourceState = (objectName === renderer.currentObjectName) ? renderer.viewerState : objectData.viewerState;
+                const isCurrent = objectName === renderer.currentObjectName;
+                const sourceState = isCurrent ? renderer.viewerState : objectData.viewerState;
 
+                // THE CLIP AND THE STYLE LIVE ON THE RENDERER while an object
+                // is the current one, and in its stored viewerState the rest
+                // of the time - _switchToObject moves them across. Saving only
+                // the fields that live in viewerState both times lost them:
+                // a session came back unclipped, and every object came back in
+                // whatever style the session as a whole was saved in.
+                const held = isCurrent ? renderer : sourceState;
                 objToSave.viewerState = {
                     rotation: sourceState.rotation,
                     zoom: sourceState.zoom,
@@ -6338,7 +8059,12 @@ function saveViewerState() {
                     focalLength: sourceState.focalLength,
                     center: sourceState.center,
                     extent: sourceState.extent,
-                    currentFrame: sourceState.currentFrame
+                    currentFrame: sourceState.currentFrame,
+                    clipNear: held.clipNear !== undefined ? held.clipNear : null,
+                    clipFar: held.clipFar !== undefined ? held.clipFar : null,
+                    clipFade: held.clipFade,
+                    style: held.style || null,
+                    styleChosen: !!held.styleChosen
                 };
             }
 
@@ -6356,6 +8082,12 @@ function saveViewerState() {
 
         const viewerState = {
             current_object_name: renderer.currentObjectName,
+            // WHICH OBJECTS WERE ON SCREEN. Null is the default - the object
+            // being edited, alone - and is not restored as anything, so a
+            // session saved that way opens exactly as it always has. An array
+            // is what the user chose, including an empty one.
+            shown_objects: (renderer.shownObjects instanceof Set)
+                ? Array.from(renderer.shownObjects) : null,
             current_frame: renderer.viewerState.currentFrame,  // From viewerState, not global
             rotation_matrix: renderer.viewerState.rotation,
             zoom: renderer.viewerState.zoom,
@@ -6388,6 +8120,7 @@ function saveViewerState() {
             thickness: renderer.cartoonThickness,
             detail: renderer.cartoonDetail,
             smooth: renderer.cartoonSmooth === true,
+            use_gpu: renderer.useGPU === true,
             arrows: renderer.cartoonArrows !== false,
             sheet_flat: renderer.cartoonSheetFlat,
             pencil: renderer.cartoonPencil,
@@ -6482,8 +8215,12 @@ function saveViewerState() {
         const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
         const jsonFilename = `py2dmol_state_${timestamp}.json`;
 
-        // Create JSON string
-        const jsonString = JSON.stringify(stateData, null, 2);
+        // NOT PRETTY-PRINTED. Two-space indentation on a session file is
+        // between two and four times the payload, and nothing reads these by
+        // hand: the app parses them back, and at this size no editor opens one
+        // anyway. Measured on 7Y7A - 305,004 positions, 1,065,107 side-chain
+        // rows - the indentation alone was 153 MB of a 212 MB file.
+        const jsonString = JSON.stringify(stateData);
 
         // Download JSON file
         const blob = new Blob([jsonString], { type: 'application/json' });
@@ -6569,6 +8306,8 @@ async function loadViewerState(stateData) {
                         pae: frameData.pae,  // undefined if missing (will use inheritance or default)
                         scatter: frameData.scatter,  // undefined if missing (will use inheritance or default)
                         position_names: frameData.position_names,  // undefined if missing (will default)
+                        position_atoms: frameData.position_atoms,  // ligands only; undefined elsewhere
+                        position_elements: frameData.position_elements,
                         residue_numbers: frameData.residue_numbers,  // undefined if missing (will default)
                         bonds: frameData.bonds || objBonds,  // undefined if both missing
                         // The THIRD field-by-field frame build in this codebase
@@ -6577,6 +8316,11 @@ async function loadViewerState(stateData) {
                         // them already. JSON has no typed arrays, so the numeric
                         // columns come back plain and are put back into shape.
                         sidechains: reviveSidechainTable(frameData.sidechains),
+                        // ...and which file it came from, or a restored session
+                        // knows the frames' names no better than before they
+                        // were kept - which is the fault this comment warns of,
+                        // one field along.
+                        name: frameData.name,
                     };
 
                     renderer.addFrame(resolvedFrame, objData.name);
@@ -6630,62 +8374,22 @@ async function loadViewerState(stateData) {
                     }
                 }
 
-                // Store contacts data if present
-                if (objData.contacts && Array.isArray(objData.contacts) && objData.contacts.length > 0) {
-                    if (!renderer.objectsData[objData.name]) {
-                        renderer.objectsData[objData.name] = {};
-                    }
-                    renderer.objectsData[objData.name].contacts = objData.contacts;
-                    // Invalidate segment cache so contacts will be regenerated when object is displayed
+                // ...AND EVERY PIECE OF PER-OBJECT STATE KEYED BY POSITION,
+                // from the same list that saved it (OBJECT_STATE). Seven
+                // blocks each testing a differently-shaped emptiness, and one
+                // of them - the bases - had to accept an EMPTY array where the
+                // others rejected it.
+                if (!renderer.objectsData[objData.name]) {
+                    renderer.objectsData[objData.name] = {};
+                }
+                if (renderer.objectStateFromJSON) {
+                    renderer.objectStateFromJSON(
+                        renderer.objectsData[objData.name], objData);
+                }
+                // ...and contacts need the segment cache dropped, since they
+                // are drawn as segments and the cache was built without them
+                if (objData.contacts && objData.contacts.length) {
                     renderer.cachedSegmentIndices = null;
-                }
-
-                // Restore color overrides if present
-                if (objData.color) {
-                    if (!renderer.objectsData[objData.name]) {
-                        renderer.objectsData[objData.name] = {};
-                    }
-                    renderer.objectsData[objData.name].color = objData.color;
-                }
-
-                // ... and secondary structure, which lives beside it
-                if (objData.sse) {
-                    if (!renderer.objectsData[objData.name]) {
-                        renderer.objectsData[objData.name] = {};
-                    }
-                    renderer.objectsData[objData.name].sse = objData.sse;
-                }
-
-                // ... and which residues were showing a side chain. Back to a
-                // Set: everything downstream asks it .has(). Only the residues
-                // whose ATOMS were saved can be shown, and the panel already
-                // reflects that on its own - hasSidechainsFor finds nothing for
-                // the others, so the Side chains row is simply not offered.
-                if (objData.sidechains && objData.sidechains.length) {
-                    if (!renderer.objectsData[objData.name]) {
-                        renderer.objectsData[objData.name] = {};
-                    }
-                    renderer.objectsData[objData.name].sidechains = new Set(objData.sidechains);
-                }
-                // ...and the bases, where an empty array is meaningful: it
-                // says every plate was hidden, which absent does not.
-                if (Array.isArray(objData.elements)) {
-                    if (!renderer.objectsData[objData.name]) {
-                        renderer.objectsData[objData.name] = {};
-                    }
-                    renderer.objectsData[objData.name].elements = new Set(objData.elements);
-                }
-                if (Array.isArray(objData.bases)) {
-                    if (!renderer.objectsData[objData.name]) {
-                        renderer.objectsData[objData.name] = {};
-                    }
-                    renderer.objectsData[objData.name].bases = new Set(objData.bases);
-                }
-                if (objData.sidechain_color) {
-                    if (!renderer.objectsData[objData.name]) {
-                        renderer.objectsData[objData.name] = {};
-                    }
-                    renderer.objectsData[objData.name].sidechainColor = objData.sidechain_color;
                 }
 
                 // Restore per-object viewerState if present
@@ -6693,14 +8397,24 @@ async function loadViewerState(stateData) {
                     if (!renderer.objectsData[objData.name]) {
                         renderer.objectsData[objData.name] = {};
                     }
+                    const vs = objData.viewerState;
                     renderer.objectsData[objData.name].viewerState = {
-                        rotation: objData.viewerState.rotation,
-                        zoom: objData.viewerState.zoom,
-                        ortho: objData.viewerState.ortho,
-                        focalLength: objData.viewerState.focalLength,
-                        center: objData.viewerState.center,
-                        extent: objData.viewerState.extent,
-                        currentFrame: objData.viewerState.currentFrame
+                        rotation: vs.rotation,
+                        zoom: vs.zoom,
+                        ortho: vs.ortho,
+                        focalLength: vs.focalLength,
+                        center: vs.center,
+                        extent: vs.extent,
+                        currentFrame: vs.currentFrame,
+                        // ...and what _switchToObject moves on and off the
+                        // renderer. Absent in a session saved before these were
+                        // written, which reads as "never set" - the same thing
+                        // an object that has never been clipped says.
+                        clipNear: (typeof vs.clipNear === 'number') ? vs.clipNear : null,
+                        clipFar: (typeof vs.clipFar === 'number') ? vs.clipFar : null,
+                        clipFade: vs.clipFade,
+                        style: vs.style || null,
+                        styleChosen: !!vs.styleChosen
                     };
                 }
             }
@@ -6857,6 +8571,7 @@ async function loadViewerState(stateData) {
             // applies that style's preset, which would otherwise overwrite the
             // values restored below.
             if (typeof vs.style === 'string' && vs.style !== renderer.style) {
+                renderer.styleChosen = true;   // a saved view says what it wants
                 renderer.setStyle(vs.style);   // no-ops on an unknown/unloaded style
                 // setStyle syncs the dropdown itself. Assigning renderer.style
                 // here used to leave the select BLANK, because 'richardson' was
@@ -6886,6 +8601,7 @@ async function loadViewerState(stateData) {
             restoreCartoon('outline_tint', 'cartoonOutlineTint', 'outlineTintSlider');
             restoreCartoon('shade', 'cartoonShade', 'shadeSlider');
             restoreCartoon('smooth', 'cartoonSmooth', 'smoothCheckbox', 'bool');
+            restoreCartoon('use_gpu', 'useGPU', 'useGpuCheckbox', 'bool');
             restoreCartoon('arrows', 'cartoonArrows', 'arrowsCheckbox', 'bool');
 
             // Restore color mode
@@ -6924,14 +8640,17 @@ async function loadViewerState(stateData) {
                 }
             }
 
-            // Restore line width
+            // Restore line width. NO SYNTHETIC EVENT - the same shape as
+            // restoreCartoon() above, and for a reason that bit: the slider's
+            // handler records a real drag as this style's chosen width
+            // (_widthByStyle), after which the style's own profile width no
+            // longer applies. Dispatching one here would make every load look
+            // like a choice. Setting the property and the element directly is
+            // what every other restored control does.
             if (typeof vs.line_width === 'number') {
                 renderer.lineWidth = vs.line_width;
                 const lineWidthSlider = document.getElementById('lineWidthSlider');
-                if (lineWidthSlider) {
-                    lineWidthSlider.value = vs.line_width;
-                    lineWidthSlider.dispatchEvent(new Event('input'));
-                }
+                if (lineWidthSlider) lineWidthSlider.value = vs.line_width;
             }
 
             // Restore shadow
@@ -7099,14 +8818,47 @@ async function loadViewerState(stateData) {
                             renderer.setFrame(0);
                         }
 
-                        // Explicitly ensure PAE data is set if available
-                        // (setFrame should handle this, but we verify here)
-                        if (renderer.paeRenderer && obj.frames && obj.frames.length > 0) {
-                            const currentFrameIndex = renderer.currentFrame >= 0 ? renderer.currentFrame : 0;
-                            const currentFrameData = obj.frames[currentFrameIndex];
-                            if (currentFrameData && currentFrameData.pae) {
-                                renderer.paeRenderer.setData(currentFrameData.pae);
+                        // ...AND THE OBJECTS THAT WERE ON SCREEN WITH IT.
+                        // After setFrame, because the merge is built from the
+                        // frame each object is parked on and the current one's
+                        // is only settled here. Names whose objects did not
+                        // come back are dropped by setShownObjects.
+                        // ...INCLUDING AN EMPTY ONE, which is every object
+                        // switched off. Null - the default - is not written at
+                        // all, so an older session restores as it always did.
+                        const shownSaved = stateData.viewer_state
+                            && stateData.viewer_state.shown_objects;
+                        if (Array.isArray(shownSaved) && renderer.setShownObjects) {
+                            renderer.setShownObjects(shownSaved);
+                        }
+
+                        // ...AND THE SAVED CAMERA HAS THE LAST WORD. Objects
+                        // arrive one at a time, and each arrival rebuilds the
+                        // merge of everything loaded so far - which frames on
+                        // what it finds, because every object in a restored
+                        // session is new to this renderer. By the time the
+                        // shown set is applied the centre and extent from the
+                        // file are long gone. They are cheap to put back, and
+                        // this is the one place that knows they are the answer.
+                        const savedView = stateData.viewer_state;
+                        if (savedView) {
+                            if (savedView.center) {
+                                renderer.viewerState.center = savedView.center;
                             }
+                            if (typeof savedView.extent === 'number') {
+                                renderer.viewerState.extent = savedView.extent;
+                            }
+                            renderer.render('restored view');
+                        }
+
+                        // Explicitly ensure PAE data is set if available
+                        // (setFrame should handle this, but we verify here).
+                        // ...through the rule about WHOSE matrix it is: taking
+                        // it off the object this loop happens to have ended on
+                        // put another object's matrix in the panel the moment
+                        // a restored session drew more than one.
+                        if (window.PAE && window.PAE.syncToDrawn) {
+                            window.PAE.syncToDrawn(renderer);
                         }
 
                         // Update scatter visibility for current object

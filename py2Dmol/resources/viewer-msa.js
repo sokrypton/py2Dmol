@@ -462,7 +462,6 @@
     let visibleSequenceEnd = 0;
     let scrollTop = 0;
     let scrollLeft = 0;
-    const MAX_VISIBLE_SEQUENCES = 100;
     const SEQUENCE_ROW_HEIGHT = 20;
     const CHAR_WIDTH = 20;
     const NAME_COLUMN_WIDTH = 200;
@@ -646,9 +645,6 @@
         return { x: displayX * scaleX, y: displayY * scaleY };
     }
 
-    // ============================================================================
-    // HELPER FUNCTIONS (continued)
-    // ============================================================================
 
     function truncateSequenceName(name, maxLength = 32) {
         if (!name) return '';
@@ -827,7 +823,18 @@
         if (!sequences || sequences.length === 0) return [];
         const queryLength = sequences[0]?.sequence?.length || 0;
         return sequences.filter(seq => {
-            const coverage = computeSequenceCoverage(seq.sequence, queryLength, selectionMask);
+            // A CARRIED COVERAGE WINS, as a carried identity already did.
+            //
+            // Coverage is non-gap over LENGTH, and a subset is shorter - so
+            // recomputing it on a copy or after a delete admits a different set
+            // of sequences and moves the conservation of residues nobody
+            // touched. The subset copies each sequence's coverage from the
+            // alignment it came out of, so however often this runs, it keeps
+            // the set the parent counted. A selection mask asks a different
+            // question and is measured fresh.
+            const coverage = (!selectionMask && typeof seq.coverage === 'number')
+                ? seq.coverage
+                : computeSequenceCoverage(seq.sequence, queryLength, selectionMask);
             return coverage >= minCoverage;
         });
     }
@@ -1106,9 +1113,6 @@
         };
     }
 
-    // ============================================================================
-    // HELPER FUNCTIONS (continued)
-    // ============================================================================
 
     function getCharWidthForMode(mode) {
         if (mode === 'msa') {
@@ -1158,9 +1162,6 @@
         };
     }
 
-    // ============================================================================
-    // HELPER FUNCTIONS (continued)
-    // ============================================================================
 
     function getLogicalCanvasDimensions(canvas) {
         const logicalWidth = canvas.width / DPI_MULTIPLIER;
@@ -2475,7 +2476,6 @@
                     const drawWidth = CHAR_WIDTH;
                     if (drawWidth > 0) {
                         // Draw from bottom up, no gap between letters
-                        const drawY = yOffset - drawHeight;
 
                         // Clip logo rendering to extend all the way to queryY (no gap)
                         ctx.save();
@@ -5142,6 +5142,7 @@
             // Extract selected MSA positions from ALL sequences (not filtered by coverage/identity)
             // Use sequencesOriginal to include all sequences, even those hidden by coverage/identity filters
             const allSequences = originalMSAData.sequencesOriginal || originalMSAData.sequences;
+            const seqStrFull = (q) => (Array.isArray(q.sequence) ? q.sequence.join('') : q.sequence);
             const extractedSequences = [];
             const extractedQuerySequence = [];
 
@@ -5163,9 +5164,20 @@
                 // Copy any other properties from the original sequence
                 if (seq.id !== undefined) extractedSeq.id = seq.id;
                 if (seq.description !== undefined) extractedSeq.description = seq.description;
+                // ...INCLUDING WHAT THE FILTERS MEASURED on the full alignment.
+                // Without them, anything that re-runs the filters on the subset
+                // measures coverage over its shorter length, admits a different
+                // set, and moves the entropy of residues nobody touched - which
+                // is what a sequence-strip rebuild after a delete was doing.
+                const cov = (typeof seq.coverage === 'number') ? seq.coverage
+                    : computeSequenceCoverage(seqStrFull(seq), originalQuerySequence.length);
+                const idt = (typeof seq.identity === 'number') ? seq.identity
+                    : computeSequenceIdentity(seqStrFull(seq), originalQuerySequence);
+                extractedSeq.coverage = cov;
+                extractedSeq.identity = idt;
 
                 // Handle both string and array sequence formats
-                const seqStr = Array.isArray(seq.sequence) ? seq.sequence.join('') : seq.sequence;
+                const seqStr = seqStrFull(seq);
 
                 // Extract only the selected MSA positions (columns) from this sequence
                 for (let i = 0; i < seqStr.length; i++) {
@@ -5245,8 +5257,37 @@
                 residueNumbers: extractedResidueNumbers // Map to structure residue_numbers
             };
 
-            // Compute MSA properties (frequencies, logOdds) for extracted sequences
-            computeMSAProperties(extractedMSAData);
+            // THE PARENT'S OWN NUMBERS, SLICED - not recomputed.
+            //
+            // A copy has to show the same conservation for a residue as the
+            // structure it was cut from, or the same residue reads two ways in
+            // two windows. Recomputing cannot do that: the parent's entropy is
+            // over the sequences that pass the coverage cutoff, coverage is
+            // non-gap over LENGTH, and the copy's length is the selection - so
+            // a different set passes and the numbers move. Counting all
+            // sequences instead put residue 105 of AF-P0A8I3 at 0.2881 in a
+            // copy where the parent read 0.2569; filtering on the copy's own
+            // columns fixed that for one copy and broke it again for a copy of
+            // a copy, by 0.045.
+            //
+            // Taking the columns the parent already computed is exact at any
+            // depth and needs no sequences at all. They are still carried, so
+            // moving the copy's own sliders recomputes from them as usual.
+            const sliceByColumn = (arr) => {
+                if (!arr) return undefined;
+                const out = [];
+                for (let i = 0; i < arr.length; i++) {
+                    if (selectedMSAPositions.has(i)) out.push(arr[i]);
+                }
+                return out.length ? out : undefined;
+            };
+            extractedMSAData.entropy = sliceByColumn(originalMSAData.entropy);
+            extractedMSAData.frequencies = sliceByColumn(originalMSAData.frequencies);
+            // ...and only where the parent had none: a fresh alignment with no
+            // numbers on it yet.
+            if (!extractedMSAData.entropy || !extractedMSAData.frequencies) {
+                computeMSAProperties(extractedMSAData);
+            }
 
             // Check if extracted chain sequence matches the extracted query sequence (no gaps)
             const extractedChainSeq = extractedChainSequences[chainId];

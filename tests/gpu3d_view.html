@@ -1,0 +1,465 @@
+<!doctype html>
+<!--
+  Plain viewer. One canvas, one renderer at a time, the style controls the app
+  has. No comparison, no metric, no sweep - gpu3d_lab.html is where measuring
+  happens, and this is for looking.
+
+    cd <repo root> && python3 -m http.server 8080
+    open http://localhost:8080/tests/gpu3d_view.html
+
+  The GPU path comes from gpu3d_core.js, the same file the lab uses, so what is
+  on screen here is the build that was measured there rather than a second copy
+  of it that could drift.
+-->
+<meta charset="utf-8">
+<title>py2Dmol — renderer viewer</title>
+<style>
+  body { font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         margin: 14px; color: #1a1a1a; background: #fff; }
+  h1 { font-size: 15px; margin: 0 0 10px; font-weight: 600; }
+  .wrap { display: flex; gap: 16px; align-items: flex-start; }
+  .panel { border: 1px solid #ddd; border-radius: 8px; padding: 10px 12px 12px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+              color: #666; margin: 0 0 8px; font-weight: 600; }
+  label.c { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
+  label.c > span.n { width: 76px; flex: none; color: #333; }
+  label.c > span.v { width: 30px; flex: none; text-align: right; color: #888;
+                     font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 132px; }
+  select, input[type=number] { font: inherit; padding: 1px 4px; }
+  canvas { border: 1px solid #ddd; border-radius: 8px; display: block;
+           background: #fff; cursor: grab; }
+  #note { color: #777; margin: 8px 0 0; min-height: 1.4em; }
+  hr { border: 0; border-top: 1px solid #eee; margin: 10px 0; }
+</style>
+
+<h1>py2Dmol renderer viewer <span style="font-weight:400;color:#888">— drag to turn, scroll to zoom</span></h1>
+
+<div class="wrap">
+  <div>
+    <canvas id="gpu" width="600" height="600"></canvas>
+    <div id="note"></div>
+  </div>
+
+  <div class="panel">
+    <h2>scene</h2>
+    <label class="c"><span class="n">renderer</span>
+      <select id="renderer">
+        <option value="gpu">WebGL2</option>
+        <option value="cpu">2D renderer</option>
+      </select></label>
+    <label class="c"><span class="n">structure</span>
+      <select id="pdb">
+        <option value="../1UBQ.cif">1UBQ</option>
+        <option value="../1BBH.cif">1BBH — helical</option>
+        <option value="../1TIM.cif">1TIM</option>
+        <option value="out/pdb/9FOG.cif">9FOG — nucleic</option>
+        <option value="fixture:three-way">fixture: three-way</option>
+        <option value="fixture:benzene">fixture: benzene</option>
+        <option value="fixture:tetra">fixture: tetrahedral</option>
+      </select></label>
+    <label class="c"><span class="n">or a file</span>
+      <input type="file" id="file" accept=".cif,.pdb,.mmcif" style="width:150px"></label>
+    <label class="c"><span class="n">colour</span>
+      <select id="colour">
+        <option value="rainbow">rainbow</option>
+        <option value="chain">by chain</option>
+        <option value="mono">one colour</option>
+        <option value="stripe">stripes</option>
+        <option value="depth">gradient</option>
+      </select></label>
+    <label class="c"><span class="n">preset</span>
+      <select id="preset">
+        <option>richardson</option><option>3d</option><option>cartoon</option>
+      </select></label>
+    <label class="c"><span class="n">backbone</span>
+      <input type="checkbox" id="showRibbon" checked></label>
+    <label class="c"><span class="n">side chains</span>
+      <input type="checkbox" id="sc" checked></label>
+    <label class="c"><span class="n">elements</span>
+      <input type="checkbox" id="elements"></label>
+
+    <hr>
+    <h2>geometry</h2>
+    <label class="c"><span class="n">width</span>
+      <input type="range" id="width" min="2" max="4.7" step="0.1" value="3">
+      <span class="v"></span></label>
+    <label class="c"><span class="n">thickness</span>
+      <input type="range" id="thickness" min="0" max="1.5" step="0.05" value="0">
+      <span class="v"></span></label>
+    <label class="c"><span class="n">sheet flat</span>
+      <input type="range" id="sheetFlat" min="0" max="1" step="0.05" value="0">
+      <span class="v"></span></label>
+    <label class="c"><span class="n">detail</span>
+      <input type="range" id="detail" min="2" max="8" step="1" value="4">
+      <span class="v"></span></label>
+    <label class="c"><span class="n">arrows</span>
+      <input type="checkbox" id="arrows" checked></label>
+    <label class="c" title="The app ships at 0.5. Anything below 1 is a perspective view."><span class="n">ortho</span>
+      <input type="range" id="ortho" min="0" max="1" step="0.05" value="1">
+      <span class="v"></span></label>
+
+    <hr>
+    <h2>shading</h2>
+    <label class="c"><span class="n">shade</span>
+      <input type="range" id="shade" min="0" max="1" step="0.05" value="1">
+      <span class="v"></span></label>
+    <label class="c"><span class="n">highlight</span>
+      <input type="range" id="highlight" min="0" max="3" step="0.05" value="1.8">
+      <span class="v"></span></label>
+    <label class="c"><span class="n">fade</span>
+      <input type="range" id="fade" min="0" max="1" step="0.05" value="0">
+      <span class="v"></span></label>
+    <label class="c"><span class="n">smooth</span>
+      <input type="checkbox" id="smooth" checked></label>
+    <label class="c" title="coloured-pencil paper grain, multiplied over the finished frame"><span class="n">pencil</span>
+      <input type="range" id="pencil" min="0" max="1" step="0.05" value="1">
+      <span class="v"></span></label>
+
+    <hr>
+    <h2>outline</h2>
+    <label class="c"><span class="n">outline</span>
+      <input type="checkbox" id="ink3d" checked></label>
+    <label class="c"><span class="n">width</span>
+      <input type="range" id="inkw" min="0.2" max="4" step="0.1" value="1.6">
+      <span class="v"></span></label>
+    <label class="c"><span class="n">bias</span>
+      <input type="range" id="inkbias" min="0" max="0.02" step="0.001" value="0.002">
+      <span class="v"></span></label>
+    <label class="c" title="0 = black ink; 1 = the element's own colour at 0.7, as ribbon mode does"><span class="n">ink tint</span>
+      <input type="range" id="outlineTint" min="0" max="1" step="0.05" value="0">
+      <span class="v"></span></label>
+  </div>
+</div>
+
+<!-- The core reads these by id. They are not shown because this page has no use
+     for them, but it still has to supply them, and the values are the ones the
+     lab settles on: welded vertex normals, no exact-input override, colour on,
+     silhouette-only ink. -->
+<div style="display:none">
+  <select id="frame"><option value="welded" selected>welded</option></select>
+  <select id="view"><option value="resident" selected>resident</option></select>
+  <input id="exact" type="checkbox">
+  <input id="white" type="checkbox">
+  <input id="inkcrease" type="number" value="180">
+  <input id="yaw" type="range" min="0" max="360" value="210">
+  <span id="yawv"></span>
+  <canvas id="ref" width="600" height="600"></canvas>
+  <div id="stats"></div>
+</div>
+
+<script src="../web/utils.js"></script>
+<script src="../py2Dmol/resources/viewer-cartoon.js"></script>
+<script src="../py2Dmol/resources/viewer-mol.js"></script>
+<script src="../py2Dmol/resources/viewer-cartoon-gpu.js"></script>
+<script src="gpu3d_core.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+// ALWAYS LOOK THE CANVAS UP. Switching renderer REPLACES the element (a canvas
+// keeps the first context type it is ever given, so one element cannot serve
+// both 2D and WebGL2), and any reference captured at startup goes on pointing
+// at the detached one - where getContext('2d') returns null, because that
+// element already answered WebGL2.
+const cv = () => $('gpu');
+const note = (m) => { $('note').textContent = m; };
+
+function showValues() {
+    for (const el of document.querySelectorAll('input[type=range]')) {
+        const v = el.parentElement.querySelector('span.v');
+        if (v) v.textContent = el.value;
+    }
+}
+for (const el of document.querySelectorAll('input[type=range]')) {
+    el.addEventListener('input', showValues);
+}
+showValues();
+
+// A PRESET LOADS THE PANEL. It has to, because everything the panel holds is
+// sent as an override and an override BEATS the preset - so with the panel
+// pinned at its own defaults, choosing `3d` got you none of its thickness 1.0
+// or sheetFlat 1.0, and `cartoon` stayed smooth. The presets differ by a lot
+// more than a name: richardson shades at 0.7 with pencil 1.0, 3d is a solid
+// slab with no outline, cartoon is flat-shaded.
+//
+// So the dropdown writes LOOK_DEFAULTS into the controls, and from there the
+// user's own edits override as they should.
+function loadPreset() {
+    const P = (window.py2dmolCartoon.LOOK_DEFAULTS || {})[$('preset').value] || {};
+    const num = (id, v) => { if (v !== undefined && $(id)) $(id).value = v; };
+    num('width', P.width);
+    num('thickness', P.thickness);
+    num('sheetFlat', P.sheetFlat);
+    num('detail', P.detail);
+    num('shade', P.shade);
+    num('highlight', P.highlight);
+    num('fade', P.fade);
+    num('outlineTint', P.outlineTint);      // richardson inks in its own colour
+    num('pencil', P.pencil);
+    if (P.smooth !== undefined) $('smooth').checked = P.smooth;
+    if (P.arrows !== undefined) $('arrows').checked = P.arrows;
+    showValues();
+}
+
+// Everything the panel holds, in the shape styleParams() merges. Set before any
+// render so both renderers read the SAME numbers - the one thing this page has
+// to get right, since with no side-by-side a mismatch would just look like the
+// GPU being wrong.
+function pushStyle() {
+    const ov = {
+        width: +$('width').value,
+        thickness: +$('thickness').value,
+        sheetFlat: +$('sheetFlat').value,
+        detail: +$('detail').value,
+        arrows: $('arrows').checked,
+        shade: +$('shade').value,
+        highlight: +$('highlight').value,
+        fade: +$('fade').value,
+        smooth: $('smooth').checked,
+        pencil: +$('pencil').value,
+        ortho: +$('ortho').value,
+        outlineTint: +$('outlineTint').value,
+    };
+    // OUTLINE WIDTH IS THE PRESET'S unless the checkbox turns it off - naming it
+    // here would pin every preset to one weight, and 3d deliberately has none
+    // (outlineWidth 0) while the other two ask for 2.0. `inkw` is a different
+    // quantity: the GPU line's width in pixels, which only the shader reads.
+    if (!$('ink3d').checked) ov.outlineWidth = 0;
+    window.__styleOverride = ov;
+}
+
+let building = false;
+let dirty = false;
+
+// Rebuild the resident mesh and draw. The 2D path renders straight to the
+// canvas; the GPU path needs the mesh, which is built from one 2D render.
+async function render(rebuild) {
+    if (building) { dirty = true; return; }
+    if (rebuild) stopInertia();   // a rebuild mid-throw redraws a stale view
+    // A pure redraw on the GPU is one draw call - no capture, no upload.
+    if (!rebuild && $('renderer').value === 'gpu' && GPU.getResident()) {
+        pushStyle();
+        drawNow();
+        return;
+    }
+    building = true;
+    try {
+        pushStyle();
+        if (!scene) return;
+        const el = cv();
+        if ($('renderer').value === 'cpu') {
+            const t0 = performance.now();
+            const r = mkRenderer(scene);
+            const g = el.getContext('2d');
+            if (!g) throw new Error('this canvas is already a WebGL2 one');
+            g.setTransform(1, 0, 0, 1, 0, 0);
+            g.fillStyle = '#fff';
+            g.fillRect(0, 0, el.width, el.height);
+            window.py2dmolCartoon.render(r, g, el.width, el.height, segColors(scene));
+            note(`2D renderer — ${(performance.now() - t0).toFixed(0)} ms per frame`);
+        } else {
+            const t0 = performance.now();
+            if (rebuild || !GPU.getResident()) { GPU.clearResident(); buildResident(); }
+            const tb = performance.now() - t0;
+            const t1 = performance.now();
+            drawResident(el);
+            note(`WebGL2 — ${(performance.now() - t1).toFixed(2)} ms per frame`
+                + (rebuild ? `, mesh built in ${tb.toFixed(0)} ms` : ''));
+        }
+    } catch (e) {
+        note('error: ' + e.message);
+        throw e;
+    } finally {
+        building = false;
+        if (dirty) { dirty = false; render(true); }
+    }
+}
+
+// THE CANVAS CANNOT CHANGE ITS MIND. A canvas keeps the first context type it is
+// given for life, so one element cannot serve getContext('2d') and WebGL2 both -
+// switching renderer replaces the element rather than the context.
+function freshCanvas() {
+    const old = cv();
+    const n = old.cloneNode(false);
+    old.parentNode.replaceChild(n, old);
+    return n;
+}
+
+let curPdb = null;
+async function loadStructure(url) {
+    note('loading ' + url.replace(/.*\//, '') + '...');
+    pushStyle();
+    await load(url);            // core: parses, builds `scene`, calls refresh()
+    curPdb = url;
+    await render(true);
+}
+
+// --- wiring ---------------------------------------------------------------
+// A geometry or style change invalidates the mesh; a view change does not.
+// Side chains are decided in buildScene, so this one needs the SCENE rebuilt,
+// not just the mesh. Everything else below only needs the mesh.
+// COLOUR NO LONGER REBUILDS. The mesh stores each face's palette SLOT, and the
+// colours themselves live in a texture, so a scheme change is an upload of a
+// few kilobytes and a redraw. The note prints the cost, which is what this
+// control was added to measure.
+$('colour').addEventListener('change', () => {
+    const t0 = performance.now();
+    if ($('renderer').value === 'gpu' && GPU.getResident()) {
+        recolour();
+        drawNow();
+        note($('note').textContent + ` · recolour ${(performance.now() - t0).toFixed(1)} ms`);
+    } else {
+        render(true);   // the 2D renderer has to paint again either way
+    }
+});
+// ELEMENTS IS NOT A RECOLOUR. Element colour takes half a bond, and the halves
+// exist because the RENDERER cuts the bond at its midpoint when the palette
+// carries a `halves` table - which happens at capture, not at palette upload.
+// Swapping the palette alone leaves the geometry uncut and the half slots
+// unused, so the control appeared to do nothing at all.
+$('elements').addEventListener('change', () => render(true));
+// SHOW/HIDE IS NOT A REBUILD. The mesh carries both classes; these set a
+// uniform. `sc` used to rebuild the SCENE - re-parsing side chains and
+// re-running the capture - which on 9FOG was seconds for a checkbox.
+for (const id of ['sc', 'showRibbon']) {
+    $(id).addEventListener('change', () => {
+        setVisible({ sticks: $('sc').checked, ribbon: $('showRibbon').checked });
+        // The GPU has the whole mesh and just masks it; the 2D renderer is
+        // handed a filtered scene by mkRenderer, so it simply repaints.
+        render(false);
+    });
+}
+// WHAT ACTUALLY NEEDS A REBUILD, and it is far less than it looks.
+//
+// The resident mesh is model-space geometry; everything about the CAMERA and
+// the LIGHT reaches the shader as a uniform. So ortho, shade, highlight and
+// fade cost a draw and nothing else - measured against a rebuild at the same
+// setting, all four differ by 0.000%. Ortho is the surprising one: `unproject`
+// inverts `project` exactly, perspective factor included, so the geometry it
+// recovers does not depend on the projection that was in force when it was
+// captured.
+//
+// Only two things genuinely move the mesh: the geometry controls, and `smooth`
+// - which is read at BUILD time, since it decides whether normals are welded.
+// Measured: thickness 18.1%, smooth 11.1%.
+const REBUILD = ['width', 'thickness', 'sheetFlat', 'detail', 'arrows', 'ink3d'];
+// `ink3d` is a REBUILD, not a redraw: the edge table is skipped entirely when
+// the outline is off (it is 91% of a build), so switching it on has to build it.
+// `pencil` is a REDRAW on both paths: on the GPU it is a fragment-stage
+// multiply against a texture that is uploaded once, and the 2D renderer
+// composites it after the frame is painted. Neither touches geometry.
+const REDRAW = ['ortho', 'shade', 'highlight', 'fade', 'inkw', 'inkbias', 'outlineTint',
+    'pencil',
+    // `smooth` joined this list once the mesh started carrying BOTH normals -
+    // the per-station pair and the per-face one - and the shader started
+    // choosing between them off uCel.
+    'smooth'];
+for (const id of REBUILD) $(id).addEventListener('input', () => render(true));
+for (const id of REDRAW) $(id).addEventListener('input', () => render(false));
+// the crease angle is baked into the edge buffer, so it is a rebuild
+if ($('inkcrease')) $('inkcrease').addEventListener('input', () => render(true));
+$('renderer').addEventListener('change', () => {
+    // Swapping the element drops the old context and every GL object with it,
+    // so the mesh, the edge buffer and both textures have to be rebuilt. The
+    // outline went missing here because only the context was replaced.
+    const n = freshCanvas();
+    wireDrag(n);
+    GPU.clearGL();
+    GPU.clearResident();
+    if ($('renderer').value === 'gpu') initGL(n);
+    render(true);
+});
+$('preset').addEventListener('change', () => { loadPreset(); render(true); });
+$('pdb').addEventListener('change', () => loadStructure($('pdb').value));
+$('file').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const txt = await f.text();
+    scene = buildScene(txt);
+    await render(true);
+});
+
+// THE APP'S ROTATION, not a yaw/pitch pair. `rotateView` accumulates the same
+// screen-space increments viewer-mol.js does (dx and dy scaled by 0.01, left
+// multiplied), so dragging here behaves like dragging in index.html: no roll
+// creeping in once the model is pitched, and no gimbal lock looking down the
+// axis. The pointer is captured so a drag that leaves the canvas keeps working.
+// One repaint at the current view, returning what it cost - the inertia loop
+// uses the number to bow out on anything it cannot turn smoothly.
+function drawNow() {
+    const t0 = performance.now();
+    if ($('renderer').value === 'gpu') drawResident(cv());
+    else {
+        const r = mkRenderer(scene);
+        const g = cv().getContext('2d');
+        g.setTransform(1, 0, 0, 1, 0, 0);
+        g.fillStyle = '#fff';
+        g.fillRect(0, 0, cv().width, cv().height);
+        window.py2dmolCartoon.render(r, g, cv().width, cv().height, segColors(scene));
+    }
+    const ms = performance.now() - t0;
+    note(($('renderer').value === 'gpu' ? 'WebGL2' : '2D renderer')
+        + ` — ${ms < 1 ? ms.toFixed(2) : ms.toFixed(0)} ms per frame`
+        + (spinRAF ? ' · coasting' : ''));
+    return ms;
+}
+
+function wireDrag(el) {
+    let last = null;
+    let lastT = 0;
+    el.addEventListener('pointerdown', (e) => {
+        stopInertia();                     // a new grab kills the old throw
+        last = [e.clientX, e.clientY];
+        lastT = performance.now();
+        el.setPointerCapture(e.pointerId);
+        el.style.cursor = 'grabbing';
+    });
+    const end = (e) => {
+        if (!last) return;
+        last = null;
+        el.style.cursor = 'grab';
+        if (e && e.pointerId !== undefined && el.hasPointerCapture(e.pointerId)) {
+            el.releasePointerCapture(e.pointerId);
+        }
+        // LET GO AND IT KEEPS TURNING. A throw older than a couple of frames is
+        // not a throw - it is a drag that stopped and then lifted - so stale
+        // velocity is dropped rather than flung.
+        if (performance.now() - lastT > 60) stopInertia();
+        startInertia(drawNow);
+    };
+    el.addEventListener('pointerup', end);
+    el.addEventListener('pointercancel', end);
+    // SCROLL TO ZOOM. On the GPU this is one uniform, so it costs a frame and
+    // nothing else; the 2D renderer has to redraw. passive:false because the
+    // page must not scroll underneath the gesture.
+    el.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        stopInertia();
+        zoomBy(Math.exp(-e.deltaY * 0.0015));
+        drawNow();
+    }, { passive: false });
+    el.addEventListener('pointermove', (e) => {
+        if (!last) return;
+        const dx = e.clientX - last[0];
+        const dy = e.clientY - last[1];
+        const now = performance.now();
+        rotateView(dx, dy);
+        noteDragVelocity(dx, dy, now - lastT);
+        last = [e.clientX, e.clientY];
+        lastT = now;
+        // A DRAG IS A VIEW CHANGE, so the GPU turns the mesh it already has and
+        // pays nothing. The 2D renderer redraws from scratch, which is the whole
+        // difference this page exists to show.
+        drawNow();
+    });
+}
+
+(async () => {
+    try {
+        if (!window.py2dmolCartoon) throw new Error('viewer-cartoon.js did not load');
+        loadPreset();
+        initGL(cv());
+        await loadStructure($('pdb').value);
+        wireDrag(cv());
+    } catch (e) { note('startup failed: ' + e.message); throw e; }
+})();
+</script>

@@ -107,49 +107,8 @@ function mean3(coords) {
     return m;
 }
 
-function covarianceXXT(coords) {
-    const mu = mean3(coords);
-    const X = coords.map(c => [
-        c[0] - mu[0],
-        c[1] - mu[1],
-        c[2] - mu[2]
-    ]);
-    return numeric.dot(numeric.transpose(X), X);
-}
-
-function ensureRightHand(V) {
-    const det = numeric.det(V);
-    if (det < 0) {
-        V = V.map(r => [r[0], r[1], -r[2]]);
-    }
-    return V;
-}
-
-function multCols(V, s) {
-    return [
-        [V[0][0] * s[0], V[0][1] * s[1], V[0][2] * s[2]],
-        [V[1][0] * s[0], V[1][1] * s[1], V[1][2] * s[2]],
-        [V[2][0] * s[0], V[2][1] * s[1], V[2][2] * s[2]]
-    ];
-}
-
 function trace(M) {
     return M[0][0] + M[1][1] + M[2][2];
-}
-
-function polar2x2_withScore(A) {
-    const svd = numeric.svd(A);
-    const U = [[svd.U[0][0], svd.U[0][1]], [svd.U[1][0], svd.U[1][1]]];
-    const V = [[svd.V[0][0], svd.V[0][1]], [svd.V[1][0], svd.V[1][1]]];
-    let R2 = numeric.dot(V, numeric.transpose(U));
-    const det = R2[0][0] * R2[1][1] - R2[0][1] * R2[1][0];
-    if (det < 0) {
-        V[0][1] *= -1;
-        V[1][1] *= -1;
-        R2 = numeric.dot(V, numeric.transpose(U));
-    }
-    const nuclear = (svd.S[0] || 0) + (svd.S[1] || 0);
-    return { R2, nuclear };
 }
 
 /**
@@ -698,11 +657,53 @@ function parsePDB(text) {
  * @param {string} text - CIF file content
  * @returns {Array<Array<object>>} - Array of models, each containing atoms
  */
-function parseCIF(text) {
+// The only loops any consumer of parseCIF's `loops` looks at. Adding a reader
+// for another one means naming it here; the symptom of forgetting is that loop
+// arriving with no rows rather than absent, which is what `skipped` marks.
+const CIF_LOOPS_READ = [
+    '_struct_conn.',
+    '_chem_comp.',
+    '_chem_comp_bond.',
+    '_pdbx_struct_assembly_gen.',
+    '_pdbx_struct_oper_list.',
+];
 
-    // Parse chemical component table first (for modified residue detection)
-    // Also parse struct_conn for explicit bonds
-    const loops = parseMinimalCIF_light(text);
+// PARSING, IN SLICES YOU CAN STOP BETWEEN.
+//
+// The body below is a generator so the same code can be drained two ways: all
+// at once by parseCIF, which is what the tests and any synchronous caller
+// want, or a slice at a time by parseCIFAsync, which hands control back to the
+// browser between slices so the tab stays alive and the progress line can move
+// on something real - the cursor's position in the file, not a timer.
+//
+// It yields a number in [0,1]: how much of the text the atom walk has passed.
+// A slice is a fixed number of BYTES rather than of rows, since that is what
+// the fraction is measured in and what makes each slice take about the same
+// time.
+// HOW OFTEN THE BAR CAN MOVE, which is the same question as how much the
+// smoothness costs. Every yield lets the browser produce a frame, and a frame
+// on this page is not free. Measured end to end on a 242 MB capsid through the
+// real fetch button, counting the DISTINCT values the bar actually showed at
+// frame time:
+//
+//   3 MB slices, timer yield    47 steps   3,650 ms
+//   12 MB slices, timer yield   34 steps   3,225 ms
+//   8 MB slices, scheduler.yield 17 steps  3,125 ms
+//
+// 12 MB is a step roughly every 90 ms - plainly moving - for about 100 ms over
+// the cheapest option that still yields at all.
+const PARSE_SLICE_BYTES = 12 << 20;
+
+function* parseCIFSteps(text) {
+
+    // THE FIVE LOOPS ANYONE ACTUALLY READS.
+    //
+    // Three are read below - struct_conn for explicit bonds, chem_comp for
+    // modified-residue detection, chem_comp_bond for ligand connectivity - and
+    // two more by extractCIFBiounitOperations, which is handed these same loops
+    // as `cachedLoops` rather than re-walking the file. Nothing else consumes
+    // parseCIF's `loops` (app.js:cachedLoops is its only reader).
+    const loops = parseMinimalCIF_light(text, CIF_LOOPS_READ);
 
     const getLoop = (name) => loops.find(([cols]) => cols.includes(name));
 
@@ -880,14 +881,75 @@ function parseCIF(text) {
     // files write ragged ones: 9a9o omits pdbx_PDB_model_num and ihm_model_id
     // on ~2000 of its 16740 atoms, all of them past the last column we need.
     const minReqLen = Math.max(idxX, idxY, idxZ, idxChain, idxResSeq, idxResName, idxAtomName) + 1;
+    // ONLY THE COLUMNS THAT ARE READ. _atom_site has 21 of them in a PDB-issued
+    // file and this loop looks at ten; tokenising the rest built 4.6 million
+    // substrings on 4UG0 and dropped them all. The mask says which column
+    // indices matter, and readCIFCols slices those and counts past the others.
+    const wantIdx = [idxRecord, idxAtomName, idxResName, idxChain, idxResSeq,
+        headerMap['_atom_site.auth_seq_id'], idxX, idxY, idxZ, idxB, idxElement, idxModelID];
+    let maxWanted = -1;
+    for (const w of wantIdx) if (w >= 0 && w > maxWanted) maxWanted = w;
+    // A STANDARD RESIDUE'S N, C AND O ARE READ BY NOTHING, so they are never
+    // built - and the scanner is told early enough that it can stop reading the
+    // row at all (see readCIFCols). The condition is what makes it safe:
+    //
+    //   - isRealAminoAcid only falls back to looking for N/CA/C atoms for a
+    //     residue NOT in STANDARD_AMINO_ACIDS. For a standard one it returns at
+    //     the name test and never reads an atom. Dropping these unconditionally
+    //     makes any unrecognised residue VANISH - measured, five renamed
+    //     residues of 4HHB took it from 748 positions to 743.
+    //   - buildSidechainTable already drops every backbone atom but CA.
+    //   - only the CA of a standard residue reaches `coords`, so nothing
+    //     addressed by atom index could resolve to one of these anyway.
+    //
+    // The cartoon rebuilding C, N and O from the C-alpha trace is a different
+    // fact and does not license it: reconstruction says where a KNOWN residue's
+    // backbone is; the classifier asks whether an unknown residue is one.
+    const dropAfter = (idxAtomName >= 0 && idxResName >= 0)
+        ? Math.max(idxAtomName, idxResName) + 1 : -1;
+    //   - ...EXCEPT PROLINE'S N, which its side chain closes a ring through.
+    //     Dropped with the rest, a proline draws as a three-atom arm hanging
+    //     off the CA rather than as the pyrrolidine it is. One atom per
+    //     proline, and prolines are about a twentieth of a structure.
+    const dropTest = (out) => DROPPABLE_BACKBONE.has(out[idxAtomName])
+        && STANDARD_AMINO_ACIDS.has(out[idxResName])
+        && SIDECHAIN_KEEP_BACKBONE[out[idxResName]] !== out[idxAtomName];
+    const wantMask = new Uint8Array(maxWanted + 1);
+    for (const w of wantIdx) if (w >= 0) wantMask[w] = 1;
+    // reused across rows; a column is only read when it is < nCols, and every
+    // column below that count was written on this row, so nothing goes stale
+    const values = [];
     let currentModelArray = null;
 
-    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
-        const line = lines[lineIdx];
-        const lineLen = line.length;
+    // OVER THE TEXT ITSELF, NOT OVER `lines`.
+    //
+    // text.split('\n') hands back SLICED strings - views carrying a pointer to
+    // the parent and an offset - and every character read through one pays that
+    // indirection. Measured on 4UG0: scanning the same 21.9 million characters
+    // costs 885 ms across the 218,776 line strings and 250 ms across the flat
+    // text. Same characters, same test, 3.5x, purely because of how the string
+    // is represented.
+    //
+    // So this walks `text` with a cursor and hands readCIFCols a RANGE. No line
+    // is ever materialised: startsWith takes a position, and the row tests read
+    // a character code straight out of the parent.
+    const textLen = text.length;
+    let sliceMark = PARSE_SLICE_BYTES;
+    for (let pos = 0; pos < textLen; ) {
+        if (pos >= sliceMark) {
+            sliceMark = pos + PARSE_SLICE_BYTES;
+            yield pos / textLen;
+        }
+        let eol = text.indexOf('\n', pos);
+        if (eol < 0) eol = textLen;
+        // a trailing \r belongs to the line ending, not to the last column
+        const end = (eol > pos && text.charCodeAt(eol - 1) === 13) ? eol - 1 : eol;
+        const lineLen = end - pos;
+        const lineStart = pos;
+        pos = eol + 1;
 
         // Check for atom_site header
-        if (line.startsWith('_atom_site.')) {
+        if (text.startsWith('_atom_site.', lineStart)) {
             atomSiteLoop = true;
             continue;
         }
@@ -895,20 +957,23 @@ function parseCIF(text) {
         if (!atomSiteLoop) continue;
 
         // Fast check for comment or end marker
-        if (lineLen > 0 && line[0] === '#') {
+        if (lineLen > 0 && text.charCodeAt(lineStart) === 35 /* # */) {
             atomSiteLoop = false;
             continue;
         }
 
         // Skip semicolon lines
-        if (lineLen > 0 && line[0] === ';') continue;
+        if (lineLen > 0 && text.charCodeAt(lineStart) === 59 /* ; */) continue;
 
-        const values = tokenizeCIFLine_light(line);
-        if (!values || values.length < minReqLen) continue;
+        const nCols = readCIFCols(text, lineStart, end, wantMask, values,
+            dropAfter, dropTest);
+        if (nCols === -1) continue;      // a standard residue's N, C or O
+        if (nCols < minReqLen) continue;
+
 
         // Direct array access - much faster than function calls
         // Update modelID if needed
-        if (idxModelID >= 0 && idxModelID < values.length) {
+        if (idxModelID >= 0 && idxModelID < nCols) {
             const newModelID = +values[idxModelID] || modelID; // Unary + is faster than parseInt
             if (newModelID !== modelID) {
                 modelID = newModelID;
@@ -931,16 +996,16 @@ function parseCIF(text) {
 
         // Create atom object with direct array access and optimized number parsing
         // Use unary + operator for numbers (faster than parseFloat/parseInt)
-        const resNameVal = (idxResName >= 0 && idxResName < values.length) ? values[idxResName] : '';
+        const resNameVal = (idxResName >= 0 && idxResName < nCols) ? values[idxResName] : '';
         // Parse residue sequence number, handling missing values ("?") by falling back to auth_seq_id
         // Use label_seq_id (PDB numbering) for SIFTS mapping compatibility
         let resSeqVal = 0;
-        if (idxResSeq >= 0 && idxResSeq < values.length) {
+        if (idxResSeq >= 0 && idxResSeq < nCols) {
             const labelSeqStr = values[idxResSeq];
             // Check if label_seq_id is missing ("?" or empty), fall back to auth_seq_id
             if (labelSeqStr === '?' || labelSeqStr === '' || labelSeqStr === null || labelSeqStr === undefined) {
                 const idxAuthSeq = headerMap['_atom_site.auth_seq_id'];
-                if (idxAuthSeq >= 0 && idxAuthSeq < values.length) {
+                if (idxAuthSeq >= 0 && idxAuthSeq < nCols) {
                     const authSeqStr = values[idxAuthSeq];
                     resSeqVal = (authSeqStr === '?' || authSeqStr === '' || authSeqStr === null) ? 0 : (+authSeqStr || 0);
                 }
@@ -951,16 +1016,16 @@ function parseCIF(text) {
         }
 
         const atom = {
-            record: (idxRecord >= 0 && idxRecord < values.length) ? values[idxRecord] : 'ATOM',
-            atomName: (idxAtomName >= 0 && idxAtomName < values.length) ? values[idxAtomName] : '',
+            record: (idxRecord >= 0 && idxRecord < nCols) ? values[idxRecord] : 'ATOM',
+            atomName: (idxAtomName >= 0 && idxAtomName < nCols) ? values[idxAtomName] : '',
             resName: resNameVal,
-            chain: (idxChain >= 0 && idxChain < values.length) ? values[idxChain] : '',
+            chain: (idxChain >= 0 && idxChain < nCols) ? values[idxChain] : '',
             resSeq: resSeqVal,
-            x: (idxX >= 0 && idxX < values.length) ? (+values[idxX] || 0) : 0,
-            y: (idxY >= 0 && idxY < values.length) ? (+values[idxY] || 0) : 0,
-            z: (idxZ >= 0 && idxZ < values.length) ? (+values[idxZ] || 0) : 0,
-            b: (idxB >= 0 && idxB < values.length) ? (+values[idxB] || 0) : 0,
-            element: (idxElement >= 0 && idxElement < values.length) ? values[idxElement] : '',
+            x: (idxX >= 0 && idxX < nCols) ? (+values[idxX] || 0) : 0,
+            y: (idxY >= 0 && idxY < nCols) ? (+values[idxY] || 0) : 0,
+            z: (idxZ >= 0 && idxZ < nCols) ? (+values[idxZ] || 0) : 0,
+            b: (idxB >= 0 && idxB < nCols) ? (+values[idxB] || 0) : 0,
+            element: (idxElement >= 0 && idxElement < nCols) ? values[idxElement] : '',
             res_name: resNameVal, // Duplicate for compatibility
             res_seq: resSeqVal // Duplicate for compatibility
         };
@@ -969,13 +1034,85 @@ function parseCIF(text) {
         atomCount++;
     }
 
-    const modelCount = modelMap.size;
 
     const models = Array.from(modelMap.keys())
         .sort((a, b) => a - b)
         .map(id => modelMap.get(id));
-
     return { models, loops, chemCompMap, structConn, chemCompBondMap };
+}
+
+// Drained in one go. Nothing observes the slices, so this is exactly the old
+// parseCIF.
+function parseCIF(text) {
+    const it = parseCIFSteps(text);
+    let r = it.next();
+    while (!r.done) r = it.next();
+    return r.value;
+}
+
+// Hand the browser a turn, so the bar it was just told about can actually be
+// painted before the next slice of work begins.
+//
+// A PLAIN TIMER, and the two cleverer options were both tried and rejected.
+// Measured on a capsid, sampling the bar inside requestAnimationFrame - which
+// is what the screen actually got, rather than what style.width was set to:
+//
+//   MessageChannel   the usual trick for dodging the ~4 ms timer clamp. A
+//                    stream of postMessage tasks gets serviced ahead of both
+//                    timers and rendering, so the load yields and the frame
+//                    still never comes: the last 700 ms painted nothing and
+//                    the bar's final visible value was 81%.
+//   scheduler.yield  continues at high priority, which throttles rendering to
+//                    about 18 fps however fine the slices are - 17 visible
+//                    steps over the load.
+//   setTimeout       36 fps, 37 visible steps. Costs the 4 ms clamp per yield,
+//                    which is why the slices above are megabytes and not
+//                    kilobytes: at 8 MB that is 30 yields, ~120 ms.
+//
+// The bar exists to be watched. The one that lets the browser draw wins.
+function yieldToBrowser() {
+    return new Promise((s) => setTimeout(s, 0));
+}
+
+// HOW OFTEN A LOAD LETS THE BROWSER IN. A yield is a setTimeout, which the
+// browser clamps to about 4 ms whatever you ask for, so yielding is only free
+// next to work that takes longer than that.
+//
+// It was yielded UNCONDITIONALLY: once per parse slice, once per convert slice,
+// and twice per model in the loader. That is right for one huge structure,
+// where a slice is 100 ms of work, and ruinous for a simulation, where a model
+// is 0.1 ms: a 275-model trajectory paid about 30 ms of clamped timers PER
+// MODEL and took 8.3 seconds to load 39 positions.
+//
+// So the rule is time, not steps: hand the frame back only when this load has
+// been holding the thread for longer than a frame's worth. A capsid still
+// yields on every slice; the trajectory yields a handful of times in total.
+const YIELD_EVERY_MS = 25;
+let _lastYieldAt = 0;
+function yieldIfBusy() {
+    const now = (typeof performance !== 'undefined' && performance.now)
+        ? performance.now() : Date.now();
+    if (now - _lastYieldAt < YIELD_EVERY_MS) return Promise.resolve();
+    _lastYieldAt = now;
+    return yieldToBrowser().then(() => {
+        // ...measured from when the browser gave the thread BACK, or the time
+        // spent waiting counts as time spent working
+        _lastYieldAt = (typeof performance !== 'undefined' && performance.now)
+            ? performance.now() : Date.now();
+    });
+}
+
+// Drained a slice at a time, giving the browser a turn in between - see
+// yieldIfBusy for how often that actually is. The steps used to carry the
+// fraction of the file they had reached, for a percentage that no longer
+// exists; the loader names the STEP it is on instead, so nothing reads them.
+async function parseCIFAsync(text) {
+    const it = parseCIFSteps(text);
+    for (;;) {
+        const r = it.next();
+        if (r.done) return r.value;
+        await yieldIfBusy();
+    }
 }
 
 /**
@@ -1013,6 +1150,37 @@ const STANDARD_NUCLEIC_ACIDS = new Set([
  * @param {string} type - 'P' for protein, 'D' for DNA, 'R' for RNA
  * @returns {boolean} - True if residue is connected to at least one neighbor
  */
+// WHERE THE NEIGHBOURS ARE, so nobody has to look through everything to find
+// four of them.
+//
+// isResidueConnected wants the residues in the same chain whose number is
+// within two of its own - at most four candidates - and used to find them by
+// walking the whole residue list. That is fine when a handful of residues ask.
+// 7Y7A asks 8,830 times of a list 309,602 long, twice over, which is billions
+// of comparisons and a browser that never comes back. 3J3Q never showed it
+// because a capsid is standard residues nearly all the way down, and standard
+// residues answer without asking.
+//
+// The index is cached on the array itself. Both callers build the list, sort
+// it and then only read it, so it cannot go stale underneath us; the length
+// check catches the case where someone starts.
+function residuesByChainSeq(allResidues) {
+    const cached = allResidues.__neighborIndex;
+    if (cached && cached.n === allResidues.length) return cached.map;
+    const map = new Map();
+    for (const r of allResidues) {
+        if (!r) continue;
+        const key = r.chain + '\u0000' + r.resSeq;
+        const at = map.get(key);
+        if (at) at.push(r); else map.set(key, [r]);
+    }
+    try {
+        Object.defineProperty(allResidues, '__neighborIndex',
+            { value: { n: allResidues.length, map }, configurable: true, writable: true });
+    } catch (e) { /* frozen array: just pay for the rebuild */ }
+    return map;
+}
+
 function isResidueConnected(residue, allResidues, type) {
     if (!residue || !residue.atoms || !allResidues) {
         return false;
@@ -1040,9 +1208,23 @@ function isResidueConnected(residue, allResidues, type) {
     const residueNum = residue.resSeq;  // Use residue number directly
     const chain = residue.chain;
 
-    // Check neighbors in the same chain by comparing residue numbers
-    // Look for residues within ±2 residue numbers in the same chain
-    for (const neighbor of allResidues) {
+    // Neighbours in the same chain within +/-2 of this residue's number. Looked
+    // up rather than searched for - see residuesByChainSeq. A number that is
+    // not a whole one cannot be reached by stepping, so that case keeps the
+    // original walk and the original answer.
+    let candidates;
+    if (Number.isInteger(residueNum)) {
+        const index = residuesByChainSeq(allResidues);
+        candidates = [];
+        for (const d of [-2, -1, 1, 2]) {
+            const at = index.get(chain + '\u0000' + (residueNum + d));
+            if (at) for (const r of at) candidates.push(r);
+        }
+    } else {
+        candidates = allResidues;
+    }
+
+    for (const neighbor of candidates) {
         if (!neighbor || neighbor.chain !== chain) continue;
 
         // Check if neighbor is within ±2 residue numbers
@@ -1228,6 +1410,9 @@ function resolveChainNucleicTypes(allResidues) {
 // Backbone. Everything else heavy is side chain - "CB and up". OXT is the
 // terminal carboxylate oxygen, backbone by any reading.
 const PROTEIN_BACKBONE_ATOMS = new Set(['N', 'CA', 'C', 'O', 'OXT']);
+// The backbone atoms of a STANDARD residue that no consumer reads - the same
+// set without CA. See the filter in parseCIF for why the qualifier matters.
+const DROPPABLE_BACKBONE = new Set(['N', 'C', 'O', 'OXT']);
 // WHAT IS ACTUALLY BONDED TO WHAT, per residue type.
 //
 // A side chain's connectivity is a property of the amino acid, not of the
@@ -1261,7 +1446,16 @@ const PROTEIN_SIDECHAIN_BONDS = {
     MSE: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'SE'], ['SE', 'CE']],
     PHE: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD1'], ['CG', 'CD2'],
         ['CD1', 'CE1'], ['CD2', 'CE2'], ['CE1', 'CZ'], ['CE2', 'CZ']],
-    PRO: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD']],
+    // PROLINE IS A RING, and the atom that closes it is a BACKBONE nitrogen.
+    // Dropped with the rest of the backbone the side chain draws as an open
+    // three-atom arm hanging off the CA, which is not what a proline looks
+    // like anywhere else. N is kept for this residue only (see
+    // SIDECHAIN_KEEP_BACKBONE) and the two bonds that make the pyrrolidine -
+    // CD-N and N-CA - come with it. N-CA touches the anchor, so it is recorded
+    // as a bond to the OWNING POSITION rather than between two table rows.
+    PRO: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD'], ['CD', 'N'], ['N', 'CA']],
+    HYP: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD'], ['CD', 'N'], ['N', 'CA'],
+        ['CG', 'OD1']],
     SER: [['CA', 'CB'], ['CB', 'OG']],
     THR: [['CA', 'CB'], ['CB', 'OG1'], ['CB', 'CG2']],
     TRP: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD1'], ['CG', 'CD2'],
@@ -1280,6 +1474,52 @@ const PROTEIN_SIDECHAIN_BONDS = {
 // the tip comes away. Symmetric pairs that merely swap between files - ASP's
 // OD1/OD2, PHE's CD1/CD2 - need nothing here: both bond to the same parent, so
 // which is which does not change the connectivity.
+// ...AND THE SAME FOR A BASE, from the chemistry rather than from distances.
+//
+// The anchor is C4' (the trace atom the position was taken from), and the two
+// sugar atoms that carry the base come with it: C4'-O4'-C1' are real bonds and
+// they are what puts the ring where it belongs. Everything after C1' is the
+// base itself.
+//
+// Written out for the same reason the protein table is: a distance rule has to
+// be tuned between the shortest bond and the shortest non-bond, and it gets
+// both wrong on refined-but-scattered geometry - a ring that misses one bond
+// draws as an open chain, and a base with an unmodelled atom draws a bond
+// across the hole. Purines and pyrimidines here, DNA and RNA both; anything
+// else (a modified base) still falls to the distance rule.
+const NUCLEIC_SIDECHAIN_BONDS = (() => {
+    const sugar = [["C4'", "O4'"], ["O4'", "C1'"]];
+    const purine = (n9) => [...sugar, ["C1'", n9]];
+    const A = [...purine('N9'), ['N9', 'C8'], ['C8', 'N7'], ['N7', 'C5'],
+        ['C5', 'C4'], ['C4', 'N9'], ['C4', 'N3'], ['N3', 'C2'], ['C2', 'N1'],
+        ['N1', 'C6'], ['C6', 'C5'], ['C6', 'N6']];
+    const G = [...purine('N9'), ['N9', 'C8'], ['C8', 'N7'], ['N7', 'C5'],
+        ['C5', 'C4'], ['C4', 'N9'], ['C4', 'N3'], ['N3', 'C2'], ['C2', 'N1'],
+        ['N1', 'C6'], ['C6', 'C5'], ['C6', 'O6'], ['C2', 'N2']];
+    const C = [...sugar, ["C1'", 'N1'], ['N1', 'C2'], ['C2', 'N3'], ['N3', 'C4'],
+        ['C4', 'C5'], ['C5', 'C6'], ['C6', 'N1'], ['C2', 'O2'], ['C4', 'N4']];
+    const T = [...sugar, ["C1'", 'N1'], ['N1', 'C2'], ['C2', 'N3'], ['N3', 'C4'],
+        ['C4', 'C5'], ['C5', 'C6'], ['C6', 'N1'], ['C2', 'O2'], ['C4', 'O4'],
+        ['C5', 'C7']];
+    const U = [...sugar, ["C1'", 'N1'], ['N1', 'C2'], ['C2', 'N3'], ['N3', 'C4'],
+        ['C4', 'C5'], ['C5', 'C6'], ['C6', 'N1'], ['C2', 'O2'], ['C4', 'O4']];
+    const out = {};
+    // every spelling a file might use for the same residue
+    for (const [names, bonds] of [[['A', 'DA', 'ADE', 'RA'], A],
+        [['G', 'DG', 'GUA', 'RG'], G], [['C', 'DC', 'CYT', 'RC'], C],
+        [['T', 'DT', 'THY', 'RT'], T], [['U', 'DU', 'URA', 'RU'], U]]) {
+        for (const nm of names) out[nm] = bonds;
+    }
+    return out;
+})();
+// THY's methyl is C7 in the modern dictionary and C5M in older files.
+const NUCLEIC_ATOM_ALIASES = { C5M: 'C7' };
+
+// WHICH BACKBONE ATOMS A RESIDUE KEEPS. Only proline and its hydroxylated
+// form, and only their N: the side chain closes a ring through it, and without
+// it the ring is an arm.
+const SIDECHAIN_KEEP_BACKBONE = { PRO: 'N', HYP: 'N' };
+
 const SIDECHAIN_ATOM_ALIASES = {
     ILE: { CD: 'CD1' },
     MSE: { SED: 'SE' },
@@ -1311,6 +1551,23 @@ const SIDECHAIN_ATOM_ALIASES = {
 // the identical table on 4HHB, because whatever the threshold misses the
 // repair puts back. It is the repair's reach below that decides the answer,
 // which is where the tests are pointed.
+// A NUCLEOTIDE'S BACKBONE, for the same job: everything the table must NOT
+// carry. What is left is the base ring plus the two sugar atoms that hold it -
+// O4' and C1' - so the drawn chain runs C4'(the trace position) - O4' - C1' -
+// N9/N1 - ring, and every stick in it is a real bond. Dropping O4' as well
+// would leave the base to be anchored straight to C4', which is 3.9 A of
+// nothing through the middle of the sugar.
+//
+// Both spellings: PDB v2 wrote the primes as asterisks (C1*, O4*) and plenty
+// of files still do.
+const NUCLEIC_BACKBONE_ATOMS = new Set([
+    'P', 'OP1', 'OP2', 'OP3', 'O1P', 'O2P', 'O3P',
+    "O5'", "C5'", "C4'", "C3'", "O3'", "C2'", "O2'",
+    'O5*', 'C5*', 'C4*', 'C3*', 'O3*', 'C2*', 'O2*',
+]);
+// The primes normalised, so one name answers for either spelling.
+const primed = (nm) => (nm ? nm.replace(/\*/g, "'") : nm);
+
 const SIDECHAIN_BOND_MAX = 2.0;
 const SIDECHAIN_BOND_MAX_SQ = SIDECHAIN_BOND_MAX * SIDECHAIN_BOND_MAX;
 // The repair's reach. Below the 2.41 A aromatic 1,3 distance, so a fragment
@@ -1361,9 +1618,13 @@ const SIDECHAIN_LINK_MAX_SQ = 2.35 * 2.35;
  * @returns {object|null} - the side-chain table, or null if there is nothing
  */
 function buildSidechainTable(coords, entries) {
-    const localFrame = (typeof window !== 'undefined' && window.py2dmolCartoon)
-        ? window.py2dmolCartoon.localFrame : null;
+    const C = (typeof window !== 'undefined') ? window.py2dmolCartoon : null;
+    const localFrame = C ? C.localFrame : null;
     if (!localFrame || !entries.length) return null;
+    // A nucleic trace steps 5.5-6.5 A, not the peptide's 3.8 - see localFrame.
+    const stepMin = C ? C.NUCLEIC_STEP_MIN : 4.5;
+    const stepMax = C ? C.NUCLEIC_STEP_MAX : 7.5;
+    const frameArgs = (isNucleic) => (isNucleic ? [stepMin, stepMax] : [undefined, undefined]);
 
     const n = coords.length;
     const at = (i) => ({ x: coords[i][0], y: coords[i][1], z: coords[i][2] });
@@ -1371,7 +1632,8 @@ function buildSidechainTable(coords, entries) {
     const fr = [0, 0, 0, 0, 0, 0, 0, 0, 0];
     const hasFrame = new Uint8Array(n);
     for (const e of entries) {
-        if (localFrame(at, n, e.pos, fr, null)) hasFrame[e.pos] = 1;
+        const [lo, hi] = frameArgs(e.nucleic);
+        if (localFrame(at, n, e.pos, fr, null, lo, hi)) hasFrame[e.pos] = 1;
     }
     // nearest framed position, searching outward - only used at chain ends
     const framedNear = (pos) => {
@@ -1385,15 +1647,56 @@ function buildSidechainTable(coords, entries) {
 
     const pos = []; const frameOf = []; const coef = [];
     const names = []; const elements = []; const bonds = [];
+    // WHICH ROWS ARE BACKBONE ATOMS KEPT ON PURPOSE - proline's ring-closing N,
+    // and nothing else today. The drawing needs to know: that atom is inside
+    // the ribbon, which draws the backbone as a solid, so the arm that closes
+    // the ring has to meet the SURFACE rather than disappear into it.
+    const onBackbone = [];
     // table rows bonded to their residue's own backbone position, not to
     // another row - the CA end of the side chain
     const toBackbone = [];
+
+    // SCRATCH, REUSED BY EVERY RESIDUE. A side chain is at most a couple of
+    // dozen heavy atoms, and the loop below used to allocate ten containers to
+    // hold them - two Sets, a Map, an array per atom for the adjacency, and a
+    // stack per walk - once per residue. A 313,000-residue capsid pays for
+    // three million short-lived objects to describe side chains that never
+    // exceed fourteen atoms. These grow to the largest residue seen and are
+    // then cleared, not rebuilt; `cap` tracks how much of each is live.
+    let cap = 32;
+    let group = new Array(cap);
+    let adjN = new Uint8Array(cap);            // degree of each group index
+    let adj = new Int16Array(cap * cap);       // neighbours, row-major by cap
+    let reach = new Uint8Array(cap);           // 1 once walked to from the CA
+    let stack = new Int16Array(cap);
+    let rowOf = new Int32Array(cap);
+    const growScratch = (need) => {
+        while (cap < need) cap *= 2;
+        group = new Array(cap);
+        adjN = new Uint8Array(cap);
+        adj = new Int16Array(cap * cap);
+        reach = new Uint8Array(cap);
+        stack = new Int16Array(cap);
+        rowOf = new Int32Array(cap);
+    };
+
     for (const e of entries) {
-        const ca = e.residue.caAtom;
+        // WHICH ATOM THE GROUP HANGS OFF, and what counts as backbone around
+        // it. A protein's is the CA; a nucleotide's is the C4' its position
+        // was taken from. Everything else in here is generic.
+        const anchorName = e.nucleic ? "C4'" : 'CA';
+        const backboneOf = e.nucleic ? NUCLEIC_BACKBONE_ATOMS : PROTEIN_BACKBONE_ATOMS;
+        // ...and the cache is a convenience, not a guarantee: c4Atom is only
+        // set where the parser saw the name it was looking for
+        const ca = e.nucleic
+            ? (e.residue.c4Atom
+                || e.residue.atoms.find((a) => primed(a.atomName) === "C4'"))
+            : e.residue.caAtom;
         if (!ca) continue;
         const anchor = framedNear(e.pos);
         if (anchor < 0) continue;                 // too short to frame: skip
-        if (!localFrame(at, n, anchor, fr, null)) continue;
+        const [flo, fhi] = frameArgs(e.nucleic);
+        if (!localFrame(at, n, anchor, fr, null, flo, fhi)) continue;
         const o = at(anchor);
 
         // ONE CONFORMER, THE FIRST. A residue modelled in two positions writes
@@ -1422,43 +1725,74 @@ function buildSidechainTable(coords, entries) {
         const isHydrogen = (a) => (a.element
             ? (a.element === 'H' || a.element === 'D')
             : /^[0-9]?[HD]/.test(a.atomName || ''));
-        const group = [];
-        const seen = new Set();
-        for (const a of e.residue.atoms) {
+        const atoms = e.residue.atoms;
+        if (atoms.length > cap) growScratch(atoms.length);
+        let gn = 0;
+        for (let ai = 0; ai < atoms.length; ai++) {
+            const a = atoms[ai];
             if (isHydrogen(a)) continue;
-            if (a.atomName !== 'CA' && PROTEIN_BACKBONE_ATOMS.has(a.atomName)) continue;
-            if (seen.has(a.atomName)) continue;
-            seen.add(a.atomName);
-            group.push(a);
+            const nm0 = primed(a.atomName);
+            const keepBB = SIDECHAIN_KEEP_BACKBONE[e.residue.resName];
+            if (nm0 !== anchorName && nm0 !== keepBB && backboneOf.has(a.atomName)) continue;
+            // first-wins by name, over a handful of entries - a linear scan
+            // beats hashing at this size, and there is nothing to allocate
+            let dup = false;
+            for (let k = 0; k < gn; k++) {
+                if (group[k].atomName === a.atomName) { dup = true; break; }
+            }
+            if (dup) continue;
+            group[gn++] = a;
         }
-        // CA first, so index 0 of every group is the anchor
-        group.sort((a, b) => (a.atomName === 'CA' ? -1 : b.atomName === 'CA' ? 1 : 0));
-        if (group.length < 2) continue;           // glycine: nothing to draw
+        // CA first, so index 0 of every group is the anchor. Moved rather than
+        // swapped: the rows are emitted in group order, so the atoms after it
+        // have to keep the order the file gave them.
+        for (let k = 1; k < gn; k++) {
+            if (primed(group[k].atomName) !== anchorName) continue;
+            const ca0 = group[k];
+            for (let m = k; m > 0; m--) group[m] = group[m - 1];
+            group[0] = ca0;
+            break;
+        }
+        if (gn < 2) continue;                     // glycine: nothing to draw
         const base = pos.length;
         // CONNECTIVITY. From the residue's chemistry where we recognise it,
         // and only otherwise from distances.
         const link = [];
-        const adj = group.map(() => []);
+        for (let k = 0; k < gn; k++) adjN[k] = 0;
         const join = (i, j) => {
             link.push(i, j);
-            adj[i].push(j); adj[j].push(i);
+            adj[i * cap + adjN[i]++] = j;
+            adj[j * cap + adjN[j]++] = i;
         };
-        const known = PROTEIN_SIDECHAIN_BONDS[e.residue.resName];
+        // ...from the right table. A base has its own, and a modified one that
+        // is in neither falls to the distance rule.
+        const rn = (e.residue.resName || '').trim().toUpperCase();
+        const known = e.nucleic
+            ? NUCLEIC_SIDECHAIN_BONDS[rn]
+            : PROTEIN_SIDECHAIN_BONDS[e.residue.resName];
         if (known) {
-            const alias = SIDECHAIN_ATOM_ALIASES[e.residue.resName];
-            const row = new Map();
-            for (let i = 0; i < group.length; i++) {
-                const n0 = group[i].atomName;
-                row.set((alias && alias[n0]) || n0, i);
+            const alias = e.nucleic
+                ? NUCLEIC_ATOM_ALIASES : SIDECHAIN_ATOM_ALIASES[e.residue.resName];
+            const rowName = [];
+            for (let i = 0; i < gn; i++) {
+                // primes normalised for a base, so a file written with
+                // asterisks matches the table's C1'
+                const n0 = e.nucleic ? primed(group[i].atomName) : group[i].atomName;
+                rowName.push((alias && alias[n0]) || n0);
             }
+            const rowIdx = (nm) => {
+                // last match wins, as Map.set did when two atoms alias to one name
+                for (let i = gn - 1; i >= 0; i--) if (rowName[i] === nm) return i;
+                return undefined;
+            };
             for (const [n1, n2] of known) {
-                const i = row.get(n1); const j = row.get(n2);
+                const i = rowIdx(n1); const j = rowIdx(n2);
                 // an atom the file never modelled simply has no bond to make
                 if (i !== undefined && j !== undefined) join(i, j);
             }
         } else {
-            for (let i = 0; i < group.length; i++) {
-                for (let j = i + 1; j < group.length; j++) {
+            for (let i = 0; i < gn; i++) {
+                for (let j = i + 1; j < gn; j++) {
                     const a = group[i], b = group[j];
                     const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
                     if (dx * dx + dy * dy + dz * dz < SIDECHAIN_BOND_MAX_SQ) {
@@ -1474,13 +1808,19 @@ function buildSidechainTable(coords, entries) {
         // it appears as a sphere floating beside a gap, which reads as a broken
         // bond rather than as the absent atom it really is. Dropping it says
         // the honest thing: nothing is drawn where nothing was measured.
-        const reach = new Set([0]);          // index 0 is the CA anchor
+        for (let k = 0; k < gn; k++) reach[k] = 0;
+        reach[0] = 1;                        // index 0 is the CA anchor
+        let reachN = 1;
         const grow = (from) => {
-            const stack = [from];
-            while (stack.length) {
-                for (const nb of adj[stack.pop()]) {
-                    if (reach.has(nb)) continue;
-                    reach.add(nb); stack.push(nb);
+            let sp = 0;
+            stack[sp++] = from;
+            while (sp) {
+                const at0 = stack[--sp];
+                const deg = adjN[at0]; const row = at0 * cap;
+                for (let k = 0; k < deg; k++) {
+                    const nb = adj[row + k];
+                    if (reach[nb]) continue;
+                    reach[nb] = 1; reachN++; stack[sp++] = nb;
                 }
             }
         };
@@ -1498,10 +1838,10 @@ function buildSidechainTable(coords, entries) {
         // further than the threshold does.
         while (!known) {
             let bd = SIDECHAIN_LINK_MAX_SQ; let bi = -1; let bj = -1;
-            for (let i = 0; i < group.length; i++) {
-                if (!reach.has(i)) continue;
-                for (let j = 0; j < group.length; j++) {
-                    if (reach.has(j)) continue;
+            for (let i = 0; i < gn; i++) {
+                if (!reach[i]) continue;
+                for (let j = 0; j < gn; j++) {
+                    if (reach[j]) continue;
                     const a = group[i], b = group[j];
                     const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
                     const d2 = dx * dx + dy * dy + dz * dz;
@@ -1510,20 +1850,19 @@ function buildSidechainTable(coords, entries) {
             }
             if (bi < 0) break;
             link.push(bi, bj);
-            adj[bi].push(bj); adj[bj].push(bi);
-            reach.add(bj);
+            adj[bi * cap + adjN[bi]++] = bj;
+            adj[bj * cap + adjN[bj]++] = bi;
+            reach[bj] = 1; reachN++;
             grow(bj);
         }
         // Whatever is STILL detached is dropped, for the reason above.
-        if (reach.size < 2) continue;        // nothing reached the CA at all
-        // renumber the survivors, since the rows are written in group order
-        const keep = [];
-        for (let i = 0; i < group.length; i++) if (reach.has(i)) keep.push(i);
-        const rowOf = new Map();
-        // the CA (group index 0) is the backbone position, so it is not emitted
-        const emitted = keep.filter((i) => i !== 0);
-        for (let i = 0; i < emitted.length; i++) rowOf.set(emitted[i], base + i);
-        for (const i of emitted) {
+        if (reachN < 2) continue;            // nothing reached the CA at all
+        // renumber the survivors, since the rows are written in group order.
+        // The CA (group index 0) is the backbone position, so it is not emitted.
+        let emitN = 0;
+        for (let i = 1; i < gn; i++) if (reach[i]) rowOf[i] = base + emitN++;
+        for (let i = 1; i < gn; i++) {
+            if (!reach[i]) continue;
             const a = group[i];
             const dx = a.x - o.x, dy = a.y - o.y, dz = a.z - o.z;
             pos.push(e.pos);
@@ -1533,18 +1872,21 @@ function buildSidechainTable(coords, entries) {
             coef.push(dx * fr[6] + dy * fr[7] + dz * fr[8]);
             names.push(a.atomName);
             elements.push(a.element || '');
+            onBackbone.push(primed(a.atomName) === SIDECHAIN_KEEP_BACKBONE[e.residue.resName]
+                ? 1 : 0);
         }
         for (let k = 0; k + 1 < link.length; k += 2) {
             const p1 = link[k]; const p2 = link[k + 1];
             // a bond touching the CA becomes a bond to the OWNING POSITION,
             // recorded separately because it crosses out of the table
             if (p1 === 0 || p2 === 0) {
-                const other = rowOf.get(p1 === 0 ? p2 : p1);
-                if (other !== undefined) toBackbone.push(other);
+                // rowOf holds stale entries from earlier residues, so a row
+                // number only counts when this residue actually reached it
+                const o = p1 === 0 ? p2 : p1;
+                if (o !== 0 && reach[o]) toBackbone.push(rowOf[o]);
                 continue;
             }
-            const a = rowOf.get(p1); const b = rowOf.get(p2);
-            if (a !== undefined && b !== undefined) bonds.push(a, b);
+            if (reach[p1] && reach[p2]) bonds.push(rowOf[p1], rowOf[p2]);
         }
     }
     if (!pos.length) return null;
@@ -1556,6 +1898,7 @@ function buildSidechainTable(coords, entries) {
         toBackbone: new Int32Array(toBackbone),
         names,
         elements,
+        onBackbone: new Uint8Array(onBackbone),
     };
 }
 
@@ -1593,6 +1936,9 @@ function trimSidechainTable(sc) {
         coef,
         bonds: Array.from(sc.bonds),
         toBackbone: Array.from(sc.toBackbone || []),
+        // dropped here once and proline's ring went back to diving into the
+        // ribbon: this IS the table the renderer reads
+        onBackbone: Array.from(sc.onBackbone || []),
     };
 }
 
@@ -1613,6 +1959,7 @@ function reviveSidechainTable(raw) {
         // dropped to save the bytes - see trimSidechainTable
         names: raw.names || [],
         elements: raw.elements || [],
+        onBackbone: new Uint8Array(raw.onBackbone || []),
     };
 }
 
@@ -1994,27 +2341,79 @@ function normalizePlddt(value) {
     return value;
 }
 
-function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, includeAllResidues = false, conectMap = null, structConn = null, chemCompBondMap = null) {
+/**
+ * The element symbol for one parsed atom.
+ *
+ * THE COLUMN FIRST, ALWAYS. A PDB file names it in columns 77-78 and an mmCIF
+ * in type_symbol, and that is the only place the two-letter elements can be
+ * read reliably: a ligand atom called CL is chlorine in one file and a carbon
+ * in another (haem names its four nitrogens NA, NB, NC, ND), and no rule over
+ * names alone tells them apart.
+ *
+ * So when the column is silent - old PDB files leave it blank - this takes the
+ * FIRST LETTER and stops. That reads chlorine as carbon, which is exactly what
+ * the drawing did before any of this existed, and never invents a sodium out
+ * of a nitrogen. The colour table only names N, O, S and SE, so a first-letter
+ * guess is either right or uncoloured; a two-letter guess could be wrong AND
+ * coloured.
+ *
+ * @param {object} atom - a parsed atom, with .element and .atomName
+ * @returns {string} an uppercase symbol, or '' if there is nothing to go on
+ */
+function elementOfAtom(atom) {
+    const col = (atom.element || '').trim().toUpperCase();
+    if (col) return col;
+    const m = /[A-Za-z]/.exec(atom.atomName || '');
+    return m ? m[0].toUpperCase() : '';
+}
+
+// CONVERSION, ALSO IN SLICES. Same reason as parseCIFSteps: this is half a
+// second on a capsid, made of five passes of 20-200 ms each, and run as one
+// block it is half a second in which the browser produces no frames and the
+// progress line is a still picture. Yielding a fraction between the passes -
+// and inside the long one - is what lets it keep moving.
+function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = null, includeAllResidues = false, conectMap = null, structConn = null, chemCompBondMap = null) {
     const coords = [];
     const plddts = [];
     const position_chains = [];
     const position_types = [];
     const residues = [];
     const residue_numbers = [];
+    // ONE ENTRY PER POSITION, and empty for everything that is not a ligand
+    // atom. A backbone position stands for a whole residue - "the atom" there
+    // is the alpha carbon or the C4', which is a fact about the model rather
+    // than about the file - so only the ligand branch, where a position IS an
+    // atom, has a name and an element to record.
+    const position_atoms = [];
+    const position_elements = [];
 
     // Map atom serial/ID to new index in coords array
     const atomSerialToIndex = new Map();
     // Also map chain:seq:atomName to index for CIF struct_conn resolution
     const atomIdToIndex = new Map();
-    // Map resKey:atomName to new index for chemCompBondMap resolution
-    const resAtomIdToIndex = new Map();
+    // the residues that contribute more than one position - see the ligand
+    // branch below, and the chem_comp_bond pass that consumes this
+    const multiAtomResidues = [];
 
     const residueMap = new Map();
+    // ATOMS ARRIVE IN RESIDUE ORDER. Building the key costs a string
+    // concatenation and a hash per atom, and a 2.4 M-atom file spends it
+    // 1.5 M times to name the same few hundred thousand residues. Almost
+    // every atom belongs to the same residue as the one before it, and
+    // three field compares settle that without touching the map. The map
+    // is still there for the atoms that don't - a residue interrupted and
+    // resumed later in the file lands back in its own group, exactly as
+    // before.
+    let runChain = null, runSeq = null, runName = null, runResidue = null;
     for (const atom of atoms) {
         if (atom.resName === 'HOH') continue;
-        // Optimize string concatenation - use array join or direct concatenation
+        let residue;
+        if (runResidue !== null && atom.chain === runChain
+            && atom.resSeq === runSeq && atom.resName === runName) {
+            residue = runResidue;
+        } else {
         const resKey = atom.chain + ':' + atom.resSeq + ':' + atom.resName;
-        let residue = residueMap.get(resKey);
+        residue = residueMap.get(resKey);
         if (!residue) {
             residue = {
                 atoms: [],
@@ -2027,6 +2426,9 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
             };
             residueMap.set(resKey, residue);
         }
+        runChain = atom.chain; runSeq = atom.resSeq; runName = atom.resName;
+        runResidue = residue;
+        }
         residue.atoms.push(atom);
 
         // Cache CA and C4' atoms during building to avoid .find() later
@@ -2038,6 +2440,7 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
         }
     }
 
+    yield 0.25;
     // Convert residueMap to array for connectivity checks
     const allResidues = Array.from(residueMap.values());
 
@@ -2049,6 +2452,7 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
         return a.resSeq - b.resSeq;
     });
 
+    yield 0.4;
     // One DNA/RNA answer per chain - see resolveChainNucleicTypes.
     const chainNucleic = resolveChainNucleicTypes(allResidues);
 
@@ -2057,9 +2461,13 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
     // is dropped, and the file text is not retained, so an atom not taken now
     // cannot be recovered later. The table it builds is never read by the
     // draw path unless a residue is actually selected - see buildSidechainTable.
+    yield 0.45;
     const sidechainEntries = [];
-
+    const CONVERT_SLICE_RESIDUES = 60000;
     for (let idx = 0; idx < allResidues.length; idx++) {
+        if (idx > 0 && idx % CONVERT_SLICE_RESIDUES === 0) {
+            yield 0.45 + 0.30 * (idx / allResidues.length);
+        }
         const residue = allResidues[idx];
 
         // Use unified classification functions
@@ -2115,6 +2523,13 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
                 residues.push(c4_atom.res_name || c4_atom.resName || residue.resName);
                 residue_numbers.push(c4_atom.res_seq || c4_atom.resSeq || residue.resSeq);
 
+                // A BASE IS A SIDE CHAIN. Same machinery as a protein's:
+                // coefficients in the residue's local frame, materialised as
+                // positions when the user asks for them. The plate stays what
+                // it always was - a schematic - and this is the real thing
+                // beside it.
+                sidechainEntries.push({ pos: newIndex, residue, nucleic: true });
+
                 // Map serial/ID to new index
                 if (c4_atom.serial !== undefined) atomSerialToIndex.set(c4_atom.serial, newIndex);
                 // Map ID for CIF resolution
@@ -2125,6 +2540,11 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
             // If includeAllResidues is true, include everything (even unclassified residues)
             // Otherwise, only include HETATM records as ligands
             // For ligands or unclassified residues, use all non-H atoms (like Python code)
+            // A LIGAND IS THE ONLY RESIDUE THAT PUTS MORE THAN ONE ATOM IN
+            // coords, and therefore the only one that can carry an
+            // intra-residue bond. Noted here so the chem_comp_bond pass below
+            // does not have to walk every residue in the structure to find out.
+            multiAtomResidues.push(residue);
             for (const atom of residue.atoms) {
                 if (atom.element !== 'H' && atom.element !== 'D') {
                     const newIndex = coords.length;
@@ -2132,6 +2552,12 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
                     plddts.push(normalizePlddt(atom.b));
                     position_chains.push(atom.chain);
                     position_types.push('L');
+                    // Written by index rather than pushed: the other branches
+                    // have no atom to name, and padding them with a blank at
+                    // every push is three more places to get the alignment
+                    // wrong. Filled in below.
+                    position_atoms[newIndex] = atom.atomName || '';
+                    position_elements[newIndex] = elementOfAtom(atom);
                             residues.push(atom.res_name || atom.resName || residue.resName);
                     residue_numbers.push(atom.res_seq || atom.resSeq || residue.resSeq);
 
@@ -2199,52 +2625,27 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
     // 3. Process explicit bonds from _chem_comp_bond (CIF component bonds)
     if (chemCompBondMap && chemCompBondMap.size > 0) {
         // Group atoms by residue unique ID (chain:resSeq:resName)
-        // We need to map the original atom serial/ID to the *new* index in the coords array.
-        // The `atomSerialToIndex` and `atomIdToIndex` maps already do this for the *final* positions.
-        // However, the `chemCompBondMap` refers to atom names within a residue, not serials or IDs.
-        // We need to map (resKey, atomName) -> newIndex.
-        // The `resAtomIdToIndex` map was intended for this, but it's not populated.
-        // Let's re-populate `resAtomIdToIndex` during the initial atom processing loop,
-        // or create a new map here that links (resKey, atomName) to the final `coords` index.
-
-        // Let's create a temporary map for this purpose, mapping (resKey, atomName) to the index in `coords`.
-        // This requires iterating through the `allResidues` and their atoms again,
-        // or modifying the initial loop to populate this map for *all* atoms that end up in `coords`.
-
-        // For simplicity and to avoid re-looping all atoms, let's assume `resAtomIdToIndex`
-        // should have been populated during the main loop where `coords` are built.
-        // Since it wasn't, we need to reconstruct a similar mapping for the atoms that *made it into* `coords`.
-
-        // A more robust way: iterate through the `allResidues` and their atoms,
-        // and for each atom that was added to `coords`, store its (resKey, atomName) -> newIndex.
-        const finalResidueAtomToIndex = new Map(); // Map<resKey, Map<atomName, finalCoordIndex>>
-
-        // This requires re-iterating through the logic that populates `coords` to get the correct indices.
-        // This is complex because `coords` indices are conditional.
-        // A simpler approach is to use the `atomSerialToIndex` or `atomIdToIndex` if the original atoms
-        // had unique identifiers that map to the final `coords` indices.
-
-        // Given the current structure, the `atomIdToIndex` (chain:resSeq:atomName -> newIndex)
-        // is the most suitable for resolving `chemCompBondMap` bonds.
-        // The `chemCompBondMap` bonds are defined by `atom1` and `atom2` (atom names) within a `resName`.
-        // So we need to find all atoms belonging to a specific residue (resName, chain, resSeq)
-        // and then map their atom names to the `coords` index.
-
-        // Let's iterate through the original `atoms` array to build a map of
-        // (chain:resSeq:resName) -> Map(atomName -> originalAtomObject)
-        // and then use `atomIdToIndex` to get the final `coords` index.
-
-        // This is tricky because `chemCompBondMap` applies to *residues*, not individual atoms.
-        // The `convertParsedToFrameData` function filters atoms and only adds certain ones to `coords`.
-        // So we need to find the `coords` indices for the atoms specified in `chemCompBondMap` for a given residue.
-
-        // Let's use the `residueMap` created earlier, which contains all atoms for each residue.
-        // Then, for each atom in `residue.atoms`, we can check if it was added to `coords`
-        // by looking it up in `atomIdToIndex`.
+        // WHICH POSITION EACH NAMED ATOM BECAME. The component table names its
+        // bonds by ATOM NAME within a residue, and coords is indexed by
+        // position - so the lookup goes through atomIdToIndex, which is keyed
+        // chain:resSeq:atomName and holds only the atoms that made it in.
 
         const processedBonds = new Set(); // To avoid duplicate bonds from this source
 
-        for (const [resKey, residue] of residueMap.entries()) {
+        // ONLY THE RESIDUES THAT CAN HAVE ONE.
+        //
+        // This walked every residue in the structure and, for each bond its
+        // component defines, built three template literals to look two atoms up
+        // by name. A protein residue contributes exactly ONE position - its CA -
+        // so both ends of an intra-residue bond can never be found and the work
+        // is spent proving that. On 3J3Q it was 313,236 residues x ~15 bonds =
+        // 4.7 million lookups and 14 million strings, 2.06 s of a 3.3 s
+        // conversion, to produce nothing at all.
+        //
+        // Only a ligand puts more than one atom in coords, so only a ligand can
+        // carry one of these bonds. Same bonds out, over the handful of
+        // residues that can actually have them.
+        for (const residue of multiAtomResidues) {
             const resName = residue.resName;
             if (chemCompBondMap.has(resName)) {
                 const bondsInComp = chemCompBondMap.get(resName);
@@ -2273,8 +2674,21 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
             }
         }
     }
+    // The holes left by the by-index writes above become blanks, so the arrays
+    // are as long as the coordinates and every consumer can index them
+    // directly. Attached only when something actually filled one: a structure
+    // with no ligand would otherwise carry two arrays of nothing per frame.
+    let anyAtomNames = false;
+    for (let i = 0; i < coords.length; i++) {
+        if (position_atoms[i]) anyAtomNames = true; else position_atoms[i] = '';
+        if (!position_elements[i]) position_elements[i] = '';
+    }
 
     const result = { coords, atomIdToIndex };
+    if (anyAtomNames) {
+        result.position_atoms = position_atoms;
+        result.position_elements = position_elements;
+    }
 
     if (bonds.length > 0) {
         result.bonds = bonds;
@@ -2305,12 +2719,33 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
         result.residue_numbers = residue_numbers;
     }
 
+    yield 0.75;
     const sidechains = buildSidechainTable(coords, sidechainEntries);
     if (sidechains) {
         result.sidechains = sidechains;
     }
 
     return result;
+}
+
+// Drained in one go - exactly the old convertParsedToFrameData.
+function convertParsedToFrameData(...args) {
+    const it = convertParsedToFrameDataSteps(...args);
+    let r = it.next();
+    while (!r.done) r = it.next();
+    return r.value;
+}
+
+// Drained a slice at a time, reporting how far through it is.
+// ...and the same for the converter: sliced so the browser can have a turn,
+// with nothing to report but the step it is on, which the loader names.
+async function convertParsedToFrameDataAsync(...args) {
+    const it = convertParsedToFrameDataSteps(...args);
+    for (;;) {
+        const r = it.next();
+        if (r.done) return r.value;
+        await yieldIfBusy();
+    }
 }
 
 /**
@@ -2697,52 +3132,259 @@ function tokenizeCIFLine_light(s) {
     return out;
 }
 
-function parseMinimalCIF_light(text) {
-    const lines = text.split(/\r?\n/);
+/* Every loop_ in the file, as [columns, rows].
+ *
+ * `keepPrefixes`, when given, names the only loops whose ROWS the caller will
+ * read. Every other loop is still found, and still delimits correctly - only
+ * its contents are not tokenised or kept.
+ *
+ * A PDB-issued mmCIF has around 40 loops and parseCIF reads five of them. The
+ * rest are metadata nobody here asks for - and one of them, _atom_site, IS the
+ * structure: on 4UG0 that is 218,776 rows of 21 columns, 4.6 million
+ * substrings, each row copied again with slice(), all retained, and then
+ * dropped, because parseCIF has its own atom reader a few lines later.
+ *
+ * Measured cold on 4UG0: walking every loop was 2,698 ms of a 5,342 ms parse.
+ * Naming only the loops that are read takes it to a fraction of that.
+ *
+ * parseCIF is now the only caller, and it always names its loops. Omitting the
+ * list still means "every loop", which is what the biounit reader that used to
+ * call it that way needed.
+ */
+/* tokenizeCIFLine_light, but it only KEEPS the columns asked for.
+ *
+ * Same rules - single and double quotes (nucleic atom names arrive as "O5'"),
+ * and an unquoted . or ? means absent. The difference is that an unwanted
+ * column is walked past rather than sliced out, which is the whole point: the
+ * atom table is the one loop where the unwanted columns outnumber the wanted
+ * ones and there are hundreds of thousands of rows.
+ *
+ * Writes into `out` and returns HOW MANY columns the row had - the caller needs
+ * that, not out.length, because ragged rows are legal and are relied on (see
+ * minReqLen).
+ */
+const CC_SPACE = 32;
+const CC_TAB = 9;
+const CC_LF = 10;
+const CC_CR = 13;
+const CC_HASH = 35;        // #
+const CC_UNDERSCORE = 95;  // _
+const CC_QUOTE = 39;      // '
+const CC_DQUOTE = 34;     // "
+const CC_DOT = 46;        // .
+const CC_QMARK = 63;      // ?
+
+function readCIFCols(s, from, n, wantMask, out, dropAfter, dropTest) {
+    const maxCol = wantMask.length;
+    let i = from;
+    let col = 0;
+    while (i < n) {
+        // ABORT AS SOON AS THE ROW IS KNOWN TO BE UNWANTED.
+        //
+        // The atom loop drops a standard residue's N, C and O, and decides that
+        // from two columns - the atom name and the residue name - that sit near
+        // the front of the row. Deciding it after the scan means reading all 21
+        // columns of _atom_site to throw the row away; deciding it here means
+        // reading six. That is 38.6% of the rows in a capsid.
+        //
+        // -1 says "dropped", which no honest column count can be.
+        if (col === dropAfter && dropTest(out)) return -1;
+        // Char codes rather than s[i]. NOT because single-character strings
+        // are expensive - V8 caches them, and measured on sliced line strings
+        // the two were within 2% of each other. It is because this now scans a
+        // RANGE of the parent text, where charCodeAt is the natural read and
+        // s[i] would be comparing against a one-character string for every
+        // character of a 24 MB file.
+        let c = s.charCodeAt(i);
+        while (i < n && (c === CC_SPACE || c === CC_TAB || c === CC_CR || c === CC_LF)) {
+            c = s.charCodeAt(++i);
+        }
+        if (i >= n) break;
+        const want = col < maxCol && wantMask[col] === 1;
+        if (c === CC_QUOTE || c === CC_DQUOTE) {
+            let j = ++i;
+            while (j < n && s.charCodeAt(j) !== c) j++;
+            if (want) out[col] = s.slice(i, j);
+            i = j < n ? j + 1 : n;
+        } else {
+            let j = i;
+            for (;;) {
+                if (j >= n) break;
+                const d = s.charCodeAt(j);
+                if (d === CC_SPACE || d === CC_TAB || d === CC_CR || d === CC_LF) break;
+                j++;
+            }
+            if (want) {
+                // an unquoted single . or ? is CIF for "no value"
+                out[col] = (j - i === 1 && (s.charCodeAt(i) === CC_DOT || s.charCodeAt(i) === CC_QMARK))
+                    ? '' : s.slice(i, j);
+            }
+            i = j;
+        }
+        col++;
+    }
+    return col;
+}
+
+
+function parseMinimalCIF_light(text, keepPrefixes) {
+    // SOUGHT, NOT WALKED.
+    //
+    // This is the pre-scan that finds the small metadata loops - struct_conn,
+    // chem_comp, chem_comp_bond, the assembly operators. It used to read the
+    // file from front to back, and on a capsid essentially all of that was
+    // spent on the one loop it does not want: 2.4 million _atom_site rows,
+    // each one tokenised just to learn how many tokens it had, so the walk
+    // would still be in step when the loop ended.
+    //
+    // It does not need to be in step with a loop it is not reading. The tags
+    // it wants can be found directly, and String.indexOf over the flat text is
+    // a different order of thing from a per-line walk: 242 MB in 30-70 ms per
+    // tag. So each wanted category is sought, the header block around the hit
+    // is recovered by walking BACKWARDS over the tag lines above it, and only
+    // the rows of loops actually being read are ever tokenised. The 2.4 M rows
+    // are not visited at all.
+    //
+    // Consequence worth stating: the returned list now holds ONLY the loops
+    // asked for. It used to carry a header-only entry for every other loop in
+    // the file too, and nothing ever read them - `skipped` marked those and
+    // had no consumer either.
+    const n = text.length;
     const loops = [];
-    let i = 0;
-    let loopCount = 0;
-    let rowCount = 0;
+    if (!keepPrefixes || !keepPrefixes.length) return loops;
+    const unread = (col) => !keepPrefixes.some((p) => col && col.startsWith(p));
 
-    while (i < lines.length) {
-        let L = lines[i].trim();
-        if (!L || L[0] === '#') {
-            i++;
-            continue;
+    let i = 0;                       // cursor, always at the start of a line
+    // A line's extent, and where the next one starts. The \r of a CRLF pair is
+    // excluded so a range behaves exactly as split(/\r?\n/) did.
+    let ls = 0, le = 0, next = 0;
+    const takeLine = () => {
+        ls = i;
+        let e = text.indexOf('\n', i);
+        if (e < 0) e = n;
+        next = e + 1;
+        if (e > ls && text.charCodeAt(e - 1) === CC_CR) e--;
+        le = e;
+    };
+    // the first non-blank character of the current line, or -1
+    const firstCh = () => {
+        let p = ls;
+        while (p < le) {
+            const c = text.charCodeAt(p);
+            if (c !== CC_SPACE && c !== CC_TAB) return p;
+            p++;
         }
+        return -1;
+    };
+    const startsWordAt = (p, word) => {
+        if (p < 0 || p + word.length > le) return false;
+        for (let k = 0; k < word.length; k++) {
+            // BOTH SIDES FOLDED. Folding only the text breaks on '_': 95 | 32
+            // is 127, so "loop_" never matched and every loop in the file was
+            // missed. Folding both leaves non-letters equal to each other,
+            // which is all this needs.
+            if ((text.charCodeAt(p + k) | 32) !== (word.charCodeAt(k) | 32)) return false;
+        }
+        return true;
+    };
+    // start of the line above the one beginning at `p`, or -1 if there is none
+    const lineAbove = (p) => {
+        if (p <= 0) return -1;
+        const nl = text.lastIndexOf('\n', p - 2);
+        return nl < 0 ? 0 : nl + 1;
+    };
 
-        if (/^loop_/i.test(L)) {
-            i++;
-            const cols = [];
-            const rows = [];
+    // Every line that opens a wanted category, in file order. A category is
+    // written once, but seeking each prefix separately and merging keeps this
+    // independent of how many times it appears.
+    // The old walk asked whether a line's first NON-BLANK character began the
+    // tag, so seeking "\n_struct_conn." instead would quietly stop matching an
+    // indented header. Seeking the bare tag and then checking backwards that
+    // only spaces and tabs separate it from the line start is the same
+    // predicate, and it also throws out the tag appearing mid-line inside a
+    // value.
+    const hits = [];
+    const atLineStart = (p) => {
+        let k = p - 1;
+        while (k >= 0) {
+            const c = text.charCodeAt(k);
+            if (c === CC_LF) return k + 1;
+            if (c !== CC_SPACE && c !== CC_TAB) return -1;
+            k--;
+        }
+        return 0;
+    };
+    for (const pfx of keepPrefixes) {
+        let q = text.indexOf(pfx);
+        while (q >= 0) {
+            const s = atLineStart(q);
+            if (s >= 0) hits.push(s);
+            q = text.indexOf(pfx, q + 1);
+        }
+    }
+    hits.sort((a, b) => a - b);
 
-            while (i < lines.length && /^\s*_/.test(lines[i])) {
-                cols.push(lines[i].trim());
-                i++;
+    const done = new Set();
+    for (const hit of hits) {
+        // Back up over the tag lines above the hit to the head of the block -
+        // the wanted tag is rarely the first column of its own loop.
+        let bs = hit;
+        for (;;) {
+            const above = lineAbove(bs);
+            if (above < 0) break;
+            i = above; takeLine();
+            const f = firstCh();
+            if (f < 0 || text.charCodeAt(f) !== CC_UNDERSCORE) break;
+            bs = above;
+        }
+        if (done.has(bs)) continue;
+        done.add(bs);
+
+        // A block not introduced by `loop_` is a set of key-value items, which
+        // this function never returned and no caller has ever asked for.
+        const lp = lineAbove(bs);
+        if (lp < 0) continue;
+        i = lp; takeLine();
+        const lf = firstCh();
+        if (lf < 0 || !startsWordAt(lf, 'loop_')) continue;
+
+        i = bs;
+        const cols = [];
+        while (i < n) {
+            takeLine();
+            const h = firstCh();
+            if (h < 0 || text.charCodeAt(h) !== CC_UNDERSCORE) break;
+            cols.push(text.slice(h, le).trim());
+            i = next;
+        }
+        // the old rule, kept: a loop is read on the strength of its FIRST column
+        if (unread(cols[0])) continue;
+
+        const rows = [];
+        // i is already at the first row: takeLine above left ls/le on it
+        for (;;) {
+            if (i >= n) break;
+            takeLine();
+            const r = firstCh();
+            if (r < 0) break;
+            const c0 = text.charCodeAt(r);
+            if (c0 === CC_HASH || c0 === CC_UNDERSCORE
+                    || startsWordAt(r, 'loop_') || startsWordAt(r, 'data_')) break;
+
+            let vals = tokenizeCIFLine_light(text.slice(ls, le));
+            i = next;
+            // a row shorter than its header continues onto the next line
+            while (vals.length < cols.length && i < n) {
+                takeLine();
+                vals = vals.concat(tokenizeCIFLine_light(text.slice(ls, le)));
+                i = next;
             }
 
-            while (i < lines.length) {
-                const raw = lines[i];
-                if (!raw || /^\s*#/.test(raw) || /^\s*loop_/i.test(raw) ||
-                    /^\s*data_/i.test(raw) || /^\s*_/.test(raw)) break;
-
-                let vals = tokenizeCIFLine_light(raw);
-                while (vals.length < cols.length && i + 1 < lines.length) {
-                    const more = tokenizeCIFLine_light(lines[++i]);
-                    vals = vals.concat(more);
-                }
-
-                if (vals.length >= cols.length) {
-                    rows.push(vals.slice(0, cols.length));
-                    rowCount++;
-                }
-                i++;
+            if (vals.length >= cols.length) {
+                rows.push(vals.slice(0, cols.length));
             }
-            loops.push([cols, rows]);
-            loopCount++;
-            continue;
         }
-        i++;
+        loops.push([cols, rows]);
     }
     return loops;
 }
@@ -2768,11 +3410,50 @@ function expandOperExpr_light(expr) {
         return out.filter(Boolean);
     }
 
+    // ADJACENT SETS, WRITTEN WITH NO SEPARATOR AT ALL.
+    //
+    // "(1-60)(61-88)" is a product of two operator sets - 1,680 operators -
+    // and it is how large icosahedral assemblies are written; "(X0)(1-60)" is
+    // the other common shape. Splitting a part on the letter x, as this did,
+    // finds no separator in either, so the whole expression came back as one
+    // operator id of "1-60)(61-88", which matches nothing in oper_list. The
+    // assembly then silently collapses to the asymmetric unit: 1M4X loaded
+    // 1,239 positions of its 2.08 million and said nothing.
+    //
+    // So groups are taken by bracket structure. A lone x or * between two of
+    // them is still accepted, since some writers use one.
+    const splitProduct = (p) => {
+        const groups = [];
+        let k = 0;
+        while (k < p.length) {
+            if (p[k] === '(') {
+                const s = k;
+                let depth = 0;
+                for (; k < p.length; k++) {
+                    if (p[k] === '(') depth++;
+                    else if (p[k] === ')') { depth--; if (depth === 0) { k++; break; } }
+                }
+                groups.push(p.slice(s, k));
+            } else {
+                const s = k;
+                while (k < p.length && p[k] !== '(') k++;
+                let term = p.slice(s, k);
+                if (term === 'x' || term === '*') continue;
+                // a separator hanging off the end of a bare term, as in 1x(2-3)
+                if ((term.endsWith('x') || term.endsWith('*')) && k < p.length) {
+                    term = term.slice(0, -1);
+                }
+                if (term) groups.push(term);
+            }
+        }
+        return groups;
+    };
+
     const parts = splitTop(expr, ',');
     const seqs = [];
 
     for (const p of parts) {
-        const groups = splitTop(p, 'x');
+        const groups = splitProduct(p);
         let expanded = groups.map(term => {
             if (term.startsWith('(') && term.endsWith(')')) {
                 term = term.slice(1, -1);
@@ -2801,18 +3482,14 @@ function expandOperExpr_light(expr) {
             }
             acc = next;
         }
-        seqs.push(...acc);
+        // RIGHTMOST SET APPLIED FIRST, which is what the dictionary means by
+        // adjacent sets, and the reverse of the order composeBiounitOperations
+        // walks - it applies a list left to right with the last one outermost.
+        // Only products have more than one element, and products have never
+        // worked until now, so nothing existing changes order under this.
+        for (const seq of acc) seqs.push(seq.length > 1 ? seq.slice().reverse() : seq);
     }
     return seqs;
-}
-
-function applyOp_light(atom, R, t) {
-    return {
-        ...atom,
-        x: R[0] * atom.x + R[1] * atom.y + R[2] * atom.z + t[0],
-        y: R[3] * atom.x + R[4] * atom.y + R[5] * atom.z + t[1],
-        z: R[6] * atom.x + R[7] * atom.y + R[8] * atom.z + t[2]
-    };
 }
 
 /**
@@ -3105,241 +3782,6 @@ function applyBiounitOperationsToAtoms(atoms, operations) {
 
     return out.length > 0 ? out : atoms;
 }
-
-function parseFirstBioAssembly(text) {
-    const isCIF = /^\s*data_/i.test(text) || /_atom_site\./i.test(text);
-    return isCIF ? buildBioFromCIF(text) : buildBioFromPDB(text);
-}
-
-function buildBioFromPDB(text) {
-    const parseResult = parsePDB(text);
-    const models = parseResult.models;
-    const atoms = (models && models[0]) ? models[0] : [];
-
-    // Extract biounit operations using unified function
-    const operations = extractPDBBiounitOperations(text);
-
-    if (!operations || operations.length === 0) {
-        return { atoms, meta: { source: 'pdb', assembly: 'asymmetric_unit' } };
-    }
-
-    // Collect chains from operations or atoms
-    const chains = new Set();
-    operations.forEach(op => {
-        if (op.chains && op.chains.length > 0) {
-            op.chains.forEach(c => chains.add(c));
-        }
-    });
-    if (chains.size === 0) {
-        for (const a of atoms) {
-            if (a.chain) chains.add(a.chain);
-        }
-    }
-
-    // Apply operations using unified function
-    const out = applyBiounitOperationsToAtoms(atoms, operations);
-
-    return {
-        atoms: out,
-        meta: {
-            source: 'pdb',
-            assembly: '1',
-            ops: operations.length,
-            chains: [...chains]
-        }
-    };
-}
-
-function buildBioFromCIF(text) {
-    const loops = parseMinimalCIF_light(text);
-    const getLoop = (name) => loops.find(([cols]) => cols.includes(name));
-
-    // Parse chemical component table to identify modified residues
-    const chemCompMap = new Map();
-    const chemCompL = getLoop('_chem_comp.id');
-    if (chemCompL) {
-        const chemCompCols = chemCompL[0], chemCompRows = chemCompL[1];
-        const ccol_id = chemCompCols.indexOf('_chem_comp.id');
-        const ccol_type = chemCompCols.indexOf('_chem_comp.type');
-        const ccol_mon_nstd = chemCompCols.indexOf('_chem_comp.mon_nstd_flag');
-
-        if (ccol_id >= 0 && ccol_type >= 0) {
-            for (const row of chemCompRows) {
-                const resName = row[ccol_id]?.trim();
-                const type = row[ccol_type]?.trim();
-                const mon_nstd = ccol_mon_nstd >= 0 ? row[ccol_mon_nstd]?.trim() : null;
-
-                if (resName && type) {
-                    // Map residue type: 'RNA linking' -> 'R', 'DNA linking' -> 'D', 'L-peptide linking' -> 'P'
-                    let mappedType = null;
-                    if (type.includes('RNA linking')) {
-                        mappedType = 'R';
-                    } else if (type.includes('DNA linking')) {
-                        mappedType = 'D';
-                    } else if (type.includes('peptide linking') || type.includes('L-peptide linking')) {
-                        mappedType = 'P';
-                    }
-
-                    // Store: is it a modified (non-standard) residue?
-                    // mon_nstd_flag = 'n' means non-standard (modified)
-                    const isModified = mon_nstd === 'n' || mon_nstd === 'y' || mon_nstd === 'Y';
-                    chemCompMap.set(resName, { type: mappedType, isModified, originalType: type });
-                }
-            }
-        }
-    }
-
-    // Atom table
-    const atomL = loops.find(([cols]) => cols.some(c => c.startsWith('_atom_site.')));
-    if (!atomL) return { atoms: [], meta: { source: 'mmcif', assembly: 'empty' }, chemCompMap };
-
-    const atomCols = atomL[0], atomRows = atomL[1];
-    const acol = (n) => atomCols.indexOf(n);
-
-    const ixX = acol('_atom_site.Cartn_x');
-    const ixY = acol('_atom_site.Cartn_y');
-    const ixZ = acol('_atom_site.Cartn_z');
-    const ixEl = acol('_atom_site.type_symbol');
-    const ixLA = acol('_atom_site.label_asym_id');
-    const ixRes = (acol('_atom_site.label_comp_id') >= 0 ?
-        acol('_atom_site.label_comp_id') : acol('_atom_site.auth_comp_id'));
-    const ixSeq = (acol('_atom_site.label_seq_id') >= 0 ?
-        acol('_atom_site.label_seq_id') : acol('_atom_site.auth_seq_id'));
-    const ixNm = acol('_atom_site.label_atom_id');
-    const ixGrp = acol('_atom_site.group_PDB');
-    const ixB = acol('_atom_site.B_iso_or_equiv');
-
-    const baseAtoms = atomRows.map(r => {
-        // Always use label_asym_id (required by mmCIF spec for biounit operations)
-        // Normalize: convert to string and trim whitespace
-        const labelChain = (ixLA >= 0 ? String(r[ixLA] || '').trim() : '');
-        return {
-            record: r[ixGrp] || 'ATOM',
-            atomName: r[ixNm] || '',
-            resName: r[ixRes] || '',
-            lchain: labelChain,
-            chain: labelChain,
-            resSeq: r[ixSeq] ? parseInt(r[ixSeq], 10) : 0,
-            x: parseFloat(r[ixX]),
-            y: parseFloat(r[ixY]),
-            z: parseFloat(r[ixZ]),
-            b: ixB >= 0 ? (parseFloat(r[ixB]) || 0.0) : 0.0,
-            element: (r[ixEl] || '').toUpperCase()
-        };
-    });
-
-    // Extract biounit operations using unified function
-    const operations = extractCIFBiounitOperations(text);
-
-    if (!operations || operations.length === 0) {
-        return { atoms: baseAtoms, meta: { source: 'mmcif', assembly: 'asymmetric_unit' }, chemCompMap: chemCompMap };
-    }
-
-    // CIF-specific assembly: need to map operations to asym_id_list and apply with lchain filtering
-    const asmL = getLoop('_pdbx_struct_assembly_gen.assembly_id');
-    if (!asmL) {
-        // Fallback: use unified application function
-        const out = applyBiounitOperationsToAtoms(baseAtoms, operations);
-        const chains = new Set();
-        operations.forEach(op => {
-            if (op.chains && op.chains.length > 0) {
-                op.chains.forEach(c => chains.add(c));
-            }
-        });
-        return {
-            atoms: out,
-            meta: {
-                source: 'mmcif',
-                assembly: '1',
-                chains: [...chains]
-            },
-            chemCompMap: chemCompMap
-        };
-    }
-
-    // Build operator map for composition
-    const operL = getLoop('_pdbx_struct_oper_list.id');
-    const opCols = operL ? operL[0] : [];
-    const opRows = operL ? operL[1] : [];
-    const o = (n) => opCols.indexOf(n);
-    const opMap = new Map();
-    for (const r of opRows) {
-        const id = (r[o('_pdbx_struct_oper_list.id')] || '').toString();
-        const R = [
-            parseFloat(r[o('_pdbx_struct_oper_list.matrix[1][1]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.matrix[1][2]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.matrix[1][3]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.matrix[2][1]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.matrix[2][2]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.matrix[2][3]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.matrix[3][1]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.matrix[3][2]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.matrix[3][3]')])
-        ];
-        const t = [
-            parseFloat(r[o('_pdbx_struct_oper_list.vector[1]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.vector[2]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.vector[3]')])
-        ];
-        if (Number.isFinite(R[0])) {
-            opMap.set(id, { R, t });
-        }
-    }
-    if (opMap.size === 0) {
-        opMap.set('1', { R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] });
-    }
-
-    // Choose assembly 1
-    const a = (n) => asmL[0].indexOf(n);
-    let candidates = asmL[1].filter(r =>
-        (r[a('_pdbx_struct_assembly_gen.assembly_id')] || '') === '1');
-    if (candidates.length === 0 && asmL[1].length > 0) {
-        candidates = [asmL[1][0]];
-    }
-    if (candidates.length === 0) {
-        return { atoms: baseAtoms, meta: { source: 'mmcif', assembly: 'asymmetric_unit' }, chemCompMap: chemCompMap };
-    }
-
-    // Assemble using CIF-specific logic (filter by lchain/asymIds)
-    const out = [];
-    const seen = new Set();
-    for (const r of candidates) {
-        const asymList = (r[a('_pdbx_struct_assembly_gen.asym_id_list')] ||
-            r[a('_pdbx_struct_assembly_gen.oper_asym_id_list')] || '').toString();
-        // Normalize chain IDs: trim whitespace and convert to string
-        const asymIds = asymList.split(',').map(s => String(s).trim()).filter(Boolean);
-        asymIds.forEach(c => seen.add(c));
-
-        const expr = (r[a('_pdbx_struct_assembly_gen.oper_expression')] || '1').toString();
-        const seqs = expandOperExpr_light(expr);
-        const seqsUse = (seqs && seqs.length) ? seqs : [['1']];
-
-        for (const seq of seqsUse) {
-            const seqLabel = seq.join('x');
-            const { R, t } = composeBiounitOperations(seq, opMap);
-
-            for (const aAtom of baseAtoms) {
-                // Match by label_asym_id (lchain) - asym_id_list contains label_asym_id values per mmCIF spec
-                if (!asymIds.includes(aAtom.lchain)) continue;
-                const ax = applyOp_light(aAtom, R, t);
-                ax.chain = (seqLabel === '1') ?
-                    String(aAtom.lchain || aAtom.chain || '') :
-                    (String(aAtom.lchain || aAtom.chain || '') + '|' + seqLabel);
-                out.push(ax);
-            }
-        }
-    }
-
-    return {
-        atoms: out,
-        meta: {
-            source: 'mmcif',
-            assembly: '1',
-            chains: [...seen]
-        },
-        chemCompMap: chemCompMap
-    };
-}
 // ============================================================================
 // RESIDUE MAPPING UTILITIES
 // ============================================================================
@@ -3359,7 +3801,266 @@ const RESIDUE_TO_AA = {
     DSN: 'S', DTH: 'T', DTR: 'W', DTY: 'Y', DVA: 'V'
 };
 
+// CRYSTALLISATION ADDITIVES: what a structure carries because of how it was
+// GROWN rather than because of what it does.
+//
+// Buffers, cryoprotectants, precipitants and the salts that come with them.
+// They are real atoms in the file and they are not what anyone opened the
+// structure to look at: a hen lysozyme comes with a dozen sulfates, and drawn
+// beside the one inhibitor that matters they are noise with the same weight.
+//
+// A LIST OF CODES, WHICH IS A JUDGEMENT AND NOT A FACT. Everything here is
+// something these files are grown in, but a few of them are occasionally the
+// point - a sulfate IS the ligand in a sulfate transporter. So this is a
+// default and not a rule: the Filter Additives switch turns it off and every
+// atom comes back. What is DELIBERATELY ABSENT matters as much as what is
+// here, and the borderline cases are left visible on purpose:
+//
+//   PO4  phosphate is a buffer AND half of biochemistry (4HHB carries one)
+//   BCT  bicarbonate is a standard additive AND a photosystem II cofactor
+//   SPM  spermine is a DNA crystallisation additive AND biologically real
+//   C8E  a detergent, which in a porin sits where the membrane lipid would
+//   metals - a zinc or a magnesium is structural far more often than not,
+//         and they are drawn at their own size and colour precisely so they
+//         can be read. Only the alkali/halide counter-ions below go.
+//
+// Hiding a real cofactor is a worse failure than showing a sulfate, so where
+// it is a toss-up the atom stays.
+const CRYSTAL_ADDITIVES = new Set([
+    // precipitants and cryoprotectants
+    'SO4', 'GOL', 'EDO', 'PEG', 'PG4', 'PGE', 'P6G', '1PE', '2PE', 'PE4',
+    'MPD', 'MRD', 'BU3', 'IPA', 'DIO', 'DOD', 'TRT', 'P33', 'XPE',
+    // buffers
+    'TRS', 'MES', 'EPE', 'BTB', 'CIT', 'FLC', 'TLA', 'MLA', 'MLI', 'SIN',
+    'CAC', 'BIS', 'PIN', 'HEZ', 'IMD', 'TAR', 'MOH',
+    // small anions and organics from the drop
+    'ACT', 'ACY', 'FMT', 'OXL', 'NO3', 'AZI', 'CN', 'SCN', 'THJ',
+    'DMS', 'DMF', 'ACN', 'EOH', 'MEO', 'URE', 'GAI',
+    // reducing agents and thiols
+    'BME', 'DTT', 'DTU', 'TCE', 'MTN',
+    // counter-ions: the alkali metals and halides that come with the buffer.
+    // The transition metals are NOT here - see the note above.
+    'NA', 'K', 'CS', 'RB', 'LI', 'CL', 'BR', 'IOD', 'F',
+]);
+
+// ...AND A METAL IS FILTERED BY HOW MANY OF IT THERE ARE, not by what it is.
+//
+// The list above keeps every transition metal, because one zinc in a zinc
+// finger or one magnesium in an active site is the thing you came to see. A
+// RIBOSOME IS NOT THAT: 4UG0 carries 239 magnesiums against 6 zincs, and they
+// are structural in the sense that mortar is structural - real, load-bearing,
+// and not what anyone is looking at. Two hundred of them are scenery.
+//
+// So the same code is kept or dropped depending on the structure, which is the
+// honest answer: 9FOG's 4 magnesiums and 1AOI's 6 manganeses are sites and
+// stay, 4UG0's 239 go. Counted per RESIDUE and only for single-atom ones - a
+// photosystem's 60 chlorophylls are many and are the subject, and they have 65
+// atoms each.
+const CROWD_ION_COUNT = 20;
+
 // Expose globally
 if (typeof window !== 'undefined') {
     window.RESIDUE_TO_AA = RESIDUE_TO_AA;
+    window.CRYSTAL_ADDITIVES = CRYSTAL_ADDITIVES;
+    window.CROWD_ION_COUNT = CROWD_ION_COUNT;
+}
+
+// ============================================================================
+// GIF89a ENCODER
+// ============================================================================
+//
+// WRITTEN HERE RATHER THAN LOADED. Every other export the viewer makes is
+// produced by the browser - PNG by toBlob, WebM and MP4 by MediaRecorder, SVG
+// by the canvas2svg port that already lives inside viewer-mol.js - and GIF is
+// the one format with no native encoder behind it. A CDN library would be the
+// obvious answer on this page, but the NOTEBOOK viewer loads nothing but
+// py2Dmol's own resources, and a capture panel whose options depend on which
+// page you are on is only honest if the missing one is genuinely missing.
+// So this is the gate: web/utils.js is loaded by index.html and by nothing the
+// notebook emits, and the panel offers GIF exactly where window.py2dmolGif is.
+//
+// The output is a normal animated GIF: one global palette, LZW-compressed
+// frames, a NETSCAPE2.0 block for looping.
+
+/**
+ * Median cut down to `max` colours, over a sample of the pixels.
+ *
+ * A drawing here is a few flat cartoon colours plus paper grain, which is
+ * hundreds of near-white shades - so a fixed cube palette spends most of itself
+ * on colours the picture does not contain and quantises the grain into visible
+ * banding. Median cut spends the palette where the pixels are.
+ *
+ * @param {Array<Uint8ClampedArray>} frames - RGBA pixel buffers
+ * @param {number} max - palette size, at most 256
+ * @returns {Array<Array<number>>} [r,g,b] entries
+ */
+function gifPalette(frames, max, alphaFloor) {
+    // One sample every few pixels, over every frame: an animation that changes
+    // colour part way through (a drawing filling in, a trajectory) must not be
+    // quantised to the first frame's palette.
+    const pts = [];
+    const stride = Math.max(1, Math.floor(
+        (frames.length * frames[0].length / 4) / 24000)) * 4;
+    const floor = alphaFloor || 0;
+    for (const f of frames) {
+        for (let i = 0; i < f.length; i += stride) {
+            // Pixels that are about to become the transparent index are not
+            // colours: sampling them spends most of a 256-entry table on the
+            // one shade nobody will see.
+            if (f[i + 3] < floor) continue;
+            pts.push([f[i], f[i + 1], f[i + 2]]);
+        }
+    }
+    if (!pts.length) return [[0, 0, 0]];
+    let boxes = [pts];
+    while (boxes.length < max) {
+        // split the box with the widest channel - the one costing the most error
+        let bi = -1; let bw = -1; let ch = 0;
+        for (let i = 0; i < boxes.length; i++) {
+            const b = boxes[i];
+            if (b.length < 2) continue;
+            for (let c = 0; c < 3; c++) {
+                let lo = 255; let hi = 0;
+                for (const p of b) { if (p[c] < lo) lo = p[c]; if (p[c] > hi) hi = p[c]; }
+                if (hi - lo > bw) { bw = hi - lo; bi = i; ch = c; }
+            }
+        }
+        if (bi < 0 || bw <= 0) break;
+        const box = boxes[bi];
+        box.sort((a, b) => a[ch] - b[ch]);
+        const mid = box.length >> 1;
+        boxes.splice(bi, 1, box.slice(0, mid), box.slice(mid));
+    }
+    return boxes.filter((b) => b.length).map((b) => {
+        let r = 0; let g = 0; let bl = 0;
+        for (const p of b) { r += p[0]; g += p[1]; bl += p[2]; }
+        return [Math.round(r / b.length), Math.round(g / b.length),
+            Math.round(bl / b.length)];
+    });
+}
+
+/** LZW, as the GIF spec defines it: variable code width, clear and end codes. */
+function gifLzw(indices, minCodeSize) {
+    const out = [];
+    let cur = 0; let bits = 0;
+    const put = (code, width) => {
+        cur |= code << bits;
+        bits += width;
+        while (bits >= 8) { out.push(cur & 255); cur >>= 8; bits -= 8; }
+    };
+    const CLEAR = 1 << minCodeSize;
+    const END = CLEAR + 1;
+    let dict = new Map();
+    let next = END + 1;
+    let width = minCodeSize + 1;
+    const reset = () => { dict = new Map(); next = END + 1; width = minCodeSize + 1; };
+    put(CLEAR, width);
+    let prefix = indices[0];
+    for (let i = 1; i < indices.length; i++) {
+        const k = indices[i];
+        const key = prefix * 4096 + k;
+        const found = dict.get(key);
+        if (found !== undefined) { prefix = found; continue; }
+        put(prefix, width);
+        dict.set(key, next);
+        if (next === (1 << width) && width < 12) width++;
+        next++;
+        if (next >= 4095) { put(CLEAR, width); reset(); }
+        prefix = k;
+    }
+    put(prefix, width);
+    put(END, width);
+    if (bits > 0) out.push(cur & 255);
+    return out;
+}
+
+/**
+ * Encode RGBA frames as one animated GIF.
+ *
+ * @param {Array<Uint8ClampedArray>} frames - one RGBA buffer per frame
+ * @param {object} opts - {width, height, delayCs, loop}
+ * @returns {Blob} image/gif
+ */
+function py2dmolGif(frames, opts) {
+    const { width, height } = opts;
+    const delay = Math.max(2, Math.round(opts.delayCs || 4));
+    // TRANSPARENCY IN A GIF IS ONE PALETTE ENTRY, not an alpha channel: a pixel
+    // is either that entry or it is opaque. So the cut is binary - anything
+    // under half alpha becomes the transparent index - and the antialiased rim
+    // of a stroke lands on one side or the other rather than fading. That is
+    // the format, not a shortcut; it is also why the frames must not stack, so
+    // each one is written with disposal 2 (restore to background) instead of
+    // being painted over the one before.
+    const clear = !!opts.transparent;
+    // FEWER COLOURS IS A SMALLER FILE, and a cartoon has few to begin with:
+    // 64 is usually indistinguishable here and about half the bytes.
+    const want = Math.max(2, Math.min(clear ? 255 : 256, opts.colors || 256));
+    const pal = gifPalette(frames, want, clear ? 128 : 0);
+    // A GIF colour table is a power of two, padded with black. With
+    // transparency on, the LAST entry is the transparent one and nothing else
+    // may quantise to it.
+    const TR = clear ? pal.length : -1;
+    let bits = 1;
+    while ((1 << bits) < pal.length + (clear ? 1 : 0)) bits++;
+    const size = 1 << bits;
+
+    // NEAREST COLOUR, CACHED. The cache is what makes this usable: a frame is
+    // a million pixels over a few thousand distinct colours, so all but the
+    // first occurrence of each is a map lookup instead of 256 distance tests.
+    const cache = new Map();
+    const nearest = (r, g, b) => {
+        const key = (r << 16) | (g << 8) | b;
+        const hit = cache.get(key);
+        if (hit !== undefined) return hit;
+        let best = 0; let bd = Infinity;
+        for (let i = 0; i < pal.length; i++) {
+            const dr = r - pal[i][0]; const dg = g - pal[i][1]; const db = b - pal[i][2];
+            const d = dr * dr + dg * dg + db * db;
+            if (d < bd) { bd = d; best = i; }
+        }
+        cache.set(key, best);
+        return best;
+    };
+
+    const bytes = [];
+    const push = (...v) => bytes.push(...v);
+    const short = (n) => push(n & 255, (n >> 8) & 255);
+    const str = (s) => { for (let i = 0; i < s.length; i++) push(s.charCodeAt(i)); };
+
+    str('GIF89a');
+    short(width); short(height);
+    push(0x80 | ((bits - 1) & 7), 0, 0);      // global table, its size, no background
+    for (let i = 0; i < size; i++) {
+        const c = pal[i] || [0, 0, 0];
+        push(c[0], c[1], c[2]);
+    }
+    // NETSCAPE2.0: the only way to say "loop forever" in a GIF
+    push(0x21, 0xFF, 11); str('NETSCAPE2.0'); push(3, 1, 0, 0, 0);
+
+    const minCode = Math.max(2, bits);
+    for (const f of frames) {
+        // graphic control: disposal 2 and the transparent flag when the frames
+        // are cut out, plain "leave it there" when they are not
+        push(0x21, 0xF9, 4, clear ? 0x09 : 0);
+        short(delay); push(clear ? TR : 0, 0);
+        push(0x2C); short(0); short(0); short(width); short(height); push(0);
+        const idx = new Uint8Array(width * height);
+        for (let i = 0, p = 0; i < f.length; i += 4, p++) {
+            idx[p] = (clear && f[i + 3] < 128) ? TR
+                : nearest(f[i], f[i + 1], f[i + 2]);
+        }
+        push(minCode);
+        const data = gifLzw(idx, minCode);
+        for (let i = 0; i < data.length; i += 255) {
+            const chunk = data.slice(i, i + 255);
+            push(chunk.length, ...chunk);
+        }
+        push(0);
+    }
+    push(0x3B);
+    return new Blob([new Uint8Array(bytes)], { type: 'image/gif' });
+}
+
+if (typeof window !== 'undefined') {
+    window.py2dmolGif = py2dmolGif;
 }

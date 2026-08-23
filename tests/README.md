@@ -32,6 +32,44 @@ by the packaged Python path.
 | `richardson_test.html` | Richardson preset beside the plain cartoon on four SS compositions (3CHY, 1TIM, 2POR, 1BBH). 1TIM is the control — it is the subject of the original drawing. |
 | `ribosome.html` | 4UG0, the large-structure performance case (17,789 positions). Built separately: `python tests/make_ribosome.py`. |
 
+## Running them
+
+    tests/run.sh            everything - about 35 seconds
+    tests/run.sh node       the node checks alone - 3 seconds, no browser
+    tests/run.sh ui         the browser probes that drive the app
+    tests/run.sh gpu        the GPU probes, which time themselves
+
+**Lanes, and why.** The node checks read the source and run in seconds; they
+catch most regressions in the code they read. A browser probe costs 3-4
+seconds of Chrome start before it measures anything, so the UI lane runs its
+probes IN PARALLEL - each is its own process, its own port and its own Chrome
+profile. The GPU probes run one at a time and last, because they measure TIME
+("the reused toggles are not faster than the builds") and in parallel they
+would be timing each other's contention.
+
+**Frames and answers, not milliseconds.** The probes used to sleep a flat
+300-1,500 ms after every action; multi_object alone spent 16 of its 23 seconds
+asleep. Where a step is a click and a render, three animation frames say the
+browser has painted (`settle()`); where it is asynchronous - a file parsed, a
+session restored - the probe waits for the ANSWER (`until(cond)`), which is
+both faster and steadier than guessing a duration. The suite went from four
+minutes to 35 seconds, and two of the conversions turned up sleeps that were
+too SHORT to be safe: a restored session is still assembling itself three
+frames later, and both probes now say what they are waiting for.
+
+**A probe that cannot finish fails fast.** Its page script is parsed (`node
+--check`) BEFORE a browser is started, and the wait for a result is capped at
+30 seconds (`probe_js.DEADLINE`), with the runner killing anything still alive
+at 60. This is not theoretical: one mis-escaped newline in a JS string literal
+- `'\n'` inside a Python triple-quoted string is a real newline - meant the
+page never parsed, so the result could never arrive, and the probe sat out its
+whole 400-second deadline saying nothing more useful than "no result posted".
+That single probe was longer than the entire suite. It now says which line and
+which file, in under a second.
+
+**Fixtures are as small as the question.** selection_panel measured a panel's
+row layout with 1YNE - 19,700 atoms - where 355D's 660 lay out identically.
+
 ## Assertions — `smoke.js` / `interaction.js` / `sequence.js` / `copy_selection.js`
 
 Unlike the pages above, these assert, and need no browser:
@@ -66,6 +104,316 @@ listener may name the selection helpers directly, and no listener may be
 registered under a name that cannot fire — both handlers had been sitting
 disabled by an `__DISABLED` suffix on their event name for long enough that the
 live copies drifted.
+
+`tests/gpu_bench.py` reports **per-pass GPU time for the tube path** on the real
+GPU, from the shell:
+
+    python3 tests/gpu_bench.py 4UG0.cif
+    python3 tests/gpu_bench.py 3J3Q.cif --frames 16 --png /tmp/capsid.png
+
+Use it for any change to `drawTube`. Timing `render()` with `performance.now()`
+does NOT work - a draw call returns when it is queued, and the submit read
+0.28 ms for a frame the GPU spent 13.6 ms on. The numbers come from
+`EXT_disjoint_timer_query_webgl2`, which the renderer emits whenever
+`window.__gpuTimers` is set, into `window.__gpuTimes`. The script prints which
+renderer produced them: a software rasteriser has the opposite vertex/fragment
+balance and its timings do not transfer. See the tube section of
+`GPU3D_NOTES.md` for the current baseline.
+
+`tests/multi_object.py` drives **several objects on screen at once** through a
+real browser - the merge, the list UI, and everything a merged view can get
+wrong:
+
+    python3 tests/multi_object.py 1BBH.cif 1HVR.cif
+    python3 tests/multi_object.py 1BBH.cif 1EHZ.cif --png /tmp/multi.png
+
+It loads two structures, shows one, then both, and checks that the source map
+covers every position, that **no segment joins two objects** (a bond across the
+gap between two structures looks like a long bond, not like a bug), that the
+picture gained ink, that no colour is shared across the join, that hiding
+residues of the second object leaves the first untouched and stores the set in
+the second object's OWN numbering, that Orient leaves nothing off canvas, that
+a pick where the second object is drawn reports the second object, that Auto
+clip cuts without emptying, and that the GPU picture is the CPU picture - in
+BOTH styles, and all inside ONE page load, because the paper grain is reseeded
+per load. Then it presses the Object button and clicks the eye, like a user.
+
+It also drives the strip both ways (sequence and chain mode), clicks chain A in
+every section, checks ligands collapse to one token per ligand in every
+section, edits a selection that reaches BOTH objects (Copy makes one object per
+structure, Delete takes one residue from each), switches everything off and
+back on, and saves the whole session and loads it into a cleared viewer to see
+each object's own sets come back on the right object.
+
+Exit status is the test result; the printout is the evidence. Run it for any
+change to the merge, to per-object state, or to the sequence strip's indices -
+and run it over several PAIRS: two of its checks were wrong rather than the
+code, and only a pair of monomers and a pair that overlaps in space showed it.
+
+`tests/object_reload.py` checks that **loading a file leaves the objects already
+loaded alone**:
+
+    python3 tests/object_reload.py
+
+`pendingObjects` accumulates across loads and is only emptied by Clear All, so
+the loader rebuilt every object in the viewer on every load - dropping what
+each remembered: hidden backbone, side chains, bases, forced SSE, colours,
+contacts. Colour a residue, load a second file, and the colour was gone. It
+was invisible while one object was on screen at a time, because the object you
+were looking at was the one that had just been loaded.
+
+It also checks that a RE-FETCH still replaces its object, which is what the
+rebuild was there for, and that the merge survives both.
+
+`tests/pick_empty.py` checks that **an empty canvas answers no clicks**:
+
+    python3 tests/pick_empty.py
+
+The screen positions picking reads are written once per DRAWN frame and stamped
+with `screenFrameId`. A frame that draws nothing never runs the projection
+loop, so the stamps from the last real frame stayed valid: with every object
+switched off, a click on blank canvas selected a residue and a double click
+selected a whole chain of a molecule that was not on screen. The probe sweeps
+a grid of clicks over the canvas in both styles, and clicks for real, with
+everything off and after Clear All.
+
+The nucleic BASE PLATES are a second set of screen-space outlines, filled only
+by the CPU cartoon pass - so the tube style and the GPU cartoon path inherited
+whatever the last cartoon frame left, at the rotation it was drawn at. They
+carry their frame's stamp now (`_naPickId`), and the probe checks both halves:
+nothing picks on an empty canvas, and a plate that IS on screen still picks its
+own residue.
+
+`tests/sidechain_toggle.py` checks that **an eye does not strip another
+object's side chains**:
+
+    python3 tests/sidechain_toggle.py
+
+A shown side chain is a set of ATOMS APPENDED to the coordinate array, past
+everything the merge itself holds. The merged visibility mask was built by
+walking each object's stored record - which lists residues and knows nothing
+about the atoms hanging off them - so the mask named every residue and none of
+their atoms, and every side chain went out the moment a merge was rebuilt.
+Click any object's eye and the side chains of the object you did not touch
+disappeared with it.
+
+`tests/gpu_mesh_reuse.py` checks that **going back to a picture already built
+reuses its mesh**:
+
+    python3 tests/gpu_mesh_reuse.py                  # 6MRR + 4HHB
+    python3 tests/gpu_mesh_reuse.py 4UG0.cif 6MRR.cif
+
+A cartoon mesh is built for exactly what is on screen, so switching an object
+off and on again asks for two meshes in turn - 1.2 s each way with a ribosome
+and a peptide up, for a change of 68 residues out of 17,618. One spare slot
+holds the mesh being replaced, and it is an EXCHANGE, so alternating hits it
+every time. The mesh signature also had to start keying the visibility mask by
+CONTENT rather than by object identity: the mask is rebuilt from the objects'
+records whenever the drawn set changes, so an identical picture never matched.
+
+**The order of the legs matters.** The picker leg runs FIRST, with the smaller
+structure loaded first, because several of the things a mesh carries are sized
+by the structure and SHRINK - the visibility texture among them. A restore that
+forgets one only shows when the mesh coming back is bigger than the one before
+it, and a merge leaves the texture big enough to hide it. That fault shipped
+for an hour and was reported before this probe existed: "1A3N would only show a
+subset of faces, but all the outline".
+
+`tests/gpu_tube_reuse.py` asks the same question of the **tube**:
+
+    python3 tests/gpu_tube_reuse.py                  # 6MRR + 4HHB
+    python3 tests/gpu_tube_reuse.py 4UG0.cif 6MRR.cif
+
+The tube is a different model - one instance per segment, no faces and no
+silhouette - and rebuilding it costs 33-50 ms rather than 1.2 s, so this is
+not really about the milliseconds. It is that a build's output should be ONE
+value that ONE function installs. The tube kept it as four module variables
+and, the first time the value was assembled, the DEPTH RANGE was left out of
+it: the restored buffer was then drawn through the range of whatever had been
+built last, same instances and a different picture. That is the tube's version
+of the visibility texture the cartoon's first restore forgot - caught here by
+the probe rather than by a user, which is the whole point of writing it.
+
+Both toggles and a recolour are checked, and the recolour check asks what the
+COLOUR ARRAY did rather than trusting the mode: with a merge up the app
+resolves 'auto' per object and can ignore a global colour mode entirely, in
+which case there is nothing for the buffer to notice and nothing to assert.
+
+`tests/gpu_recolour.py` checks that **a colour change repaints the GPU mesh
+rather than rebuilding it**:
+
+    python3 tests/gpu_recolour.py            # 1EHZ, a small RNA
+    python3 tests/gpu_recolour.py 4UG0.cif   # a ribosome
+
+The mesh carries a palette INDEX per face, so a colour change is three texels
+per segment against geometry that never moves - and a face whose colour did
+not come from the palette has to bake it, which makes the WHOLE mesh
+ineligible. Nucleic base rungs were baked: their colour is `colors[bbSeg[i]]`,
+a palette lookup like any other, but the index was not recorded. So every
+colour change on any structure with a base pair in it rebuilt everything -
+21,744 of 167,824 faces on 4UG0, 950 ms against the 30 ms an upload costs.
+
+The probe compares the repainted picture with one drawn from a mesh built for
+that mode, PIXEL FOR PIXEL, in four modes - which is what catches a face
+repainted from the wrong palette slot. It also checks that the two cases which
+must still rebuild do: ss mode and a per-residue override both cut geometry at
+the midpoint between two colours.
+
+`tests/minimal_input.py` checks **the smallest thing the Python API can be
+handed**: an Nx3 array of CA coordinates and nothing else.
+
+    python3 tests/minimal_input.py
+
+No chains, no residue names, no atom names, no types, no side-chain table -
+`view.add(coords)`. Everything downstream has to cope: the cartoon predicts a
+backbone to build a ribbon from, the SS assignment works off the trace (36 of
+60 residues found as helix, from coordinates alone), and the panel answers its
+questions without inventing data it has not got. It is also where a change
+made for the web app can quietly break the notebook, because the web always
+loads a full PDB.
+
+It times the assignment too, since the panel asks for it on every selection
+change: 1 ms cold and 5 microseconds warm on a 60-residue trace. On real
+structures in the tube style, where nothing else computes one, it is 19 ms for
+1AOI and 81 ms for 4UG0 - which is why the SSE control is not offered there at
+all unless the SS colour mode is on.
+
+`tests/selection_panel.py` drives the **selection panel's controls** the way a
+user does:
+
+    python3 tests/selection_panel.py
+
+Each part of a residue is answered by two buttons rather than one switch: the
+action is explicit and the button matching what is DRAWN is filled, so the
+control says both what it will do and what it has done. A selection that
+disagrees with itself fills neither - the state a switch could only show as a
+grey smear. Contacts read Add, and once one exists the Add goes and the row
+becomes that contact's own colour, width and a bin.
+
+It also watches the **SSE control**, which says the structure in one word -
+Helix, Sheet or Loop, whoever decided it - and reported "DSSP" after one click
+and something else after the next with nothing about the structure having
+changed.
+The assignment was read off the two render-time caches and given up on when
+both were absent - which is always, in the TUBE style, because only the cartoon
+pass fills them. It is asked for now (`py2dmolCartoon.secondaryFor`), computed
+on a miss and cached the way the colour path caches it. The probe reads the
+control through the same selection in cartoon, in tube and on the GPU path, and
+after the actions that drop the caches.
+
+The node tests score the panel against a stub DOM; this presses the real
+buttons and looks at the real structure. It also measures the ROWS: a pair is half as
+wide again as the switch it replaced, and the main-chain row wrapped onto two
+lines until the SSE select was capped. A wrapped row is the confusion this was
+meant to remove, so it is a test rather than a look.
+
+`tests/save_multi.py` checks that **a Multi session comes back the way it was
+saved**:
+
+    python3 tests/save_multi.py
+
+Three objects with one switched off, per-object state on two of them, and a
+camera the user chose - saved through the Save button's own path, cleared, and
+loaded back. It checks the mode (the button pressed, the list open, the picker
+greyed), which eyes are on, which object is being edited, every object's own
+state, the coordinate count and the picture.
+
+The view was the one that did not survive. Objects arrive one at a time and
+each arrival rebuilds the merge of everything loaded so far, which frames on
+what it finds - every object in a restored session is new to the renderer, so
+the rule that widens the view for a newly loaded file fires for all of them.
+By the time the shown set was applied, the centre and extent from the file
+were long gone: 17.8 saved, 51.3 restored. The saved camera is re-applied
+last.
+
+`tests/nucleic_multi.py` checks that **a nucleic object keeps its atoms when
+the viewer drops out of Multi**:
+
+    python3 tests/nucleic_multi.py
+
+Reported as "1YNE lost its base pairs": show a protein and an RNA together,
+set the RNA's bases to full atoms rather than plates, press Multi off, and the
+RNA came back with no bases at all - the plates switched off on purpose, the
+atoms dropped. A nucleotide's side chain is rebuilt through a longer local
+frame than a peptide's and the choice is made from `positionTypes`, which the
+materialiser took from the RENDERER - the array being replaced - rather than
+from the frame it is materialising. On any load that changes the array's shape
+those describe a different structure.
+
+It also checks that the frame drawn by the switch is pixel-identical to a
+repaint of the same state: the load used to paint before the selection had
+been carried across, so the highlight went missing until something else
+redrew.
+
+`tests/pae_objects.py` checks that **the PAE panel belongs to one object**:
+
+    python3 tests/pae_objects.py
+
+A PAE matrix is a square over one structure's residues - there is no such
+thing across two - but the panel was wired to whichever object was last LOADED
+and nothing re-asked when the drawn set changed. Load a structure with no PAE,
+load a prediction that has one, hide the prediction: the matrix stayed on
+screen describing residues that were not, and a box drawn on it selected the
+other object's. The rule is in `paeObjectName` (viewer-mol.js): **in Multi
+there is no panel at all** - the matrix belongs to one structure and Multi is
+the mode for looking at several - and outside Multi it is the object on
+screen, when that object has a matrix. The probe gives the second object a
+synthetic matrix, so it needs no network.
+
+`tests/hidden_reload.py` checks that **everything switched off is a state you
+can come back from**:
+
+    python3 tests/hidden_reload.py
+
+Two faults from one assumption - that the coordinate array always holds the
+object being edited. Switching an object back on took the "one object, and it
+is the one being edited" path, which RETURNS without loading on the grounds
+that the array already has it; the array had been emptied on purpose, so
+nothing was ever drawn again. And loading a file while everything was off left
+the shown set empty, so the file you had just asked for did not appear. The
+strip builds from the object's own frames rather than the array, so it came
+back as a full row of grey cells - measured in SATURATED pixels, since a strip
+of grey cells still has hundreds of shades in its antialiased letters.
+
+`tests/cut_ligands.py` checks what an edit leaves behind in the **ligand
+groups**:
+
+    python3 tests/cut_ligands.py
+
+Which atoms make up one ligand is computed once, in `addFrame`, as a map of
+position indices. Cut and Delete rewrite the frames in place and renumber
+everything else keyed by position - the mask, the side chains, the contacts,
+the MSA - and this was left in the old numbering: the remaining ligands drew
+as loose spheres and stopped collapsing to one token in the strip. It is
+rebuilt from the frame now (`_recomputeLigandGroups`), not renumbered. The
+probe cuts a protein chain (where the map has to survive intact, the harder
+case) and then a ligand chain (where groups have to leave).
+
+`tests/python_page.py` checks the **Python API's own page** in a real browser:
+
+    python3 tests/python_page.py
+
+It builds a two-object viewer through `view.add_pdb`, `set_color`, `set_sse`
+and `add_contacts`, renders the page `_display_viewer` produces, and asks the
+renderer what it made of it. The Python path loads viewer-mol.js and the
+cartoon plugin and nothing else - no object list, no sequence strip - so what
+this covers is the RENDERER's multi-object handling reached through Python
+state: one object drawn to begin with, each object's per-position colour on its
+own residue, forced SSE on the object that was given it, and a contact naming
+"chain A 10 to 20" in EACH object resolving inside its own window rather than
+both landing on the first object's residues.
+
+It also runs the STATE PIPELINE both ways before the page: what Python saves
+must reload in Python with the same per-object colours and contacts, and a file
+saved by the WEB - which carries `shown_objects` and a per-object `viewerState`,
+keys Python has never seen - must load without choking. The comparison goes
+through JSON on both sides on purpose: a position map is keyed by an int in
+memory and by a string once it has been through a file, and JS reads either.
+
+IT LOADS THE MINIFIED BUNDLE, like every Python page. Editing the source and
+running this proves nothing until `npx terser` has run - which is worth
+remembering, because a mutation test against it silently passed for that
+reason.
 
 `copy_selection.js` covers what **Copy** carries onto the new object. A frame
 is extracted position by position and has its own coverage; this is the
@@ -106,6 +454,259 @@ one residue silently did nothing. The extent is floored at 8 Å — a residue's 
 reach, an arginine's tip sitting ~7 Å from its CA — so one residue frames itself
 and its side chain rather than asking for a magnification nothing is legible at.
 Anything bigger clears the floor on its own and is untouched.
+
+## GPU renderer — `gpu3d_view.html` (look) and `gpu3d_lab.html` (measure)
+
+**Start with `GPU3D_HANDOFF.md`**: what exists, what works, what is half-done,
+and the numbers to check a change against. `GPU3D_NOTES.md` is the long record
+of why each rule is what it is — worth reading before changing one, since most
+look wrong until you know what they fixed.
+
+    python3 -m http.server 8080
+    open http://localhost:8080/tests/gpu3d_view.html
+
+**`gpu3d_view.html`** is the plain one: a single canvas, a `renderer` dropdown
+(WebGL2 or the 2D renderer), a structure picker, and the style controls the app
+has. No comparison and no metric — pick a renderer, change a setting, look. The
+frame time is printed under the canvas, which is where the difference shows:
+1UBQ at 640px reads 47 ms on the 2D renderer and 0.3 ms on WebGL2, because a
+drag on the GPU turns a mesh that is already resident and rebuilds nothing.
+
+Throw it and it coasts, with the app's own numbers: velocity smoothed at 0.5
+while dragging, applied per frame as `rotationMatrix*(v * 0.005)`, damped by
+0.95 until it falls under 1e-4. Whether to run it is decided by MEASURED frame
+cost rather than by the size of the structure — the same call
+`viewer-cartoon.js` makes for its gesture ink degrade, and for the reason it
+gives there: a segment count knows nothing about canvas size, detail, or the
+machine.
+
+`inertiaStep()` is split out of the rAF loop so the physics can be driven
+directly. That is not a convenience: `requestAnimationFrame` never fires in a
+backgrounded tab, so a test that goes through the loop measures whether the
+window had focus and nothing else.
+
+Most controls do NOT rebuild the mesh. It holds model-space geometry, and
+everything about the camera and the light arrives at the shader as a uniform, so
+`ortho`, `shade`, `highlight` and `fade` cost one draw — measured against a
+rebuild at the same setting, all four differ by **0.000%**. Ortho is the
+surprising one: `unproject` inverts `project` exactly, perspective factor
+included, so the geometry it recovers does not depend on the projection in force
+when it was captured. `smooth` joined them once the mesh started carrying BOTH normals — the
+per-station pair a smooth face interpolates between and the single per-face one
+a flat face uses — with the shader choosing off `uCel`; toggling it without a
+rebuild differs from a rebuild by 0%. Only the geometry controls now move the
+mesh (thickness 18.1%).
+
+**Show/hide does not either.** The mesh carries every face and tags each with
+its class, so hiding the backbone or the side chains is a uniform and a clip at
+the vertex stage — measured on 1UBQ, all four combinations reuse the mesh and
+cost 0.6 ms. Side chains are therefore ALWAYS materialised
+(`window.__scGeometry = false` leaves them out of the geometry altogether, worth
+it only on something like 9FOG where they are most of the 62k faces).
+
+Note the two pages want opposite things from that checkbox. In the viewer it is
+visibility. In the lab it must change the SCENE, because hiding side chains on
+the GPU while the reference still paints them does not measure anything — it
+reports the side chains as error (1BBH 24.1% → 52.5%). The lab rebuilds.
+
+**Nor does adding or removing an individual side chain.** Every face carries the
+residue it belongs to, and a one-byte-per-residue texture says which residues
+are drawn — so `setResidueVisible(i, on)` is a single texel write against a mesh
+that already holds the geometry. Measured on 1UBQ: below timer resolution,
+against 67 ms for the rebuild it replaces. `setAllResiduesVisible(on)` resets it.
+A side chain can only be revealed if the mesh contains it, which is why they are
+always materialised.
+
+**The Ink control is ported.** `cartoonOutlineTint` mixes an outline between
+black and the element's own colour at 0.7 — and it is not a mix: past zero the
+black term is dropped entirely, so at 0.5 a line is a dark version of its own
+element rather than a grey. `inkColor()`'s depth fade came with it. The presets
+set it (richardson 0.8, the others 0), and matching improves as it rises —
+1UBQ 25.6% at tint 0 to 20.5% at 1 — because a tinted line sits closer to the
+fill it borders, so a misplaced one costs less.
+
+Set the SAME tint on both sides when measuring. The lab's reference had it
+pinned at 0 from when the shader could only draw black, which compared a tinted
+outline against a black one and called the difference error.
+
+**Bias is tied to line width and surface slope**, which is what stops the
+outline zigzagging. The line is a screen-space quad straddling the edge, so half
+its width lies OVER one of the two faces, at that face's depth — which is why it
+z-fights at all. How much depth that half spans depends on the line's width and
+on how steeply the face recedes (`|n.xy| / |n.z|`), both of which the shader
+already has. A constant bias over-corrects a face-on surface and
+under-corrects a grazing one, and under-correction eats the quad in a
+slope-dependent pattern: a line that alternates between drawn and missing along
+its length. Reported by eye as a zigzag.
+
+Scaled, it is essentially solved. Counting ink pixels with fewer than two ink
+neighbours — the ends of a stroke — a black outline at width 1.6 goes from
+**63% broken to 0.8%**, with the manual bias at zero. The manual bias is a trim
+now: 0.8% without it, 0.7% with.
+
+**The outline is tuned for how it LOOKS, not for the pixel metric**, which is a
+deliberate choice and worth stating because the two disagree. More ink than the
+reference is fine: a solid line reads as a line, a dashed one reads as a fault,
+and the metric prefers the dashed one because it counts pixels rather than
+strokes. The one thing the cap still protects against is a genuine defect rather
+than a matter of taste — an effectively uncapped bias reached ~0.038 on grazing
+faces and surfaced edges that should have stayed hidden.
+
+Defaults: line width 1.6, manual bias 0.002, slope-bias cap 0.004, ink tint from
+the preset. The knobs, in the order worth reaching for: `ink w` sets the weight,
+`bias` trims continuity, and the cap (`window.__biasMax`) bounds how far a line
+may sit in front of its own surface — raise it for solider lines, lower it if
+hidden edges start showing.
+
+Note the fills-only comparison is unaffected by any of this and stays the honest
+measure of the SHADING port: 15.8% on 1UBQ.
+
+The trade itself, for reference (1UBQ, ink tint 0.8):
+
+| line width | pixel match | broken |
+|---|--:|--:|
+| 1.2 | **18.0%** | 58.6% |
+| 1.4 | 20.2% | 34.0% |
+| 1.6 | 23.2% | **11.7%** |
+
+A thinner line is nearer the reference by pixel count and more broken; a wider
+one is solid and over-inks. The default is 1.6, chosen for the drawing rather
+than the number — the same call as the bias itself.
+
+**The old fixed-bias note**, kept because the reasoning was wrong in an
+instructive way: It was added
+to stop a silhouette z-fighting its own surface, but measured against the
+renderer it only makes the match worse — 1UBQ 24.3% at bias 0, 25.6% at 0.004 —
+because the ink it admits is largely ink the reference does not draw. At zero
+bias the GPU still lays down 11843 ink pixels against the reference's 9440, so
+**the remaining outline error is not the depth epsilon**: it is a rule
+difference about which edges get drawn. An ID buffer would remove the epsilon
+and leave that 25% untouched.
+
+**A new GL context invalidates every object the old one owned.** Switching
+renderer replaces the canvas, and the textures are created lazily by functions
+that short-circuit on an existing handle — so they were rebound from the dead
+context and silently did nothing, which showed up as the outline vanishing on
+the way back to WebGL2. `initGL` clears the handles.
+
+**The outline is most of a build, so it is only built when it is on.** Staged
+timings on 9FOG put the edge table and its instance buffer at 471 ms against
+511 ms for everything else — and the outline is a checkbox. Skipping it takes a
+9FOG build from 1672 ms to 1201 ms; ticking the box rebuilds, which is a cost
+the user just asked for. `window.__mrPhase` carries the stage timings.
+
+**One instance per face, not six vertices.** Of the 36 floats a vertex carried,
+only the position and the normal/tangent pair differ between a face's corners —
+the other 21 were written six times over. Per face it is now 48 floats: four
+corners, two frames, one copy of the rest, with the corner picked off
+`gl_VertexID`. On 9FOG the vertex array went from **111 MB to 25 MB**.
+
+Watch the attribute budget when adding to it. Ten per-face scalars declared
+singly wanted 18 vertex attributes against WebGL2's 16, and the program simply
+fails to link with "too many attributes" — they are packed three-to-a-vec4 and
+unpacked on the shader's first three lines.
+
+**Building is faster too**, by not doing work nobody wanted:
+
+| | before | after |
+|---|--:|--:|
+| 1UBQ capture | 44 ms | 9.8 ms |
+| 1UBQ `makeResident` | 26 ms | 14.5 ms |
+| 9FOG `makeResident` | 1409 ms | 894 ms |
+
+Three things did it. `renderer._probeOnly` returns from the render as soon as
+the primitives exist — a consumer harvesting geometry has everything it came for
+by then, and the paint and ink that follow are a frame nobody looks at. The
+model radius was re-unprojecting every corner a second time, when the loop above
+had already stored them. And the edge table keyed on template literals built
+from three `Math.round`s per corner, about half a million of them on 9FOG; it
+now hashes to a number and caches that on the point.
+
+The viewer has a `colour` dropdown (rainbow, by chain, one colour, stripes,
+gradient) so a colour change is something to measure rather than talk about.
+Each mode moves 85–89% of painted pixels, and the note under the canvas prints
+what the change cost — currently 45 ms on 1UBQ, which is the number a fast path
+has to beat.
+
+**Element colour takes HALF a bond**, and the renderer is what cuts it: a
+colours array may carry a `halves` side-table, `halves[s] = {a, b}`, and where
+it does the renderer splits that bond at its midpoint and gives the near half
+`a`, the far half `b`. Supplying the PAIR is the whole of it — an earlier
+attempt here painted the entire segment with its non-carbon end's colour, a
+bond-length smear where the app draws half of one. On 1UBQ, 78 segments carry
+halves and 468 primitives come back painted an element colour.
+
+**A LIGAND ATOM CARRIES ITS OWN ELEMENT.** Element colour reads
+`sidechainMap` for an appended side-chain atom, and a ligand atom is not in it —
+it is a position of the file's own — so ligands were left out of colour-by-
+element entirely until `position_atoms` and `position_elements` were captured
+beside `position_names`. They are blank at every position that stands for a
+whole residue (an alpha carbon, a C4'), and the element comes from the FILE'S
+OWN COLUMN: a ligand atom called `CL` is chlorine in one file and a carbon in
+another, and haem names four nitrogens NA, NB, NC and ND, so a two-letter guess
+off the name would invent a sodium. Where the column is silent the first letter
+is taken and nothing more. The switch is per atom for a ligand and per residue
+for a side chain (`elementOwners`), and the selection row renames itself
+*Ligand* when that is all it has on it. Measured on 3PTB: 94 pixels change when
+the benzamidine's two nitrogens are switched off, restoring exactly, CPU and GPU
+alike — the GPU only because the element set is in the mesh signature, since
+cutting a bond at its midpoint is geometry.
+
+**Colour does not rebuild either.** Every primitive reports the palette SLOT it
+took (`ci`, plus `half` for the two half-bond colours element colouring
+supplies), the mesh stores that slot per face, and the colours themselves live
+in a texture — three texels per segment. Changing scheme is one upload of a few
+kilobytes and a redraw: **0.2–2.1 ms against 45 ms for the rebuild it replaces,
+and pixel-identical to it (0%).**
+
+The two derived colours are redone in the shader rather than baked — a sheet
+edge is white, a helix's inner face is tinted 0.68 toward white — because baking
+them would need a palette entry per derived colour instead of per segment.
+
+Two things this cost:
+
+- **Every prim kind has to report a slot.** The junction plates of a three-way
+  side chain did not, so they kept the colour baked at build time and stayed
+  behind as wrong-coloured triangles while the legs around them changed. 117 of
+  1UBQ's 2947 faces were in that state (110 junction, 7 rib cap) and it showed
+  as a 0.7% residual against a rebuild; with them tagged it is 0%.
+- **The attribute limit.** Ten per-face scalars declared singly wanted 18 vertex
+  attributes against WebGL2's 16, and the program simply fails to link with
+  "too many attributes". They are packed three-to-a-vec4 and unpacked into the
+  same names on the shader's first three lines. On 9FOG that is the difference between a
+sub-millisecond redraw and a 1.7 s rebuild.
+
+Rotation is the app's, not a yaw/pitch pair: `rotateView` accumulates the same
+screen-space increments `viewer-mol.js` does (`dx`/`dy` scaled by 0.01, left
+multiplied onto the accumulated matrix), so a drag here behaves like a drag in
+index.html — no roll creeping in once the model is pitched, and no gimbal lock
+looking down the axis. The lab's yaw slider still steps to a named angle through
+`setViewYawPitch`, which is how the measurements in `GPU3D_NOTES.md` were taken.
+
+Note the canvas is REPLACED when the renderer changes. A canvas keeps the first
+context type it is ever given, so one element cannot serve `getContext('2d')`
+and WebGL2 both — a reference captured at startup goes on pointing at the
+detached one, where `getContext('2d')` returns null.
+
+**`gpu3d_core.js`** holds the GPU path both pages use — shaders, capture,
+`facesOf`, `buildResident`, the outline pass. It is lifted out of the lab rather
+than reimplemented: every rule in it was arrived at by measuring against the
+renderer, and a second copy would drift silently. It reads its settings from DOM
+ids (`preset`, `smooth`, `frame`, `ink3d`, …), so a page that does not show one
+supplies a hidden input carrying the default.
+
+## GPU depth prototype — `gpu3d_lab.html`
+
+    python3 -m http.server 8080
+    open http://localhost:8080/tests/gpu3d_lab.html
+
+Answers "how much of the drawing changes if depth is resolved per pixel instead
+of by sorting bodies". Both panels draw the SAME faces off the renderer's own
+primitive list with the same tone function; only the depth resolution differs, and
+a third no-depth GPU pass separates rasterisation from ordering. Measured over 36
+views of 1UBQ: **ordering 674 px (0.19%)**, rasterisation 13590 px of which 99.3%
+is antialiasing on a colour boundary and 56 px land inside a face. Findings and
+the costs that are not pixels are in `GPU3D_NOTES.md`.
 
 ## Paint order — `paint_order_audit.js`
 
@@ -498,6 +1099,7 @@ from the console (`window.py2dmol_viewers[id].renderer`):
 | `_capT` | `0.85` | Threshold for filling the interior cross-section cap |
 | `_innerShade` | `0.22` | Depth of the concave-side shadow on wide faces |
 | `_quality` | `'perfect'` | `'fast'` selects the cheap painter ink. There is no automatic gesture downgrade: it changed the drawing mid-drag and snapped back on release, which reads as the render breaking |
+| `_noViewCull` | `false` | Keeps primitives that fall outside the viewport. Dropping them is right for painting a frame and wrong for HARVESTING geometry: a consumer that re-uses the primitives at other views gets a model with holes wherever that frame happened to look |
 | `_inkMode` | `'grid'` | `'zbuf'` swaps the exact analytic hidden-line test for a depth buffer — faster, but flickers (see PERF_NOTES) |
 | `_loopFrame` | transport | `'curvature'` restores the old loop frame (visibly more twist) |
 | `_cuts` | `'quarter'` | `'half'` / `'none'` reduce depth-sort granularity |
@@ -898,3 +1500,123 @@ aim 17.6° median / 49.5° p90, twist stdev 28.9°, reversals 22.2%.
 `viewer-cartoon.min.js`, and a bundle committed without being rebuilt scores
 exactly like the code it was meant to replace — which is how a shipped fix
 came to be source-only for a day.
+
+## Structural alignment — `align.js` / `align_objects.py` / `vendor_tmalign.mjs`
+
+TM-align, and the five decisions the viewer makes around it. The algorithm is
+not maintained in this repo: it lives inside
+`py2Dmol/resources/viewer-align.js`, **generated** into that file from
+`../foldjs/lib/tmalign.js` — a port of `TMalign.cpp` 20220412 whose parity
+against the C++ is checked upstream to 1.1e-16.
+
+**One file with a seam in it.** The algorithm and the viewer's side of it were
+two scripts once, which meant two `<script>` tags, two names in the worker's
+`importScripts`, and two ways for a page to end up with half the feature: the
+aligner present and its arithmetic missing, or the reverse. They are one file
+now, and the seam is a pair of markers:
+
+```
+// >>> BEGIN GENERATED: foldjs/lib/tmalign.js
+   ...1,433 lines, at column zero, byte-for-byte
+// <<< END GENERATED
+```
+
+The generated half sits at column zero while the rest of the file is indented,
+because reindenting it would break the diff that proves it is a copy.
+
+**The copy is derived, not edited.** foldjs exists because copied modules
+drift, and this is a copy of one of them. `tests/vendor_tmalign.mjs` states the
+derivation — drop `export ` from the eight top-level declarations, splice the
+result between the markers — and `align.js` runs the generator in check mode
+and fails on any difference. Regenerate with
+`node tests/vendor_tmalign.mjs --write`; the diff is then reviewable. An
+earlier version of the check looked for the upstream body *inside* the file,
+and a line appended to the end passed it.
+
+Why an IIFE rather than the ES module it is upstream: py2Dmol's resources are
+classic scripts, and the notebook build inlines them into one HTML file
+(`viewer.py:1313`), where a module cannot go and a `fetch` has nothing to
+fetch. `window.Align` is the only global; the algorithm's own entry points are
+hung off it too, so a test can read a raw score, but nothing in the app calls
+them.
+
+**Which coordinates.** Protein Cα only — the port leaves out the RNA C3′
+parameter sets, so a nucleic chain has no business being scored by it.
+Positions typed `'P'` are exactly the Cα trace, one per residue, which is the
+input TM-align wants with no resampling. Chains under 15 residues are dropped:
+d0 is clamped there and the score below it is noise with a confident face on.
+
+**Which chain.** The reference is the **selected residues**, and the object
+being moved may be a complex whose matching chain is neither its first nor its
+longest. Every protein chain is tried and the best kept.
+
+**Which search — and this one is a real trade.** All of them run at TM-align's
+`fast` settings (`Align.FULL_SEARCH`). Measured over 44 homolog-like pairs
+built from this repo's fixtures — a chain against itself with runs deleted and
+0.5–5 Å of jitter added — **41 agreed with the full search to four decimal
+places** on both TM and RMSD, for 2–4× less time: 63 ms against 149 ms on
+2OMF/2POR, 1.4 s against 15.7 s on a 1,365-residue chain.
+
+The other three failed badly rather than slightly. 1AOI's 116-residue histone
+at 3 Å of jitter scored **0.18 fast against 0.52 full**, RMSD 3.5 against 1.5 —
+the fast search missing the alignment altogether, which is what happens on
+short chains with little secondary structure to seed on. The failure is at
+least a loud one: the bad score is the one reported and the structures visibly
+do not overlap, so it reads as "these do not match" rather than passing for a
+fit. If that tail ever matters more than the wait, the shape to reach for is
+escalation rather than a flag — run fast, re-run the winner at full when it
+comes back under about 0.5, which is exactly where the three failures sit.
+
+Fast also collapses two passes into one: ranking N chains needs a score per
+chain anyway, so the winner's score *is* the answer and nothing is computed
+twice. The setting is read from one constant by both hosts, and `align.js`
+fails if a call site names it inline — the worker asked for the full search and
+the main-thread fallback for the fast one once, so a notebook and the web app
+answered differently, by 0.3 TM on the cases where the two searches disagree.
+
+**Which score ranks.** TM1 is normalised by chain 2 (the reference) and TM2 by
+chain 1 (the chain being moved). Comparing chains of *different lengths*
+against one fixed reference is only fair under the reference's normalisation,
+so TM1 ranks and TM1 is reported. TM2 hands the win to whichever chain is
+shortest — a 30-residue fragment that fits perfectly beats a whole domain that
+fits well, and `align.js` builds exactly that fixture so the two disagree.
+
+**Which direction.** TM-align's own direction is `X = t + u·x`: chain 1 onto
+chain 2. The chain being moved is passed as chain 1, so `t/u` applies to the
+moved object unchanged and **the reference never moves** — which is what keeps
+the camera valid. Run backwards it scores identically, so the probe checks the
+*coordinates*: 2OMF and 2POR start 70.6 Å apart and end 1.2 Å apart; the
+reversed transform drives them to 140.2 Å.
+
+**Where the transform lives.** On the object as `alignTransform`, applied in
+`_resolvedFrame` on the way to the screen — never written to `frame.coords`.
+That buys three things a rewrite would not: aligning again starts from the
+original coordinates instead of compounding, undo is deleting a field, and a
+re-fetch does not silently revert. `_resolvedFrame` and not the merge, because
+it is the one place **both** the merge and the single-object load pass through:
+in the merge alone, an aligned object shown by itself would be drawn where its
+file put it, and nothing on screen would say so.
+
+Side chains come along for free — they are coefficients in a local frame built
+from the backbone, and a rigid motion carries that frame. The exception is rows
+with `frameOf === -1`, whose coefficients are a *world* offset because the copy
+they came from was too short to be framed; those are rotated by hand, on a copy
+of the array, or the atom keeps its old orientation while its residue turns.
+
+`alignTransform` is in `OBJECT_STATE`, so it is saved with a session and
+carried across a Cut — the only field there that is not keyed by position, so
+it goes across whole. A Cut reads the *raw* frames, so without it the piece you
+just cut out of an aligned structure would fly back to its file coordinates on
+its own.
+
+**Where it runs.** In a Worker: 1,365 residues is still 1.4 s at fast
+settings. A page with no script URL to import from — the inlined notebook
+build — runs the same job on the main thread at fast settings instead. That
+fallback would also cover a *broken* worker perfectly quietly, and the only
+symptom would be a page that stops for several seconds, so `align_objects.py`
+asks which one ran.
+
+Measured end to end on 2OMF + 2POR (two porins), and pinned: TM 0.705 against
+2OMF, RMSD 3.18 Å over 278 residues, identical to the same pair in node.
+Normalised the other way it is 0.787 — a probe that accepted both would be
+accepting the score this code deliberately does not report.

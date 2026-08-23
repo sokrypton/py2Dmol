@@ -53,7 +53,14 @@ DEFAULT_CONFIG = {
         "outline": "full",
         "width": 3.0,
         "ortho": 0.5,
-        "detect_cyclic": True
+        "detect_cyclic": True,
+        # Draw the cartoon on the GPU. The geometry is built once by the
+        # ordinary cartoon renderer and then re-painted from any angle, so
+        # turning and zooming cost one draw call instead of a full repaint.
+        # Falls back to the 2D path wherever WebGL2 is unavailable, and exports
+        # always go through it - so this changes how fast the picture appears,
+        # not what leaves the viewer in a file.
+        "gpu": True
     },
     "color": {
         "mode": "auto",
@@ -99,6 +106,7 @@ _RENDER_STATE_KEYS = (
     ("shade", "shade"),
     ("shadow", "shadow_enabled"),
     ("ortho", "ortho_slider_value"),
+    ("gpu", "use_gpu"),
 )
 
 
@@ -131,6 +139,7 @@ def _nest_config(**flat):
     if "outline" in flat: config["rendering"]["outline"] = flat["outline"]
     if "width" in flat: config["rendering"]["width"] = flat["width"]
     if "ortho" in flat: config["rendering"]["ortho"] = flat["ortho"]
+    if flat.get("gpu") is not None: config["rendering"]["gpu"] = bool(flat["gpu"])
     if "detect_cyclic" in flat: config["rendering"]["detect_cyclic"] = flat["detect_cyclic"]
     # None = leave the key out so the renderer's default (plates on) applies
     if flat.get("base_plates") is not None:
@@ -362,11 +371,48 @@ The `persistence` parameter controls whether output cells are preserved after no
 For complete documentation, see: technical_readme.md → "Persistence Modes"
 """
 
+# CRYSTALLISATION ADDITIVES - what a structure carries because of how it was
+# GROWN rather than because of what it does: buffers, cryoprotectants,
+# precipitants and the counter-ions that come with them.
+#
+# THE SAME LIST AS CRYSTAL_ADDITIVES IN web/utils.js, and it has to stay that
+# way - a structure opened in the notebook and the same one dropped on the web
+# page must not disagree about what is in it. tests/interaction.js compares the
+# two and fails if they drift.
+#
+# Read the note beside the JS copy for what is deliberately NOT here: PO4, BCT,
+# SPM, C8E and every transition metal stay visible, because hiding a real
+# cofactor is a worse failure than showing a sulfate.
+# ...AND A METAL IS FILTERED BY HOW MANY OF IT THERE ARE, not by what it is.
+# One magnesium is an active site; 4UG0's 239 are the mortar a ribosome is
+# built with. Counted per residue and only for single-atom ones, so a
+# photosystem's 60 chlorophylls are untouched. Same number as CROWD_ION_COUNT
+# in web/utils.js.
+CROWD_ION_COUNT = 20
+
+CRYSTAL_ADDITIVES = {
+    # precipitants and cryoprotectants
+    'SO4', 'GOL', 'EDO', 'PEG', 'PG4', 'PGE', 'P6G', '1PE', '2PE', 'PE4',
+    'MPD', 'MRD', 'BU3', 'IPA', 'DIO', 'DOD', 'TRT', 'P33', 'XPE',
+    # buffers
+    'TRS', 'MES', 'EPE', 'BTB', 'CIT', 'FLC', 'TLA', 'MLA', 'MLI', 'SIN',
+    'CAC', 'BIS', 'PIN', 'HEZ', 'IMD', 'TAR', 'MOH',
+    # small anions and organics from the drop
+    'ACT', 'ACY', 'FMT', 'OXL', 'NO3', 'AZI', 'CN', 'SCN', 'THJ',
+    'DMS', 'DMF', 'ACN', 'EOH', 'MEO', 'URE', 'GAI',
+    # reducing agents and thiols
+    'BME', 'DTT', 'DTU', 'TCE', 'MTN',
+    # counter-ions: the alkali metals and halides that come with the buffer.
+    # The transition metals are NOT here.
+    'NA', 'K', 'CS', 'RB', 'LI', 'CL', 'BR', 'IOD', 'F',
+}
+
+
 class view:
     def __init__(self, size=(400,400), controls=True, box=True,
         color="auto", colorblind=False, ss_palette=None, style="tube", preset=None, smooth=None, thickness=None, sheet_flat=None, pencil=None, arrows=True, base_plates=None, detail=4, fade=0, highlight=None, outline_tint=None,
         shadow=True, shade=None, shadow_strength=0.5,
-        outline=None, width=None, ortho=0.5, bg=None, rotate=False, autoplay=False,
+        outline=None, width=None, ortho=0.5, gpu=True, bg=None, rotate=False, autoplay=False,
         pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, detect_cyclic=True,
         persistence=True, id=None, cutoffs=None,
     ):
@@ -380,10 +426,8 @@ class view:
             color (str): Color mode - "auto", "chain", "rainbow", "plddt", "deepmind", "entropy", "ss" (secondary structure). Default "auto".
             colorblind (bool): Use colorblind-friendly palette. Default False.
             ss_palette (str): Named palette for the "ss" colour mode -
-                "pymol" (red/yellow/green, the default), "jmol"
-                (magenta/yellow/white), "jr1" (Jane Richardson blue/green
-                convention) or "jr2" (her 1981 hand-coloured drawings: tan
-                helices, green strands). The SSE dropdown in the Style panel
+                "pymol" (red/yellow/green, the default) or "jmol"
+                (magenta/yellow/white). The SSE dropdown in the Style panel
                 while colouring by SSE.
             base_plates (bool): Draw DNA/RNA base plates (the rungs of a
                 duplex). None (default) leaves the renderer's default (on).
@@ -415,6 +459,22 @@ class view:
                 (solid shaded geometry: thickness 1.0, no outline, smooth
                 shading, flat sheets, on a black page). Implies
                 style="cartoon". An explicit argument always wins over it.
+            gpu (bool): Draw on the GPU (WebGL2) - BOTH styles, not just the
+                cartoon. The picture is the same: the geometry is built once by
+                the ordinary renderer and then re-painted from any angle, so
+                turning and zooming cost one draw call instead of a full
+                repaint, which is what makes a large structure usable. Measured
+                on a 313,000-position capsid: first render 1,813 ms on the 2D
+                path against 455 with this, and every frame after it 840 ms
+                against 26.
+
+                Only ever a REQUEST. Where WebGL2 is missing, a context is lost,
+                or a shader will not link, the 2D renderer draws the frame as if
+                this had not been set. PNG and SVG export always go through the
+                2D path, whatever this says - they render into their own canvas
+                at their own resolution, which the GPU path declines. The
+                hand-drawn build-up (Draw) is a 2D effect and takes the 2D path
+                too. Default True.
             style (str): Render style - "tube" (smooth backbone trace) or
                 "cartoon" (secondary-structure cartoon: helix/strand ribbons,
                 loop tubes). Default "tube". These are the only two, because
@@ -520,7 +580,7 @@ class view:
         if highlight is None:
             highlight = 3.0 if preset == "richardson" else (2.0 if is3d else 1.8)
         if shade is None:
-            # mirrors STYLE_DEFAULTS: richardson models more lightly than a
+            # mirrors LOOK_DEFAULTS: richardson models more lightly than a
             # rendered solid. Sending a flat 1.0 here made view(preset=...)
             # disagree with the identical preset chosen in the GUI.
             shade = 0.7 if preset == "richardson" else 1.0
@@ -548,9 +608,9 @@ class view:
         outline_tint = float(outline_tint)
         if not 0.0 <= outline_tint <= 1.0:
             raise ValueError("outline_tint must be between 0.0 (black) and 1.0 (element color).")
-        if ss_palette is not None and ss_palette not in ("pymol", "jmol", "jr1", "jr2"):
+        if ss_palette is not None and ss_palette not in ("pymol", "jmol"):
             raise ValueError(
-                f'Invalid ss_palette "{ss_palette}" - expected "pymol", "jmol", "jr1" or "jr2".')
+                f'Invalid ss_palette "{ss_palette}" - expected "pymol" or "jmol".')
         if base_plates is not None:
             base_plates = bool(base_plates)
         if bg not in ("white", "black"):
@@ -586,6 +646,7 @@ class view:
             outline=outline,
             width=width,
             ortho=ortho,
+            gpu=gpu,
             bg=bg,
             rotate=rotate,
             autoplay=autoplay,
@@ -719,9 +780,17 @@ class view:
         if self._position_residue_numbers is not None:
             payload["residue_numbers"] = list(self._position_residue_numbers)
 
+        # A LIGAND ATOM'S OWN NAME AND ELEMENT. Every other position stands for
+        # a whole residue - its alpha carbon, its C4' - and has neither; these
+        # are what colour-by-element reads for a ligand.
+        if self._position_atoms is not None:
+            payload["position_atoms"] = list(self._position_atoms)
+        if self._position_elements is not None:
+            payload["position_elements"] = list(self._position_elements)
+
         return payload
 
-    def _update(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None, align=True, position_names=None, residue_numbers=None, atom_types=None, allow_reflection=False):
+    def _update(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None, align=True, position_names=None, residue_numbers=None, atom_types=None, allow_reflection=False, position_atoms=None, position_elements=None):
       """
       Updates the internal state with new data. Coordinates are kept in original space.
       Rotation matrix is ALWAYS computed for first frame (best_view).
@@ -774,6 +843,8 @@ class view:
       self._scatter = scatter
       self._position_names = position_names
       self._position_residue_numbers = residue_numbers
+      self._position_atoms = position_atoms
+      self._position_elements = position_elements
 
       # --- Final Safety Check (ensure arrays match coord length if provided) ---
       n_positions = self._coords.shape[0]
@@ -793,6 +864,12 @@ class view:
       if self._position_residue_numbers is not None and len(self._position_residue_numbers) != n_positions:
           print(f"Warning: Residue numbers length mismatch. Ignoring residue numbers for this frame.")
           self._position_residue_numbers = None
+      for attr, label in (("_position_atoms", "Atom names"),
+                          ("_position_elements", "Elements")):
+          value = getattr(self, attr)
+          if value is not None and len(value) != n_positions:
+              print(f"Warning: {label} length mismatch. Ignoring {label.lower()} for this frame.")
+              setattr(self, attr, None)
 
     def _find_object_by_name(self, name):
         """Find and return object by name, or None if not found."""
@@ -1050,6 +1127,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 prev_position_types = None
                 prev_position_names = None
                 prev_residue_numbers = None
+                prev_position_atoms = None
+                prev_position_elements = None
                 prev_bonds = None
                 prev_scatter = None
 
@@ -1092,6 +1171,20 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                         if curr_residue_numbers is not None:
                             light_frame["residue_numbers"] = curr_residue_numbers
                         prev_residue_numbers = curr_residue_numbers
+
+                    # a ligand atom's own name and element, sent the same way:
+                    # they never change between frames of one structure, so
+                    # after the first they cost nothing
+                    curr_position_atoms = frame.get("position_atoms")
+                    if frame_idx == 0 or curr_position_atoms != prev_position_atoms:
+                        if curr_position_atoms is not None:
+                            light_frame["position_atoms"] = curr_position_atoms
+                        prev_position_atoms = curr_position_atoms
+                    curr_position_elements = frame.get("position_elements")
+                    if frame_idx == 0 or curr_position_elements != prev_position_elements:
+                        if curr_position_elements is not None:
+                            light_frame["position_elements"] = curr_position_elements
+                        prev_position_elements = curr_position_elements
 
                     # position_types
                     curr_position_types = frame.get("position_types")
@@ -1227,6 +1320,16 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 cartoon_js_content = f.read()
             container_html = f'<script>{cartoon_js_content}</script>\n' + container_html
 
+            # The WebGL2 cartoon path. Always shipped, never active unless
+            # something asks for it: it registers window.py2dmolCartoonGPU and
+            # does nothing else until renderer.useGPU is set. Loading it
+            # unconditionally is what lets the Style panel offer the switch, and
+            # what lets it fall straight back to the 2D renderer when a browser
+            # has no WebGL2.
+            with importlib.resources.open_text(py2dmol_resources, 'viewer-cartoon-gpu.min.js') as f:
+                cartoon_gpu_js = f.read()
+            container_html = f'<script>{cartoon_gpu_js}</script>\n' + container_html
+
             if self.config["pae"]["enabled"]:
                 with importlib.resources.open_text(py2dmol_resources, 'viewer-pae.min.js') as f:
                     pae_js_content = f.read()
@@ -1266,6 +1369,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._scatter = None
         self._position_names = None
         self._position_residue_numbers = None
+        self._position_atoms = None
+        self._position_elements = None
         self._is_live = False
 
         # Reset incremental update tracking
@@ -1620,6 +1725,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._scatter = None
         self._position_names = None
         self._position_residue_numbers = None
+        self._position_atoms = None
+        self._position_elements = None
 
         if name is None:
             name = f"{len(self.objects)}"
@@ -1642,7 +1749,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             self._send_incremental_update()
     
     def add(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None,
-            name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False):
+            name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False, position_atoms=None, position_elements=None):
         """
         Adds a new *frame* of data to the viewer.
 
@@ -1720,6 +1827,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     position_names=_slice(position_names, i),
                     residue_numbers=_slice(residue_numbers, i),
                     atom_types=_slice(atom_types, i),
+                    position_atoms=_slice(position_atoms, i),
+                    position_elements=_slice(position_elements, i),
                     contacts=contacts,  # contacts/bonds/color assumed shared across batch
                     bonds=bonds,
                     color=color,
@@ -1779,7 +1888,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         # --- Step 2: Update Python-side alignment state ---
         self._update(coords, plddts, chains, position_types, pae, scatter,
             align=align, position_names=position_names, residue_numbers=residue_numbers, atom_types=atom_types,
-            allow_reflection=allow_reflection)
+            allow_reflection=allow_reflection, position_atoms=position_atoms,
+            position_elements=position_elements)
         data_dict = self._get_data_dict() # This reads the full, correct data
 
         data_dict["name"] = None  # Don't set frame-level name; use object name instead
@@ -1872,7 +1982,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             self._send_incremental_update()
 
     def replace(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None,
-                name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False):
+                name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False, position_atoms=None, position_elements=None):
         """
         Replace frame(s) for an object (streaming mode).
 
@@ -1903,7 +2013,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._update(coords, plddts=plddts, chains=chains, position_types=position_types, pae=pae,
                      scatter=scatter, align=align, position_names=position_names,
                      residue_numbers=residue_numbers, atom_types=atom_types,
-                     allow_reflection=allow_reflection)
+                     allow_reflection=allow_reflection, position_atoms=position_atoms,
+                     position_elements=position_elements)
 
         frame_data = self._get_data_dict()
         if color is not None:
@@ -2234,7 +2345,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 self._send_incremental_update()
 
 
-    def add_pdb(self, filepath, chains=None, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, scatter=None, color=None, scatter_config=None):
+    def add_pdb(self, filepath, chains=None, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, filter_additives=True, contacts=None, scatter=None, color=None, scatter_config=None):
         """
         Loads a structure from a local PDB or CIF file and adds it to the viewer
         as a new frame (or object).
@@ -2253,6 +2364,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             load_ligands (bool): If True, loads ligand atoms. Defaults to True.
+            filter_additives (bool): If True, leaves out buffers, cryoprotectants
+                and counter-ions - what the crystal was grown in rather than what
+                the molecule is. See CRYSTAL_ADDITIVES. Defaults to True.
             contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
             scatter: Optional scatter plot data for trajectory visualization. Can be:
                     - String: filepath to CSV file (first row = header with xlabel,ylabel; subsequent rows = x,y data)
@@ -2380,7 +2494,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
              
         for i, model in enumerate(models_to_process):
             (coords, plddts, position_chains, position_types, position_names,
-             residue_numbers) = self._parse_model(model, chains, load_ligands=load_ligands)
+             residue_numbers, position_atoms,
+             position_elements) = self._parse_model(model, chains, load_ligands=load_ligands,
+                                                    filter_additives=filter_additives)
 
             if coords:
                 coords_np = np.array(coords)
@@ -2406,25 +2522,56 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     align=align,
                     position_names=position_names,
                     residue_numbers=residue_numbers,
+                    # ...and only where a ligand was loaded: an all-blank pair
+                    # of arrays is a per-frame cost for nothing
+                    position_atoms=position_atoms if any(position_atoms) else None,
+                    position_elements=position_elements if any(position_atoms) else None,
                     color=color if i == 0 else None) # Only add color to first frame/model call
 
 
-    def _parse_model(self, model, chains_filter, load_ligands=True):
+    @staticmethod
+    def _crowded_ions(model):
+        """Single-atom het residues this model has more than CROWD_ION_COUNT of.
+
+        A ribosome's magnesiums, and nothing that is the subject of a picture:
+        see CROWD_ION_COUNT.
+        """
+        counts = {}
+        for chain in model:
+            for residue in chain:
+                if len(residue) != 1:
+                    counts[residue.name] = -1        # not monoatomic, never crowd
+                elif counts.get(residue.name, 0) >= 0:
+                    counts[residue.name] = counts.get(residue.name, 0) + 1
+        return {k for k, v in counts.items() if v > CROWD_ION_COUNT}
+
+    def _parse_model(self, model, chains_filter, load_ligands=True, filter_additives=True):
         """
         Helper function to parse a gemmi.Model object.
 
         Returns:
             tuple: (coords, plddts, position_chains, position_types,
-                    position_names, residue_numbers)
+                    position_names, residue_numbers, position_atoms,
+                    position_elements)
             - residue_numbers: List of PDB residue sequence numbers (one per position)
+            - position_atoms/position_elements: a ligand atom's own name and
+              element; blank at every position that stands for a whole residue
                               For ligands: multiple positions share the same residue number
         """
         coords = []
         plddts = []
+        # THE IONS THIS MODEL HAS HUNDREDS OF, worked out once before the walk
+        # below rather than per residue - see _crowded_ions.
+        crowded = self._crowded_ions(model) if filter_additives else set()
         position_chains = []
         position_types = []
         position_names = []
         residue_numbers = []
+        # ONE ENTRY PER POSITION, blank for everything that is not a ligand
+        # atom: a backbone position stands for a whole residue, so "the atom"
+        # there is a fact about the model rather than about the file.
+        position_atoms = []
+        position_elements = []
         for chain in model:
             if chains_filter is None or chain.name in chains_filter:
                 for residue in chain:
@@ -2455,6 +2602,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                             position_types.append('P')
                             position_names.append(residue.name)
                             residue_numbers.append(residue.seqid.num)
+                            position_atoms.append('')
+                            position_elements.append('')
 
                     elif is_nucleic:
                         c4_atom = None
@@ -2484,9 +2633,16 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                                 position_types.append('R') # Default to RNA
                             position_names.append(residue.name)
                             residue_numbers.append(residue.seqid.num)
+                            position_atoms.append('')
+                            position_elements.append('')
 
                     else:
-                        # Ligand: use all heavy atoms
+                        # Ligand: use all heavy atoms - unless it is something the
+                        # crystal was grown in rather than part of the molecule.
+                        # See CRYSTAL_ADDITIVES.
+                        if filter_additives and (residue.name in CRYSTAL_ADDITIVES
+                                                 or residue.name in crowded):
+                            continue
                         if load_ligands:
                             for atom in residue:
                                 if atom.element.name != 'H':
@@ -2496,9 +2652,16 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                                     position_types.append('L')
                                     position_names.append(residue.name)
                                     residue_numbers.append(residue.seqid.num)
+                                    # gemmi reads the element from the file's
+                                    # own column, which is the only place a
+                                    # two-letter element can be read at all -
+                                    # a ligand atom called CL is chlorine in
+                                    # one file and a carbon in another.
+                                    position_atoms.append(atom.name)
+                                    position_elements.append(atom.element.name.upper())
                 
         return (coords, plddts, position_chains, position_types,
-                position_names, residue_numbers)
+                position_names, residue_numbers, position_atoms, position_elements)
 
     def add_contacts(self, contacts, name=None):
         """
@@ -2743,7 +2906,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         return struct_filepath, pae_filepath
 
 
-    def from_pdb(self, pdb_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, scatter=None, color=None, ignore_ligands=None, show=None, scatter_config=None):
+    def from_pdb(self, pdb_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, filter_additives=True, contacts=None, scatter=None, color=None, ignore_ligands=None, show=None, scatter_config=None):
         """
         Loads a structure from a PDB code (downloads from RCSB if not found locally)
         and adds it to the viewer.
@@ -2760,6 +2923,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             load_ligands (bool): If True, loads ligand atoms. Defaults to True.
+            filter_additives (bool): If True, leaves out buffers, cryoprotectants
+                and counter-ions - what the crystal was grown in rather than what
+                the molecule is. See CRYSTAL_ADDITIVES. Defaults to True.
             contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
             scatter: Optional scatter plot data for trajectory visualization. Can be:
                     - String: filepath to CSV file (first row = header with xlabel,ylabel; subsequent rows = x,y data)
@@ -2793,6 +2959,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 use_biounit=use_biounit,
                 biounit_name=biounit_name,
                 load_ligands=load_ligands,
+                filter_additives=filter_additives,
                 contacts=contacts,
                 scatter=scatter,
                 color=color,
@@ -2825,6 +2992,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             load_ligands (bool): If True, loads ligand atoms. Defaults to True.
+            filter_additives (bool): If True, leaves out buffers, cryoprotectants
+                and counter-ions - what the crystal was grown in rather than what
+                the molecule is. See CRYSTAL_ADDITIVES. Defaults to True.
             scatter: Optional scatter plot data for trajectory visualization. Can be:
                     - String: filepath to CSV file (first row = header with xlabel,ylabel; subsequent rows = x,y data)
                     - List/array: [[x1, y1], [x2, y2], ...] - one point per model/frame
@@ -2994,7 +3164,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     frame_data["plddts"] = [round(p) for p in frame["plddts"]]
 
                 # Copy other fields
-                for key in ["chains", "position_types", "position_names", "residue_numbers", "bonds", "scatter", "color", "pae"]:
+                for key in ["chains", "position_types", "position_names", "residue_numbers",
+                            "position_atoms", "position_elements", "bonds", "scatter", "color", "pae"]:
                     if key in frame:
                         frame_data[key] = frame[key]
 
@@ -3123,6 +3294,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     plddts = np.array(frame_data["plddts"]) if "plddts" in frame_data else None
                     position_names = frame_data.get("position_names")
                     residue_numbers = frame_data.get("residue_numbers")
+                    position_atoms = frame_data.get("position_atoms")
+                    position_elements = frame_data.get("position_elements")
                     pae = np.array(frame_data["pae"]) if "pae" in frame_data else None
                     scatter = frame_data.get("scatter")  # Load scatter data [x, y]
                     bonds = frame_data.get("bonds")
@@ -3140,6 +3313,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                         align=False,  # Don't re-align loaded data
                         position_names=position_names,
                         residue_numbers=residue_numbers,
+                        position_atoms=position_atoms,
+                        position_elements=position_elements,
                         bonds=bonds,
                         color=color  # Pass frame-level color to add()
                     )

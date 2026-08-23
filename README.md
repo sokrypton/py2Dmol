@@ -75,7 +75,7 @@ normal controls, which stay live for tweaking:
 - **`3d`** — solid shaded geometry, on a black background. Pass `bg=` to override.
 
 ```python
-py2Dmol.view(style='cartoon').from_pdb('4HHB', use_biounit=True)   # Richardson
+py2Dmol.view(style='cartoon').from_pdb('1A3N', use_biounit=True)   # Richardson
 py2Dmol.view(style='cartoon', color='ss').from_pdb('1TIM')
 py2Dmol.view(preset='ribbon').from_pdb('1TIM')                     # plain cartoon
 py2Dmol.view(preset='3d').from_pdb('1TIM')                         # solid, on black
@@ -96,15 +96,14 @@ All are `view()` arguments and all have a slider in the panel:
 | `width` | overall ribbon scale |
 | `shade` | 0–1, how much directional modelling: `0` is flat colour, `1` full light and inner shadow |
 | `highlight` | specular band, *not* scaled by `shade` — so `shade=0, highlight=2` is flat colour with a highlight on top |
-| `detail` | 2–8 subdivisions per residue. An upper bound: a structure drawn small quietly uses less. |
+| `detail` | 2–8 subdivisions per residue. Exactly this, at every canvas size, zoom and structure size. |
 | `arrows` | arrowhead on each strand's C-terminal end (default on) |
 | `sheet_flat` | 0–1, damps the β-pleat and smooths loops |
 | `pencil` | 0–1, coloured-pencil paper grain, on the structure only |
 | `outline` | width in pixels; fractional values are real, and it thins to a hairline before `0` turns it off |
 
 `color='ss'` colours by secondary structure, with the palette set by `ss_palette`
-or the SSE dropdown: `pymol` (default), `jmol`, or Richardson's own `jr1` and
-`jr2`. It works with any style.
+or the SSE dropdown: `pymol` (default) or `jmol`. It works with any style.
 
 **SVG and PNG export** reproduce all of this, grain and gradients included.
 
@@ -338,6 +337,6 @@ Control output cell behavior with the `persistence` parameter:
 **Color modes**: `auto`, `rainbow`, `plddt`, `chain`, `ss`, `entropy`, `deepmind`  
 **Styles**: `tube` (default), `cartoon`  
 **Cartoon presets**: `richardson` (default), `ribbon`, `3d`  
-**SSE palettes**: `pymol` (default), `jmol`, `jr1`, `jr2`  
+**SSE palettes**: `pymol` (default), `jmol`  
 **Outline modes**: `none`, `partial`, `full` (default)  
 **Formats**: PDB (.pdb), mmCIF (.cif); multi-model files load as frames.

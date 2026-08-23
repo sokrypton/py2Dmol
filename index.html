@@ -39,7 +39,37 @@ AI Context: STANDALONE WEB APP ENTRY POINT
 
     <!-- Total width (600 + 8 + 340 = 948px) -->
     <div class="mx-auto" style="width: 948px; position: relative;">
-        <div style="position: absolute; top: 0; right: 0; display: flex; gap: 8px;">
+        <!-- SAVE, CLEAR ALL AND GPU are about the page, not about the thing you
+             are loading, and they are here every second of a session while
+             Fetch and Upload are used once. Smaller and quieter than the
+             controls in the panel below for that reason: three full-size
+             buttons in strong colours at the top of the page took the eye
+             first, and the first thing to do on this page is load something. -->
+        <div class="page-actions"
+            style="position: absolute; top: 0; right: 0; display: flex; gap: 6px; align-items: center;">
+            <!-- USE GPU sits with Save and Clear All because it is a GLOBAL setting,
+                 not something about the file being fetched. It is the rendering
+                 BACKEND and applies to both styles equally, and it wears the same
+                 skin as the toggles in the Style panel - green on, grey off - at the
+                 size of the two buttons beside it.
+
+                 ON BY DEFAULT, on this page only. Measured first render of 3J3Q:
+                 1,813 ms on the 2D path against 455 with the GPU, and every frame
+                 after it 840 ms against 26 - turning a capsid is not usable
+                 without it. Small structures are unaffected either way (1TIM 306
+                 vs 327 ms, 4UG0 332 vs 333).
+
+                 Safe as a default because it is only ever a REQUEST: this control
+                 removes itself when WebGL2 is absent, and the renderer falls back
+                 to the 2D path by itself for anything the GPU declines. The Python
+                 viewer keeps its own default (gpu=False in viewer.py) and has no
+                 such control. -->
+            <label id="useGpuRow" class="btn-toggle-global"
+                title="Draw on the GPU (WebGL2): the same picture, but turning and zooming cost one draw call instead of a full repaint. Applies to both styles.">
+                <input type="checkbox" id="useGpuCheckbox" checked>
+                <span><i class="fa-solid fa-microchip"></i>GPU</span>
+            </label>
+
             <button id="saveStateButton" class="btn btn-primary">
                 <i class="fa-solid fa-floppy-disk"></i>
                 <span>Save</span>
@@ -49,153 +79,168 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                 <span>Clear All</span>
             </button>
         </div>
-        <h1 class="text-4xl font-extrabold text-gray-900 mb-2">2Dmol</h1>
-        <!-- The chain suffixes are the only part a user cannot guess, so they
-             are what the line keeps. Which database a PDB or UniProt ID goes to
-             follows from the ID, and "to visualize protein structures" is what
-             the page evidently does. -->
-        <p class="text-gray-500 mb-4">Upload a PDB/CIF file, or fetch by PDB ID
-            (<code>1tim</code>, <code>1timA</code>, <code>1tim_AB</code>) or UniProt ID.</p>
+        <!-- JUST THE TITLE. The line under it said "Upload a PDB/CIF file, or
+             fetch by PDB or UniProt ID", which is a description of the two
+             controls directly beneath it: a box whose placeholder is an ID and
+             a button that says Upload. The chain suffixes it used to carry -
+             the only part of the syntax nobody can guess - are in that box's
+             placeholder now (1a3n_AB), where someone about to type an ID is
+             already looking. -->
+        <div class="page-head">
+            <h1>2Dmol</h1>
+        </div>
 
         <div id="upload-options-container" class="container-box" style="width: 948px; margin-bottom: 10px;">
 
-            <!-- Use table for reliable layout -->
-            <table style="width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 0;">
-                <tr>
-                    <!-- Left Column: Fetch + Load -->
-                    <td style="width: 50%; padding-right: 12px; vertical-align: top;">
+            <!-- FETCH PANEL. Three lines, and the third is usually not there.
+                 It was a two-column table: an ID box and a Load button on the
+                 left, seven toggles standing open on the right, and the
+                 examples squeezed into half a column where four of them
+                 wrapped onto two rows. Everything about that layout was sized
+                 by the options, which are the part almost nobody changes -
+                 they are defaults, and a default that is right does not need
+                 to be on screen. So they fold behind a button and the row that
+                 matters gets the whole width. -->
+            <div class="fetch-panel">
+                <!-- WHAT TO LOAD, all on one line. The label the ID box used to
+                     carry is the placeholder now: it said the same words, in
+                     the same place, one line further up. -->
+                <div class="fetch-row" id="fetch-input-container">
+                    <input type="text" id="fetch-id"
+                        aria-label="PDB ID (4 characters, optionally +chains) or UniProt ID"
+                        placeholder="e.g., 1A3N, 1a3n_AB or P0A8I3">
+                    <button id="fetch-btn" class="btn btn-primary">Fetch</button>
+                    <button id="upload-button" class="btn btn-secondary">
+                        <i class="fa-solid fa-file-arrow-up"></i>
+                        <span>Upload</span>
+                    </button>
+                    <input type="file" id="file-upload"
+                        accept=".pdb,.cif,.ent,.zip,.json,.cst,.a3m,.fasta,.fa,.fas,.sto,.csv" multiple
+                        class="hidden">
+                    <!-- aria-expanded and aria-controls, because a button that
+                         shows something has to say so to anything not looking
+                         at it. -->
+                    <button id="fetchOptionsButton" class="btn btn-grey" type="button"
+                        aria-expanded="false" aria-controls="fetchOptions"
+                        title="Loading options: frames, alignment, PAE, biounit, ligands">
+                        <span>Options</span>
+                        <span id="fetchOptionsCaret" aria-hidden="true">&#9662;</span>
+                    </button>
+                </div>
 
-                        <!-- Fetch Section -->
-                        <label for="fetch-id"
-                            style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">PDB
-                            (4-char, +chains) or UniProt ID</label>
-                        <div id="fetch-input-container" style="margin-bottom: 8px;">
-                            <input type="text" id="fetch-id" placeholder="e.g., 4HHB, 4hhb_AB or P0A8I3">
-                            <button id="fetch-btn" class="btn btn-primary">Fetch</button>
+                <!-- ONE ROW, which is what the whole width buys. Wired
+                     generically off data-example-value, so adding one needs no
+                     JS - but the row does not wrap any more, so adding a fifth
+                     is now a decision about width rather than a free action. -->
+                <div class="fetch-row fetch-examples">
+                    <span class="fetch-row-label">Examples</span>
+                    <button class="btn btn-success btn-small" data-example-value="6MRR">
+                        <span>6MRR</span>
+                    </button>
+                    <button class="btn btn-success btn-small" data-example-value="Q5VSL9">
+                        <span>Q5VSL9</span>
+                    </button>
+                    <button class="btn btn-success btn-small" data-example-value="1YNE">
+                        <span>1YNE</span>
+                    </button>
+                    <button class="btn btn-success btn-small" data-example-value="1A3N">
+                        <span>1A3N</span>
+                    </button>
+                </div>
+
+                <!-- ...AND THE OPTIONS, folded away, IN GROUPS. Eight
+                     switches in one flowing row is a list to read rather than
+                     a thing to scan: they answer three different questions,
+                     and which one a switch belongs to is not obvious from its
+                     name (Align chain is about frames, Filter Additives is
+                     about what the file contains). Grouped, each column is one
+                     question, and the two columns you are not asking can be
+                     skipped in a glance. -->
+                <div class="fetch-options" id="fetchOptions" hidden>
+                    <!-- MANY MODELS IN ONE FILE, and what to do with them. -->
+                    <div class="fetch-option-group">
+                        <span class="fetch-option-title">Frames</span>
+                        <div class="upload-toggle-item">
+                            <label class="switch">
+                                <input type="checkbox" id="loadAsFramesCheckbox" checked>
+                                <span class="slider-toggle"></span>
+                            </label>
+                            <label for="loadAsFramesCheckbox" class="upload-toggle-label">Load as Frames</label>
                         </div>
-
-                        <!-- Load Section -->
-                        <div style="display: flex; gap: 8px; align-items: flex-start;">
-                            <div style="flex: 1;">
-                                <label
-                                    style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Load
-                                    Files</label>
-                                <div id="uploadControlsContainer" style="display: flex; gap: 8px;">
-                                    <!-- Load Button (Triggers hidden input) -->
-                                    <button id="upload-button" class="btn btn-secondary">
-                                        <i class="fa-solid fa-file-arrow-up"></i>
-                                        <span>Choose Files</span>
-                                    </button>
-
-                                    <input type="file" id="file-upload"
-                                        accept=".pdb,.cif,.ent,.zip,.json,.cst,.a3m,.fasta,.fa,.fas,.sto,.csv" multiple
-                                        class="hidden">
-                                </div>
-                            </div>
-
-                            <!-- Separator Bar -->
-                            <div style="width: 1px; background: #e5e7eb; align-self: stretch;"></div>
-
-                            <div style="flex: 1;">
-                                <label
-                                    style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Example</label>
-                                <!-- btn-small, and one more of them: four
-                                     full-size buttons no longer fit the column.
-                                     Wired generically off data-example-value,
-                                     so adding one needs no JS. -->
-                                <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                                    <button class="btn btn-success btn-small" data-example-value="6MRR">
-                                        <span>6MRR</span>
-                                    </button>
-                                    <button class="btn btn-success btn-small" data-example-value="Q5VSL9">
-                                        <span>Q5VSL9</span>
-                                    </button>
-                                    <button class="btn btn-success btn-small" data-example-value="1YNE">
-                                        <span>1YNE</span>
-                                    </button>
-                                    <button class="btn btn-success btn-small" data-example-value="4HHB">
-                                        <span>4HHB</span>
-                                    </button>
-                                </div>
-                            </div>
+                        <div class="upload-toggle-item">
+                            <label class="switch">
+                                <input type="checkbox" id="alignFramesCheckbox" checked>
+                                <span class="slider-toggle"></span>
+                            </label>
+                            <label for="alignFramesCheckbox" class="upload-toggle-label">Align Frames</label>
                         </div>
-
-                    </td>
-
-                    <!-- Right Column: Options (split into two columns) -->
-                    <td style="vertical-align: top;">
-                        <label
-                            style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Options</label>
-
-                        <div style="display: flex; gap: 16px;">
-                            <!-- Left Column: Existing Options -->
-                            <div class="upload-options-section" style="margin-bottom: 0; flex: 1;">
-
-                                <!-- Load as Frames Toggle -->
-                                <div class="upload-toggle-item">
-                                    <label class="switch">
-                                        <input type="checkbox" id="loadAsFramesCheckbox" checked>
-                                        <span class="slider-toggle"></span>
-                                    </label>
-                                    <label for="loadAsFramesCheckbox" class="upload-toggle-label">Load as Frames</label>
-                                </div>
-
-                                <!-- Align Frames Toggle -->
-                                <div class="upload-toggle-item">
-                                    <label class="switch">
-                                        <input type="checkbox" id="alignFramesCheckbox" checked>
-                                        <span class="slider-toggle"></span>
-                                    </label>
-                                    <label for="alignFramesCheckbox" class="upload-toggle-label">Align Frames</label>
-                                </div>
-
-                            </div>
-
-                            <!-- Right Column: New Options -->
-                            <div class="upload-options-section" style="margin-bottom: 0; flex: 1;">
-
-                                <!-- Load PAE Toggle -->
-                                <div class="upload-toggle-item">
-                                    <label class="switch">
-                                        <input type="checkbox" id="loadPAECheckbox" checked>
-                                        <span class="slider-toggle"></span>
-                                    </label>
-                                    <label for="loadPAECheckbox" class="upload-toggle-label">Load PAE</label>
-                                </div>
-
-                                <!-- Load MSA Toggle -->
-                                <div class="upload-toggle-item">
-                                    <label class="switch">
-                                        <input type="checkbox" id="loadMSACheckbox">
-                                        <span class="slider-toggle"></span>
-                                    </label>
-                                    <label for="loadMSACheckbox" class="upload-toggle-label">Load MSA</label>
-                                </div>
-
-                                <!-- Load Biounit Toggle -->
-                                <div class="upload-toggle-item">
-                                    <label class="switch">
-                                        <input type="checkbox" id="biounitCheckbox" checked>
-                                        <span class="slider-toggle"></span>
-                                    </label>
-                                    <label for="biounitCheckbox" class="upload-toggle-label">Load Biounit</label>
-                                </div>
-
-                                <!-- Load Ligands Toggle -->
-                                <div class="upload-toggle-item">
-                                    <label class="switch">
-                                        <input type="checkbox" id="loadLigandsCheckbox">
-                                        <span class="slider-toggle"></span>
-                                    </label>
-                                    <label for="loadLigandsCheckbox" class="upload-toggle-label">Load Ligands</label>
-                                </div>
-                            </div>
+                        <!-- WHICH CHAIN THE FRAMES ARE ALIGNED ON. Blank keeps
+                             the old behaviour - the first chain in the reference
+                             frame - which is right until the first chain is not
+                             the one you care about. Only read when Align Frames
+                             is on, which is why it sits under it. -->
+                        <div class="upload-toggle-item" id="alignChainRow">
+                            <label for="alignChainInput" class="upload-toggle-label"
+                                title="Align the frames on this chain. Blank uses the first chain in the structure.">Align chain</label>
+                            <input type="text" id="alignChainInput" placeholder="auto"
+                                maxlength="4" autocomplete="off" spellcheck="false"
+                                style="width: 64px; height: 26px; font-size: 12px; padding: 0 6px; border: 1px solid #d1d5db; border-radius: 6px;">
                         </div>
-                    </td>
-                </tr>
-            </table>
+                    </div>
 
-            <!-- Status message below the table -->
+                    <!-- WHAT OF THE FILE ENDS UP IN THE PICTURE. All three
+                         change which atoms are there at all, which is a
+                         different question from how they are drawn. -->
+                    <div class="fetch-option-group">
+                        <span class="fetch-option-title">Structure</span>
+                        <div class="upload-toggle-item">
+                            <label class="switch">
+                                <input type="checkbox" id="biounitCheckbox" checked>
+                                <span class="slider-toggle"></span>
+                            </label>
+                            <label for="biounitCheckbox" class="upload-toggle-label">Load Biounit</label>
+                        </div>
+                        <div class="upload-toggle-item">
+                            <label class="switch">
+                                <input type="checkbox" id="loadLigandsCheckbox" checked>
+                                <span class="slider-toggle"></span>
+                            </label>
+                            <label for="loadLigandsCheckbox" class="upload-toggle-label">Load Ligands</label>
+                        </div>
+                        <div class="upload-toggle-item">
+                            <label class="switch">
+                                <input type="checkbox" id="filterAdditivesCheckbox" checked>
+                                <span class="slider-toggle"></span>
+                            </label>
+                            <label for="filterAdditivesCheckbox" class="upload-toggle-label"
+                                title="Leave out buffers, cryoprotectants and counter-ions - what the crystal was grown in rather than what the molecule is">Filter Additives</label>
+                        </div>
+                    </div>
+
+                    <!-- ...AND WHAT COMES WITH IT. Neither is the structure:
+                         they are other files fetched alongside it, and they
+                         open panels of their own. -->
+                    <div class="fetch-option-group">
+                        <span class="fetch-option-title">Alongside</span>
+                        <div class="upload-toggle-item">
+                            <label class="switch">
+                                <input type="checkbox" id="loadPAECheckbox" checked>
+                                <span class="slider-toggle"></span>
+                            </label>
+                            <label for="loadPAECheckbox" class="upload-toggle-label">Load PAE</label>
+                        </div>
+                        <div class="upload-toggle-item">
+                            <label class="switch">
+                                <input type="checkbox" id="loadMSACheckbox">
+                                <span class="slider-toggle"></span>
+                            </label>
+                            <label for="loadMSACheckbox" class="upload-toggle-label">Load MSA</label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Status message below the panel -->
             <div id="status-message" style="margin-top: 12px;"></div>
         </div>
 
@@ -239,6 +284,13 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     <span><i class="fa-solid fa-rotate"></i>Rotate</span>
                                 </label>
 
+                                <!-- Clip: PyMOL's near/far slab, cutting the drawing. -->
+                                <label class="btn-toggle btn-flex" id="clipToggle"
+                                    title="Clip the view to a slab, as in PyMOL: near and far planes that cut the drawing">
+                                    <input type="checkbox" id="clipCheckbox">
+                                    <span><i class="fa-solid fa-cube"></i>Clip</span>
+                                </label>
+
                             </div>
 
                             <div class="toolbar-row">
@@ -250,11 +302,60 @@ AI Context: STANDALONE WEB APP ENTRY POINT
 
                                 <button id="saveImageButton" class="btn-toggle btn-flex"
                                     aria-expanded="false" aria-controls="savePanel"
-                                    title="Save an image or a video">
-                                    <span><i class="fa-solid fa-camera"></i>Save</span>
+                                    title="Capture an image or a video">
+                                    <span><i class="fa-solid fa-camera"></i>Capture</span>
                                 </button>
                             </div>
                         </div>
+
+
+                        <!-- WHICH OBJECT, and how many. Directly under the
+                             buttons because everything below it - Style, Clip,
+                             Capture - acts on the object named here: pick an
+                             object and the panels below describe THAT object.
+                             Multi puts every object on screen at once; the
+                             eyes decide what is drawn and the picker still
+                             decides which one you are editing. -->
+                        <!-- OBJECTS: ONE AT A TIME, OR SEVERAL.
+                             The picker in the sequence header chooses the
+                             object - one on screen, the one being edited,
+                             which is how this viewer has always worked.
+                             Multi is the other mode: the picker greys out,
+                             every object gets a row with an eye, and the
+                             eyes decide what is drawn. It opens on the
+                             object the picker was showing, so pressing it
+                             changes nothing until an eye is clicked. -->
+                        <div id="objectRow" class="toggle-item object-row">
+                            <!-- THE LIST, EXPANDED. Three stacked lines: the one
+                                 object on screen opening into all of them. It
+                                 read "Multi", which names a mode rather than
+                                 what the button does, and spent a fifth of a
+                                 narrow row saying it. The accessible name still
+                                 says it in words. -->
+                            <button id="objectListButton" type="button"
+                                class="object-list-btn" aria-pressed="false"
+                                aria-controls="objectList" aria-label="Expand to several objects"
+                                title="Expand: show several objects at once"><i
+                                class="fa-solid fa-bars" aria-hidden="true"></i></button>
+                            <!-- WHICH OBJECT: the picker, and the ordinary way to
+                                 choose one. It names the object on screen AND the one
+                                 being edited, which are the same object until Multi is
+                                 pressed - there it greys out, because with several on
+                                 screen the eyes decide what is drawn and clicking in
+                                 the strip decides what is edited (adoptObjectOfSelection).
+                                 Every other path drives the current object through this
+                                 select: the renderer's change listener, the prev/next
+                                 buttons, a restored session. -->
+                            <select id="objectSelect" class="object-picker"
+                                title="Which object to show and edit"
+                                style="min-width: 110px; height: 28px; font-size: 12px; padding: 0 8px;">
+                                <!-- Initially empty -->
+                            </select>
+                        </div>
+                        <!-- Rows are built in app.js from the objects that
+                             exist: an eye and a name, and the whole row is
+                             the switch. Only in Multi. -->
+                        <div id="objectList" class="object-list" hidden></div>
 
                         <style>
                             /* Inline display:flex on the style rows outranks the UA [hidden]
@@ -263,6 +364,104 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                             /* Open cue is the shared .btn-toggle[aria-expanded] rule
                                in style.css - the same green as a checked toggle. */
                         </style>
+                        <!-- CLIP PANEL. PyMOL's clip: a slab in camera space, set as a
+                             RANGE - two knobs on one track, far on the left and near on
+                             the right, which cannot cross. No figures: where the knobs
+                             are IS the answer, and the picture shows the rest.
+                             Switching Clip off puts the panel away and LEAVES the cut;
+                             AUTO is what re-cuts: it fits the slab to the selection,
+                             and with nothing selected that is the uncut rest state -
+                             which is what the button used to say Reset for. -->
+                        <style>
+                            /* [hidden] is a UA rule and an inline display:flex outranks
+                               it - the same trap the style panel documents below. */
+                            #clipPanel[hidden] { display: none !important; }
+                            /* THE TWO HANDLES SHARE ONE TRACK. Both inputs sit on the
+                               same line, transparent, so what you see is the track drawn
+                               underneath and the two thumbs on it. pointer-events are
+                               off for the input body and back on for the thumb, or the
+                               upper input would swallow every click meant for the lower
+                               one. */
+                            /* TWO IDS, DELIBERATELY. web/style.css styles every range
+                               input in the viewer with
+                               `.py2dmol-viewer-instance input[type="range"]:not(#frameSlider)`,
+                               and :not(#frameSlider) counts an ID - so that rule outranks
+                               a single-id selector here and kept painting its own 6px grey
+                               bar and its own blue thumb. That bar on top of this one is
+                               the "two bars" this control was showing. */
+                            #clipPanel #clipRange { position: relative; height: 24px; flex: 1; min-width: 0; }
+                            #clipPanel #clipRange .track {
+                                position: absolute; left: 0; right: 0; top: 10px; height: 4px;
+                                background: #e5e7eb; border-radius: 2px;
+                            }
+                            #clipPanel #clipRange .span {
+                                position: absolute; top: 10px; height: 4px;
+                                background: #2563eb; border-radius: 2px;
+                            }
+                            #clipPanel #clipRange input[type=range] {
+                                position: absolute; left: 0; top: 0; width: 100%; height: 24px;
+                                margin: 0; padding: 0; background: transparent; pointer-events: none;
+                                border-radius: 0; outline: none;
+                                -webkit-appearance: none; appearance: none;
+                            }
+                            /* the track each input paints for itself, out of the way */
+                            #clipPanel #clipRange input[type=range]::-webkit-slider-runnable-track {
+                                background: transparent; border: none; height: 24px;
+                            }
+                            #clipPanel #clipRange input[type=range]::-moz-range-track {
+                                background: transparent; border: none; height: 24px;
+                            }
+                            #clipPanel #clipRange input[type=range]::-moz-range-progress {
+                                background: transparent;
+                            }
+                            #clipPanel #clipRange input[type=range]::-webkit-slider-thumb {
+                                pointer-events: auto; -webkit-appearance: none; appearance: none;
+                                width: 14px; height: 14px; margin-top: 5px; border-radius: 50%;
+                                background: #fff; border: 2px solid #2563eb; box-shadow: none;
+                                cursor: pointer;
+                            }
+                            #clipPanel #clipRange input[type=range]::-moz-range-thumb {
+                                pointer-events: auto; width: 14px; height: 14px; border-radius: 50%;
+                                background: #fff; border: 2px solid #2563eb; box-shadow: none;
+                                cursor: pointer;
+                            }
+                        </style>
+                        <!-- TWO LINES: the planes, then how soft they are. Each row
+                             spells out flex-direction ROW - the panel is a COLUMN and
+                             .control-group is one too, and inheriting that once stacked
+                             the readouts above a track with no width at all: the handles
+                             were there and unusable. -->
+                        <div id="clipPanel" hidden class="control-group"
+                            style="display: flex; flex-direction: column; align-items: stretch; gap: 6px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; padding: 8px; margin-bottom: 4px;">
+                            <div style="display: flex; flex-direction: row; align-items: center; gap: 8px;">
+                                <label for="clipNear" class="font-medium text-gray-700"
+                                    style="width: 34px; font-size: 11px; flex-shrink: 0;"
+                                    title="Drag the two knobs to clip the view between them">Clip:</label>
+                                <div id="clipRange" title="Drag the two knobs to clip the view between them">
+                                    <div class="track"></div>
+                                    <div class="span" id="clipSpan"></div>
+                                    <input type="range" id="clipFar" aria-label="Far clipping plane">
+                                    <input type="range" id="clipNear" aria-label="Near clipping plane">
+                                </div>
+                                <button id="clipAutoButton" class="btn btn-grey btn-small"
+                                    title="Fit the slab to the selection - or uncut, with nothing selected"
+                                    style="font-size: 11px;">Auto</button>
+                            </div>
+                            <div style="display: flex; flex-direction: row; align-items: center; gap: 8px;">
+                                <label for="clipFadeSlider" class="font-medium text-gray-700"
+                                    style="width: 34px; font-size: 11px; flex-shrink: 0;"
+                                    title="Soft edge: how far outside each plane the drawing fades out instead of stopping. 0 is a hard cut.">Fade:</label>
+                                <input type="range" id="clipFadeSlider" min="0" max="100" value="10" step="5"
+                                    style="flex: 1; min-width: 0; outline: none;"
+                                    title="Soft edge: how far outside each plane the drawing fades out instead of stopping. 0 is a hard cut.">
+                                <!-- Auto stands over this space on the row above; without
+                                     it the two tracks would end in different places, which
+                                     is the whole reason the rows were split. -->
+                                <span aria-hidden="true" id="clipResetSpacer"
+                                    style="width: 51px; flex-shrink: 0;"></span>
+                            </div>
+                        </div>
+
                         <div id="styleAppearanceContainer" class="control-group">
 
                             <!-- Render controls live in a collapsible Style panel. Rows and
@@ -282,7 +481,7 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                         <select id="styleSelect"
                                             style="flex: 1; min-width: 0; height: 28px; font-size: 12px; padding: 0 8px; border: 1px solid #d1d5db; border-radius: 8px;">
                                             <option value="tube">Tube</option>
-                                            <option value="cartoon">Cartoon</option>
+                                            <option value="cartoon" selected>Cartoon</option>
                                         </select>
                                     </div>
                                     <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
@@ -339,34 +538,40 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     </div>
                                 </div>
                                 
-                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                <!-- A FLOW, NOT TWO ROWS. Each cell is half the
+                                     width and the container wraps, so a cell
+                                     that belongs to the other style collapses
+                                     and the ones that are left pair up on their
+                                     own. Hand-made rows went ragged instead:
+                                     tube hid Pencil and Ink and was left with
+                                     Shadow alone on one line and Ortho alone on
+                                     the next. -->
+                                <div class="toggle-item" style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                                    <div data-style="cartoon" style="flex: 1 1 45%; display: flex; align-items: center; gap: 4px; min-width: 0;">
                                         <label for="pencilSlider" class="font-medium text-gray-700"
                                             style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Coloured-pencil paper grain (0 = clean)">Pencil:</label>
                                         <input type="range" id="pencilSlider" min="0" max="1" value="0" step="0.05"
                                             style="flex: 1; min-width: 0; outline: none;">
                                     </div>
-                                    <div data-style="tube" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                    <div data-style="tube" style="flex: 1 1 45%; display: flex; align-items: center; gap: 4px; min-width: 0;">
                                         <label for="shadowSlider" class="font-medium text-gray-700"
                                             style="width: 50px; font-size: 12px; flex-shrink: 0;">Shadow:</label>
                                         <input type="range" id="shadowSlider" min="0" max="1" value="0.5" step="0.01"
                                             style="flex: 1; min-width: 0; outline: none;">
                                     </div>
-                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                    <div data-style="cartoon" style="flex: 1 1 45%; display: flex; align-items: center; gap: 4px; min-width: 0;">
                                         <label for="outlineTintSlider" class="font-medium text-gray-700"
                                             style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Outline colour: 0 = black, 1 = tint of the element colour (as in ribbon mode)">Ink:</label>
                                         <input type="range" id="outlineTintSlider" min="0" max="1" value="0" step="0.05"
                                             style="flex: 1; min-width: 0; outline: none;">
                                     </div>
-                                </div>
-                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                    <div data-style="cartoon" style="flex: 1 1 45%; display: flex; align-items: center; gap: 4px; min-width: 0;">
                                         <label for="detailSlider" class="font-medium text-gray-700"
                                             style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Subdivisions per residue, 2-8 (low = faceted and faster)">Detail:</label>
                                         <input type="range" id="detailSlider" min="2" max="8" value="4" step="1"
                                             style="flex: 1; min-width: 0; outline: none;">
                                     </div>
-                                    <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                    <div style="flex: 1 1 45%; display: flex; align-items: center; gap: 4px; min-width: 0;">
                                         <label for="orthoSlider" class="font-medium text-gray-700"
                                             style="width: 50px; font-size: 12px; flex-shrink: 0;">Ortho:</label>
                                         <input type="range" id="orthoSlider" min="0" max="1" value="0.5" step="0.01"
@@ -378,12 +583,27 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                         style="font-size: 12px;">Color:</label>
                                     <select id="colorSelect"
                                         style="flex: 1; height: 28px; font-size: 12px; padding: 0 8px; border: 1px solid #d1d5db; border-radius: 8px;">
+                                        <!-- ORDERED BY HOW OFTEN THEY ARE REACHED FOR,
+                                             not by when they were added: Auto first
+                                             because it is the answer most of the time,
+                                             then the three that apply to any structure,
+                                             then the two that only mean anything on a
+                                             prediction. -->
                                         <option value="auto">Auto</option>
-                                        <option value="plddt">pLDDT</option>
-                                        <option value="deepmind">DeepMind</option>
                                         <option value="rainbow">Rainbow</option>
                                         <option value="chain">Chain</option>
+                                        <!-- ONE FLAT COLOUR PER OBJECT, for
+                                             comparing two structures of the
+                                             same thing - where every other
+                                             scheme gives them the same colours
+                                             as each other. Hidden until there
+                                             is more than one object on screen,
+                                             where it would colour everything
+                                             identically. -->
+                                        <option value="object" hidden>Object</option>
                                         <option value="ss">SSE</option>
+                                        <option value="plddt">pLDDT</option>
+                                        <option value="deepmind">DeepMind</option>
                                         <option value="entropy" id="entropyColorOption" hidden>Entropy</option>
                                     </select>
                                 </div>
@@ -392,23 +612,44 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                         style="font-size: 12px; width: 50px; flex-shrink: 0;" title="Colour palette for the SSE mode; C coil, H helix, E strand, N nucleic, L ligand">SSE:</label>
                                     <div id="ssPaletteButtons" style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;"></div>
                                 </div>
-                                <!-- The row itself is NOT tagged data-style: Smooth and
-                                     Arrows are cartoon-only and carry the tag themselves,
-                                     but Cyclic is a question about the structure and
-                                     applies to either style. Tagging the row would take
-                                     Cyclic off the screen in tube style. -->
-                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1;"
+                                <!-- The container is NOT tagged data-style: Smooth,
+                                     Arrows and Draw are cartoon-only and carry the tag
+                                     themselves, but Colorblind, Dark and Cyclic apply to
+                                     either style. Tagging it would take all three off the
+                                     screen in tube. Their ORDER is what makes each style
+                                     read as whole lines: cartoon gets Smooth/Arrows/Draw
+                                     then Colorblind/Dark/Cyclic, and tube - which hides
+                                     the first three - gets Colorblind/Dark/Cyclic. -->
+                                <!-- ...AND THE TOGGLES, for the same reason: a
+                                     third of the width each, wrapping, so tube
+                                     (which has no Smooth, Arrows or Draw) puts
+                                     Colorblind, Dark and Cyclic on one line
+                                     instead of scattering them down three. -->
+                                <div class="toggle-item" style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1 1 30%;"
                                         data-style="cartoon"
                                         title="Smooth shading gradients (off = flat tone bands)">
                                         <input type="checkbox" id="smoothCheckbox">
                                         <span>Smooth</span>
                                     </label>
-                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1;"
+                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1 1 30%;"
                                         data-style="cartoon"
                                         title="Arrowheads on the C-terminal end of each beta strand">
                                         <input type="checkbox" id="arrowsCheckbox" checked>
                                         <span>Arrows</span>
+                                    </label>
+                                    <label class="btn-toggle btn-no-margin btn-small" data-style="cartoon" style="flex: 1 1 30%;"
+                                        title="Build the picture up by hand: pencil sketch, colour wash, then ink">
+                                        <input type="checkbox" id="drawCheckbox">
+                                        <span>Draw</span>
+                                    </label>
+                                    <label class="btn-toggle btn-no-margin btn-small" title="Colorblind-safe colors" style="flex: 1 1 30%;">
+                                        <input type="checkbox" id="colorblindCheckbox">
+                                        <span>Colorblind</span>
+                                    </label>
+                                    <label class="btn-toggle btn-no-margin btn-small" title="Black background (white ink, fade toward black)" style="flex: 1 1 30%;">
+                                        <input type="checkbox" id="darkCheckbox">
+                                        <span>Dark</span>
                                     </label>
                                     <!-- Detect Cyclic lives here rather than in the fetch
                                          panel: it is a question about the structure that
@@ -422,37 +663,15 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                          round, so the N and C termini come out the same
                                          colour. Cyclic peptides are rare enough that the
                                          user should ask. -->
-                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1;"
+                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1 1 30%;"
                                         title="Join a chain's first and last residue when they are close enough to be bonded, and wrap the rainbow ramp around the ring">
                                         <input type="checkbox" id="detectCyclicCheckbox">
                                         <span>Cyclic</span>
                                     </label>
                                 </div>
-                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                    <label class="btn-toggle btn-no-margin btn-small" title="Colorblind-safe colors" style="flex: 1;">
-                                        <input type="checkbox" id="colorblindCheckbox">
-                                        <span>Colorblind</span>
-                                    </label>
-                                    <label class="btn-toggle btn-no-margin btn-small" title="Black background (white ink, fade toward black)" style="flex: 1;">
-                                        <input type="checkbox" id="darkCheckbox">
-                                        <span>Dark</span>
-                                    </label>
-                                    <label class="btn-toggle btn-no-margin btn-small" data-style="cartoon" style="flex: 1;"
-                                        title="Build the picture up by hand: pencil sketch, colour wash, then ink">
-                                        <input type="checkbox" id="drawCheckbox">
-                                        <span>Draw</span>
-                                    </label>
-                                </div>
                             </div>
 
-                            <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                <label for="objectSelect" class="font-medium text-gray-700"
-                                    style="font-size: 12px;">Object:</label>
-                                <select id="objectSelect"
-                                    style="flex: 1; height: 28px; font-size: 12px; padding: 0 8px;">
-                                    <!-- Initially empty -->
-                                </select>
-                            </div>
+
 
                         </div>
 
@@ -467,19 +686,51 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                          Hidden until something is selected: with nothing picked
                          every one of them is a no-op. -->
                     <div id="selectionPanel" class="container-box selection-panel" hidden>
+                        <!-- THE HEAD CARRIES THE ACTIONS, as icons. Copy used to be a
+                             full-width button at the bottom of the panel, where it sat
+                             under the pointer after every other control and was pressed
+                             by accident. Small, cornered and iconic, it takes a
+                             deliberate move to reach - which is what an action that
+                             makes a new object should take. -->
                         <div class="selection-panel-head">
                             <span class="selection-panel-title">Selection</span>
                             <span id="selectionPanelCount" class="selection-panel-count"></span>
+                            <span class="selection-panel-actions">
+                                <button id="copySelectionButton" class="selection-icon-btn"
+                                    title="Copy the selected residues into a new object"
+                                    aria-label="Copy the selection into a new object">
+                                    <i class="fa-regular fa-copy"></i>
+                                </button>
+                                <!-- CUT is Copy and Delete in one press, and it
+                                     has to be one: Copy switches to the object it
+                                     makes and Delete works on whatever is current,
+                                     so pressing them in turn deletes the copy out
+                                     of itself and leaves the original whole. -->
+                                <button id="cutSelectionButton" class="selection-icon-btn"
+                                    title="Cut the selected residues into a new object, removing them from this one"
+                                    aria-label="Cut the selection into a new object">
+                                    <i class="fa-solid fa-scissors"></i>
+                                </button>
+                                <button id="deleteSelectionButton" class="selection-icon-btn selection-icon-danger"
+                                    title="Delete the selected residues from this object"
+                                    aria-label="Delete the selected residues">
+                                    <i class="fa-solid fa-trash-can"></i>
+                                </button>
+                            </span>
                         </div>
                         <!-- WHAT IS DRAWN, one labelled row per part, because
                              the two are independent: a residue can show its main
                              chain, its side chain, both or neither.
-                             Show and Hide are separate buttons rather than one
-                             toggle - a toggle has to name the state to be usable
-                             ("Hide side chains"), and with two rows you would be
-                             reading two labels to work out what the selection
-                             currently looks like. Two buttons say what they do
-                             and leave the state to the drawing. -->
+                             Show and Hide are two buttons rather than one
+                             switch. A switch says what it will do and leaves
+                             you to work out what it has done; a pair says both,
+                             because the one matching what is drawn is filled -
+                             and a selection that disagrees with itself fills
+                             neither, which is a state a switch can only show as
+                             a grey smear. Plate and Elements stay switches: they
+                             are not "is this drawn" but "which way", and a
+                             second pair on the same row would read as a second
+                             copy of the same question. -->
                         <div id="selectionTools" class="selection-tools" title="Applies to the selected residues">
                             <!-- Hidden when the selection has no side chains to
                                  show - all glycine, nucleic acid, or a
@@ -498,35 +749,48 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     </button>
                                     <div id="scColorMenu" class="selection-color-menu" hidden></div>
                                 </span>
-                                <label class="btn-toggle btn-small selection-toggle" title="Draw side chains for the selected residues">
-                                    <input type="checkbox" id="sidechainShowToggle"
-                                        aria-label="Draw side chains for the selected residues">
-                                    <span>Show</span>
+                                <!-- TWO BUTTONS, ONE QUESTION. A single switch
+                                     said what it would do and left you to work
+                                     out what it had done; a pair says both -
+                                     the one that matches what is drawn is
+                                     filled, and neither is when the selection
+                                     disagrees with itself. Which is the third
+                                     state a switch could only show as a grey
+                                     smear. -->
+                                <span class="selection-switch" id="sidechainPair"
+                                    role="group" aria-label="Draw side chains for the selected residues">
+                                    <button type="button" id="sidechainShowButton"
+                                        class="selection-switch-btn"
+                                        title="Draw side chains for the selected residues">Show</button>
+                                    <button type="button" id="sidechainHideButton"
+                                        class="selection-switch-btn"
+                                        title="Hide the side chains of the selected residues">Hide</button>
+                                </span>
+                                <!-- ...AND HOW, FOR A NUCLEOTIDE, which is the only
+                                     thing with two ways of being drawn: the plate or
+                                     its real atoms. A switch rather than a menu,
+                                     because Plate is on or it is not and a two-item
+                                     menu is a switch that takes a click to read -
+                                     and because the menu was wide enough to push
+                                     Elements onto a second line. It appears only
+                                     where the selection has nucleotides, and only
+                                     while they are being drawn. -->
+                                <label class="btn-toggle btn-small selection-toggle" title="Draw the bases as plates rather than atoms">
+                                    <input type="checkbox" id="plateShowToggle"
+                                        aria-label="Draw the selected bases as plates">
+                                    <span>Plate</span>
                                 </label>
                                 <!-- Element colours ride WITH the side chains rather than in a
                                      row of their own: they are a property of the atoms this row
                                      draws, and a row that only ever applies to whatever this one
                                      turned on reads as a separate thing to manage. -->
-                                <label class="btn-toggle btn-small selection-toggle" title="Colour the selected side chains by element - nitrogen blue, oxygen red, sulfur gold">
+                                <label class="btn-toggle btn-small selection-toggle" title="Colour the selected atoms by element - nitrogen blue, oxygen red, sulfur gold">
                                     <input type="checkbox" id="elementsShowToggle"
-                                        aria-label="Colour the selected side chains by element">
+                                        aria-label="Colour the selected atoms by element">
                                     <span>Elements</span>
                                 </label>
                             </div>
-                            <!-- Hidden unless the selection contains nucleotides.
-                                 See hasBasesFor. Called "Side chain" and not
-                                 "Bases" because it is the same thing this panel
-                                 offers a protein: the part that hangs off the
-                                 backbone, drawn or not drawn. -->
-                            <div class="selection-panel-row" id="basesRow" hidden>
-                                <span class="selection-panel-label">Side chain</span>
-                                <label class="btn-toggle btn-small selection-toggle" title="Draw base plates for the selected nucleotides">
-                                    <input type="checkbox" id="basesShowToggle"
-                                        aria-label="Draw base plates for the selected nucleotides">
-                                    <span>Show</span>
-                                </label>
-                            </div>
-                            <div class="selection-panel-row">
+                            <div class="selection-panel-row" id="mainchainRow">
                                 <span class="selection-panel-label">Main chain</span>
                                 <span class="selection-color-wrap">
                                     <!-- aria-label because the button has no text
@@ -541,23 +805,101 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     </button>
                                     <div id="selColorMenu" class="selection-color-menu" hidden></div>
                                 </span>
-                                <label class="btn-toggle btn-small selection-toggle" title="Show or hide the selected residues">
-                                    <input type="checkbox" id="mainchainShowToggle"
-                                        aria-label="Show or hide the selected residues">
-                                    <span>Show</span>
-                                </label>
+                                <!-- SHOW IS THE CHAIN, and nothing else. It used
+                                     to hide the whole residue, side chain and
+                                     all, with a second toggle beside it for the
+                                     backbone alone - two controls where one
+                                     said "draw this part", which is what every
+                                     other row on this panel means by Show. A
+                                     residue with no chain and no side chain
+                                     draws nothing, and drops out of the
+                                     visibility mask on its own. -->
+                                <span class="selection-switch" id="mainchainPair"
+                                    role="group" aria-label="Draw the backbone of the selected residues">
+                                    <button type="button" id="mainchainShowButton"
+                                        class="selection-switch-btn"
+                                        title="Draw the backbone of the selected residues">Show</button>
+                                    <button type="button" id="mainchainHideButton"
+                                        class="selection-switch-btn"
+                                        title="Hide the backbone. Their side chains, bases and contacts stay.">Hide</button>
+                                </span>
                                 <!-- SSE lives HERE because it is a BACKBONE
                                      property: a side chain has no secondary
                                      structure. It sits where Elements sits on
                                      the side-chain row - the second control on
                                      the row, styling what that row draws. -->
+                                <!-- A STATE, NOT AN ACTION. It read "SSE" whatever
+                                     the selection was, because it reset itself
+                                     after every pick - so the one thing a menu
+                                     on a selection panel is for, saying what the
+                                     selection currently is, was the one thing it
+                                     did not do. It now shows which of the four
+                                     states the selection is in, and Mixed where
+                                     they disagree.
+                                     DSSP rather than Auto: the automatic answer
+                                     is not a preference, it is what the
+                                     assignment says, and naming it says which
+                                     assignment. Its label carries that answer
+                                     where the drawing already knows it. -->
                                 <select id="selSsSelect" class="btn btn-grey btn-small"
-                                    title="Force the secondary structure of the selected residues">
-                                    <option value="" selected>SSE</option>
+                                    title="The secondary structure of the selected residues">
+                                    <option value="" disabled hidden>Mixed</option>
+                                    <option value="dssp">DSSP</option>
                                     <option value="H">Helix</option>
                                     <option value="E">Sheet</option>
                                     <option value="C">Loop</option>
-                                    <option value="auto">Auto</option>
+                                </select>
+                            </div>
+                            <!-- WHAT THE SELECTION IS, above; WHAT TO DO WITH IT,
+                                 below. The rows above set properties of the residues
+                                 you have picked - how they are drawn, what colour,
+                                 which structure - and read as a group because they
+                                 all answer "what does this look like". Find and
+                                 Contact do something instead: one changes the
+                                 selection, the other adds an annotation. Running
+                                 them into the same stack of labelled rows made
+                                 Find look like another property with a button
+                                 next to it. -->
+                            <div class="selection-panel-divider" id="selActionDivider"></div>
+                            <!-- FIND INTERACTIONS: the residues whose SIDE CHAINS
+                                 come within 5 A of the selection, atom to atom, side
+                                 chains rebuilt whether or not they are drawn.
+                                 One button and no settings, because the settings were
+                                 a distance nobody wanted to change and a choice
+                                 between "any atom" and "side chain" whose any-atom
+                                 half is mostly backbone running past. It belongs on
+                                 this panel rather than beside Select all: those make
+                                 or clear a selection, this acts on one - and what you
+                                 do with the answer is turn on the side chains two rows
+                                 up. The seed stays selected, as PyMOL's byres does. -->
+                            <div class="selection-panel-row" id="nearbyRow">
+                                <span class="selection-panel-label">Find</span>
+                                <button id="selectNearby" class="btn btn-grey btn-small"
+                                    title="Select every residue whose side chain comes within 5 &#8491; of the selection">interactions</button>
+                            </div>
+                            <!-- ALIGN: superpose other objects onto the SELECTED
+                                 RESIDUES by TM-align. It sits on this panel and
+                                 next to Find because it is the same kind of thing
+                                 - an action on the selection rather than a
+                                 property of it - and because what you align to is
+                                 the pick: one chain out of a complex, or one
+                                 domain out of a chain, is a selection and nothing
+                                 else in the app can say it.
+                                 A DROPDOWN AND NOT TWO BUTTONS: "all" and
+                                 "visible" are the same action over different
+                                 sets, so they read as one control with a choice,
+                                 and Undo belongs in the same list because it is
+                                 the third thing you can do to an alignment. The
+                                 row is hidden until a second object is loaded -
+                                 there is nothing to align one structure to. -->
+                            <div class="selection-panel-row" id="alignRow" hidden>
+                                <span class="selection-panel-label">Align</span>
+                                <select id="alignSelect" class="btn btn-grey btn-small"
+                                    title="Superpose other objects onto the selected residues (TM-align)">
+                                    <option value="" selected hidden>to selection</option>
+                                    <option value="all">all to this</option>
+                                    <option value="visible">visible to this</option>
+                                    <option value="none">undo</option>
                                 </select>
                             </div>
                             <!-- CONTACTS need exactly two residues, so this row
@@ -575,11 +917,16 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     </button>
                                     <div id="contactColorMenu" class="selection-color-menu" hidden></div>
                                 </span>
-                                <label class="btn-toggle btn-small selection-toggle" title="Draw a contact between the two selected residues">
-                                    <input type="checkbox" id="contactShowToggle"
-                                        aria-label="Draw a contact between the two selected residues">
-                                    <span>Show</span>
-                                </label>
+                                <!-- ADD, not Show: a contact does not exist
+                                     until you make one, and once it does the
+                                     button has nothing left to offer - so it
+                                     goes, and the row becomes the contact's own
+                                     controls: its colour, its width, and a bin
+                                     to be rid of it. One control per state
+                                     rather than a pair with a dead half. -->
+                                <button type="button" id="contactAddButton"
+                                    class="btn btn-grey btn-small selection-add"
+                                    title="Draw a contact between the two selected residues">Add</button>
                                 <!-- Per contact, not global: the stored entry
                                      carries its own weight, so two contacts in
                                      one picture can differ. Narrow, to keep the
@@ -593,13 +940,18 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     min="0.15" max="1" step="0.05" value="1" hidden
                                     aria-label="Width of this contact"
                                     title="Width of this contact (full width is the maximum)">
-                            </div>
-                            <!-- Whole-selection actions. Copy is the only one
-                                 left: it acts on the selection as a whole
-                                 rather than on one part of it. -->
-                            <div class="selection-panel-row">
-                                <button id="copySelectionButton" class="btn btn-grey btn-small"
-                                    title="Copy the selected residues into a new object">Copy</button>
+                                <!-- ...AND THE BIN, at the end of the row: the
+                                     last thing on a row of that contact's own
+                                     controls, where a destructive action is a
+                                     deliberate reach rather than the button
+                                     next to the one you were just pressing. -->
+                                <button type="button" id="contactDeleteButton"
+                                    class="btn btn-grey btn-small selection-icon-btn selection-icon-danger"
+                                    hidden
+                                    aria-label="Remove the contact between the two selected residues"
+                                    title="Remove this contact">
+                                    <i class="fa-solid fa-trash-can"></i>
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -630,7 +982,18 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                         <option value="sequence" selected>Sequence</option>
                         <option value="chain">Chain</option>
                     </select>
+<!-- The object picker lives beside the Multi button, in the
+                         Objects row - see #objectRow. -->
                 </div>
+
+                <!-- WHICH FILE THIS FRAME CAME FROM, in the gap between the mode
+                     dropdown and the buttons. Loading a folder of predictions as
+                     frames gives one object and a frame number; this says which
+                     file you are looking at. Empty when the frames have no names
+                     of their own (a single structure, or a session from before
+                     they were kept). -->
+                <div id="frameNameLabel"
+                    style="flex: 1; min-width: 0; text-align: center; font-size: 12px; color: #6b7280; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"></div>
 
                 <!-- Action buttons aligned to the right -->
                 <div class="sequence-actions" style="margin-left: auto;">
@@ -642,6 +1005,8 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                             title="Select every residue">Select all</button>
                         <button id="clearAllResidues" class="btn btn-grey btn-small"
                             title="Clear the selection">Unselect</button>
+                        <button id="invertSelection" class="btn btn-grey btn-small"
+                            title="Select everything that is not selected now">Invert</button>
                     </span>
                 </div>
             </div>
@@ -744,13 +1109,20 @@ AI Context: STANDALONE WEB APP ENTRY POINT
 
     <!-- Load scripts in order -->
     <script src="web/utils.js"></script>
+    <!-- TM-align and the viewer's side of it, in one file: loaded before
+         viewer-mol.js so the renderer's align methods have window.Align to
+         hand. Its TM-align half is generated from foldjs/lib/tmalign.js - see
+         tests/vendor_tmalign.mjs. -->
+    <script src="py2Dmol/resources/viewer-align.js"></script>
     <script src="py2Dmol/resources/viewer-mol.js"></script>
     <script src="py2Dmol/resources/viewer-cartoon.js"></script>
+    <script src="py2Dmol/resources/viewer-cartoon-gpu.js"></script>
     <script src="py2Dmol/resources/viewer-pae.js"></script>
     <script src="py2Dmol/resources/viewer-scatter.js"></script>
     <script src="py2Dmol/resources/viewer-seq.js"></script>
     <script src="py2Dmol/resources/viewer-msa.js"></script>
     <script src="web/app.js"></script>
+
 
 </body>
 

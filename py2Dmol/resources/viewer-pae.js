@@ -143,10 +143,16 @@
         // Expand ligand positions
         expandLigandPositions(positionIndices) {
             if (typeof expandLigandSelection === 'function') {
-                const currentObject = this.mainRenderer.objectsData[this.mainRenderer.currentObjectName];
-                if (currentObject?.ligandGroups) {
-                    return expandLigandSelection(positionIndices, currentObject.ligandGroups);
-                }
+                // ...in MERGED indices, like the positions handed in - the
+                // object's own groups are in its own numbering, and matched
+                // against merged indices they expand nothing (or somebody
+                // else's ligand).
+                const groups = this.mainRenderer.mergedLigandGroups
+                    ? this.mainRenderer.mergedLigandGroups()
+                    : (this.mainRenderer.ligandGroupsOf
+                        ? this.mainRenderer.ligandGroupsOf(this.mainRenderer.currentObjectName)
+                        : null);
+                if (groups) return expandLigandSelection(positionIndices, groups);
             }
             return new Set(positionIndices);
         }
@@ -245,9 +251,16 @@
                     const currentSelection = this.mainRenderer.getVisibility();
                     const existingBoxes = currentSelection.paeBoxes || [];
                     const existingPositions = currentSelection.positions || new Set();
+                    // A PAE ROW IS A RESIDUE OF THIS OBJECT, and the mask
+                    // speaks merged indices - so a box drawn on the second
+                    // object's matrix used to hide the first object's residues.
+                    const paeOff = this.mainRenderer.sourceOffsetOf
+                        ? this.mainRenderer.sourceOffsetOf(PAE.paeObject(this.mainRenderer)) : 0;
                     const newPositions = new Set();
-                    for (let r = i_start; r <= i_end; r++) if (r >= 0 && r < this.mainRenderer.chains.length) newPositions.add(r);
-                    for (let r = j_start; r <= j_end; r++) if (r >= 0 && r < this.mainRenderer.chains.length) newPositions.add(r);
+                    const inRange = (r) => (r + paeOff) >= 0
+                        && (r + paeOff) < this.mainRenderer.chains.length;
+                    for (let r = i_start; r <= i_end; r++) if (inRange(r)) newPositions.add(r + paeOff);
+                    for (let r = j_start; r <= j_end; r++) if (inRange(r)) newPositions.add(r + paeOff);
                     const expandedNewPositions = this.expandLigandPositions(newPositions);
 
                     if (this.isAdding) {
@@ -257,7 +270,11 @@
                         const newChains = new Set();
                         if (this.mainRenderer.chains) {
                             for (const pos of combinedPositions) {
-                                if (pos >= 0 && pos < this.mainRenderer.chains.length) newChains.add(this.mainRenderer.chains[pos]);
+                                if (pos >= 0 && pos < this.mainRenderer.chains.length) {
+                                    newChains.add(this.mainRenderer.chainKeyAt
+                                        ? this.mainRenderer.chainKeyAt(pos)
+                                        : this.mainRenderer.chains[pos]);
+                                }
                             }
                         }
                         const hasPartialSelections = combinedPositions.size > 0 && combinedPositions.size < (this.mainRenderer.chains?.length || 0);
@@ -269,7 +286,11 @@
                         const newChains = new Set();
                         if (this.mainRenderer.chains) {
                             for (const pos of expandedNewPositions) {
-                                if (pos >= 0 && pos < this.mainRenderer.chains.length) newChains.add(this.mainRenderer.chains[pos]);
+                                if (pos >= 0 && pos < this.mainRenderer.chains.length) {
+                                    newChains.add(this.mainRenderer.chainKeyAt
+                                        ? this.mainRenderer.chainKeyAt(pos)
+                                        : this.mainRenderer.chains[pos]);
+                                }
                             }
                         }
                         const hasPartialSelections = expandedNewPositions.size > 0 && expandedNewPositions.size < (this.mainRenderer.chains?.length || 0);
@@ -404,12 +425,27 @@
                 if (!hasPositionSelection) return selectedPositions;
             }
             if (!hasPositionSelection && !hasChainSelection) return selectedPositions;
-            let allowedChains = hasChainSelection ? visibilityModel.chains : new Set(renderer.chains);
+            // ...and the chain set speaks (object, chain) keys - see chainKeyAt
+            let allowedChains = visibilityModel.chains;
+            if (!hasChainSelection) {
+                allowedChains = new Set();
+                for (let i = 0; i < renderer.chains.length; i++) {
+                    allowedChains.add(renderer.chainKeyAt ? renderer.chainKeyAt(i)
+                        : renderer.chains[i]);
+                }
+            }
             const n = this.n;
+            // A PAE row is a residue of the object this matrix belongs to; the
+            // mask and the chain array are the viewer's, and with several
+            // objects merged this object starts partway into them.
+            const off = renderer.sourceOffsetOf
+                ? renderer.sourceOffsetOf(PAE.paeObject(renderer)) : 0;
             for (let r = 0; r < n; r++) {
-                if (r >= renderer.chains.length) continue;
-                const chain = renderer.chains[r];
-                if (allowedChains.has(chain) && (!hasPositionSelection || visibilityModel.positions.has(r))) {
+                if (r + off >= renderer.chains.length) continue;
+                const chain = renderer.chainKeyAt
+                    ? renderer.chainKeyAt(r + off) : renderer.chains[r + off];
+                if (allowedChains.has(chain)
+                    && (!hasPositionSelection || visibilityModel.positions.has(r + off))) {
                     selectedPositions.add(r);
                 }
             }
@@ -585,10 +621,19 @@
 
             const boundaries = new Set(); // Set of PAE positions where chain changes
 
+            // A PAE ROW IS A RESIDUE OF THE OBJECT THIS MATRIX BELONGS TO, and
+            // with several objects merged that object starts partway into the
+            // chain array - so the lines were ruled where the FIRST object's
+            // chains change, across a matrix belonging to another one.
+            const off = renderer.sourceOffsetOf
+                ? renderer.sourceOffsetOf(PAE.paeObject(renderer)) : 0;
+            const chainAt = (i) => (renderer.chainKeyAt
+                ? renderer.chainKeyAt(i) : renderer.chains[i]);
+
             // Find chain boundaries
-            for (let r = 0; r < n - 1 && r < renderer.chains.length - 1; r++) {
-                const chain1 = renderer.chains[r];
-                const chain2 = renderer.chains[r + 1];
+            for (let r = 0; r < n - 1 && r + off < renderer.chains.length - 1; r++) {
+                const chain1 = chainAt(r + off);
+                const chain2 = chainAt(r + off + 1);
 
                 if (chain1 !== chain2) {
                     // Chain boundary at position r+1 (draw line before this position)
@@ -669,9 +714,60 @@
             return object.frames.some(f => this.isValid(f.pae));
         },
 
-        // Update PAE renderer with data for the specified frame
+        /**
+         * The object whose matrix the panel shows. The renderer decides (see
+         * paeObjectName); this is the fallback for a renderer that predates
+         * it, where the edited object is the only object.
+         */
+        paeObject: function (renderer) {
+            return renderer.paeObjectName
+                ? renderer.paeObjectName() : renderer.currentObjectName;
+        },
+
+        /**
+         * POINT THE PANEL AT WHAT IS ON SCREEN. Called whenever the drawn set
+         * or the edited object changes - the two things paeObject() reads.
+         * With no answer the panel is emptied as well as hidden, or the next
+         * object to arrive would find the old matrix still in the canvas.
+         */
+        syncToDrawn: function (renderer) {
+            if (!renderer.paeRenderer) return;
+            const name = this.paeObject(renderer);
+            const object = name ? renderer.objectsData[name] : null;
+            if (!object) {
+                renderer.paeRenderer.setData(null);
+                this.updateVisibility(renderer);
+                return;
+            }
+            // ...on the frame THAT object is on, which for anything but the
+            // object being edited is the frame it was parked on.
+            const parked = (object.viewerState && object.viewerState.currentFrame) || 0;
+            const frameIndex = (name === renderer.currentObjectName)
+                ? Math.max(0, renderer.currentFrame)
+                : Math.max(0, Math.min(parked, object.frames.length - 1));
+            this._show(renderer, object, frameIndex);
+        },
+
+        /**
+         * Update the panel for a frame of ONE object.
+         *
+         * The callers all ask about the object being edited, because for most
+         * of this viewer's life that was the only object there was. It is not
+         * the object the panel belongs to once several are on screen - so the
+         * question is answered about the owner instead of refused, and a frame
+         * step on an object with no matrix stops wiping out the matrix of the
+         * prediction next to it.
+         */
         updateFrame: function (renderer, object, frameIndex) {
             if (!renderer.paeRenderer) return;
+            const owner = this.paeObject(renderer);
+            const name = object && object.name;
+            if (name && name !== owner) return this.syncToDrawn(renderer);
+            if (!owner && name) return this.syncToDrawn(renderer);
+            this._show(renderer, object, frameIndex);
+        },
+
+        _show: function (renderer, object, frameIndex) {
             const paeData = this.resolveData(object, frameIndex);
             renderer.paeRenderer.setData(paeData);
             this.updateVisibility(renderer);
@@ -693,9 +789,12 @@
             // We use renderer.objectHasPAE() logic here effectively
             // But we need to know if the CURRENT object has PAE
 
-            // Re-implement objectHasPAE logic here using local helpers
-            const name = renderer.currentObjectName;
-            const object = renderer.objectsData[name];
+            // WHOSE MATRIX THIS IS - not simply the object being edited. With
+            // several objects on screen the panel belongs to the one whose
+            // residues its rows count, and when that object is not drawn there
+            // is nothing for the panel to describe. See paeObjectName.
+            const name = PAE.paeObject(renderer);
+            const object = name ? renderer.objectsData[name] : null;
             const hasPAE = object ? this.hasData(object) : false;
 
             container.style.display = hasPAE ? 'flex' : 'none';

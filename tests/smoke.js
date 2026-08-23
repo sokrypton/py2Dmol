@@ -29,6 +29,10 @@ if (!cartoon || !cartoon.render) throw new Error('plugin failed to load');
 // ---- mock 2D context that records bad style assignments ----
 function mkCtx() {
     const bad = [];
+    // `grads` counts gradient objects handed to fillStyle and `fills` the
+    // distinct solid colours: together they are how "is this surface smooth
+    // or banded" becomes a number instead of a squint at a screenshot.
+    const seen = { grads: 0, fills: new Set() };
     const ctx = {
         canvas: { width: 400, height: 400 },
         lineWidth: 1, lineJoin: 'round', lineCap: 'butt', miterLimit: 10,
@@ -40,13 +44,19 @@ function mkCtx() {
             return { addColorStop(t, c) { checkStyle(c); } };
         },
     };
+    ctx.seen = seen;
     let _fill = '#000'; let _stroke = '#000';
     const checkStyle = (v) => {
         if (typeof v === 'string' && /NaN|undefined/.test(v)) bad.push(v);
     };
     Object.defineProperty(ctx, 'fillStyle', {
         get: () => _fill,
-        set: (v) => { checkStyle(v); _fill = v; },
+        set: (v) => {
+            checkStyle(v);
+            if (v && typeof v === 'object') seen.grads++;
+            else if (typeof v === 'string') seen.fills.add(v);
+            _fill = v;
+        },
     });
     Object.defineProperty(ctx, 'strokeStyle', {
         get: () => _stroke,
@@ -252,12 +262,17 @@ test('SS palettes complete', () => {
             }
         }
     }
-    // ... and STYLE_DEFAULTS must cover every style-owned control
-    const D = cartoon.STYLE_DEFAULTS;
+    // ... and LOOK_DEFAULTS must cover every style-owned control, for every
+    // LOOK: the tube style and the cartoon style's three presets
+    const D = cartoon.LOOK_DEFAULTS;
     for (const key of ['width', 'outlineWidth', 'thickness', 'outlineTint',
         'highlight', 'sheetFlat', 'pencil', 'arrows', 'detail', 'fade', 'shade', 'smooth']) {
-        for (const s of ['richardson', 'cartoon', '3d']) {
-            if (D[s][key] === undefined) throw new Error(`STYLE_DEFAULTS.${s} missing ${key}`);
+        // EVERY LOOK, tube included: it is one of the four things the drawing
+        // can be, and a key missing from it is a control that keeps the
+        // previous look's value instead of being set.
+        for (const look of ['richardson', 'ribbon', '3d', 'tube']) {
+            if (!D[look]) throw new Error(`LOOK_DEFAULTS has no ${look}`);
+            if (D[look][key] === undefined) throw new Error(`LOOK_DEFAULTS.${look} missing ${key}`);
         }
     }
 });
@@ -1266,6 +1281,66 @@ test('a coloured residue paints the ribbon around it, not after it', () => {
 
 
 
+// HOW WIDE IS THE CONTACT ON SCREEN, in projected pixels, measured across its
+// own direction. A contact used to be a flat stroke with a `w` to read off;
+// it is a box now, so the width is asked of the drawing instead of the record
+// - which is the more honest question anyway, and survives the next change of
+// shape.
+// The contact's own prims, and the centroid of each - enough to ask where its
+// ends are and how its depth keys are spread, without knowing whether it was
+// drawn as a stroke or as a box.
+function contactParts(prims, col) {
+    // col null = take every stick face, which is what the contact fixtures
+    // want: they have no ligand or side chain, so the only box in the picture
+    // IS the contact.
+    const same = (c) => (!col) || (c && c.r === col.r && c.g === col.g && c.b === col.b);
+    const out = [];
+    for (const p of prims) {
+        let pts = null;
+        if (p.kind === 'stickFace' && p.q && same(p.c)) pts = p.q;
+        else if (p.kind === 'line' && p.pts && same(p.c)) pts = p.pts;
+        if (!pts || !pts.length) continue;
+        let cx = 0; let cy = 0;
+        for (const q of pts) { cx += q[0]; cy += q[1]; }
+        out.push({ z: p.z, c: [cx / pts.length, cy / pts.length], pts,
+            joints: p.joints });
+    }
+    return out;
+}
+
+function contactWidthPx(prims, contactCol) {
+    const same = (c) => c && contactCol && c.r === contactCol.r
+        && c.g === contactCol.g && c.b === contactCol.b;
+    const pts = [];
+    for (const p of prims) {
+        if (p.kind === 'stickFace' && p.q && same(p.c)) {
+            for (const q of p.q) pts.push([q[0], q[1]]);
+        } else if (p.kind === 'line' && p.pts && same(p.c)) {
+            // the flat stroke: its own recorded width IS the answer
+            return p.w;
+        }
+    }
+    if (pts.length < 4) return 0;
+    // the long axis of the point cloud is the contact; measure across it
+    let cx = 0; let cy = 0;
+    for (const q of pts) { cx += q[0]; cy += q[1]; }
+    cx /= pts.length; cy /= pts.length;
+    let sxx = 0; let sxy = 0; let syy = 0;
+    for (const q of pts) {
+        const dx = q[0] - cx; const dy = q[1] - cy;
+        sxx += dx * dx; sxy += dx * dy; syy += dy * dy;
+    }
+    const th = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+    const nx = -Math.sin(th); const ny = Math.cos(th);   // across the long axis
+    let lo = Infinity; let hi = -Infinity;
+    for (const q of pts) {
+        const d = (q[0] - cx) * nx + (q[1] - cy) * ny;
+        if (d < lo) lo = d;
+        if (d > hi) hi = d;
+    }
+    return hi - lo;
+}
+
 test('the Line Width control does not reach contacts', () => {
     // It sets how heavy the BACKBONE is drawn. A contact is an annotation over
     // the structure rather than part of it, and one that grew and shrank with
@@ -1288,9 +1363,9 @@ test('the Line Width control does not reach contacts', () => {
         });
         const { ctx } = mkCtx();
         cartoon.render(r, ctx, 400, 400, segs.map(() => COL));
-        const flats = (r._primProbe || []).filter((p) => p.kind === 'line' && p.flat);
-        if (!flats.length) throw new Error('no contact was drawn');
-        return flats[0].w;
+        const w = contactWidthPx(r._primProbe || [], COL);
+        if (!w) throw new Error('no contact was drawn');
+        return w;
     };
     // ...AND IT IS IN ANGSTROM, so it grows and shrinks with the structure. The
     // widths here are all `something * scale`, scale being pixels per Angstrom;
@@ -1307,9 +1382,9 @@ test('the Line Width control does not reach contacts', () => {
         r.viewerState.zoom = zoom;
         const { ctx } = mkCtx();
         cartoon.render(r, ctx, 400, 400, segs.map(() => COL));
-        const f2 = (r._primProbe || []).filter((p) => p.kind === 'line' && p.flat);
-        if (!f2.length) throw new Error('no contact at zoom ' + zoom);
-        return f2[0].w;
+        const w2 = contactWidthPx(r._primProbe || [], COL);
+        if (!w2) throw new Error('no contact at zoom ' + zoom);
+        return w2;
     };
     const z1 = atZoom(1); const z2 = atZoom(2);
     if (!(z2 > z1 * 1.8)) {
@@ -1362,7 +1437,20 @@ test('a contact is cut into pieces so it sorts along its length', () => {
     // one before, and the first version of the cut crashed it
     cartoon.render(r, ctx, 400, 400, segs.map(() => COL));
     if (bad.length) throw new Error('bad styles: ' + bad[0]);
-    const flats = (r._primProbe || []).filter((p) => p.kind === 'line' && p.flat);
+    // ...and the same fixture as a flat stroke, for the parts of this that are
+    // the stroke's own: the depth bias, and the cap slots.
+    const rFlat = mkRenderer(coords, segs, {
+        overlayState: { enabled: false },
+        residueNumbers: coords.map((_, i) => i + 1),
+        cartoonContactBoxes: false,
+        _primProbe: null, _posProbe: null,
+    });
+    const { ctx: ctxF } = mkCtx();
+    cartoon.render(rFlat, ctxF, 400, 400, segs.map(() => COL));
+    // WHATEVER SHAPE IT IS DRAWN AS. A contact is a box now, so this asks the
+    // question of the drawing rather than of one prim kind: does the contact
+    // occupy more than one depth key, and do those keys span its real depth?
+    const flats = contactParts(r._primProbe || [], null);
     if (flats.length < 2) {
         throw new Error('the contact was drawn as ' + flats.length + ' prim(s) -'
             + ' one key for its whole span, so it sorts as if it were all at its'
@@ -1371,7 +1459,7 @@ test('a contact is cut into pieces so it sorts along its length', () => {
     // the pieces must sort where they really are: their keys have to span the
     // contact's actual depth range, not sit together at the middle
     const zs = flats.map((p) => p.z);
-    const span = Math.max(...zs) - Math.min(...zs);
+    const span = zs.length ? Math.max(...zs) - Math.min(...zs) : 0;
     if (span < 20) {
         throw new Error('the pieces span only ' + span.toFixed(1) + ' in depth,'
             + ' but the contact runs from +14 to -14 - they are not sorting'
@@ -1406,6 +1494,13 @@ test('a contact is cut into pieces so it sorts along its length', () => {
             overlayState: { enabled: false }, positionTypes: ty,
             residueNumbers: cs.map((_, i) => i + 1),
             cartoonThickness: th, _primProbe: null, _posProbe: null,
+            // THE BIAS BELONGS TO THE FLAT STROKE. It exists because a stroke
+            // "stands for something with thickness" and so has no near surface
+            // of its own to sort on. A box has one, and biasing that as well
+            // would push it in front of things it genuinely sits behind - so
+            // the renderer drops the bias for boxes, and this asks the question
+            // where the answer still means something.
+            cartoonContactBoxes: false,
         });
         const mm = mkCtx();
         cartoon.render(rr, mm.ctx, 400, 400, sg.map(() => COL));
@@ -1422,7 +1517,14 @@ test('a contact is cut into pieces so it sorts along its length', () => {
     }
     // ...by the SAME amount all along it, or the pieces reorder against each
     // other. Compared piece to piece against their own interpolated depth.
-    const step = flats.map((p) => p.z - (p.pts[0][2] + p.pts[1][2]) / 2);
+    // AGAINST ALL of the piece's own points, not its first two. A flat stroke
+    // piece has exactly two, so the old form was the mean; a box face has four
+    // corners and averaging half of them is not its depth.
+    const step = flats.map((p) => {
+        let zt = 0;
+        for (const q of p.pts) zt += q[2];
+        return p.z - zt / p.pts.length;
+    });
     for (const q of step) {
         if (Math.abs(q) > 1e-6) {
             throw new Error('a piece is keyed ' + q.toFixed(3) + ' off its own'
@@ -1449,8 +1551,16 @@ test('a contact is cut into pieces so it sorts along its length', () => {
     // tick across it. The slots are POSITIONAL, [0] the start point and [1] the
     // end, so a piece that caps one end has to say which; getting that wrong
     // capped the last piece at its start, which is an internal cut.
+    // THE CAP SLOTS ARE THE FLAT STROKE'S. They tell the ink pass which end of
+    // a piece is a real end of the run and which is an internal cut, so it caps
+    // one and not the other. A box has no such thing: its ink is the silhouette
+    // of the solid, and an internal cut contributes no boundary edge because
+    // the two pieces share that face. Asked of the stroke, where it exists.
+    const strokePieces = contactParts(rFlat._primProbe || [], null)
+        .filter((p) => p.joints);
+    if (!strokePieces.length) throw new Error('the flat stroke drew no pieces');
     let capKeys = 0;
-    for (const p of flats) {
+    for (const p of strokePieces) {
         if (!p.joints || p.joints.length !== 2) {
             throw new Error('a contact piece carries ' + (p.joints || []).length
                 + ' joint slots - the ink pass reads both by position');
@@ -1461,8 +1571,8 @@ test('a contact is cut into pieces so it sorts along its length', () => {
         throw new Error(capKeys + ' of the contact\'s ends ask for a cap -'
             + ' exactly the two real ends should, and the internal cuts none');
     }
-    const withStart = flats.filter((p) => p.joints[0]);
-    const withEnd = flats.filter((p) => p.joints[1]);
+    const withStart = strokePieces.filter((p) => p.joints[0]);
+    const withEnd = strokePieces.filter((p) => p.joints[1]);
     if (withStart.length !== 1 || withEnd.length !== 1) {
         throw new Error('the cap is on ' + withStart.length + ' start(s) and '
             + withEnd.length + ' end(s) - it belongs on one of each');
@@ -2079,21 +2189,45 @@ test('a contact runs CA to CA and the ribbon crops it', () => {
             overlayState: { enabled: false }, positionTypes: types,
             residueNumbers: coords.map((_, i) => i + 1),
             _forceSec: (ss || 'E').repeat(N) + 'C', cartoonThickness: thickness,
+            // THE CROP, ON ITS OWN. A contact is drawn as a box by default and
+            // the box adds a CUT on top of the crop - the section is sliced
+            // into the ribbon's plane - which moves the end face and makes
+            // "where does the drawn end sit" a question about two things at
+            // once. The crop is what this test is for and it runs in both
+            // modes, so it is asked where it is the only thing happening; the
+            // cut has its own test below.
+            cartoonContactBoxes: false,
             _primProbe: null,
         });
         const { ctx, bad } = mkCtx();
         cartoon.render(r, ctx, 400, 400, segs.map(() => COL));
         if (bad.length) throw new Error('bad styles: ' + bad[0]);
-        const flats = (r._primProbe || []).filter((p) => p.kind === 'line' && p.flat);
-        const head = flats.find((p) => p.joints && p.joints[0]);
-        const tail = flats.find((p) => p.joints && p.joints[1]);
-        if (!head || !tail) throw new Error('the contact drew no end pieces');
+        // THE TWO ENDS OF THE DRAWN CONTACT, whatever it is drawn as. A box is
+        // cut into pieces along its length, so its end faces are the pieces
+        // whose CENTROIDS sit furthest along the contact's own axis - and a
+        // centroid is the right point to ask about either way, because the
+        // flush cut slides each corner a different distance ALONG the bond and
+        // leaves the middle of the face exactly where the axis crosses the
+        // ribbon's surface. Which is what "cropped along its own axis" means.
+        const parts = contactParts(r._primProbe || [], null);
+        if (parts.length < 2) throw new Error('the contact drew no end pieces');
         // Projected pixels throughout, compared only against projected pixels.
         const p0 = [r.screenX[OWN], r.screenY[OWN]];
         const p1 = [r.screenX[N], r.screenY[N]];
         const vx = p1[0] - p0[0]; const vy = p1[1] - p0[1];
         const vv = vx * vx + vy * vy;
-        const st = head.pts[0]; const en = tail.pts[tail.pts.length - 1];
+        const proj = (q) => ((q[0] - p0[0]) * vx + (q[1] - p0[1]) * vy) / vv;
+        // THE EXTREME POINTS, not the extreme centroids. A flat piece's centroid
+        // is its MIDDLE, and the pieces are 2 A long, so measuring the crop
+        // against one reads about a piece too far along - 1.39 A where the
+        // half-thickness is 0.45.
+        let st = parts[0].pts[0]; let en = parts[0].pts[0];
+        for (const pt of parts) {
+            for (const q of pt.pts) {
+                if (proj(q) < proj(st)) st = q;
+                if (proj(q) > proj(en)) en = q;
+            }
+        }
         // how far along the CA->partner line the drawn end sits, as a fraction,
         // and how far OFF that line it strays
         const along = (q) => ((q[0] - p0[0]) * vx + (q[1] - p0[1]) * vy) / vv;
@@ -2119,7 +2253,15 @@ test('a contact runs CA to CA and the ribbon crops it', () => {
     //    either way. It has to be asked where they differ.
     for (const deg of [0, 45, 60, 120]) {
         const q = aim(deg, 0.9);
-        if (!(q.off < 0.05)) {
+        // TOLERANCE IN PIXELS, against a fault measured in tens of them. An
+        // anchor moves the end sideways by up to the ribbon's half-extent -
+        // "about 23 degrees of bearing over a 6 A contact" - which is the thing
+        // this catches. Measured: 0.000 px at 0, 45 and 60 degrees, and 0.28 at
+        // 120, where BOTH ends shift by the same amount: the contact is built
+        // on the residue's raw CA while this compares against its DRAWN
+        // position, and sheet flattening separates the two at that angle. A
+        // whole-axis translation of a third of a pixel is not an anchor.
+        if (!(q.off < 0.6)) {
             throw new Error('at ' + deg + ' deg the drawn end sits '
                 + q.off.toFixed(2) + ' px off the line between its two residues'
                 + ' - it was moved sideways onto the surface rather than'
@@ -2359,6 +2501,204 @@ test('the ink pass decides the same lines at every cell pitch', () => {
                     + 'instead of just how fast it was reached');
             }
         }
+    }
+});
+
+// 35. SMOOTH OFF MUST TURN OFF EVERY SURFACE, not most of them.
+//
+// The rib painter has two surface routines - paintFace for the broad faces
+// and paintSide for the thickness bands - and only paintFace had a `cel`
+// early-return. So with smooth off the faces went flat and the side bands
+// kept their per-station linear gradients: one surface of every loop still
+// airbrushed inside an otherwise banded drawing. Reported from the screen,
+// which is the only place it showed.
+//
+// What made it survive: the constant `sideLumAt` sitting right beside the
+// gradient code, with a comment saying the sides are solid in practice. That
+// was true when it was written and false afterwards - both call sites pass a
+// non-zero `outward`, which takes the per-station branch every time.
+//
+// The assertion is on GRADIENT COUNT, not on colours. A gradient object is
+// the renderer saying "this surface varies continuously", which is exactly
+// what smooth-off is a request not to do, and it cannot be satisfied by
+// accident the way a colour count can (few distinct colours would also be
+// the answer for a structure that happens to face the light evenly).
+test('smooth off leaves no gradient on ANY surface, sides included', () => {
+    const coords = coil(30, 0);
+    const segs = bbSegs([[0, 29]]);
+    const gradsWith = (smooth) => {
+        const { ctx } = mkCtx();
+        const r = mkRenderer(coords, segs, { cartoonSmooth: smooth });
+        cartoon.render(r, ctx, 400, 400, segs.map(() => COL));
+        return ctx.seen.grads;
+    };
+    // Control FIRST: if smooth-on emits no gradients either, this fixture
+    // never exercised the smooth path and a zero below would mean nothing.
+    const on = gradsWith(true);
+    if (on === 0) {
+        throw new Error('smooth ON drew no gradients at all - the fixture '
+            + 'does not reach the smooth path, so this test cannot detect '
+            + 'anything being left switched on');
+    }
+    const off = gradsWith(false);
+    if (off !== 0) {
+        throw new Error(off + ' gradients survived with cartoonSmooth off ('
+            + on + ' with it on) - some surface is still shaded continuously. '
+            + 'Every paint routine in the rib/tube/stick branches needs its '
+            + 'own `cel` branch; paintSide was the one that had none');
+    }
+});
+
+// 36. THE DRAWN POSITIONS ARE RIGID UNDER A VIEW ROTATION.
+//
+// The WebGL2 path (viewer-cartoon-gpu.js) captures the drawn positions ONCE,
+// lifts them into model space, and re-projects them every frame - that is what
+// keeps click-picking, the sequence hover and the selection halo on the ribbon
+// when the model turns. The whole mechanism rests on one assumption about THIS
+// renderer: that `_posProbe` moves with the view and does not depend on it.
+// Sheet flattening is solved in rotated space, so that is a real question and
+// not an obvious one.
+//
+// Asserted as an identity: rendering at R2 must give the same drawn positions
+// as rotating the R1 answer by R2 * R1^T.
+test('drawn positions turn with the view and do not depend on it', () => {
+    const mul = (A, B) => A.map((row) => [0, 1, 2].map(
+        (j) => row[0] * B[0][j] + row[1] * B[1][j] + row[2] * B[2][j]));
+    const T = (m) => [0, 1, 2].map((i) => [0, 1, 2].map((j) => m[j][i]));
+    const ap = (m, v) => ({
+        x: m[0][0] * v.x + m[0][1] * v.y + m[0][2] * v.z,
+        y: m[1][0] * v.x + m[1][1] * v.y + m[1][2] * v.z,
+        z: m[2][0] * v.x + m[2][1] * v.y + m[2][2] * v.z });
+    const rotY = (a) => [[Math.cos(a), 0, Math.sin(a)], [0, 1, 0],
+        [-Math.sin(a), 0, Math.cos(a)]];
+    const rotX = (a) => [[1, 0, 0], [0, Math.cos(a), -Math.sin(a)],
+        [0, Math.sin(a), Math.cos(a)]];
+    // a strand pair, so sheet FLATTENING is actually exercised - it is the one
+    // stage that solves in rotated space and so the one that could break this
+    const coords = [];
+    for (let i = 0; i < 12; i++) coords.push({ x: i * 3.3, y: 0, z: 0 });
+    for (let i = 0; i < 12; i++) coords.push({ x: (11 - i) * 3.3, y: 4.8, z: 0.9 });
+    const segs = bbSegs([[0, 11], [12, 23]]);
+    const sec = new Array(24).fill('E');
+    const at = (R) => {
+        const r = mkRenderer(coords, segs, {
+            rotatedCoords: coords.map((v) => ap(R, v)),
+            cartoonSheetFlat: 1.0,
+            _posProbe: null,
+        });
+        r.objectsData.obj.sse = sec;
+        const { ctx } = mkCtx();
+        cartoon.render(r, ctx, 400, 400, segs.map(() => COL));
+        if (!r._posProbe) throw new Error('_posProbe was not filled by a render');
+        return r._posProbe;
+    };
+    const R1 = rotY(0.3);
+    const R2 = mul(rotX(0.9), rotY(2.1));
+    const P1 = at(R1);
+    const P2 = at(R2);
+    // CONTROL FIRST: the two views must actually differ, or an identity that
+    // holds trivially would pass and mean nothing.
+    let spread = 0;
+    for (let i = 0; i < P1.length; i++) {
+        if (!P1[i] || !P2[i]) continue;
+        spread = Math.max(spread, Math.abs(P1[i].x - P2[i].x));
+    }
+    if (spread < 1.0) {
+        throw new Error('the two views are barely different (' + spread.toFixed(3)
+            + ' A) - this fixture cannot detect a view-dependent position');
+    }
+    const M = mul(R2, T(R1));
+    let worst = 0;
+    let worstAt = -1;
+    for (let i = 0; i < P1.length; i++) {
+        if (!P1[i] || !P2[i]) continue;
+        const want = ap(M, P1[i]);
+        const d = Math.hypot(want.x - P2[i].x, want.y - P2[i].y, want.z - P2[i].z);
+        if (d > worst) { worst = d; worstAt = i; }
+    }
+    if (worst > 1e-6) {
+        throw new Error('drawn position ' + worstAt + ' moved ' + worst.toFixed(4)
+            + ' A relative to the view - the GPU path re-projects these from a '
+            + 'single capture, so anything view-dependent here puts the '
+            + 'selection halo and the sequence highlight off the ribbon');
+    }
+});
+
+// 37. A CONTACT'S POINTS CARRY ITS DEPTH BIAS, AND SAY SO.
+//
+// The bias is added to the projected z so the contact sorts on its near surface
+// rather than its centre line. The 2D painter only SORTS on that channel, so
+// moving it does not move the drawn line. A consumer that recovers POSITION
+// from it - the WebGL2 path unprojects every prim back into model space - gets
+// the contact planted half an Angstrom toward the eye, along whatever direction
+// the capture was looking, and that offset then turns with the structure: the
+// contact drifts off the two CAs it names as the view rotates.
+//
+// So the prim has to carry the bias, and the value has to be the one actually
+// in the points. Asserted both ways round, because either alone passes while
+// the drift is still there: a `zBias` field nobody sets reads 0 and matches
+// nothing, and points with no bias match a zBias of 0 too.
+test('a contact reports the depth bias that is in its own points', () => {
+    const N = 14;
+    const coords = strand(N);
+    const segs = [];
+    for (let i = 0; i + 1 < N; i++) segs.push({ type: 'P', idx1: i, idx2: i + 1, origIndex: i });
+    segs.push({ type: 'C', idx1: 2, idx2: 11, origIndex: 2,
+        contactIdx1: 2, contactIdx2: 11, contactWeight: 1.0, len: 40 });
+    const at = (thickness) => {
+        const r = mkRenderer(coords, segs, {
+            overlayState: { enabled: false },
+            residueNumbers: coords.map((_, i) => i + 1),
+            cartoonThickness: thickness,
+            viewerState: { extent: 30, zoom: 1, ortho: 1, focalLength: 1e6 },
+            _primProbe: null, _posProbe: null,
+        });
+        const { ctx } = mkCtx();
+        cartoon.render(r, ctx, 400, 400, segs.map(() => COL));
+        const L = (r._primProbe || []).filter((p) => p.kind === 'line');
+        if (!L.length) throw new Error('no contact was drawn');
+        // the contact runs between two residues of a flat strand, so the true
+        // depth of every point on it is bracketed by theirs
+        const pos = r._posProbe || coords;
+        const zLo = Math.min(pos[2].z, pos[11].z);
+        const zHi = Math.max(pos[2].z, pos[11].z);
+        let worst = 0;
+        for (const p of L) {
+            for (const q of p.pts) {
+                const trueZ = Math.min(zHi, Math.max(zLo, q[2] - (p.zBias || 0)));
+                worst = Math.max(worst, Math.abs(q[2] - (p.zBias || 0) - trueZ));
+            }
+        }
+        return { bias: L[0].zBias, offAxis: worst,
+            rawOff: Math.abs(L[0].pts[0][2] - zLo) };
+    };
+    // 1. THE FIELD IS THERE AND IS NOT ZERO where the bias is not zero.
+    const a = at(0);
+    if (!(a.bias > 0.4)) {
+        throw new Error('at thickness 0 the contact reports a bias of '
+            + a.bias + ' - CONTACT_TUBE_R is 0.5 and nothing has eaten it, so'
+            + ' a consumer unprojecting from z has nothing to take back off');
+    }
+    // 2. AND IT IS THE ONE IN THE POINTS. Removing it must land every point on
+    //    the true depth of the strand it runs across.
+    if (a.offAxis > 1e-6) {
+        throw new Error('removing the reported bias leaves points '
+            + a.offAxis.toFixed(3) + ' A off the strand they run between - the'
+            + ' field and the points disagree about how much was added');
+    }
+    // 3. CONTROL: the points really were biased, or 1 and 2 both pass on a
+    //    contact that never needed the field at all.
+    if (!(a.rawOff > 0.4)) {
+        throw new Error('the raw points are only ' + a.rawOff.toFixed(3)
+            + ' A off the strand - this fixture never applied a bias, so it'
+            + ' cannot tell whether the field reports one correctly');
+    }
+    // 4. AND IT TRACKS THE THICKNESS, which is what feeds it.
+    const b = at(0.7);
+    if (!(b.bias < a.bias - 0.2) || b.offAxis > 1e-6) {
+        throw new Error('at thickness 0.7 the bias is ' + b.bias + ' against '
+            + a.bias + ' at 0 - it is meant to be CONTACT_TUBE_R minus half the'
+            + ' thickness, and the points must still agree with it');
     }
 });
 

@@ -24,7 +24,10 @@ const app=fs.readFileSync(ROOT+'/web/app.js','utf8');
 const i=app.indexOf('const frameObj = {');
 const j=app.indexOf('};', i);
 const lit=app.slice(i, j+2);
-const mkFrameObj=new Function('frameData', lit+' return frameObj;');
+// ...and the three names the literal closes over in app.js: which model of a
+// multi-model file this is, and what the file was called. Stubbed rather than
+// trimmed out of the text, so the literal itself stays the shipped one.
+const mkFrameObj=new Function('frameData','models','name','i', lit+' return frameObj;');
 
 // EVERY FRAME IS BUILT FIELD BY FIELD, and a field nobody names is dropped in
 // silence. That has now happened twice: web/app.js's frameObj (side chains
@@ -51,13 +54,15 @@ function checkFrameBuilders(){
     let a=src.indexOf('{',i), d=0, k=a;
     for(;k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){d--; if(!d)break;} }
     const body=src.slice(a,k+1);
-    if(!/\bsidechains\b/.test(body)){
-      console.log(`FAIL ${file}: \`${marker}\` does not carry \`sidechains\` -`
-        +` it will be dropped in silence`);
-      bad++;
+    for(const field of ['sidechains','position_atoms','position_elements']){
+      if(!new RegExp('\\b'+field+'\\b').test(body)){
+        console.log(`FAIL ${file}: \`${marker}\` does not carry \`${field}\` -`
+          +` it will be dropped in silence`);
+        bad++;
+      }
     }
   }
-  if(!bad) console.log('PASS  every field-by-field frame builder carries sidechains');
+  if(!bad) console.log('PASS  every field-by-field frame builder carries side chains and ligand atoms');
   return bad;
 }
 // The tables are module-scope `const`, which - unlike a function declaration -
@@ -495,7 +500,7 @@ FRACTION_CHECK: {
     }
   }
 }
-const fo=mkFrameObj(fd);
+const fo=mkFrameObj(fd,[0],'test',0);
 if(!fo.sidechains){
   console.log(`FAIL ${name}: ${nAt} atoms captured, then DROPPED by app.js's frameObj copy`);
   failures++; return;
@@ -521,8 +526,17 @@ const lift=(name)=>{
 const elStatic=vm2.match(/\n        static get ELEMENT_COLORS\(\)[\s\S]*?\n        \}/);
 if(!elStatic) throw new Error('ELEMENT_COLORS is gone from viewer-mol.js');
 const Cls=new Function('window','return class V {'+vm2.slice(k,b+1)
-  +elStatic[0]+lift('_segmentElementColor')+lift('_segmentElementHalves')+'}')(sb.window);
+  +elStatic[0]+lift('_segmentElementColor')+lift('_segmentElementHalves')
+  +lift('elementAt')+lift('_elementOwnerOf')+lift('shownSidechainSet')
+  +lift('mergedObjectSet')+'}')(sb.window);
 const v=new Cls(); v.currentObjectName='o';
+// nothing merged: one object, its own indices - see shownSidechainSet
+v.multiState={enabled:false};
+// WHICH POSITIONS ARE NUCLEOTIDES. _materialiseSidechains reads this to pick
+// the step range it rebuilds the local frame with - a nucleotide's backbone
+// strides twice a peptide's - and without it every DNA and RNA structure here
+// rebuilt nothing at all and reported five residues switched on with no atoms.
+v.positionTypes=fd.position_types||[];
 v._invalidateSegmentCache=function(){ this.cachedSegmentIndices=null; this._invalidated=true; };
 v.cachedSegmentIndices=[{stale:true}];
 // FIVE RESIDUES, PLUS EVERY CYSTEINE. The sample is deliberately small - this
@@ -547,6 +561,54 @@ for(let q=0;q<fo.coords.length;q++){
 }
 if(!out.position_types.slice(fo.coords.length).every(t=>t==='L')){
   console.log(`FAIL ${name}: appended atoms are not ligand positions`); failures++; return;
+}
+// A LIGAND ATOM'S NAME AND ELEMENT, all the way through. They are captured per
+// position, copied by app.js's frameObj, and have to come out of materialising
+// still in step with the coordinates - an array one short puts every element
+// on the wrong atom from there on, and _setDataField would silently swap it for
+// a row of blanks.
+const ligAt=[]; for(let q=0;q<fd.position_types.length;q++) if(fd.position_types[q]==='L') ligAt.push(q);
+if(ligAt.length){
+  if(!fd.position_atoms||!fd.position_elements){
+    console.log(`FAIL ${name}: ${ligAt.length} ligand atoms captured with no name or element`);
+    failures++; return;
+  }
+  if(!fo.position_atoms||fo.position_atoms.length!==fd.coords.length){
+    console.log(`FAIL ${name}: app.js's frameObj dropped the ligand atom names`);
+    failures++; return;
+  }
+  const noEl=ligAt.filter((q)=>!fd.position_elements[q]);
+  if(noEl.length){
+    console.log(`FAIL ${name}: ${noEl.length} of ${ligAt.length} ligand atoms have no element`);
+    failures++; return;
+  }
+  const named=fd.position_atoms.filter((nm,q)=>nm&&fd.position_types[q]!=='L');
+  if(named.length){
+    console.log(`FAIL ${name}: ${named.length} non-ligand positions were given an atom name -`
+      +` a backbone position stands for a residue, not an atom`);
+    failures++; return;
+  }
+  if(out.position_atoms.length!==out.coords.length
+    ||out.position_elements.length!==out.coords.length){
+    console.log(`FAIL ${name}: materialising left the atom arrays ${out.position_atoms.length}`
+      +` long against ${out.coords.length} coordinates`);
+    failures++; return;
+  }
+  // ...and the element reaches the colour: a bond into a ligand nitrogen or
+  // oxygen is painted from it, which is the whole reason it is carried
+  const w=new Cls(); w.currentObjectName='o'; w.objectsData={o:{}};
+  w.positionTypes=out.position_types; w.positionElements=out.position_elements;
+  w.sidechainMap=null;
+  const het=ligAt.find((q)=>/^[NOS]$/.test(fd.position_elements[q]));
+  if(het!==undefined){
+    const other=ligAt.find((q)=>q!==het);
+    const hh=w._segmentElementHalves({idx1:other,idx2:het,origIndex:other});
+    if(!hh||!hh.b){
+      console.log(`FAIL ${name}: a bond into ligand atom ${fd.position_atoms[het]}`
+        +` (${fd.position_elements[het]}) took no element colour`);
+      failures++; return;
+    }
+  }
 }
 // The segment cache keys on frame + object name, neither of which moves when a
 // side chain is toggled. Left alone it is reused and nothing new is ever drawn.
