@@ -4939,7 +4939,12 @@ function tubeKeyOf(renderer, S) {
         renderer.currentObjectName, renderer.currentFrame,
         idOf(renderer.coords), renderer.coords && renderer.coords.length,
         idOf(renderer.segmentIndices), S.count,
-        idOf(S.colors), idOf(renderer.visiblePositions),
+        // ...THE MASK BY WHAT IS IN IT, like the cartoon's key: the mask is
+        // rebuilt from the objects' own records whenever the drawn set
+        // changes, so an identical picture arrives as a different object and
+        // rebuilt the instance buffer for nothing. The other entries here are
+        // identity on purpose - a new coordinate array IS new geometry.
+        idOf(S.colors), visKeyOf(renderer.visiblePositions),
         renderer.lineWidth,
         renderer.sidechainMap ? renderer.sidechainMap.size : 0,
         renderer.backboneHiddenSet && renderer.backboneHiddenSet()
