@@ -109,9 +109,33 @@ window.addEventListener('load', () => {
       }
       R.colors = cols;
       R.autos = r.multiState ? r.multiState.sourceAutoColors : null;
-      // NO COLOUR SHARED ACROSS THE JOIN. Both structures have a chain A, and
-      // under the chain scheme that came out the same colour for both - two
-      // molecules reading as one. Sampled from the drawing, per source.
+      // NO PALETTE SLOT SHARED ACROSS THE JOIN. Both structures have a chain
+      // A, and under the chain scheme that came out the same colour for both -
+      // two molecules reading as one.
+      //
+      // The SLOTS, not the rendered colours: two monomers both resolve to
+      // rainbow, and two rainbows share hues by construction - that is what
+      // "each object keeps its own scheme" means, not a clash.
+      {
+        const slots = {};
+        for (const [key, slot] of r.chainIndexMap.entries()) {
+          const nm = key.includes('|') ? key.slice(0, key.indexOf('|')) : '(one object)';
+          (slots[nm] = slots[nm] || []).push(slot);
+        }
+        R.chainSlots = slots;
+        const seen = new Map();
+        R.sharedSlots = [];
+        for (const [nm, list] of Object.entries(slots)) {
+          for (const slot of list) {
+            if (seen.has(slot) && seen.get(slot) !== nm) {
+              R.sharedSlots.push(`${nm} and ${seen.get(slot)} both use slot ${slot}`);
+            }
+            seen.set(slot, nm);
+          }
+        }
+      }
+      // ...and where both objects DO colour by chain, the drawn colours must
+      // be disjoint too - that is the case the report was about.
       const bySource = [new Set(), new Set()];
       for (let i = 0; i < r.coords.length; i++) {
         const src = g[i];
@@ -120,7 +144,10 @@ window.addEventListener('load', () => {
         bySource[src].add([c.r, c.g, c.b].join(','));
       }
       R.perSource = bySource.map((x) => Array.from(x));
-      R.sharedColors = R.perSource[0].filter((c) => R.perSource[1].includes(c));
+      R.bothByChain = (r.multiState.sourceAutoColors || [])
+        .slice(0, 2).every((m) => m === 'chain');
+      R.sharedColors = R.bothByChain
+        ? R.perSource[0].filter((c) => R.perSource[1].includes(c)) : [];
       R.modes = {global: r.colorMode, effective: r._getEffectiveColorMode(),
         perObject: r.objectsData[r.currentObjectName].colorMode,
         resolvedAuto: r.resolvedAutoColor};
@@ -187,15 +214,28 @@ window.addEventListener('load', () => {
       }
       R.outsideAfterOrient = outside;
 
-      // pick where the SECOND object is drawn: the hit must belong to it.
-      // pickResidueAt takes CLIENT coordinates and subtracts the canvas rect.
-      const probe = R.offsets[1] + 5;
+      // PICKING REACHES THE SECOND OBJECT. Not "the pixel over residue X
+      // returns X": two structures loaded from different files overlap in
+      // space, so whichever is in FRONT at that pixel is the right answer -
+      // asking for one particular residue tested the geometry, not the
+      // picking. Several of its positions are tried, and one of them must
+      // come back as its own object.
       r._ensurePickProjection();
       const rect = r.canvas.getBoundingClientRect();
-      const hit = r.pickResidueAt(r.screenX[probe] + rect.left,
-        r.screenY[probe] + rect.top);
-      R.pickHit = hit;
-      R.pickOwner = (hit >= 0 && r.ownerOf) ? (r.ownerOf(hit) || {}).name : null;
+      const from = R.offsets[1];
+      const to = r.coords.length;
+      let owner = null;
+      let tried = 0;
+      for (let i = from; i < to && !owner; i += Math.max(1, Math.floor((to - from) / 40))) {
+        if (!r.screenValid || !r.screenValid[i]) continue;
+        tried++;
+        const hit = r.pickResidueAt(r.screenX[i] + rect.left, r.screenY[i] + rect.top);
+        const nm = (hit >= 0 && r.ownerOf) ? (r.ownerOf(hit) || {}).name : null;
+        if (nm === R.sources[1]) owner = nm;
+      }
+      R.pickTried = tried;
+      R.pickOwner = owner;
+      const probe = R.offsets[1] + 5;
 
       // auto clip on a selection in the second object
       r.setResidueSelection(new Set([probe]));
@@ -549,6 +589,10 @@ def serve(port, box):
             self.send_header("Content-Length", "2")
             self.end_headers()
             self.wfile.write(b"ok")
+    # ...REUSING THE PORT, so the probe can be run twice in a row. Without
+    # this the second run dies on "address already in use" while the first
+    # one's socket sits in TIME_WAIT, which reads as a test failure.
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
     httpd = socketserver.ThreadingTCPServer(("127.0.0.1", port), H)
     httpd.daemon_threads = True
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -608,7 +652,8 @@ def main():
     print(f"  auto per object: {R.get('autos')}; first position of each:"
           f" {R['colors']}")
     print(f"  colours per object: {[len(x) for x in R.get('perSource', [])]},"
-          f" shared: {R.get('sharedColors')}")
+          f" both by chain: {R.get('bothByChain')}, shared: {R.get('sharedColors')};"
+          f" palette slots {R.get('chainSlots')}")
     print(f"  modes: {R.get('modes')}")
     print(f"  painted: {R.get('painted')}")
     print(f"  hiding 40 of the second object: {R['hiddenInk']} ink,"
@@ -647,7 +692,7 @@ def main():
           f" {R.get('afterPickOwner')}, drawn {R.get('afterPickDrawn')}")
     print(f"  orient: {R.get('orientInk')} ink,"
           f" {R.get('outsideAfterOrient')} positions off canvas;"
-          f" pick at the second object -> {R.get('pickOwner')};"
+          f" picking reaches {R.get('pickOwner')} (of {R.get('pickTried')} tries);"
           f" clip {R.get('clipSlab')} leaves {R.get('clipInk')} ink")
     print(f"  Object mode offered: {R.get('objectOptionShown')},"
           f" colours per object in it: {R.get('flatPerObject')}")
@@ -671,8 +716,11 @@ def main():
         bad.append("the source map does not cover every position")
     if R["crossing"]:
         bad.append(f"{R['crossing']} segments join two objects")
+    if R.get("sharedSlots"):
+        bad.append(f"palette slots collide: {R['sharedSlots']}")
     if R.get("sharedColors"):
-        bad.append(f"two objects share colours {R['sharedColors']}")
+        bad.append(f"two objects that both colour by chain share colours"
+                   f" {R['sharedColors']}")
     if R["hiddenOnFirst"]:
         bad.append("hiding the second object's backbone wrote onto the first")
     if R["hiddenLocal"] != 0:
@@ -684,7 +732,8 @@ def main():
     if R.get("outsideAfterOrient"):
         bad.append(f"{R['outsideAfterOrient']} positions are off canvas after Orient")
     if R.get("pickOwner") != R["sources"][1]:
-        bad.append(f"a pick on the second object reported {R.get('pickOwner')}")
+        bad.append(f"picking never reached the second object in"
+                   f" {R.get('pickTried')} tries - it reported {R.get('pickOwner')}")
     if not (0 < R.get("clipInk", 0) < R["bothInk"]):
         bad.append(f"auto clip on one object left {R.get('clipInk')} ink")
     if R.get("rows") != ["All"] + R["objects"]:
