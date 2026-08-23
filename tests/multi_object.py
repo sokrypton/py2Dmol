@@ -594,6 +594,46 @@ window.addEventListener('load', () => {
         R.sizesAfterDelete = names.map((n) => r.objectsData[n].frames[0].coords.length);
         R.sizesBeforeDelete = before;
       }
+      // SAVE AND RELOAD A MERGED SESSION. Everything an object remembers is
+      // stored in ITS OWN numbering, so the file must come back with each set
+      // on the right object - and the shown set with it.
+      {
+        r.setShownObjects(names);
+        await new Promise((s) => setTimeout(s, 250));
+        const o0 = r.multiState.sourceOffsets[0];
+        const o1 = r.multiState.sourceOffsets[1];
+        r.setBackboneHiddenFor([o1, o1 + 1], true);
+        for (const [nm, local, hex] of [[names[0], 2, '#ff0000'], [names[1], 3, '#00ff00']]) {
+          const o = r.objectsData[nm];
+          const value = (o.color && o.color.type === 'advanced' && o.color.value) || {};
+          value.position = value.position || {};
+          value.position[local] = hex;
+          o.color = { type: 'advanced', value };
+        }
+        const state = (o) => ({
+          hidden: Array.from(r.objectsData[o].hiddenBackbone || []).sort((a, b) => a - b),
+          colour: JSON.stringify(((r.objectsData[o].color || {}).value || {}).position || null),
+        });
+        R.beforeSave = { [names[0]]: state(names[0]), [names[1]]: state(names[1]) };
+
+        // ...through the Save button's own path
+        const RealBlob = window.Blob;
+        let captured = null;
+        window.Blob = function (parts, opts) { captured = parts[0]; return new RealBlob(parts, opts); };
+        const realClick = HTMLAnchorElement.prototype.click;
+        HTMLAnchorElement.prototype.click = function () {};
+        window.saveViewerState();
+        window.Blob = RealBlob;
+        HTMLAnchorElement.prototype.click = realClick;
+
+        r.clearAllObjects();
+        await new Promise((s) => setTimeout(s, 200));
+        await window.loadViewerState(JSON.parse(captured));
+        await new Promise((s) => setTimeout(s, 700));
+        R.afterLoad = { [names[0]]: state(names[0]), [names[1]]: state(names[1]) };
+        R.afterLoadDrawn = r.drawnObjects();
+        R.afterLoadN = r.coords.length;
+      }
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});
   };
@@ -738,6 +778,9 @@ def main():
           f" colours per object in it: {R.get('flatPerObject')}")
     print(f"  tube:  {R.get('tubeInk')} ink, {R.get('tubeCrossing')} crossing;"
           f" gpu {R.get('tubeGpuInk')} (path taken: {R.get('tubeGpuTook')})")
+    print(f"  save/reload: {R.get('afterLoadDrawn')} came back with"
+          f" {R.get('afterLoadN')} positions, per-object state identical:"
+          f" {R.get('beforeSave') == R.get('afterLoad')}")
     print(f"  gpu:   {R['gpuInk']:8d} ink (path taken: {R['gpuTook']})"
           + (f"  DECLINED: {R['gpuError']}" if R.get("gpuError") else ""))
 
@@ -907,6 +950,13 @@ def main():
     if abs(R["gpuInk"] - R.get("cpuBeforeGpu", 1)) > 0.05 * R.get("cpuBeforeGpu", 1):
         bad.append(f"the GPU picture ({R['gpuInk']} ink) is not the CPU one"
                    f" ({R.get('cpuBeforeGpu')})")
+    if R.get("beforeSave") != R.get("afterLoad"):
+        bad.append(f"a saved session came back different: {R.get('beforeSave')}"
+                   f" -> {R.get('afterLoad')}")
+    if R.get("afterLoadDrawn") != R["objects"]:
+        bad.append(f"a saved merged session came back showing {R.get('afterLoadDrawn')}")
+    if not R.get("afterLoadN"):
+        bad.append("nothing was loaded back")
     for m in bad:
         print("FAIL:", m)
     sys.exit(1 if bad else 0)

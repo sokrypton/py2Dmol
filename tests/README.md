@@ -100,8 +100,17 @@ clip cuts without emptying, and that the GPU picture is the CPU picture - in
 BOTH styles, and all inside ONE page load, because the paper grain is reseeded
 per load. Then it presses the Object button and clicks the eye, like a user.
 
+It also drives the strip both ways (sequence and chain mode), clicks chain A in
+every section, checks ligands collapse to one token per ligand in every
+section, edits a selection that reaches BOTH objects (Copy makes one object per
+structure, Delete takes one residue from each), switches everything off and
+back on, and saves the whole session and loads it into a cleared viewer to see
+each object's own sets come back on the right object.
+
 Exit status is the test result; the printout is the evidence. Run it for any
-change to the merge, to per-object state, or to the sequence strip's indices.
+change to the merge, to per-object state, or to the sequence strip's indices -
+and run it over several PAIRS: two of its checks were wrong rather than the
+code, and only a pair of monomers and a pair that overlaps in space showed it.
 
 `copy_selection.js` covers what **Copy** carries onto the new object. A frame
 is extracted position by position and has its own coverage; this is the
