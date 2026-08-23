@@ -7673,14 +7673,31 @@ t('Multi is a mode, and the picker is what it replaces', () => {
     const at = app.indexOf('function toggleObjectMulti(');
     if (at < 0) throw new Error('the Multi button toggles nothing');
     const body = app.slice(at, app.indexOf('\n}', at)).replace(/\s+/g, ' ');
-    // ON opens on exactly what was already there; OFF drops the set entirely
+    // ON opens on exactly what was already there; OFF keeps what is on screen
     if (!/setShownObjects\(cur \? \[cur\] : \[\]\)/.test(body)) {
         throw new Error('Multi does not open on the object already on screen');
     }
-    if (!/setShownObjects\(null, false, \{ reframe: true \}\)/.test(body)) {
+    if (!/leaveMultiObject\(\)/.test(body)) {
+        throw new Error('leaving Multi does not go through leaveMultiObject,'
+            + ' so it keeps the EDITED object rather than the one you were'
+            + ' looking at');
+    }
+    const molSrc2 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const leave = molSrc2.slice(molSrc2.indexOf('leaveMultiObject() {'),
+        molSrc2.indexOf('Load whatever drawnObjects() now says'));
+    if (!/drawn\.indexOf\(this\.currentObjectName\) >= 0/.test(leave)
+        || !/: drawn\[0\]/.test(leave)) {
+        throw new Error('leaving Multi does not keep the object on screen when'
+            + ' the edited one is not among them');
+    }
+    if (!/this\.shownObjects = null/.test(leave)) {
         throw new Error('leaving Multi trims the set instead of dropping it -'
             + ' null is the resting state, and an object loaded later has to'
             + ' become the one on screen');
+    }
+    if (!/_dropMergeState\(\)/.test(leave)) {
+        throw new Error('the merge is still up when the switch runs, so'
+            + " _switchToObject freezes the object's camera, clip and style");
     }
 
     // the list is Multi's, and the picker is the other mode's

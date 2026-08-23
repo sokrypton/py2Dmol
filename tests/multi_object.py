@@ -413,6 +413,33 @@ window.addEventListener('load', () => {
       btn.click();                      // ...and back into Multi for the rest
       await new Promise((s) => setTimeout(s, 250));
 
+      // LEAVING MULTI KEEPS WHAT YOU WERE LOOKING AT. The two questions have
+      // separate answers here - the eyes say what is drawn, the strip says
+      // what is edited - and they are allowed to disagree. Dropping back to
+      // one object used to keep the EDITED one, so pressing Multi off swapped
+      // the picture for a different structure and everything that structure
+      // was showing went with it.
+      {
+        const editing = r.currentObjectName;
+        const other = names.find((n) => n !== editing);
+        for (let k = 0; k < rowNames().length; k++) {
+          const want = rowNames()[k] === other;
+          if (rowOn(k) !== want) {
+            eyes()[k].click();
+            await new Promise((s) => setTimeout(s, 250));
+          }
+        }
+        R.lookingAt = { drawn: r.drawnObjects(), editing: r.currentObjectName };
+        btn.click();                    // Multi off
+        await new Promise((s) => setTimeout(s, 500));
+        R.keptOnLeaving = {
+          drawn: r.drawnObjects(), editing: r.currentObjectName,
+          picker: picker.value, wanted: other,
+        };
+        btn.click();                    // ...and back in for the rest
+        await new Promise((s) => setTimeout(s, 300));
+      }
+
       r.setShownObjects(names);
       r.render('all again');
       await new Promise((s) => setTimeout(s, 200));
@@ -976,6 +1003,18 @@ def main():
     if not R.get("offShown") or R.get("offDrawn") != [R.get("pickerValue")]:
         bad.append(f"leaving Multi left {R.get('offDrawn')} on screen rather"
                    f" than the picker's {R.get('pickerValue')!r}")
+    k = R.get("keptOnLeaving") or {}
+    print(f"  leaving Multi while looking at {R.get('lookingAt', {}).get('drawn')}"
+          f" and editing {R.get('lookingAt', {}).get('editing')}:"
+          f" drew {k.get('drawn')}, editing {k.get('editing')},"
+          f" picker {k.get('picker')!r}")
+    if k.get("drawn") != [k.get("wanted")]:
+        bad.append(f"leaving Multi swapped the picture for {k.get('drawn')}"
+                   f" - {k.get('wanted')} was the object on screen")
+    if k.get("editing") != k.get("wanted") or k.get("picker") != k.get("wanted"):
+        bad.append(f"the picker did not follow what was kept: editing"
+                   f" {k.get('editing')}, picker {k.get('picker')!r}")
+
     if not R.get("cameraHeld"):
         bad.append("switching an eye moved the camera - an object already"
                    " framed should appear and disappear where it is")

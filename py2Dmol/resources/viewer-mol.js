@@ -10646,6 +10646,44 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
+         * LEAVE MULTI, KEEPING WHAT YOU WERE LOOKING AT.
+         *
+         * Two questions have separate answers in Multi - what is on screen is
+         * the eyes, what is being edited is where you last clicked in the
+         * strip - and they are allowed to disagree: you can be looking at one
+         * structure while editing another. Dropping back to one object at a
+         * time has to reconcile them, and it used to do it by keeping the
+         * EDITED one, so pressing Multi off swapped the picture for a
+         * different structure. Everything that structure had - its side
+         * chains, its colours, its hidden backbone - went off screen with it,
+         * which reads exactly like the choices not being recovered.
+         *
+         * What you were looking at wins. The edited object keeps the job when
+         * it is one of the things on screen; otherwise the first drawn object
+         * takes it. With nothing on screen at all there is nothing to keep, so
+         * the edited object is what comes back.
+         *
+         * @returns {string|null} an object the caller must switch to, or null
+         *   when the edited object was already the right answer
+         */
+        leaveMultiObject() {
+            const drawn = this.drawnObjects();
+            const keep = (drawn.indexOf(this.currentObjectName) >= 0)
+                ? this.currentObjectName : drawn[0];
+            this.shownObjects = null;
+            if (!keep || keep === this.currentObjectName) {
+                this._applyShownObjects(false, { reframe: true });
+                return null;
+            }
+            // THE MERGE IS OVER BEFORE THE SWITCH, so the switch is a real one:
+            // _switchToObject deliberately freezes the camera, the clip, the
+            // style and the mask while several objects are on screen, and the
+            // object being switched TO here is the only one left.
+            this._dropMergeState();
+            return keep;
+        }
+
+        /**
          * Load whatever drawnObjects() now says, as ONE coordinate array.
          *
          * One object is loaded exactly as it always was - the merge path is not

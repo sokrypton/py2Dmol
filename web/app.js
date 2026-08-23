@@ -2342,12 +2342,23 @@ function toggleObjectMulti() {
     const renderer = viewerApi?.renderer;
     if (!renderer || !renderer.setShownObjects) return;
     if (objectMultiOn(renderer)) {
-        // ...AND FRAME ON WHAT IS LEFT. Switching an eye never moves the
-        // camera - things appear and disappear where they are - but leaving
-        // Multi is a mode change, and the one object that stays would
-        // otherwise sit small and off to a side in a camera set to hold
-        // several.
-        renderer.setShownObjects(null, false, { reframe: true });
+        // ...KEEPING WHAT YOU WERE LOOKING AT, and framing on it. Switching an
+        // eye never moves the camera - things appear and disappear where they
+        // are - but leaving Multi is a mode change, and the one object that
+        // stays would otherwise sit small and off to a side in a camera set to
+        // hold several. If the object being edited is not one of the ones on
+        // screen, the picture wins and the picker follows it: see
+        // leaveMultiObject.
+        const keep = renderer.leaveMultiObject
+            ? renderer.leaveMultiObject()
+            : (renderer.setShownObjects(null, false, { reframe: true }), null);
+        if (keep) {
+            const sel = document.getElementById('objectSelect');
+            if (sel) {
+                sel.value = keep;
+                sel.dispatchEvent(new Event('change'));
+            }
+        }
     } else {
         const cur = renderer.currentObjectName;
         renderer.setShownObjects(cur ? [cur] : []);
