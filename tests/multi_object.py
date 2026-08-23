@@ -417,6 +417,15 @@ window.addEventListener('load', () => {
       await new Promise((s) => setTimeout(s, 300));
       R.oneBackDrawn = r.drawnObjects();
       R.oneBackInk = ink(r);
+      // ...AND THE CAMERA FRAMES IT. An empty canvas has no view worth
+      // holding, and the first eye lit was drawn into whatever framing the
+      // last thing happened to use: a ribosome brought back at a peptide's
+      // scale landed 3,200 px off the side of a 1,200 px canvas - a blank
+      // window with the object reported as drawn.
+      R.oneBackFraming = {
+        extent: r.viewerState.extent,
+        own: (r.objectsData[R.oneBackDrawn[0]] || {}).maxExtent,
+      };
       R.oneBackIsEdited = r.drawnObjects()[0] === r.currentObjectName;
       // THE CAMERA HOLDS STILL for an object it has already framed - an eye
       // makes things appear and disappear, it does not zoom.
@@ -1113,6 +1122,13 @@ def main():
         bad.append("this leg is meant to draw the object that is NOT being edited")
     if not R.get("oneBackInk"):
         bad.append("one eye from an empty canvas drew nothing")
+    fr = R.get("oneBackFraming") or {}
+    print(f"  ...framed at {fr.get('extent')} against its own {fr.get('own')}")
+    if not fr.get("own") or not fr.get("extent") \
+            or abs(fr["extent"] - fr["own"]) > 0.01 * fr["own"]:
+        bad.append("one eye from an empty canvas kept the camera it found"
+                   f" ({fr.get('extent')}) rather than framing the object it"
+                   f" drew ({fr.get('own')})")
     if R.get("afterJoinDrawn") != R["objects"]:
         bad.append(f"lighting a second eye left {R.get('afterJoinDrawn')} drawn -"
                    " it should JOIN what is on screen, not replace it")

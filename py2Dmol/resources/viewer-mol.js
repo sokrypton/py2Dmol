@@ -10744,6 +10744,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         _applyShownObjects(skipRender = false, opts = {}) {
             const names = this.drawnObjects();
             const ms = this.multiState;
+            // AN EMPTY CANVAS HAS NO CAMERA WORTH HOLDING. Everything below
+            // holds the view still for an object it has already framed, so
+            // that an eye makes things appear and disappear where they are -
+            // but that argument is about a picture you can see. With nothing
+            // on screen there is no "where they are", and the first eye lit
+            // was left drawing into whatever framing the last thing happened
+            // to use: switch a ribosome and a peptide both off, light the
+            // ribosome, and it was drawn at the peptide's scale, 3,200 px off
+            // the side of a 1,200 px canvas. A blank window, with the object
+            // reported as drawn.
+            //
+            // Asked of the coordinate array rather than of the bookkeeping:
+            // the array is what is on screen.
+            const wasEmpty = !(this.coords && this.coords.length);
+            const reframe = !!opts.reframe || wasEmpty;
 
             // NOTHING ON SCREEN, because every object was switched off. The
             // coordinate array is emptied rather than the objects unloaded:
@@ -10774,6 +10789,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // all, for good.
                 if (!ms.enabled) {
                     if (this._loadedKey === this._arrayKey()) return;
+                    // ...and from an empty canvas, framed on what is coming
+                    // back, for the reason given at the top of this method.
+                    const own = this.objectsData[this.currentObjectName];
+                    if (reframe && own && own.center) {
+                        this.viewerState.center = { x: own.center[0],
+                            y: own.center[1], z: own.center[2] };
+                        this.viewerState.extent = own.maxExtent || null;
+                    }
                     this._loadFrameData(this.currentFrame >= 0 ? this.currentFrame : 0,
                         skipRender);
                     // ...AND THE MASK FROM THIS OBJECT'S OWN RECORD. The live
@@ -10800,7 +10823,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const one = this.currentObjectName;
                 const back = this.objectsData[one];
                 if (back && back.center
-                        && (opts.reframe || !this._framedObjects.has(one))) {
+                        && (reframe || !this._framedObjects.has(one))) {
                     this.viewerState.center = { x: back.center[0], y: back.center[1],
                         z: back.center[2] };
                     this.viewerState.extent = back.maxExtent || null;
@@ -10877,7 +10900,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // new again.
             const fresh = names.filter((nm) => !this._framedObjects.has(nm));
             for (const nm of names) this._framedObjects.add(nm);
-            if (ms.stats && (opts.reframe || fresh.length)) {
+            if (ms.stats && (reframe || fresh.length)) {
                 this.viewerState.center = { x: ms.stats.center[0],
                     y: ms.stats.center[1], z: ms.stats.center[2] };
                 this.viewerState.extent = ms.stats.maxExtent;

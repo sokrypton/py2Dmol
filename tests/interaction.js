@@ -8092,12 +8092,21 @@ t('an eye does not move the camera; an object that just arrived does', () => {
     // path, not the merge, and that is where the picture went on jumping after
     // the merge had been taught not to.
     if (!/const fresh = names\.filter\(\(nm\) => !this\._framedObjects\.has\(nm\)\)/
-        .test(body) || !/if \(ms\.stats && \(opts\.reframe \|\| fresh\.length\)\)/.test(body)) {
+        .test(body) || !/if \(ms\.stats && \(reframe \|\| fresh\.length\)\)/.test(body)) {
         throw new Error('the merge re-frames without asking whether anything'
             + ' is new to the camera');
     }
-    if (!/opts\.reframe \|\| !this\._framedObjects\.has\(one\)/.test(body)) {
+    if (!/reframe \|\| !this\._framedObjects\.has\(one\)/.test(body)) {
         throw new Error('switching every eye off but one still re-frames on it');
+    }
+    // ...EXCEPT FROM AN EMPTY CANVAS, which has no camera worth holding: the
+    // first eye lit was drawn into whatever framing the last thing happened to
+    // use, and a ribosome brought back at a peptide's scale lands off the side
+    // of the canvas - a blank window with the object reported as drawn.
+    if (!/const wasEmpty = !\(this\.coords && this\.coords\.length\)/.test(body)
+        || !/const reframe = !!opts\.reframe \|\| wasEmpty/.test(body)) {
+        throw new Error('an eye lit from an empty canvas keeps the camera it'
+            + ' found, so what it draws can be nowhere in shot');
     }
     // ...and what the camera has seen is everything that has been in the
     // array, recorded where the array is recorded
