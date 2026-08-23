@@ -81,11 +81,20 @@ week, all the same shape - two paths, one of which quietly owns shared state:
      object, so a second merged object's hidden backbone would not have
      rebuilt anything. The shared term asks `backboneHiddenSet()`, which merges.
 
-2. **One mesh value for the tube too.** The tube path keeps `bufTube`,
-   `tubeSig` and `tubeCount` as three hand-maintained module variables, with no
-   `captureMesh`/`activateMesh` and no spare slot. It does not need the speed -
-   33 ms - so the reason to do it is that it is the same structure that let the
-   visibility texture be forgotten. Do it when the tube next needs a change.
+2. ~~**One mesh value for the tube too.**~~ DONE. `captureTube`/`activateTube`
+   install everything a tube build decides - the instance data (a COPY: the
+   scratch array is reused), the count, the centre, the depth range and the
+   occlusion density - and `keepTube`/`restoreTube` give it the same exchanged
+   spare slot, held only where more than one object is loaded. Assembling the
+   value immediately found the piece that was already loose: the DEPTH RANGE,
+   which buildTube set on its own, so a restored buffer was drawn through the
+   range of whatever had been built last. `tests/gpu_tube_reuse.py` caught it,
+   which is the cartoon's visibility-texture bug found before a user saw it.
+
+   For the slot to ever hit, the tube's colours had to be keyed by CONTENT
+   (`colourKeyOf`, cached against the array) rather than by identity - the app
+   rebuilds the colour array from scratch whenever the drawn set changes.
+   Toggling one object of a two-object merge in tube style: 33-50 ms -> 2-4 ms.
 
 3. **Derived state, filled independently of style.** Anything a reader outside
    the render path consults must be askable and keyed on what it came from.
@@ -96,6 +105,7 @@ week, all the same shape - two paths, one of which quietly owns shared state:
 ## What must stay green
 
     python3 tests/gpu_mesh_reuse.py            # 6MRR + 4HHB, in that order
+    python3 tests/gpu_tube_reuse.py            # the same, in tube style
     python3 tests/gpu_mesh_reuse.py 4UG0.cif 6MRR.cif
     python3 tests/gpu_recolour.py              # and with 4UG0.cif
     node tests/smoke.js && node tests/smoke.js py2Dmol/resources/viewer-cartoon.min.js

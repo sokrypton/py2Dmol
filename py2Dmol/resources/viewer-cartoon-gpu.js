@@ -2011,6 +2011,11 @@ let tubeSig = null;             // what the instance buffer was built from
 // the 2D drawing's ink centroid to (217, 434) and left the GPU's at (299,
 // 278), which is the whole structure still sitting in the middle.
 let tubeCentre = [0, 0, 0];
+// THE INSTANCE DATA ITSELF, kept the way the cartoon keeps its mesh: what a
+// build produced, so it can be put back without being produced again. See
+// captureTube/activateTube.
+let tubeLive = null;            // the value currently in bufTube
+let spareTube = null;           // ...and the one an eye can come back to
 let tubeTouch = null;           // per-position count of drawn segments, reused
 let tubeClaim = null;           // ...and which segment owns each joint's cap
 let tubeData = null;            // the instance staging array, reused
@@ -4512,6 +4517,7 @@ function invalidate() {
     // a mesh kept under a signature that happens to come round again would be
     // the old shape.
     spareMesh = null; lastFill = null; lastEdges = null;
+    spareTube = null; tubeLive = null; tubeCount = 0;
     clearResident();
 }
 
@@ -4971,20 +4977,94 @@ function visKeyOf(set) {
     }
     return d;
 }
+/* WHAT A COLOUR ARRAY CONTAINS, cached against the array.
+ *
+ * The tube's instances carry their own colours, so a recolour is a rebuild -
+ * but so was coming BACK to a picture already built, because the app rebuilds
+ * the colours from scratch whenever the drawn set changes and identity said
+ * "different" about an identical list. Same argument as the visibility mask,
+ * and the same answer: ask what is in it, once per array. The walk is O(n) and
+ * happens only when a new array appears, not per frame - which is what made
+ * hashing it per frame 9 ms of a 20 ms frame at 320,000 positions.
+ */
+const colourDigests = new WeakMap();
+function colourKeyOf(colors) {
+    if (!colors || !colors.length) return 'nocol';
+    let d = colourDigests.get(colors);
+    if (d === undefined) {
+        let a = colors.length >>> 0;
+        for (let i = 0; i < colors.length; i++) {
+            const c = colors[i];
+            if (!c) { a = (a * 31 + 7) >>> 0; continue; }
+            a = (Math.imul(a, 16777619) ^ (((c.r | 0) << 16) | ((c.g | 0) << 8) | (c.b | 0))) >>> 0;
+        }
+        d = 'c' + colors.length + ':' + a.toString(36);
+        colourDigests.set(colors, d);
+    }
+    return d;
+}
 let tubeShadowTick = 0;
 function tubeKeyOf(renderer, S) {
     if (S.renderShadows) return 'shaded:' + (++tubeShadowTick);
     return sharedGeometryKey(renderer).concat([
         // COLOUR IS GEOMETRY HERE, unlike the cartoon: an instance carries its
         // own colour, so a recolour is a rebuilt buffer either way and there is
-        // no palette texture to repaint instead. By identity - `colors` is
-        // always a fresh array out of _calculateSegmentColors, never edited in
-        // place - because hashing it was ~9 ms of a ~20 ms frame at 320,000
-        // positions, spent proving nothing had changed.
-        idOf(S.colors),
+        // no palette texture to repaint instead. By CONTENT (see colourKeyOf),
+        // so coming back to a picture already built is an upload, not a build.
+        colourKeyOf(S.colors),
         // how many of the ordered segments are actually drawn
         S.count,
     ]).join('|');
+}
+
+/* A TUBE IS A VALUE TOO.
+ *
+ * The cartoon mesh learned this the hard way - a restore that put back the
+ * buffers and forgot the visibility texture drew half a structure - and the
+ * tube kept the same shape of state loose: an instance buffer, a count, a
+ * centre and a density, four module variables set by one function and read by
+ * another. There is less of it and it costs less to rebuild, so this is not
+ * about speed; it is that "everything a build decides" should be one thing
+ * that one function installs, in both paths, so neither can grow a second
+ * writer.
+ *
+ * The scratch array is REUSED between builds, so a captured value has to own a
+ * copy - which is also what makes the spare slot honest.
+ */
+function captureTube(sig) {
+    if (!tubeLive) return null;
+    return Object.assign({}, tubeLive, { sig });
+}
+
+function activateTube(m) {
+    if (!m || !gl || !bufTube) return false;
+    tubeLive = m;
+    tubeCount = m.count;
+    tubeCentre = m.centre;
+    tubeRange = m.range;
+    tubeDensity = m.density;
+    gl.bindBuffer(gl.ARRAY_BUFFER, bufTube);
+    gl.bufferData(gl.ARRAY_BUFFER, m.data, gl.DYNAMIC_DRAW);
+    return m.count > 0;
+}
+
+// The same exchange the cartoon's spare slot makes, and for the same reason:
+// alternating between two pictures is what an eye is for, so the value coming
+// out takes the place of the one going in.
+function keepTube(sig) {
+    const m = captureTube(sig);
+    spareTube = (m && sig && m.bytes <= MESH_CACHE_MAX_BYTES) ? m : null;
+    if (typeof window !== 'undefined') {
+        window.__spareTube = spareTube
+            ? { sig: spareTube.sig, bytes: spareTube.bytes } : null;
+    }
+}
+
+function restoreTube(sig) {
+    if (!spareTube || spareTube.sig !== sig) return false;
+    const m = spareTube;
+    keepTube(tubeSig);
+    return activateTube(m);
 }
 
 const TUBE_FLOATS = 15;      // ...the last two are the ends' ball colours
@@ -4994,13 +5074,12 @@ function buildTube(renderer, S) {
     const n = co.length;
     const order = S.order || [];
     const cnt = Math.min(S.count === undefined ? order.length : S.count, order.length);
-    if (!cnt || !n) { tubeCount = 0; return false; }
+    if (!cnt || !n) { tubeCount = 0; tubeLive = null; return false; }
     // the centre the app subtracts before rotating, so this is the same model
     // space the cartoon mesh lives in
     let cx = 0; let cy = 0; let cz = 0;
     for (let i = 0; i < n; i++) { cx += co[i].x; cy += co[i].y; cz += co[i].z; }
     cx /= n; cy /= n; cz /= n;
-    tubeCentre = [cx, cy, cz];
     const lw = renderer.lineWidth || 3.0;
     // HOW MANY DRAWN SEGMENTS TOUCH EACH POSITION. An end shared with the next
     // segment is not an end of anything - the chain runs straight through it -
@@ -5169,7 +5248,6 @@ function buildTube(renderer, S) {
         if (ownB >= 0 && slotOf[ownB] >= 0) data[at + 14] = colOf[ownB];
     }
     rad = Math.sqrt(rad) + 2;    // room for the capsule's own bulge
-    tubeRange = [-rad, rad];
     // HOW MANY SEGMENTS PER SQUARE ANGSTROM the occlusion pass should assume.
     // Each of its taps stands for a patch of the sampling disc, and what the
     // CPU sums over that patch is SEGMENTS - so the two only agree if the pass
@@ -5202,11 +5280,26 @@ function buildTube(renderer, S) {
     // a second time overshot.
     //
     // tubeAOGain still multiplies this, so it stays the knob it was.
-    tubeDensity = TUBE_AO_DENSITY;
-    tubeCount = count;
-    gl.bindBuffer(gl.ARRAY_BUFFER, bufTube);
-    gl.bufferData(gl.ARRAY_BUFFER, data.subarray(0, o), gl.DYNAMIC_DRAW);
-    return count > 0;
+    // HOW MANY TIMES THE INSTANCE DATA HAS BEEN BUILT, for the probes: a
+    // restore that quietly rebuilt would otherwise look identical.
+    if (typeof window !== 'undefined') {
+        window.__tubeBuilds = (window.__tubeBuilds || 0) + 1;
+    }
+    // ...and everything this build decided goes in as ONE value. `data` is the
+    // scratch array and is written over by the next build, so the value takes
+    // a copy of exactly the bytes it uses.
+    const bytes = data.slice(0, o);
+    return activateTube({
+        data: bytes, count, centre: [cx, cy, cz],
+        // THE DEPTH RANGE IS A BUILD PRODUCT TOO - it is the scene's own
+        // radius, and the capsules are mapped through it. Left out of the
+        // value at first, and a restored buffer was then drawn through the
+        // range of whatever was built last: same instances, different picture.
+        // The probe caught it; the cartoon's version of this exact omission
+        // (the visibility texture) reached the app.
+        range: [-rad, rad],
+        density: TUBE_AO_DENSITY, bytes: bytes.byteLength,
+    });
 }
 
 /* Two passes, outline then fill, exactly the order the 2D pass strokes them in
@@ -5556,8 +5649,16 @@ function renderTubeApp(renderer, ctx, displayWidth, displayHeight, S) {
         // the buffer that was already there.
         const key = tubeKeyOf(renderer, S);
         if (key !== tubeSig || !tubeCount) {
-            if (!buildTube(renderer, S)) { tubeSig = null; return false; }
+            // the way back to a picture already built is an upload; only worth
+            // holding one where an eye can switch something off and on again
+            if (Object.keys(renderer.objectsData || {}).length > 1) {
+                if (!restoreTube(key)) { keepTube(tubeSig); }
+            } else { spareTube = null; }
+            if (!tubeLive || tubeLive.sig !== key) {
+                if (!buildTube(renderer, S)) { tubeSig = null; return false; }
+            }
             tubeSig = key;
+            tubeLive.sig = key;
         }
         if (!tubeCount) return false;
         if (!drawTube(appCv, renderer,

@@ -181,6 +181,26 @@ it, and a merge leaves the texture big enough to hide it. That fault shipped
 for an hour and was reported before this probe existed: "1A3N would only show a
 subset of faces, but all the outline".
 
+`tests/gpu_tube_reuse.py` asks the same question of the **tube**:
+
+    python3 tests/gpu_tube_reuse.py                  # 6MRR + 4HHB
+    python3 tests/gpu_tube_reuse.py 4UG0.cif 6MRR.cif
+
+The tube is a different model - one instance per segment, no faces and no
+silhouette - and rebuilding it costs 33-50 ms rather than 1.2 s, so this is
+not really about the milliseconds. It is that a build's output should be ONE
+value that ONE function installs. The tube kept it as four module variables
+and, the first time the value was assembled, the DEPTH RANGE was left out of
+it: the restored buffer was then drawn through the range of whatever had been
+built last, same instances and a different picture. That is the tube's version
+of the visibility texture the cartoon's first restore forgot - caught here by
+the probe rather than by a user, which is the whole point of writing it.
+
+Both toggles and a recolour are checked, and the recolour check asks what the
+COLOUR ARRAY did rather than trusting the mode: with a merge up the app
+resolves 'auto' per object and can ignore a global colour mode entirely, in
+which case there is nothing for the buffer to notice and nothing to assert.
+
 `tests/gpu_recolour.py` checks that **a colour change repaints the GPU mesh
 rather than rebuilding it**:
 
