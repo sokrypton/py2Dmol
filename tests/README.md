@@ -159,6 +159,28 @@ their atoms, and every side chain went out the moment a merge was rebuilt.
 Click any object's eye and the side chains of the object you did not touch
 disappeared with it.
 
+`tests/gpu_mesh_reuse.py` checks that **going back to a picture already built
+reuses its mesh**:
+
+    python3 tests/gpu_mesh_reuse.py                  # 6MRR + 4HHB
+    python3 tests/gpu_mesh_reuse.py 4UG0.cif 6MRR.cif
+
+A cartoon mesh is built for exactly what is on screen, so switching an object
+off and on again asks for two meshes in turn - 1.2 s each way with a ribosome
+and a peptide up, for a change of 68 residues out of 17,618. One spare slot
+holds the mesh being replaced, and it is an EXCHANGE, so alternating hits it
+every time. The mesh signature also had to start keying the visibility mask by
+CONTENT rather than by object identity: the mask is rebuilt from the objects'
+records whenever the drawn set changes, so an identical picture never matched.
+
+**The order of the legs matters.** The picker leg runs FIRST, with the smaller
+structure loaded first, because several of the things a mesh carries are sized
+by the structure and SHRINK - the visibility texture among them. A restore that
+forgets one only shows when the mesh coming back is bigger than the one before
+it, and a merge leaves the texture big enough to hide it. That fault shipped
+for an hour and was reported before this probe existed: "1A3N would only show a
+subset of faces, but all the outline".
+
 `tests/gpu_recolour.py` checks that **a colour change repaints the GPU mesh
 rather than rebuilding it**:
 

@@ -1969,6 +1969,34 @@ void main() {
 
 let gl, prog, buf, locPos, locZ, locCol;
 let prog3, buf3, resident = null;   // { count, zMin, zMax, scale }
+// THE LAST MESH, AND THE ONE BEFORE IT.
+//
+// A mesh is built for exactly what is on screen, so switching an object off
+// and on again asks for two meshes in turn, over and over - and each rebuild
+// runs the whole 2D pass and the outline pass again: 1.2 s on a ribosome with
+// a peptide beside it, for a change of 68 residues out of 17,618. The
+// arrays a build uploads are kept, so coming back to a mesh already built is
+// two bufferData calls.
+//
+// ONE SPARE SLOT, because the thing people actually do is alternate. It is
+// held only while the arrays are small enough to be worth holding - a
+// ribosome's mesh is 45 MB of floats, and two of those is a real cost to a
+// laptop, so past the cap the previous mesh is dropped and the rebuild is
+// paid as before.
+let lastFill = null;             // what the current build uploaded...
+let lastEdges = null;            // ...and its outline, when there is one
+// ...AND ONLY WHERE THERE IS SOMETHING TO GO BACK TO. Holding a mesh's arrays
+// after they have been uploaded costs their size in JS heap - 45 to 67 MB for
+// a ribosome - and buys nothing at all for a viewer with one object in it,
+// which has no eye to switch. It is switched on from renderApp when the page
+// has more than one object loaded.
+let keepArrays = false;
+function setKeepMeshArrays(on) {
+    keepArrays = !!on;
+    if (!on) { lastFill = null; lastEdges = null; spareMesh = null; }
+}
+const MESH_CACHE_MAX_BYTES = 128 * 1024 * 1024;
+let spareMesh = null;            // { sig, fill, edges, edgeCount, resident, pal }
 let progInk, bufInk, edgeCount = 0;
 // whether the resident edge buffer holds any contacts - see below
 let residentHasContacts = false;
@@ -3237,6 +3265,7 @@ function makeResident(faces, scale, prm, lines) {
         window.__fillHash = { hash: h >>> 0, floats: data.length };
     }
     gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    lastFill = keepArrays ? data : null;
 
     mark('facesAndEmit');
     // ---- EDGES, only when something is going to draw them -----------------
@@ -3253,6 +3282,7 @@ function makeResident(faces, scale, prm, lines) {
     const wantEdges = !!P0.ink || contactEdges.length > 0;
     const wantOutline = !!P0.ink;
     edgeCount = 0;
+    lastEdges = null;
     window.__edgeStats = { edges: 0, faces: faces.length, skipped: !wantEdges };
     if (wantEdges) {
         // ---- EDGES, second pass ------------------------------------------------
@@ -3570,7 +3600,9 @@ function makeResident(faces, scale, prm, lines) {
             window.__edgeHash = { hash: h >>> 0, floats: eo, instances: edgeCount };
         }
         gl.bindBuffer(gl.ARRAY_BUFFER, bufInk);
-        gl.bufferData(gl.ARRAY_BUFFER, ed.subarray(0, eo), gl.STATIC_DRAW);
+        const edUp = ed.subarray(0, eo);
+        lastEdges = keepArrays ? edUp : null;
+        gl.bufferData(gl.ARRAY_BUFFER, edUp, gl.STATIC_DRAW);
         window.__edgeStats = { edges: edgeCount, boundary: nBoundary, crease: nCrease,
             faces: faces.length, interiorDropped: nInterior, nonManifoldDropped: nNonManifold,
             ghostOnly: nGhostOnly };
@@ -4154,7 +4186,7 @@ function signatureOf(r, w, h, colors) {
     // array, which made every mask hash to the same constant and stopped
     // hiding a residue from ever rebuilding. Identity cannot make that mistake:
     // there is nothing to index.)
-    const visKey = r.visiblePositions ? 'v' + idOf(r.visiblePositions) : 'all';
+    const visKey = visKeyOf(r.visiblePositions);
     // CONTACTS ARE GEOMETRY. Their endpoints, weight and colour are all baked
     // into the ink instances when the mesh is built - a contact's width is
     // CONTACT_WIDTH times its own stored weight, in Angstrom - so the width
@@ -4351,8 +4383,95 @@ function captureFrom(renderer, w, h, colors) {
 // Force the next render to rebuild. The app calls this when something changed
 // that the signature cannot see - a style object replaced wholesale, a new
 // structure loaded under the same name.
+/**
+ * A MESH, AS A VALUE.
+ *
+ * What a build produces is not one thing: two buffers, the instance count and
+ * the depth range, the outline's count, whether every face can be repainted
+ * from the palette, the drawn positions everything on top of the canvas is
+ * re-projected from, the scene's radius, and the SIZE of the visibility
+ * texture - which is per structure, and shrinks. Holding a mesh so it can be
+ * put back means holding all of that, and the first version of this held most
+ * of it: the visibility texture was left at whatever size the last BUILD chose,
+ * so restoring a bigger mesh had every residue past the smaller one's end read
+ * as hidden. Its fills vanished and its outline stayed - which is exactly what
+ * it looked like.
+ *
+ * So the mesh is a value now and there is one function that installs one.
+ * Build and restore both go through it, and a piece that is not in `capture`
+ * cannot be forgotten by one path and not the other: there is only one path.
+ */
+function captureMesh(sig) {
+    if (!sig || !resident || !lastFill) return null;
+    return {
+        sig,
+        fill: lastFill,
+        edges: lastEdges,
+        edgeCount,
+        resident,
+        pal: appPalComplete,
+        pos: appPos,
+        stdDev: sceneStdDev,
+        nBase: (resMap && resMap.nBase) || 0,
+        scMap: (resMap && resMap.sidechainMap) || null,
+        bytes: lastFill.byteLength + (lastEdges ? lastEdges.byteLength : 0),
+    };
+}
+
+function activateMesh(m) {
+    if (!m || !gl || !buf3) return false;
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf3);
+    gl.bufferData(gl.ARRAY_BUFFER, m.fill, gl.STATIC_DRAW);
+    if (m.edges && bufInk) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, bufInk);
+        gl.bufferData(gl.ARRAY_BUFFER, m.edges, gl.STATIC_DRAW);
+    }
+    edgeCount = m.edges ? m.edgeCount : 0;
+    resident = m.resident;
+    appPalComplete = m.pal;
+    appPos = m.pos;
+    setStdDev(m.stdDev);
+    // THE TWO THINGS SIZED BY THE STRUCTURE, not by the view: the residue map
+    // a side-chain face is traced back through, and the visibility texture a
+    // face is tested against. Both are per mesh and both shrink.
+    setResidueMap({ nBase: m.nBase, sidechainMap: m.scMap });
+    ensureVisTexture(m.nBase || 1);
+    lastFill = m.fill;
+    lastEdges = m.edges;
+    srCache = null; srKey = '';
+    return true;
+}
+
+/**
+ * THE SPARE SLOT: one mesh, exchanged rather than read.
+ *
+ * Alternating between two pictures is what an eye is for, so the mesh coming
+ * out swaps places with the one going in - a slot that is only ever read
+ * leaves every second toggle rebuilding.
+ */
+function keepMesh(sig) {
+    const m = captureMesh(sig);
+    spareMesh = (m && m.bytes <= MESH_CACHE_MAX_BYTES) ? m : null;
+    if (typeof window !== 'undefined') {
+        window.__spareMesh = spareMesh
+            ? { sig: spareMesh.sig, bytes: spareMesh.bytes } : null;
+    }
+}
+
+function restoreMesh(sig) {
+    if (!spareMesh || spareMesh.sig !== sig) return false;
+    const m = spareMesh;
+    keepMesh(appSig);              // the exchange
+    return activateMesh(m);
+}
+
 function invalidate() {
     appSig = null; appColourKey = ''; appPalComplete = true; tubeSig = null;
+    // ...AND THE SPARE WITH IT. invalidate() means the geometry is no longer
+    // what any mesh was built for - a structure edited, a frame replaced - so
+    // a mesh kept under a signature that happens to come round again would be
+    // the old shape.
+    spareMesh = null; lastFill = null; lastEdges = null;
     clearResident();
 }
 
@@ -4521,7 +4640,29 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
         const prm = paramsFromRenderer(renderer);
 
         const sig = signatureOf(renderer, w, h, colors);
+        // ...AND IS IT THE ONE WE PUT DOWN A MOMENT AGO? Switching an object
+        // off and on again alternates between two meshes, and rebuilding each
+        // time runs the whole 2D pass and the outline pass for geometry that
+        // has not changed. Coming back to a mesh already built is two uploads.
+        // WORTH KEEPING A MESH AT ALL? Only where an eye can switch one off
+        // and on again, which means more than one object on the page.
+        setKeepMeshArrays(Object.keys(renderer.objectsData || {}).length > 1);
+        if (sig !== appSig && restoreMesh(sig)) {
+            appSig = sig;
+            appColors = colors;
+            appColourKey = idOf(colors);
+            setPaletteSource(() => appColors);
+            setDefaultParams(() => paramsFromRenderer(renderer));
+            setResidueMap({ nBase: renderer.coords.length,
+                sidechainMap: renderer.sidechainMap || null });
+            setSize(displayWidth, displayHeight);
+            if (typeof renderer._ensureRotated === 'function') renderer._ensureRotated();
+            recolour();
+        }
         if (sig !== appSig || !resident) {
+            // the mesh about to be replaced goes in the spare slot, so the way
+            // back is an upload rather than a build
+            keepMesh(appSig);
             // THE ONE THING ON THIS PATH THAT DOES NEED rotatedCoords. The
             // renderer skips its rotation loop when it expects the GPU to take
             // the frame (see _renderToContext), and a steady frame here never
@@ -4759,6 +4900,36 @@ function idOf(v) {
     let id = objIds.get(v);
     if (id === undefined) { id = objIdNext++; objIds.set(v, id); }
     return id;
+}
+
+/**
+ * WHAT A VISIBILITY MASK CONTAINS, not which object it is.
+ *
+ * The mask is rebuilt from the objects' own records whenever what is drawn
+ * changes, so switching an object off and on again produces a Set with exactly
+ * the same members and a different identity. Keyed by identity, the mesh then
+ * counts as out of date for a picture it has already built - which is what
+ * made every eye toggle a full rebuild even with the mesh kept.
+ *
+ * Order-independent (a Set has no order worth relying on) and cached against
+ * the Set, because this runs on every frame and the walk is O(n): 17,550
+ * members is about half a millisecond, once.
+ */
+const visDigests = new WeakMap();
+function visKeyOf(set) {
+    if (!set) return 'all';
+    let d = visDigests.get(set);
+    if (d === undefined) {
+        let a = set.size >>> 0;
+        let b = 2166136261 >>> 0;
+        for (const i of set) {
+            a = (a + Math.imul(i | 0, 2654435761)) >>> 0;
+            b = (b ^ (i | 0)) >>> 0;
+        }
+        d = 'v' + set.size + ':' + a.toString(36) + ':' + b.toString(36);
+        visDigests.set(set, d);
+    }
+    return d;
 }
 let tubeShadowTick = 0;
 function tubeKeyOf(renderer, S) {
