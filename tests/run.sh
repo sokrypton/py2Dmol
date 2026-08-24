@@ -34,6 +34,15 @@ if [[ "$LANE" == "all" || "$LANE" == "node" ]]; then
       print "node $f: ok"
     fi
   done
+  # ...and every resource viewer.py opens is one setup.py ships. Static, so it
+  # costs nothing; the wheel it protects is built by CI, where no revision
+  # control plugin covers for a package_data omission.
+  if python3 tests/packaging.py >/dev/null 2>&1; then
+    print "node packaging: ok"
+  else
+    fail=1; print "NODE packaging:"; python3 tests/packaging.py 2>&1 | grep '^FAIL' | head -3
+  fi
+
   # ...and the minified bundles draw the same picture as the sources
   node tests/smoke.js py2Dmol/resources/viewer-cartoon.min.js >/dev/null 2>&1 \
     && print "node smoke (min): ok" || { fail=1; print "NODE smoke (min): FAILED" }
