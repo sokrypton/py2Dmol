@@ -7,7 +7,7 @@ Why it exists: a WebGL draw call returns when it is QUEUED, so timing
 `renderer.render()` with performance.now() measures the submit and nothing
 else - it reported 0.28 ms for a frame the GPU spent 13.6 ms on. The numbers
 here come from EXT_disjoint_timer_query_webgl2, which the renderer emits when
-`window.__gpuTimers` is set (see the timer block in viewer-cartoon-gpu.js).
+`window.__gpuTimers` is set (see the timer block in cartoon/paintgl.js).
 
 Two traps this works around, both of which cost a whole session's numbers once:
 
@@ -71,7 +71,7 @@ window.addEventListener('load', () => {
 
 
 def build_probe():
-    src = open(os.path.join(ROOT, "index.html")).read()
+    src = open(os.path.join(ROOT, "dev.html")).read()
     stamp = str(int(time.time() * 1000))
     src = re.sub(r'(<script src="(?!https?:)[^"]+?)(\?v=\d+)?(")',
                  lambda m: m.group(1) + "?v=" + stamp + m.group(3), src)

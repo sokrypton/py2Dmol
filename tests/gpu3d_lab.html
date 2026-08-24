@@ -142,10 +142,11 @@
 
 <div id="host"></div>
 
-<script src="../web/utils.js"></script>
-<script src="../py2Dmol/resources/viewer-cartoon.js"></script>
-<script src="../py2Dmol/resources/viewer-mol.js"></script>
-<script src="../py2Dmol/resources/viewer-cartoon-gpu.js"></script>
+<script src="../web/parse.js"></script>
+<script src="../src/cartoon/geom.js"></script>
+<script src="../src/cartoon/paint2d.js"></script>
+<script src="../src/core/mol.js"></script>
+<script src="../src/cartoon/paintgl.js"></script>
 <script src="gpu3d_core.js"></script>
 <script>
 /* ---------------------------------------------------------------- capture */
@@ -175,7 +176,7 @@ async function boot() {
     }
     if (!window.py2dmolCartoon || !window.parseCIF) {
         fail('The viewer scripts did not load.',
-            'Serve from the REPO ROOT so ../web/utils.js and '
+            'Serve from the REPO ROOT so ../web/parse.js and '
             + '../py2Dmol/resources/*.js resolve.');
         return;
     }

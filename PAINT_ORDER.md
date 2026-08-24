@@ -63,13 +63,13 @@ that produced it is named in **Reproducing the measurements**.
 
 ## 1. The renderer, in one page
 
-`py2Dmol/resources/viewer-cartoon.js` (~11,400 lines) draws protein cartoons to
-a 2D canvas. There is no depth buffer for the fills. It is a **painter's
+`src/cartoon/geom.js` (10,249 lines) builds the primitives and
+`cartoon/paint2d.js` (2,487) draws them to a 2D canvas. There is no depth buffer for the fills. It is a **painter's
 algorithm**: everything drawable is pushed onto a `prims` array, each prim
 carries a scalar depth key `z`, and the whole array is sorted once —
 
 ```js
-prims.sort((a, b) => a.z - b.z);          // viewer-cartoon.js:8851
+prims.sort((a, b) => a.z - b.z);          // cartoon/geom.js:9842
 ```
 
 — then drawn in that order. Larger `z` is nearer the viewer, so later painters
@@ -78,7 +78,7 @@ depth in Ångström**, not a scaled or normalised value.
 
 Two kinds of prim matter here.
 
-**`rib`** — a piece of ribbon. Built at `viewer-cartoon.js:5868`. A piece is a
+**`rib`** — a piece of ribbon. Built at `cartoon/geom.js:6326`. A piece is a
 **slab**: a twisted box with two wide faces, two thin edge bands ("thickness
 bands"), and end caps. It carries the projected corners of its cross-section at
 each station in four parallel arrays `Lp`, `Lm`, `Rp`, `Rm` (left/right ×
@@ -90,7 +90,7 @@ const zSort = zSeg / (e0 - a0 + 1);       // the piece's CENTROID
 ```
 
 **`stickFace`** — one face of one bond of a side chain or ligand, built at
-`viewer-cartoon.js:6868`. Its key is the mean of **that face's own four
+`cartoon/geom.js:7642`. Its key is the mean of **that face's own four
 corners**:
 
 ```js

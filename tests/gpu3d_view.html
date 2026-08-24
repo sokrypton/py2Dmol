@@ -148,10 +148,11 @@
   <div id="stats"></div>
 </div>
 
-<script src="../web/utils.js"></script>
-<script src="../py2Dmol/resources/viewer-cartoon.js"></script>
-<script src="../py2Dmol/resources/viewer-mol.js"></script>
-<script src="../py2Dmol/resources/viewer-cartoon-gpu.js"></script>
+<script src="../web/parse.js"></script>
+<script src="../src/cartoon/geom.js"></script>
+<script src="../src/cartoon/paint2d.js"></script>
+<script src="../src/core/mol.js"></script>
+<script src="../src/cartoon/paintgl.js"></script>
 <script src="gpu3d_core.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -379,7 +380,7 @@ $('file').addEventListener('change', async (e) => {
 });
 
 // THE APP'S ROTATION, not a yaw/pitch pair. `rotateView` accumulates the same
-// screen-space increments viewer-mol.js does (dx and dy scaled by 0.01, left
+// screen-space increments core/mol.js does (dx and dy scaled by 0.01, left
 // multiplied), so dragging here behaves like dragging in index.html: no roll
 // creeping in once the model is pitched, and no gimbal lock looking down the
 // axis. The pointer is captured so a drag that leaves the canvas keeps working.
@@ -455,7 +456,7 @@ function wireDrag(el) {
 
 (async () => {
     try {
-        if (!window.py2dmolCartoon) throw new Error('viewer-cartoon.js did not load');
+        if (!window.py2dmolCartoon) throw new Error('cartoon/geom.js did not load');
         loadPreset();
         initGL(cv());
         await loadStructure($('pdb').value);

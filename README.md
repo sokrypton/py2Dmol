@@ -18,6 +18,12 @@ pip install py2Dmol
 pip install git+https://github.com/sokrypton/py2Dmol.git
 ```
 
+### Requirements
+A browser with **WebGL2**, which every current browser has. The notebook draws
+on the GPU: turning and zooming cost one draw call rather than a full repaint,
+which is what makes a large structure usable — 26 ms a frame on a 313,000-atom
+capsid, against 840 ms without it.
+
 ## Quickstart: core workflow
 `py2Dmol` has two modes—decided by when you call `show()`:
 - **Static**: `add*()` then `show()` → one self-contained viewer.
@@ -64,26 +70,25 @@ viewer.show()
 ```
 
 ### Render styles
-Two styles, switchable live from the Style dropdown:
+Four styles, switchable live from the Style dropdown:
 - **`tube`** (default) — the classic py2Dmol smooth backbone trace.
-- **`cartoon`** — secondary-structure cartoon: twisted ribbons for helices, arrowhead plates for strands, thin tubes for loops.
-
-The cartoon style carries named **presets** — starting points that load into the
-normal controls, which stay live for tweaking:
-- **`richardson`** (default) — the hand-drawn look of Jane Richardson's protein drawings: flat wide helices, thick arrowheaded strands with white card edges, and coloured-pencil paper grain.
-- **`ribbon`** — plain flat cartoon, with none of the above.
+- **`richardson`** — the hand-drawn look of Jane Richardson's protein drawings: flat wide helices, thick arrowheaded strands with white card edges, and coloured-pencil paper grain.
+- **`ribbon`** — plain flat cartoon: twisted ribbons for helices, arrowhead plates for strands, thin tubes for loops, and none of the above.
 - **`3d`** — solid shaded geometry, on a black background. Pass `bg=` to override.
 
+The last three are all cartoons, and each is a starting point that loads into
+the normal controls — the sliders stay live for tweaking under any of them.
+`style="cartoon"` still works and means `richardson`.
+
 ```python
-py2Dmol.view(style='cartoon').from_pdb('1A3N', use_biounit=True)   # Richardson
-py2Dmol.view(style='cartoon', color='ss').from_pdb('1TIM')
-py2Dmol.view(preset='ribbon').from_pdb('1TIM')                     # plain cartoon
-py2Dmol.view(preset='3d').from_pdb('1TIM')                         # solid, on black
-py2Dmol.view(style='cartoon', pencil=0, sheet_flat=0).from_pdb('1TIM')
+py2Dmol.view(style='richardson').from_pdb('1A3N', use_biounit=True)
+py2Dmol.view(style='richardson', color='ss').from_pdb('1TIM')
+py2Dmol.view(style='ribbon').from_pdb('1TIM')                      # plain cartoon
+py2Dmol.view(style='3d').from_pdb('1TIM')                          # solid, on black
+py2Dmol.view(style='richardson', pencil=0, sheet_flat=0).from_pdb('1TIM')
 ```
 
-Naming a preset implies `style='cartoon'`, and an explicit argument always wins
-over the preset. Both styles work on C-alpha-only models — the backbone, its secondary structure, and where nucleic
+An explicit argument always wins over the style's own defaults. Both styles work on C-alpha-only models — the backbone, its secondary structure, and where nucleic
 bases point are all rebuilt from the trace, with nothing per-residue stored or
 shipped. `tests/README.md` has the accuracy numbers.
 
@@ -181,6 +186,43 @@ viewer.show()
   1.4,-149.8
   1.6,-149.1
   ```
+
+## Put a structure on your own web page
+
+No Python, no build step — one script tag and one call:
+
+```html
+<div id="mol" style="width:400px;height:400px"></div>
+<script src="https://py2dmol.solab.org/py2Dmol/resources/bundles/py2Dmol.embed.min.js"></script>
+<script>
+  fetch('https://files.rcsb.org/download/1UBQ.pdb')
+      .then((r) => r.text())
+      .then((text) => {
+          const v = py2Dmol.show('mol', text);
+          v.setStyle('cartoon');
+      });
+</script>
+```
+
+`show()` works out whether it was handed a PDB or an mmCIF by looking at it and
+returns the viewer. Beyond `setStyle` and `setFrame` you get `setColor` (a mode,
+or any colour on a chain, a list of positions or a range), `setContacts`
+(lines between residues, weighted and coloured), `showObjects` (two structures
+in one picture) and `select`. Pass `controls: true` for the same Style panel the
+notebook has, and the frame strip appears by itself for a multi-model file.
+
+Two bundles, differing only in the painter:
+
+| file | size | |
+| --- | --- | --- |
+| `py2Dmol.embed.min.js` | 447 KB | WebGL2. Fast on large structures. |
+| `py2Dmol.embed.cpu.min.js` | 375 KB | 2D canvas. No WebGL2 needed, and it can export SVG. |
+
+Neither carries the control panel, the save UI or the side panels; for those,
+load the full application. Neither falls back to the other — each has one
+painter and nothing behind it.
+
+**[Live demo and full API →](https://py2dmol.solab.org/embed.html)**
 
 # Advanced
 
@@ -335,8 +377,7 @@ Control output cell behavior with the `persistence` parameter:
 **Atom codes**: Protein=P (CA), DNA=D (C4'), RNA=R (C4'), Ligand=L (heavy atoms)  
 **Bond thresholds**: Protein CA-CA 5.0 Å; DNA/RNA C4'-C4' 7.5 Å; Ligand 2.0 Å  
 **Color modes**: `auto`, `rainbow`, `plddt`, `chain`, `ss`, `entropy`, `deepmind`  
-**Styles**: `tube` (default), `cartoon`  
-**Cartoon presets**: `richardson` (default), `ribbon`, `3d`  
+**Styles**: `tube` (default), `richardson`, `ribbon`, `3d`  
 **SSE palettes**: `pymol` (default), `jmol`  
 **Outline modes**: `none`, `partial`, `full` (default)  
 **Formats**: PDB (.pdb), mmCIF (.cif); multi-model files load as frames.

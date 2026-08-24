@@ -9,7 +9,7 @@ load a prediction that has one, then hide the prediction: the matrix stayed on
 screen describing residues that were not, and a box drawn on it selected the
 other object's.
 
-The rule (paeObjectName in viewer-mol.js): in Multi there is no panel, because
+The rule (paeObjectName in core/mol.js): in Multi there is no panel, because
 the matrix belongs to one structure and Multi is the mode for looking at
 several; outside Multi it is the object on screen, when that object has a
 matrix. The probe gives the second object a synthetic matrix, so it needs no
@@ -121,7 +121,7 @@ window.addEventListener('load', () => {
 """
 JS = JS.replace("//HELPERS", HELPERS)
 check_js(JS if "PAGE_JS" not in globals() else PAGE_JS)
-src=open(os.path.join(ROOT,"index.html")).read()
+src=open(os.path.join(ROOT,"dev.html")).read()
 stamp=str(int(time.time()*1000))
 src=re.sub(r'(<script src="(?!https?:)[^"]+?)(\?v=\d+)?(")', lambda m: m.group(1)+"?v="+stamp+m.group(3), src)
 open(PROBE,"w").write(src.replace("</body>", JS+"</body>"))

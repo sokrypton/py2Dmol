@@ -21,14 +21,24 @@ setup(
     # above contributes nothing and this list is the whole of it.
     # tests/packaging.py builds a wheel and imports it, which is the only way
     # this list can be checked at all.
+    # PER-DIRECTORY GLOBS, not eighteen literal paths. The resources moved into
+    # core/, parts/, cartoon/, panels/ and align/, and a list that long is a list
+    # that goes stale - which it did once already, shipping a wheel without the
+    # GPU renderer. tests/packaging.py checks these against what viewer.py reads.
+    # WHAT SHIPS IS THE BUNDLES, not the two dozen source files they are built
+    # from. tools/bundle.py concatenates and minifies each target; the panels
+    # stay loose because viewer.py adds them only when the config asks.
+    # tests/packaging.py checks this against what viewer.py actually reads.
     package_data={
         'py2Dmol': [
             'resources/viewer.html',
-            'resources/viewer-mol.min.js',
-            'resources/viewer-cartoon.min.js',
-            'resources/viewer-cartoon-gpu.min.js',
-            'resources/viewer-pae.min.js',
-            'resources/viewer-scatter.min.js',
+            # ...the NOTEBOOK bundle only. The glob that was here also shipped
+            # py2Dmol.embed.min.js, a web artefact in
+            # every pip install, which viewer.py never opens. tests/packaging.py
+            # fails if it ever opens one that is not listed here.
+            'resources/bundles/py2Dmol.notebook.min.js',
+            'resources/bundles/py2Dmol.notebook.cpu.min.js',
+            'resources/bundles/py2Dmol.notebook.tube.min.js',
         ],
     },
     license='BEER-WARE',

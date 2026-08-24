@@ -72,7 +72,7 @@ each one was and what it turned up.
      only its **length**. Identity is the wrong answer - the merge is rebuilt
      from scratch whenever the drawn set changes, so an eye toggle brings back
      the same picture in a new array. Taking the tube's half made every toggle
-     rebuild (70-80 ms). Both now ask `_arrayKey()`, the statement viewer-mol.js
+     rebuild (70-80 ms). Both now ask `_arrayKey()`, the statement core/mol.js
      already keeps of what the array holds, and the toggles fell to **3-8 ms**
      from the 50-80 ms the spare slot had got them to.
    * Neither half could see coordinates MOVE inside a frame - same objects,
@@ -101,7 +101,7 @@ each one was and what it turned up.
 
 3. ~~**Derived state, filled independently of style.**~~ Checked. The three
    cartoon caches (`_cartoonPair`, `_cartoonLadder`, `_cartoonSheet`) have no
-   reader outside viewer-cartoon.js, `_naPick` carries the frame it was drawn
+   reader outside cartoon/geom.js, `_naPick` carries the frame it was drawn
    for, and the SS assignment is askable - so nothing outside the render path
    depends on which painter ran.
 
@@ -109,7 +109,7 @@ each one was and what it turned up.
    of what the coordinates are, and the weakest - it could not see a coordinate
    swap at all, which is why `_invalidateSegmentCache` reaches in and clears
    those caches by hand. All three now ask `renderer._coordsKey()`
-   (viewer-mol.js), which is `_arrayKey()` - the statement the renderer already
+   (core/mol.js), which is `_arrayKey()` - the statement the renderer already
    keeps of what the array holds - plus three samples of the coordinates. The
    hand-clearing stays: it also covers the other direction, the array unchanged
    and something derived from it not.
@@ -120,7 +120,7 @@ each one was and what it turned up.
     python3 tests/gpu_tube_reuse.py            # the same, in tube style
     python3 tests/gpu_mesh_reuse.py 4UG0.cif 6MRR.cif
     python3 tests/gpu_recolour.py              # and with 4UG0.cif
-    node tests/smoke.js && node tests/smoke.js py2Dmol/resources/viewer-cartoon.min.js
+    node tests/smoke.js && node tests/smoke.js py2Dmol/resources/bundles/py2Dmol.notebook.min.js
 
 `gpu_mesh_reuse.py` compares every restored picture with one drawn from a mesh
 built for it, PIXEL FOR PIXEL, and checks that picking lands on the same

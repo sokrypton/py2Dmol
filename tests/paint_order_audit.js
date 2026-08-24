@@ -1,6 +1,6 @@
 /* Paint-order audit, written once and plainly.
  *
- *   CARTOON=<path to viewer-cartoon.js> [SC_ALL=1] node audit.js
+ *   CARTOON=<path to cartoon/geom.js> [SC_ALL=1] node audit.js
  *
  * Rasterises every face the painter emits. At each covered pixel it compares
  * the face that ENDS UP on top with the face that actually IS on top.

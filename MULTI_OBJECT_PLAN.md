@@ -13,7 +13,7 @@ wrong model, and the codebase already contains the right one.
 **Overlay mode merges every frame of a trajectory into ONE coordinate array**
 (`_mergeFrameRange`) and remembers where each position came from in
 `overlayState.frameIdMap`. That map is then handed to the cartoon as a
-**bonding group** — viewer-cartoon.js: *"a residue may only bond within its own
+**bonding group** — cartoon/geom.js: *"a residue may only bond within its own
 frame"* — so nothing joins across sources, and `assignSecondary` gets
 `groups: ovMap` for the same reason.
 
@@ -270,12 +270,12 @@ that asks "is this position in that chain" now asks `chainKeyAt(i)` /
 |---|---|
 | the visibility mask, both branches | `_composeAndApplyMask` |
 | Show all's chain set | `showAll` |
-| what the panel writes when it hides | `web/app.js` |
-| the strip's chain buttons | `viewer-seq.js` |
-| the PAE map's rows | `viewer-pae.js` |
+| what the panel writes when it hides | `src/app/` |
+| the strip's chain buttons | `panels/seq.js` |
+| the PAE map's rows | `panels/pae.js` |
 | the palette | `chainIndexMap` |
-| the 3D double-click "whole chain" | `viewer-mol.js` |
-| the silhouette's chain-break test | `viewer-mol.js` |
+| the 3D double-click "whole chain" | `core/mol.js` |
+| the silhouette's chain-break test | `core/mol.js` |
 | the strip: hit test, hover, label colour, drag, selection | `cellsOfChain` / `chainBoxOf` |
 | the head-to-tail test for a cyclic chain | `chainPolymerBounds` |
 | the fallback that bonds a chain's ligand atoms | `ligandIndicesByChain` |
@@ -340,14 +340,14 @@ recorded so the next reader does not have to re-derive it:
 
 | file | what was wrong |
 |---|---|
-| `viewer-mol.js` | the 3D double-click's whole-chain widening; the silhouette's chain-break test; `chainPolymerBounds` (the head-to-tail test for a cyclic chain); `ligandIndicesByChain` (the fallback that bonds a chain's ligand atoms); the lone-atom ligand-group lookup; the hover readout; six entropy fills |
-| `viewer-seq.js` | the hit tester, the hover, the label's override colour, the drag, the whole-chain selection, the ligand groups, one section's rows kept on `sequenceCanvasData`, `chainIdOfItem` reading the edited object's frame, and a guard that refused a selection unless the EDITED object had frames |
-| `viewer-pae.js` | a box's rows landing at raw indices, the reverse mapping, the chain set it writes, the ligand expansion |
-| `viewer-cartoon.js` | the base-plate set, the forced-SSE map, the framing extent, the colour-override fast path |
-| `viewer-cartoon-gpu.js` | the mesh signature (which objects, the extent, the base and element sets, the per-position colour flag) and the contact cache key |
-| `web/app.js` | the panel's element/side-chain/base tallies, the side-chain colour readback, the chain set written when hiding, four entropy fills, Copy/Cut/Delete reporting, and CONTACTS - filed on whichever object was current, found the same way, and matched in the index form at merged indices |
-| `viewer-msa.js` | nothing: it maps one object's alignment onto that object's own frame, and `entropyForDrawn` places the result |
-| `viewer-scatter.js` | nothing: it holds no position indices |
+| `core/mol.js` | the 3D double-click's whole-chain widening; the silhouette's chain-break test; `chainPolymerBounds` (the head-to-tail test for a cyclic chain); `ligandIndicesByChain` (the fallback that bonds a chain's ligand atoms); the lone-atom ligand-group lookup; the hover readout; six entropy fills |
+| `panels/seq.js` | the hit tester, the hover, the label's override colour, the drag, the whole-chain selection, the ligand groups, one section's rows kept on `sequenceCanvasData`, `chainIdOfItem` reading the edited object's frame, and a guard that refused a selection unless the EDITED object had frames |
+| `panels/pae.js` | a box's rows landing at raw indices, the reverse mapping, the chain set it writes, the ligand expansion |
+| `cartoon/geom.js` | the base-plate set, the forced-SSE map, the framing extent, the colour-override fast path |
+| `cartoon/paintgl.js` | the mesh signature (which objects, the extent, the base and element sets, the per-position colour flag) and the contact cache key |
+| `src/app/` | the panel's element/side-chain/base tallies, the side-chain colour readback, the chain set written when hiding, four entropy fills, Copy/Cut/Delete reporting, and CONTACTS - filed on whichever object was current, found the same way, and matched in the index form at merged indices |
+| `panels/msa.js` | nothing: it maps one object's alignment onto that object's own frame, and `entropyForDrawn` places the result |
+| `panels/scatter.js` | nothing: it holds no position indices |
 | `py2Dmol/viewer.py` | nothing: it writes per-object state in each object's own numbering - a colour map, an sse map, chain+residue contacts - which is exactly what the merged reader translates. Checked in a browser by `tests/python_page.py` |
 
 **A contact between two objects is refused**, out loud. It is stored on an
@@ -524,7 +524,7 @@ is what they were computed FROM, by identity where that is possible:
 
 **3. What the user chose.** Colours, side chains, hidden backbones, forced
 letters, contacts, the mask. This IS state, it does belong to the object, and
-it is declared in one place: `OBJECT_STATE` in viewer-mol.js.
+it is declared in one place: `OBJECT_STATE` in core/mol.js.
 
 **Cost, measured.** The assignment computed on demand: 1 ms cold on a
 60-residue trace, 19 ms on 1AOI (1,103 positions), 81 ms on 4UG0 (17,550) -

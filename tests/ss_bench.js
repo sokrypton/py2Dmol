@@ -4,7 +4,7 @@
  *   node tests/ss_bench.js               # report
  *   node tests/ss_bench.js --per-chain   # worst chains too
  *
- * Loads viewer-cartoon.js directly (window shim) and calls the SAME exported
+ * Loads cartoon/geom.js directly (window shim) and calls the SAME exported
  * functions the renderer calls, so this can never score a stale
  * reimplementation of the algorithm.
  */
@@ -13,7 +13,7 @@ const path = require('path');
 const vm = require('vm');
 
 const TRUTH = path.resolve(__dirname, 'out/ss_truth.json');
-const SRC = path.resolve(__dirname, '../py2Dmol/resources/viewer-cartoon.js');
+const SRC = path.resolve(__dirname, '../src/cartoon/geom.js');
 
 function loadCartoon() {
     const sandbox = {
@@ -91,7 +91,7 @@ function report(name, conf) {
         process.exit(1);
     }
     const api = loadCartoon();
-    if (!api || !api.makeSec) { console.error('viewer-cartoon.js did not export makeSec'); process.exit(1); }
+    if (!api || !api.makeSec) { console.error('cartoon/geom.js did not export makeSec'); process.exit(1); }
     const data = JSON.parse(fs.readFileSync(TRUTH, 'utf8'));
 
     const variants = [

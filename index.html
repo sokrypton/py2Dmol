@@ -3,7 +3,8 @@ index.html
 ----------
 AI Context: STANDALONE WEB APP ENTRY POINT
 - The main HTML file for the standalone web application.
-- Loads: web/utils.js, viewer-mol.js, viewer-pae.js, viewer-seq.js, viewer-msa.js, web/app.js
+- Loads every source file directly, in the order tools/bundle.py declares.
+  A deployed page can load one bundle instead; see tools/bundle.py BUNDLES.
 - Defines the DOM structure for the viewer, sidebar, and controls.
 -->
 <!DOCTYPE html>
@@ -13,20 +14,17 @@ AI Context: STANDALONE WEB APP ENTRY POINT
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>2Dmol</title>
-    <!-- PRODUCTION NOTE: Replace CDN script below with locally built Tailwind CSS
-         Install: npm install -D tailwindcss postcss autoprefixer
-         Build: npx tailwindcss -i ./input.css -o ./output.css --watch
-         See: https://tailwindcss.com/docs/installation -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- No Tailwind. It was loaded from cdn.tailwindcss.com - an in-browser JIT
+         compiler that re-scans the DOM on every mutation, and warns in the
+         console that it is not for production - to supply EIGHT utility rules.
+         They are in src/app/style.css now, with Tailwind's own values. -->
     <!-- JSZip library for handling zip file uploads -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-    <!-- Numeric.js for SVD calculations -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/numeric/1.2.6/numeric.min.js"></script>
-    <!-- canvas2svg is now integrated into viewer-mol.js -->
+    <!-- canvas2svg is src/core/svg.js -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
         xintegrity="sha512-SnH5WK+bZxgPHs44uWIX+LLMDJd4gYm4zQ6UvE6j3v/3Tf7U7T2Y9p6gJzU0bW5V6f6G6X6b6W6w6+g6w=="
         crossorigin="anonymous" referrerpolicy="no-referrer" />
-    <link rel="stylesheet" href="web/style.css">
+    <link rel="stylesheet" href="src/app/style.css">
 </head>
 
 <body class="bg-gray-50 text-gray-800 font-sans p-8">
@@ -59,11 +57,12 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                  without it. Small structures are unaffected either way (1TIM 306
                  vs 327 ms, 4UG0 332 vs 333).
 
-                 Safe as a default because it is only ever a REQUEST: this control
-                 removes itself when WebGL2 is absent, and the renderer falls back
-                 to the 2D path by itself for anything the GPU declines. The Python
-                 viewer keeps its own default (gpu=False in viewer.py) and has no
-                 such control. -->
+                 Safe as a default HERE because this page is the one build that
+                 keeps both painters: the control removes itself when WebGL2 is
+                 absent, and the renderer falls back to the 2D path for anything
+                 the GPU declines. Nowhere else has that fallback - the notebook
+                 and embed bundles ship the WebGL2 painter alone, and their
+                 default is gpu=True with nothing behind it. -->
             <label id="useGpuRow" class="btn-toggle-global"
                 title="Draw on the GPU (WebGL2): the same picture, but turning and zooming cost one draw call instead of a full repaint. Applies to both styles.">
                 <input type="checkbox" id="useGpuCheckbox" checked>
@@ -352,7 +351,7 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                 <!-- Initially empty -->
                             </select>
                         </div>
-                        <!-- Rows are built in app.js from the objects that
+                        <!-- Rows are built in src/app/objects.js from the objects that
                              exist: an eye and a name, and the whole row is
                              the switch. Only in Multi. -->
                         <div id="objectList" class="object-list" hidden></div>
@@ -382,7 +381,7 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                off for the input body and back on for the thumb, or the
                                upper input would swallow every click meant for the lower
                                one. */
-                            /* TWO IDS, DELIBERATELY. web/style.css styles every range
+                            /* TWO IDS, DELIBERATELY. src/app/style.css styles every range
                                input in the viewer with
                                `.py2dmol-viewer-instance input[type="range"]:not(#frameSlider)`,
                                and :not(#frameSlider) counts an ID - so that rule outranks
@@ -464,212 +463,11 @@ AI Context: STANDALONE WEB APP ENTRY POINT
 
                         <div id="styleAppearanceContainer" class="control-group">
 
-                            <!-- Render controls live in a collapsible Style panel. Rows and
-                                 half-cells tagged data-style="tube|cartoon" appear only under
-                                 that style; data-needs-cel appears only while Cel is on.
-                                 Filtering is done by syncStylePanel() in viewer-mol.js. -->
-                            <div id="stylePanel" hidden
-                                style="display: flex; flex-direction: column; gap: 6px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; padding: 8px;">
-                                <!-- Style and Preset share a row; the Preset half is
-                                     tagged data-style="cartoon" so it only appears once a
-                                     cartoon style is selected, and the row collapses to
-                                     Style alone otherwise. -->
-                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                    <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                        <label for="styleSelect" class="font-medium text-gray-700"
-                                            style="font-size: 12px; flex-shrink: 0;">Style:</label>
-                                        <select id="styleSelect"
-                                            style="flex: 1; min-width: 0; height: 28px; font-size: 12px; padding: 0 8px; border: 1px solid #d1d5db; border-radius: 8px;">
-                                            <option value="tube">Tube</option>
-                                            <option value="cartoon" selected>Cartoon</option>
-                                        </select>
-                                    </div>
-                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                        <label for="presetSelect" class="font-medium text-gray-700"
-                                            style="font-size: 12px; flex-shrink: 0;" title="Named starting points; the sliders stay live under any of them">Preset:</label>
-                                        <select id="presetSelect"
-                                            style="flex: 1; min-width: 0; height: 28px; font-size: 12px; padding: 0 8px; border: 1px solid #d1d5db; border-radius: 8px;">
-                                            <option value="richardson">Richardson</option>
-                                            <option value="ribbon">Ribbon</option>
-                                            <option value="3d">3D</option>
-                                        </select>
-                                    </div>
-                                </div>
-                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                    <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                        <label for="lineWidthSlider" class="font-medium text-gray-700"
-                                            style="width: 50px; font-size: 12px; flex-shrink: 0;">Width:</label>
-                                        <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1"
-                                            style="flex: 1; min-width: 0; outline: none;">
-                                    </div>
-                                    <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                        <label for="outlineWidthSlider" class="font-medium text-gray-700"
-                                            style="width: 50px; font-size: 12px; flex-shrink: 0;">Outline:</label>
-                                        <input type="range" id="outlineWidthSlider" min="0" max="3" value="3.0" step="0.1"
-                                            style="flex: 1; min-width: 0; outline: none;">
-                                    </div>
-                                </div>
-                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                        <label for="thicknessSlider" class="font-medium text-gray-700"
-                                            style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Cartoon slab thickness (0 = flat)">Thick:</label>
-                                        <input type="range" id="thicknessSlider" min="0" max="1.5" value="0" step="0.05"
-                                            style="flex: 1; min-width: 0; outline: none;">
-                                    </div>
-                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                        <label for="sheetFlatSlider" class="font-medium text-gray-700"
-                                            style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Flatten beta strands (0 = natural pleat, 1 = flat)">Flat:</label>
-                                        <input type="range" id="sheetFlatSlider" min="0" max="1" value="0" step="0.05"
-                                            style="flex: 1; min-width: 0; outline: none;">
-                                    </div>
-                                </div>
-                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                        <label for="highlightSlider" class="font-medium text-gray-700"
-                                            style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Brightness lift on faces pointing at the light (0 = base colour is the ceiling)">Hilite:</label>
-                                        <input type="range" id="highlightSlider" min="0" max="3" value="1.8" step="0.05"
-                                            style="flex: 1; min-width: 0; outline: none;">
-                                    </div>
-                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                        <label for="shadeSlider" class="font-medium text-gray-700"
-                                            style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Directional shading: 0 = flat colour, 1 = full light, highlight and inner shadow">Shade:</label>
-                                        <input type="range" id="shadeSlider" min="0" max="1" value="1" step="0.05"
-                                            style="flex: 1; min-width: 0; outline: none;">
-                                    </div>
-                                </div>
-                                
-                                <!-- A FLOW, NOT TWO ROWS. Each cell is half the
-                                     width and the container wraps, so a cell
-                                     that belongs to the other style collapses
-                                     and the ones that are left pair up on their
-                                     own. Hand-made rows went ragged instead:
-                                     tube hid Pencil and Ink and was left with
-                                     Shadow alone on one line and Ortho alone on
-                                     the next. -->
-                                <div class="toggle-item" style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
-                                    <div data-style="cartoon" style="flex: 1 1 45%; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                        <label for="pencilSlider" class="font-medium text-gray-700"
-                                            style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Coloured-pencil paper grain (0 = clean)">Pencil:</label>
-                                        <input type="range" id="pencilSlider" min="0" max="1" value="0" step="0.05"
-                                            style="flex: 1; min-width: 0; outline: none;">
-                                    </div>
-                                    <div data-style="tube" style="flex: 1 1 45%; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                        <label for="shadowSlider" class="font-medium text-gray-700"
-                                            style="width: 50px; font-size: 12px; flex-shrink: 0;">Shadow:</label>
-                                        <input type="range" id="shadowSlider" min="0" max="1" value="0.5" step="0.01"
-                                            style="flex: 1; min-width: 0; outline: none;">
-                                    </div>
-                                    <div data-style="cartoon" style="flex: 1 1 45%; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                        <label for="outlineTintSlider" class="font-medium text-gray-700"
-                                            style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Outline colour: 0 = black, 1 = tint of the element colour (as in ribbon mode)">Ink:</label>
-                                        <input type="range" id="outlineTintSlider" min="0" max="1" value="0" step="0.05"
-                                            style="flex: 1; min-width: 0; outline: none;">
-                                    </div>
-                                    <div data-style="cartoon" style="flex: 1 1 45%; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                        <label for="detailSlider" class="font-medium text-gray-700"
-                                            style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Subdivisions per residue, 2-8 (low = faceted and faster)">Detail:</label>
-                                        <input type="range" id="detailSlider" min="2" max="8" value="4" step="1"
-                                            style="flex: 1; min-width: 0; outline: none;">
-                                    </div>
-                                    <div style="flex: 1 1 45%; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                        <label for="orthoSlider" class="font-medium text-gray-700"
-                                            style="width: 50px; font-size: 12px; flex-shrink: 0;">Ortho:</label>
-                                        <input type="range" id="orthoSlider" min="0" max="1" value="0.5" step="0.01"
-                                            style="flex: 1; min-width: 0; outline: none;">
-                                    </div>
-                                </div>
-                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                    <label for="colorSelect" class="font-medium text-gray-700"
-                                        style="font-size: 12px;">Color:</label>
-                                    <select id="colorSelect"
-                                        style="flex: 1; height: 28px; font-size: 12px; padding: 0 8px; border: 1px solid #d1d5db; border-radius: 8px;">
-                                        <!-- ORDERED BY HOW OFTEN THEY ARE REACHED FOR,
-                                             not by when they were added: Auto first
-                                             because it is the answer most of the time,
-                                             then the three that apply to any structure,
-                                             then the two that only mean anything on a
-                                             prediction. -->
-                                        <option value="auto">Auto</option>
-                                        <option value="rainbow">Rainbow</option>
-                                        <option value="chain">Chain</option>
-                                        <!-- ONE FLAT COLOUR PER OBJECT, for
-                                             comparing two structures of the
-                                             same thing - where every other
-                                             scheme gives them the same colours
-                                             as each other. Hidden until there
-                                             is more than one object on screen,
-                                             where it would colour everything
-                                             identically. -->
-                                        <option value="object" hidden>Object</option>
-                                        <option value="ss">SSE</option>
-                                        <option value="plddt">pLDDT</option>
-                                        <option value="deepmind">DeepMind</option>
-                                        <option value="entropy" id="entropyColorOption" hidden>Entropy</option>
-                                    </select>
-                                </div>
-                                <div class="toggle-item" data-needs-ss hidden style="display: flex; align-items: flex-start; gap: 8px;">
-                                    <label class="font-medium text-gray-700"
-                                        style="font-size: 12px; width: 50px; flex-shrink: 0;" title="Colour palette for the SSE mode; C coil, H helix, E strand, N nucleic, L ligand">SSE:</label>
-                                    <div id="ssPaletteButtons" style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;"></div>
-                                </div>
-                                <!-- The container is NOT tagged data-style: Smooth,
-                                     Arrows and Draw are cartoon-only and carry the tag
-                                     themselves, but Colorblind, Dark and Cyclic apply to
-                                     either style. Tagging it would take all three off the
-                                     screen in tube. Their ORDER is what makes each style
-                                     read as whole lines: cartoon gets Smooth/Arrows/Draw
-                                     then Colorblind/Dark/Cyclic, and tube - which hides
-                                     the first three - gets Colorblind/Dark/Cyclic. -->
-                                <!-- ...AND THE TOGGLES, for the same reason: a
-                                     third of the width each, wrapping, so tube
-                                     (which has no Smooth, Arrows or Draw) puts
-                                     Colorblind, Dark and Cyclic on one line
-                                     instead of scattering them down three. -->
-                                <div class="toggle-item" style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
-                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1 1 30%;"
-                                        data-style="cartoon"
-                                        title="Smooth shading gradients (off = flat tone bands)">
-                                        <input type="checkbox" id="smoothCheckbox">
-                                        <span>Smooth</span>
-                                    </label>
-                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1 1 30%;"
-                                        data-style="cartoon"
-                                        title="Arrowheads on the C-terminal end of each beta strand">
-                                        <input type="checkbox" id="arrowsCheckbox" checked>
-                                        <span>Arrows</span>
-                                    </label>
-                                    <label class="btn-toggle btn-no-margin btn-small" data-style="cartoon" style="flex: 1 1 30%;"
-                                        title="Build the picture up by hand: pencil sketch, colour wash, then ink">
-                                        <input type="checkbox" id="drawCheckbox">
-                                        <span>Draw</span>
-                                    </label>
-                                    <label class="btn-toggle btn-no-margin btn-small" title="Colorblind-safe colors" style="flex: 1 1 30%;">
-                                        <input type="checkbox" id="colorblindCheckbox">
-                                        <span>Colorblind</span>
-                                    </label>
-                                    <label class="btn-toggle btn-no-margin btn-small" title="Black background (white ink, fade toward black)" style="flex: 1 1 30%;">
-                                        <input type="checkbox" id="darkCheckbox">
-                                        <span>Dark</span>
-                                    </label>
-                                    <!-- Detect Cyclic lives here rather than in the fetch
-                                         panel: it is a question about the structure that
-                                         can be asked at any time, not a setting that has
-                                         to be right before the file arrives. It is still
-                                         OFF by default - the test is a distance one, first
-                                         and last residue closer than the chain-break
-                                         cutoff, and a linear chain whose ends happen to
-                                         fold together passes it. That draws a bond that is
-                                         not there and wraps the rainbow ramp all the way
-                                         round, so the N and C termini come out the same
-                                         colour. Cyclic peptides are rare enough that the
-                                         user should ask. -->
-                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1 1 30%;"
-                                        title="Join a chain's first and last residue when they are close enough to be bonded, and wrap the rainbow ramp around the ring">
-                                        <input type="checkbox" id="detectCyclicCheckbox">
-                                        <span>Cyclic</span>
-                                    </label>
-                                </div>
-                            </div>
+                            <!-- The Style panel is BUILT by parts/panel.js and inserted here by
+                                 ui.js. It used to be written out in full in this file AND again
+                                 in the other page, under a note saying to edit both - which had
+                                 already been missed in both directions. -->
+                            <div id="stylePanelMount"></div>
 
 
 
@@ -1087,7 +885,6 @@ AI Context: STANDALONE WEB APP ENTRY POINT
         </div>
 
     </div>
-    </div>
 
     <!-- Footer -->
     <footer style="margin-top: var(--container-gap); padding: 0; color: #6b7280; font-size: 13px;">
@@ -1107,21 +904,20 @@ AI Context: STANDALONE WEB APP ENTRY POINT
         </div>
     </footer>
 
-    <!-- Load scripts in order -->
-    <script src="web/utils.js"></script>
-    <!-- TM-align and the viewer's side of it, in one file: loaded before
-         viewer-mol.js so the renderer's align methods have window.Align to
-         hand. Its TM-align half is generated from foldjs/lib/tmalign.js - see
-         tests/vendor_tmalign.mjs. -->
-    <script src="py2Dmol/resources/viewer-align.js"></script>
-    <script src="py2Dmol/resources/viewer-mol.js"></script>
-    <script src="py2Dmol/resources/viewer-cartoon.js"></script>
-    <script src="py2Dmol/resources/viewer-cartoon-gpu.js"></script>
-    <script src="py2Dmol/resources/viewer-pae.js"></script>
-    <script src="py2Dmol/resources/viewer-scatter.js"></script>
-    <script src="py2Dmol/resources/viewer-seq.js"></script>
-    <script src="py2Dmol/resources/viewer-msa.js"></script>
-    <script src="web/app.js"></script>
+    <!-- THE DEPLOYED PAGE LOADS THE BUNDLE. py2dmol.solab.org serves this
+         file from the repo root, so twenty-seven tags meant twenty-seven
+         requests and 2.9 MB; bundles/py2Dmol.web.min.js is 729 KB in one. To develop
+         against the loose sources - real line numbers, no rebuild between an
+         edit and a reload - open dev.html, which tools/bundle.py generates
+         from this file. -->
+
+    <!-- TM-align and the viewer's side of it, in one file, and the one thing
+         that can never be concatenated: it starts its Worker by having the
+         worker importScripts *itself*, found through document.currentScript.src,
+         which inlining leaves empty. Its TM-align half is generated from
+         foldjs/lib/tmalign.js - see tests/vendor_tmalign.mjs. -->
+    <script src="src/align/align.js"></script>
+    <script src="py2Dmol/resources/bundles/py2Dmol.web.min.js"></script>
 
 
 </body>

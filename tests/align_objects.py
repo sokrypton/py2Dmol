@@ -36,6 +36,13 @@ window.addEventListener('load', () => {
   const P = new URLSearchParams(location.search);
   const load = async (f) => {
     const txt = await (await fetch('/' + f)).text();
+    // ...WITH THE BIOUNIT OFF, because this measures an ALIGNMENT and the node
+    // figures it is checked against were computed on the deposited chains. The
+    // page's Load Biounit box is ticked by default, and 2OMF's assembly is a
+    // trimer - so with it on the page aligns three chains against three and
+    // scores 0.254, which says nothing about whether TM-align works.
+    const bu = document.getElementById('biounitCheckbox');
+    if (bu && bu.checked) { bu.checked = false; bu.dispatchEvent(new Event('change')); }
     await window.processFiles([{name: f, readAsync: () => Promise.resolve(txt)}], false);
   };
   const el = (id) => document.getElementById(id);
@@ -132,7 +139,7 @@ window.addEventListener('load', () => {
 """
 JS = JS.replace("//HELPERS", HELPERS)
 check_js(JS)
-src = open(os.path.join(ROOT, "index.html")).read()
+src = open(os.path.join(ROOT, "dev.html")).read()
 stamp = str(int(time.time() * 1000))
 src = re.sub(r'(<script src="(?!https?:)[^"]+?)(\?v=\d+)?(")',
              lambda m: m.group(1) + "?v=" + stamp + m.group(3), src)

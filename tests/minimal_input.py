@@ -58,7 +58,13 @@ window.addEventListener('load', () => {
     try {
       const key = Object.keys(window.py2dmol_viewers)[0];
       const r = window.py2dmol_viewers[key].renderer;
-      r.useGPU = false;
+      // NOT `r.useGPU = false` ANY MORE. This used to pin the CPU path so the
+      // SSE timings below could not be blamed on a driver - but the notebook
+      // bundle now ships cartoon/paintgl.js and no 2D painter, so switching the
+      // GPU off leaves the cartoon with nothing to draw it and this probe
+      // reported "cartoon drew nothing from a bare CA trace" against a viewer
+      // that was working. The timings are unaffected either way: assignedSseFor
+      // is geometry, and no painter is involved in it.
       await settle();
       const all = [];
       for (let i = 0; i < r.coords.length; i++) all.push(i);
@@ -91,6 +97,19 @@ window.addEventListener('load', () => {
                 allMs: (() => { const a = performance.now();
                   r.assignedSseFor(all); return Math.round((performance.now() - a) * 100) / 100; })()};
       };
+      // THE NOTEBOOK OPENS FACING THE READER, and since best_view left
+      // viewer.py that is parts/orient.js's job rather than numpy's. An
+      // unoriented viewer looks like a viewer, so the only way to see this
+      // regress is to ask whether anything turned it.
+      R.orient = {
+        module: !!window.py2dmolOrient,
+        fromPython: !!(r.objectsData[r.currentObjectName] || {}).rotation_matrix,
+        rotation: r.viewerState.rotation.map((row) => row.map(
+            (v) => Math.round(v * 1000) / 1000)),
+      };
+      R.orient.identity = [0, 1, 2].every((i) => [0, 1, 2].every((j) =>
+          Math.abs(R.orient.rotation[i][j] - (i === j ? 1 : 0)) < 1e-6));
+
       R.tube = await look('tube');
       R.cartoon = await look('cartoon');
 
@@ -180,8 +199,21 @@ def main():
               f" {s.get('warmMs')}ms warm, {s.get('allMs')}ms over all of it")
     print(f"  absent: {R.get('absent')}")
     print(f"  panel:  {R.get('after')}")
+    o = R.get('orient') or {}
+    print(f"  orient: module {o.get('module')}, from python"
+          f" {o.get('fromPython')}, identity {o.get('identity')}")
 
     bad = []
+    o = R.get('orient') or {}
+    if not o.get('module'):
+        bad.append('parts/orient.js is not in the notebook bundle, so nothing can'
+                   ' choose a viewing angle now that viewer.py does not')
+    if o.get('fromPython'):
+        bad.append('the payload still carries a rotation_matrix from Python -'
+                   ' best_view was meant to go with numeric.js')
+    if o.get('identity'):
+        bad.append('the viewer opened at the identity rotation: nothing oriented it,'
+                   ' so the structure faces whichever way the file happened to be')
     for e in R.get('errors', []):
         bad.append('page error: ' + e)
     for style in ('tube', 'cartoon'):

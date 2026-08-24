@@ -30,7 +30,7 @@ import numpy as np
 from itertools import product
 from scipy.spatial import ConvexHull, Delaunay
 
-# ---- the renderer's own constants (py2Dmol/resources/viewer-cartoon.js) ----
+# ---- the renderer's own constants (src/cartoon/geom.js) ----
 SS_HALF_A_H   = 1.3     # helix half-width, Angstrom, before the Width slider
 LIGAND_STICK_H = 0.30
 LIGAND_WIDTH   = 2.5

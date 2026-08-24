@@ -38,6 +38,7 @@ So the STATIC check is the one that means something, and --wheel warns when the
 environment is lying to it.
 """
 import ast
+import glob
 import os
 import re
 import subprocess
@@ -49,11 +50,19 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def opened_by_viewer():
-    """Resource names viewer.py hands to importlib.resources, and their lines."""
+    """Resource names viewer.py hands to importlib.resources, and their lines.
+
+    THE NAME, WHEREVER IT IS WRITTEN. This used to require the literal to sit
+    inside the _resource_text(...) call, and viewer.py now picks between two
+    bundles - so the argument became a variable and this found NOTHING, which
+    it reported as success. Both names are still in the file, three lines up.
+    """
     src = open(os.path.join(ROOT, "py2Dmol", "viewer.py")).read()
     out = {}
-    for m in re.finditer(r"open_text\(\s*py2dmol_resources\s*,\s*['\"]([^'\"]+)['\"]", src):
-        out[m.group(1)] = src[:m.start()].count("\n") + 1
+    for m in re.finditer(r"""["']((?:bundles/)?[\w./-]+\.(?:min\.js|html))["']""", src):
+        name = m.group(1)
+        if name.endswith((".min.js", ".html")):
+            out.setdefault(name, src[:m.start()].count("\n") + 1)
     return out
 
 
@@ -66,7 +75,16 @@ def shipped_by_setup():
         for key, val in zip(node.value.keys, node.value.values):
             if getattr(key, "value", None) != "py2Dmol":
                 continue
-            return {os.path.basename(e.value) for e in val.elts}
+            # ...GLOBS EXPANDED, and as the path under resources/, which is how
+            # viewer.py names them. setup.py lists directories rather than
+            # eighteen literal paths, so comparing the strings would say the
+            # wheel ships nothing.
+            out = set()
+            for e in val.elts:
+                for hit in glob.glob(os.path.join(ROOT, "py2Dmol", e.value)):
+                    out.add(os.path.relpath(hit, os.path.join(ROOT, "py2Dmol",
+                                                              "resources")))
+            return out
     return set()
 
 
@@ -103,7 +121,7 @@ for name in sorted(shipped - set(opened)):
     print(f"  unused      {name}  (shipped, never opened)")
 
 if not opened:
-    bad.append("no open_text(py2dmol_resources, ...) calls found at all - this"
+    bad.append("no _resource_text(...) calls found at all - this"
                " check has stopped reading viewer.py and would pass forever")
 if not shipped:
     bad.append("no package_data for 'py2Dmol' found in setup.py - this check has"

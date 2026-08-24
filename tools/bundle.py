@@ -1,0 +1,487 @@
+"""The one list of what JavaScript this project has, and who needs it.
+
+    python3 tools/bundle.py check     # every consumer agrees with MODULES
+    python3 tools/bundle.py build     # build every bundle (and the loose panels)
+    python3 tools/bundle.py build embed   # ...or just one
+    python3 tools/bundle.py show      # print the manifest
+
+WHY THIS EXISTS. The same set of files was written out by hand in five places -
+index.html's script tags, viewer.py's inline reads, tests/run.sh's
+terser loop, and setup.py's package_data - and they had already drifted apart:
+
+  * setup.py did not ship viewer-cartoon-gpu.min.js, which viewer.py opens
+    unconditionally. A wheel built by CI raised FileNotFoundError on the first
+    show(); a wheel built here did not, because setuptools-scm covered for it.
+  * tests/run.sh built viewer-seq.min.js on every run and nothing consumed it,
+    while viewer-align.js had no .min.js at all.
+  * viewer-msa.min.js, 63 KB, is committed and consumed by nothing.
+
+Five lists that must agree, and nothing checking them, is one list plus four
+copies waiting to rot - and the file split about to happen turns nine files into
+twenty. So the manifest below is the list, `check` derives every consumer from
+it, and tests/run.sh runs `check` in the node lane.
+
+This is deliberately NOT a bundler. The files are classic scripts sharing one
+global scope; they concatenate with no ceremony (verified - the whole set passes
+`node --check` when cat'd together) and load with plain <script> tags. What is
+needed is a manifest, not a module system.
+"""
+import os
+import re
+import subprocess
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+class Mod:
+    """One JavaScript file, and everything that decides who gets it.
+
+    `targets` is which HTML entry points load it. `inlined` is whether
+    viewer.py reads it into the notebook's HTML - which is a different question,
+    because the notebook has no <script src> at all. `minified` follows from
+    `inlined`: a .min.js exists to be inlined and for no other reason.
+
+    `standalone` marks a file that must NEVER be concatenated or inlined.
+    align/align.js is the only one: it starts its Worker by having the worker
+    importScripts *itself*, found through document.currentScript.src. With no
+    URL of its own that lookup returns '' and it silently runs TM-align on the
+    main thread instead - seconds of frozen page, no error.
+    """
+
+    def __init__(self, name, path, targets, inlined=False, standalone=False):
+        self.name = name
+        self.path = path
+        self.targets = set(targets)
+        self.inlined = inlined
+        self.standalone = standalone
+
+    @property
+    def minified(self):
+        # NOTHING is minified on its own any more - see BUNDLES. Kept so
+        # check() can say so when a stray .min.js turns up beside a source.
+        return False
+
+    @property
+    def min_path(self):
+        return self.path[:-3] + '.min.js'
+
+
+# IN LOAD ORDER. The order of this list is the order the tags are written and
+# the order a bundle concatenates in - parts before core/mol, which installs
+# them; cartoon/geom before cartoon/paint2d, which reads its vocabulary.
+MODULES = [
+    # FIRST, and it is the only tag index.html carries beside the bundle: it
+    # cannot be concatenated (see Mod.standalone), and everything that uses it
+    # - the renderer's align methods - only reaches for window.Align at click
+    # time, so being early costs nothing and keeps one order for both pages.
+    Mod('align',      'src/align/align.js',     ['web'], standalone=True),
+    Mod('math',       'src/io/math.js',                          ['web']),
+    Mod('parse',      'src/io/parse.js',                         ['web']),
+    Mod('gif',        'src/io/gif.js',                           ['web']),
+    Mod('svg',        'src/core/svg.js',        ['web']),
+    Mod('objstate',   'src/core/objstate.js',   ['web']),
+    Mod('viewport',   'src/parts/viewport.js',  ['web']),
+    Mod('shadow',     'src/parts/shadow.js',    ['web']),
+    Mod('clip',       'src/parts/clip.js',      ['web']),
+    Mod('capture',    'src/parts/capture.js',   ['web']),
+    Mod('savepanel',  'src/parts/savepanel.js', ['web']),
+    Mod('mol-align',  'src/parts/align.js',     ['web']),
+    Mod('multi',      'src/parts/multi.js',     ['web']),
+    # ...the style panel's rows, as data. Before ui.js, which mounts it.
+    Mod('panel',      'src/parts/panel.js',     ['web']),
+    # ...turning a structure to face the reader. Needs src/io/math.js, which is
+    # why that file is no longer web-only.
+    Mod('orient',     'src/parts/orient.js',    ['web']),
+    Mod('ui',         'src/parts/ui.js',        ['web']),
+    # ...the other wirer. Not on the website, which has the panel; core/mol.js
+    # picks between the two on config.embed.
+    Mod('embed',      'src/parts/embed.js',     []),
+    Mod('mol',        'src/core/mol.js',        ['web']),
+    Mod('geom',       'src/cartoon/geom.js',    ['web']),
+    Mod('paint2d',    'src/cartoon/paint2d.js', ['web']),
+    Mod('paintgl',    'src/cartoon/paintgl.js', ['web']),
+    Mod('pae',        'src/panels/pae.js',      ['web']),
+    Mod('scatter',    'src/panels/scatter.js',  ['web']),
+    Mod('seq',        'src/panels/seq.js',      ['web']),
+    Mod('msa',        'src/panels/msa.js',      ['web']),
+    # the browser UI, split by what each part is for. Load order is loose -
+    # everything here is a top-level function called after the page is up - but
+    # main.js declares the shared state, so it goes first.
+    Mod('app',        'src/app/main.js',                      ['web']),
+    Mod('app-select', 'src/app/selection.js',                 ['web']),
+    Mod('app-objects','src/app/objects.js',                   ['web']),
+    Mod('app-fetch',  'src/app/fetch.js',                     ['web']),
+    Mod('app-scatter','src/app/scatter.js',                   ['web']),
+    Mod('app-session','src/app/session.js',                   ['web']),
+]
+
+# WHAT EACH APPLICATION ACTUALLY SHIPS.
+#
+# Many small source files are for reading; nobody should download twenty-two of
+# them. A bundle is a named subset, concatenated in MODULES order and minified
+# once - so the notebook fetches one script instead of fifteen, and an embed
+# carries neither the panels nor the capture machinery it will never open.
+#
+# `standalone` modules are never in a bundle: align/align.js starts its Worker
+# by importing its own URL, which a concatenation does not have.
+BUNDLES = {
+    # The notebook: everything a Jupyter cell can reach, panels included.
+    #
+    # PAE and scatter used to be added only when the config asked, as two
+    # conditional reads and then as two one-file bundles. They are 15 KB and
+    # 8 KB against 466 KB - five per cent - and both register a global and do
+    # nothing at all until something asks for them. Two branches in viewer.py,
+    # two artefacts and two entries in every list, to save five per cent of one
+    # download, was not a trade worth keeping.
+    # NO 'mol-align'. parts/align.js is the renderer's side of TM-align, and in
+    # a notebook it is dead twice over: the only caller is app/selection.js,
+    # which is web-only, and the engine it needs - align/align.js - cannot be
+    # concatenated into any bundle at all (see Mod.standalone). Every method it
+    # adds throws "the aligner is not loaded" the moment it is reached.
+    #
+    # Worth removing even though it is small, because the notebook bundle is
+    # INLINED INTO THE .ipynb, uncompressed, once per show() cell. Bytes here
+    # are paid again for every viewer in the document.
+    'notebook': ['math', 'svg', 'objstate', 'viewport', 'shadow', 'clip',
+                 'capture', 'savepanel', 'multi', 'panel', 'orient',
+                 'ui', 'mol', 'geom', 'paintgl', 'pae', 'scatter'],
+    # ...AND THE SAME WITHOUT THE CARTOON GEOMETRY, for a notebook that cannot
+    # reach it. cartoon/geom.js is 101 KB of the 470 - twenty-one per cent - and
+    # it is only ever entered by the cartoon styles.
+    #
+    # "Cannot reach" is a narrow and checkable condition: no Style dropdown
+    # (controls=False), a tube style, and no preset named. Then nothing in the
+    # page can ask for a cartoon, because Python fixes the style at view() time
+    # and there is no control to change it afterwards. viewer.py picks; see the
+    # note there.
+    #
+    # A SECOND ARTEFACT, WHICH embed-tube DID NOT EARN AND THIS DOES. That one
+    # was a quarter smaller and could not draw a ribbon - a capability cut
+    # dressed as a size option. This one draws exactly what the caller already
+    # asked for, and the bytes are paid per .ipynb CELL rather than once over a
+    # gzipped wire.
+    # ...AND THE SAME DRAWN ON THE CPU, for a machine with no WebGL2 and for
+    # anyone who wants an SVG out of a notebook.
+    #
+    # THE GPU-ONLY RULE WAS RIGHT FOR THE DOWNLOAD AND WRONG FOR THE NOTEBOOK.
+    # One painter per bundle is what keeps the website's two artefacts honest,
+    # and outside it the GPU is the better painter by 26 ms a frame against
+    # 840. But a notebook cannot fall back: no WebGL2 meant no picture at all,
+    # said on the console, to a reader who never chose a painter and has no
+    # checkbox to change one. That is a bad failure to hand someone whose only
+    # mistake was an old browser or a remote kernel.
+    #
+    # It is also SMALLER - paint2d.js is 25 KB minified against paintgl.js's
+    # 118 - and it is the only notebook that can save an SVG, because vector
+    # output is the primitives replayed into an export context and the GPU
+    # holds a raster.
+    'notebook.cpu': ['math', 'svg', 'objstate', 'viewport', 'shadow', 'clip',
+                     'capture', 'savepanel', 'multi', 'panel', 'orient',
+                     'ui', 'mol', 'geom', 'paint2d', 'pae', 'scatter'],
+    'notebook.tube': ['math', 'svg', 'objstate', 'viewport', 'shadow', 'clip',
+                      'capture', 'savepanel', 'multi', 'panel', 'orient',
+                      'ui', 'mol', 'paintgl', 'pae', 'scatter'],
+    # The website. Everything index.html loads EXCEPT align/align.js, which
+    # cannot be concatenated - it starts its Worker by importing its own URL.
+    #
+    # index.html itself still loads the twenty-seven sources one by one, on
+    # purpose: it is the development page, and edit-and-reload with real line
+    # numbers is worth more there than one request. This bundle is what a
+    # deployed copy serves instead, next to a plain tag for align/align.js.
+    'web': ['math', 'parse', 'gif', 'svg', 'objstate', 'viewport', 'shadow', 'clip',
+            'capture', 'savepanel', 'mol-align', 'multi', 'panel', 'orient', 'ui', 'mol',
+            'geom', 'paint2d', 'paintgl', 'pae', 'scatter', 'seq', 'msa',
+            'app', 'app-select', 'app-objects', 'app-fetch', 'app-scatter',
+            'app-session'],
+    # ONE PAINTER PER BUNDLE, AND OUTSIDE THE WEBSITE IT IS THE GPU.
+    #
+    # The website keeps both and a toggle; everything else picks one and has no
+    # fallback behind it. What that does to a download depends entirely on what
+    # the bundle carried before, so the three numbers go in three directions and
+    # only one of them is a saving:
+    #
+    #   notebook    478 -> 453 KB   had BOTH; dropped paint2d          -25
+    #   embed       321 -> 414 KB   had paint2d; swapped for paintgl   +93
+    #
+    # THERE WAS A THIRD, AND GOING GPU-ONLY IS WHAT ENDED IT. embed-tube was the
+    # small one: tube only, no cartoon geometry, no painter at all - the tube is
+    # drawn by _drawFrame in core/mol.js - and it came to 195 KB against embed's
+    # 321. Needing paintgl took it to 313 against 415. A quarter smaller, for a
+    # build that cannot draw a cartoon, is not a choice worth offering or a
+    # second artefact worth keeping in step.
+    #
+    # MEASURE THIS MINIFIED, NOT IN LINES. paint2d.js is 2,487 lines and 25 KB
+    # minified; paintgl.js is 5,834 lines and 118 KB. Twice the source, nearly
+    # five times the download - paint2d is 81% comment and whitespace against
+    # paintgl's 62%, so line counts understate the swap by half.
+    #
+    # What it buys is what the sizes were never the point of: 26 ms a frame on a
+    # capsid against 840, and 455 ms to first paint against 1,813.
+    #
+    # TWO THINGS FOLLOW AND ARE NOT OPTIONAL. Without WebGL2 these builds draw
+    # nothing, loudly - cartoon/geom.js says so on the console rather than
+    # leaving a blank canvas. And SVG export is gone from them: the GPU refuses
+    # an export context by design (paintgl.js checks ctx.getSerializedSvg), so
+    # vector output only ever came from the 2D painter. The Save panel hides the
+    # option when that painter is absent.
+
+    # A structure on someone's web page: parse, render, and a JS API. No panels,
+    # no save UI, no session, no alignment.
+    # panel + ui are what `controls: true` and `play` need: the embed mounts
+    # the notebook's own Style panel and is wired by wireViewerUI, rather than
+    # growing a third set of controls to keep in step. 25 KB for exact parity.
+    'embed': ['math', 'parse', 'objstate', 'viewport', 'shadow', 'clip',
+              'capture', 'savepanel', 'multi', 'panel', 'orient', 'ui', 'embed',
+              'mol', 'geom', 'paintgl'],
+    # ...and the same embed drawn on the CPU. THE SECOND ARTEFACT THAT EARNS ITS
+    # KEEP, where embed-tube did not: it draws the same picture from the same
+    # geometry - one geometry, two painters - so nothing is given up but speed on
+    # a large structure, and paint2d.js is 25 KB against paintgl.js's 118, which
+    # is 93 KB off the download. It can also export SVG, which the GPU cannot:
+    # vector output is the primitives replayed into an SVG context, and the GPU
+    # holds a raster. So capture and svg come with it.
+    #
+    # NOT A FALLBACK. Neither bundle has anything behind it; parts/embed.js asks
+    # which painter is present and refuses a request for the other one.
+    'embed.cpu': ['math', 'parse', 'objstate', 'svg', 'viewport', 'shadow',
+                  'clip', 'capture', 'savepanel', 'multi', 'panel', 'orient',
+                  'ui', 'embed', 'mol', 'geom', 'paint2d'],
+}
+
+BUNDLE_DIR = 'py2Dmol/resources/bundles'
+
+# THE FILENAME SAYS WHICH LIBRARY IT IS. A bundle is copied into someone else's
+# project and sits beside their own scripts; `py2Dmol.embed.min.js` there is anonymous,
+# and the directory that would have explained it is left behind. The target name
+# stays as the suffix, so the set reads as one family.
+BUNDLE_PREFIX = 'py2Dmol.'
+
+
+def bundle_file(target):
+    return f'{BUNDLE_DIR}/{BUNDLE_PREFIX}{target}.min.js'
+
+BY_PATH = {m.path: m for m in MODULES}
+
+# TWO PAGES, ONE MARKUP. index.html is what py2dmol.solab.org serves, so it
+# loads the bundle: one 729 KB request instead of twenty-seven totalling 2.9 MB.
+# dev.html is the same page with the twenty-six bundled files as loose tags, for
+# edit-and-reload with real line numbers, and it is GENERATED - `build` writes
+# it and `check` fails if it is not what regeneration would produce. Keeping it
+# by hand is how aoe's two near-identical pages drifted.
+SITE_HTML = 'index.html'
+DEV_HTML = 'dev.html'
+ENTRY_HTML = {'web': DEV_HTML}
+
+DEV_BANNER = ("    <!-- GENERATED by tools/bundle.py from index.html. Do not edit:\n"
+              "         change index.html and run `python3 tools/bundle.py build`.\n"
+              "         This is index.html with the bundle expanded into the loose\n"
+              "         sources it was built from - the page to develop against. -->\n")
+
+
+def render_dev():
+    """index.html with the bundle tag expanded into the manifest's loose tags."""
+    src = open(os.path.join(ROOT, SITE_HTML)).read()
+    tag = f'<script src="{bundle_file("web")}"></script>'
+    if src.count(tag) != 1:
+        sys.exit(f'{SITE_HTML} must carry exactly one {tag}')
+    loose = ''.join(f'    <script src="{m.path}"></script>\n'
+                    for m in for_target('web') if not m.standalone)
+    return src.replace('    ' + tag + '\n', DEV_BANNER + loose, 1)
+
+
+def for_target(t):
+    return [m for m in MODULES if t in m.targets]
+
+
+# --- reading what each consumer currently believes -------------------------
+
+def tags_in(html):
+    """The local <script src> paths in an HTML entry point, in document order."""
+    src = open(os.path.join(ROOT, html)).read()
+    return re.findall(r'<script src="((?:py2Dmol|src)/[^"?]+)', src)
+
+
+def inlined_by_viewer():
+    """The .min.js files viewer.py reads.
+
+    BY THE NAME, NOT BY THE CALL. This matched `_resource_text("...")` with a
+    literal inside, and viewer.py chooses between two bundles now - so the
+    argument is a variable and the scan came back EMPTY while both names sat
+    three lines above it. A check that reads nothing passes everything.
+
+    What matters is that every bundle the file names is one that gets built and
+    shipped; how the string reaches the call does not change that.
+    """
+    src = open(os.path.join(ROOT, 'py2Dmol', 'viewer.py')).read()
+    return sorted(set(re.findall(r"""["'](bundles/[^"']+\.min\.js)["']""", src)))
+
+
+def minified_by_runsh():
+    """What tests/run.sh minifies: a list of its own, or None if it delegates.
+
+    None is the right answer and the one this repo gives - run.sh calls
+    `tools/bundle.py minify`, so there is no second list to disagree with. The
+    literal-list branch stays because that is what it used to do, and a revert
+    to it should be caught rather than silently accepted.
+    """
+    src = open(os.path.join(ROOT, 'tests', 'run.sh')).read()
+    if re.search(r'bundle\.py\s+minify', src):
+        return None
+    m = re.search(r'for f in ((?:py2Dmol|src)/[\s\S]*?); do\n\s*npx terser', src)
+    return re.findall(r'(?:py2Dmol|src)/\S+\.js', m.group(1)) if m else []
+
+
+# --- building -----------------------------------------------------------
+
+BY_NAME = {m.name: m for m in MODULES}
+
+
+def bundle_paths(target):
+    """The files in a bundle, in MODULES order, with the names checked."""
+    want = set(BUNDLES[target])
+    unknown = want - set(BY_NAME)
+    if unknown:
+        sys.exit(f"bundle {target!r} names modules that do not exist: {sorted(unknown)}")
+    standalone = [n for n in want if BY_NAME[n].standalone]
+    if standalone:
+        sys.exit(f"bundle {target!r} includes {standalone}, which cannot be"
+                 " concatenated - see Mod.standalone")
+    return [m.path for m in MODULES if m.name in want]
+
+
+def build(targets=None):
+    os.makedirs(os.path.join(ROOT, BUNDLE_DIR), exist_ok=True)
+    for target in (targets or list(BUNDLES)):
+        srcs = bundle_paths(target)
+        joined = '\n'.join(open(os.path.join(ROOT, p)).read() for p in srcs)
+        raw = os.path.join(ROOT, BUNDLE_DIR, target + '.js')
+        out = os.path.join(ROOT, bundle_file(target))
+        open(raw, 'w').write(joined)
+        r = subprocess.run(['npx', 'terser', raw, '-c', '-m', '-o', out],
+                           cwd=ROOT, capture_output=True, text=True)
+        os.remove(raw)
+        if r.returncode != 0:
+            sys.exit(f'terser failed on bundle {target}:\n' + r.stderr.strip()[:400])
+        print(f'  {os.path.getsize(out):>9} {bundle_file(target)}'
+              f'  ({len(srcs)} files)')
+    # ...and the development page, which is index.html with the web bundle
+    # expanded. Written every build so it cannot lag the manifest.
+    dev = render_dev()
+    open(os.path.join(ROOT, DEV_HTML), 'w').write(dev)
+    print(f'  {len(dev):>9} {DEV_HTML}  ({dev.count("<script src=") } tags)')
+    return 0
+
+
+# --- the check --------------------------------------------------------------
+
+def check():
+    bad = []
+    print(f"{len(MODULES)} modules, {len(BUNDLES)} bundles")
+
+    for target, html in ENTRY_HTML.items():
+        want = [m.path for m in for_target(target)]
+        have = tags_in(html)
+        print(f"  {html}: {len(have)} tags")
+        if have != want:
+            bad.append(f"{html} loads\n      {have}\n    but the manifest says\n      {want}")
+
+    # ...and the DEPLOYED page loads the bundle and the one file that cannot be
+    # in it, and nothing else. A loose tag surviving here is a source file
+    # served to the public beside a bundle that already contains it.
+    site_want = [m.path for m in for_target('web') if m.standalone] + \
+                [bundle_file('web')]
+    site_have = tags_in(SITE_HTML)
+    if site_have != site_want:
+        bad.append(f"{SITE_HTML} loads\n      {site_have}\n    but should load\n"
+                   f"      {site_want}")
+
+    # ...and dev.html IS index.html with the bundle expanded. Generated, so the
+    # two pages cannot drift in markup - only in the tag block, which is derived.
+    dev_path = os.path.join(ROOT, DEV_HTML)
+    if not os.path.exists(dev_path):
+        bad.append(f"{DEV_HTML} is missing - run: python3 tools/bundle.py build")
+    elif open(dev_path).read() != render_dev():
+        bad.append(f"{DEV_HTML} is not what index.html regenerates to - it was"
+                   " edited by hand, or index.html changed without a rebuild."
+                   " Run: python3 tools/bundle.py build")
+
+    # ...and the web bundle IS index.html's tag list, minus what cannot be
+    # concatenated. A deployed page serving a bundle that omits a file the dev
+    # page loads is a page that works locally and not in production.
+    if 'web' in BUNDLES:
+        want_web = [m.name for m in for_target('web') if not m.standalone]
+        if sorted(BUNDLES['web']) != sorted(want_web):
+            miss = sorted(set(want_web) - set(BUNDLES['web']))
+            extra = sorted(set(BUNDLES['web']) - set(want_web))
+            if miss:
+                bad.append(f"the web bundle is missing {miss}, which index.html loads")
+            if extra:
+                bad.append(f"the web bundle has {extra}, which index.html does not load")
+
+    # ...every module is in at least one bundle, or is loose, or is standalone,
+    # or is web-app-only. A file nobody ships is a file nobody notices rotting.
+    bundled = {n for names in BUNDLES.values() for n in names}
+    WEB_ONLY = {'gif', 'seq', 'msa', 'app', 'app-objects',
+                'app-fetch', 'app-scatter', 'app-session',
+                'app-select'}
+    for m in MODULES:
+        if m.name in bundled or m.standalone or m.name in WEB_ONLY:
+            continue
+        bad.append(f"{m.path} is in no bundle and is not loose - nothing ships it")
+
+    # THE THREE THE NOTEBOOK CAN INLINE, one per cell: the WebGL2 cartoon, the
+    # 2D one for gpu=False, and the cartoon-less tube for a viewer that cannot
+    # reach a cartoon at all.
+    want_inline = sorted(f'bundles/{BUNDLE_PREFIX}{t}.min.js'
+                         for t in ('notebook', 'notebook.cpu', 'notebook.tube'))
+    have_inline = sorted(set(inlined_by_viewer()))
+    print(f"  viewer.py inlines: {len(have_inline)}")
+    if have_inline != want_inline:
+        bad.append(f"viewer.py inlines {have_inline}, manifest says {want_inline}")
+
+    for target in BUNDLES:
+        f = os.path.join(ROOT, bundle_file(target))
+        if not os.path.exists(f):
+            bad.append(f"{bundle_file(target)} has not been built"
+                       " - run: python3 tools/bundle.py build")
+    # ...AND NOTHING MINIFIED OUTSIDE bundles/. Everything that ships is a
+    # bundle, so a .min.js beside a source file is a leftover - it will not be
+    # rebuilt, nothing loads it, and it is indistinguishable from something that
+    # matters.
+    for dirpath, _, names in os.walk(os.path.join(ROOT, 'py2Dmol', 'resources')):
+        if os.path.basename(dirpath) == 'bundles':
+            continue
+        for n in names:
+            if n.endswith('.min.js'):
+                rel = os.path.relpath(os.path.join(dirpath, n), ROOT)
+                bad.append(f"{rel} is minified but not in bundles/ - nothing"
+                           " builds or loads it")
+
+    if not MODULES or not BUNDLES:
+        bad.append("the manifest is empty - this check would pass forever")
+
+    for b in bad:
+        print("FAIL: " + b)
+    return 1 if bad else 0
+
+
+def minify():
+    """Kept as a name people type; building the bundles is the same job now."""
+    return build()
+
+
+def show():
+    for m in MODULES:
+        flags = ' '.join(filter(None, [
+            'inlined' if m.inlined else '', 'standalone' if m.standalone else '']))
+        print(f"  {m.name:<12} {m.path:<42} {','.join(sorted(m.targets)):<9} {flags}")
+    return 0
+
+
+if __name__ == '__main__':
+    cmd = sys.argv[1] if len(sys.argv) > 1 else 'check'
+    args = sys.argv[2:]
+    if cmd == 'build':
+        sys.exit(build(args or None))
+    sys.exit({'check': check, 'minify': minify, 'show': show}[cmd]())

@@ -1,11 +1,11 @@
-// Node smoke test for the cartoon renderer: loads viewer-cartoon.js with
+// Node smoke test for the cartoon renderer: loads cartoon/geom.js with
 // window shims and a mock 2D context, renders synthetic structures, and
 // asserts the invariants fixed in Aug 2026: no crash without overlayState, no
 // NaN paint styles under cel + shadow-off, sheet flattening confined to its
 // own chain, the protein-only fast path, and DNA base pairing.
 //
 //   node tests/smoke.js                 # test the source
-//   node tests/smoke.js py2Dmol/resources/viewer-cartoon.min.js
+//   node tests/smoke.js py2Dmol/resources/bundles/py2Dmol.notebook.min.js
 //
 'use strict';
 const fs = require('fs');
@@ -20,9 +20,21 @@ global.Event = function Event(name) { this.name = name; };
 
 // Optional argv[2] points at an alternate build (e.g. the .min.js bundle).
 const srcFile = process.argv[2]
-    || path.resolve(__dirname, '../py2Dmol/resources/viewer-cartoon.js');
+    || path.resolve(__dirname, '../src/cartoon/geom.js');
 const src = fs.readFileSync(srcFile, 'utf8');
 eval(src);
+// ...AND THE PAINTER, which is a separate file now. Loading only the geometry
+// leaves render() with no painter: it says so on the console and draws nothing,
+// and every assertion here that counts fills reads 0 of 0 - a failure with no
+// visible cause. Paired with whichever build argv[2] chose, so the minified run
+// scores the minified painter rather than mixing the two.
+// A BUNDLE ALREADY CONTAINS ITS PAINTER; a bare source file does not. argv[2]
+// names a built artefact, and those are concatenations of everything the target
+// needs - loading a second copy of the painter over one would register it twice.
+if (!process.argv[2]) {
+    eval(fs.readFileSync(
+        path.resolve(__dirname, '../src/cartoon/paint2d.js'), 'utf8'));
+}
 const cartoon = global.window.py2dmolCartoon;
 if (!cartoon || !cartoon.render) throw new Error('plugin failed to load');
 
@@ -98,7 +110,8 @@ function mkRenderer(coords, segments, opts) {
     const n = coords.length;
     const r = {
         coords,
-        rotatedCoords: coords,
+        rotatedCoords: coords.map((c) => (Array.isArray(c)
+            ? { x: c[0], y: c[1], z: c[2] } : c)),
         segmentIndices: segments,
         positionTypes: new Array(n).fill('P'),
         positionNames: new Array(n).fill('ALA'),
@@ -304,7 +317,7 @@ test('mirrored + D-flagged matches L', () => {
 });
 
 
-// 8. CYCLIC PEPTIDES. viewer-mol.js emits a head-to-tail bond joining a chain's
+// 8. CYCLIC PEPTIDES. core/mol.js emits a head-to-tail bond joining a chain's
 // first and last residue; it is not index-adjacent, so the cartoon used to
 // reject it as backbone and draw it as a generic stick while the ribbon
 // terminated at both ends. The run must now close and the ribbon must take one
@@ -319,7 +332,7 @@ test('cyclic run closes the ribbon', () => {
         coords.push({ x: R * Math.cos(t), y: R * Math.sin(t), z: 0.4 * Math.sin(3 * t) });
     }
     const open = bbSegs([[0, N - 1]]);
-    // ... plus the closure bond, exactly as viewer-mol.js emits it
+    // ... plus the closure bond, exactly as core/mol.js emits it
     const closed = open.concat([{ type: 'P', idx1: 0, idx2: N - 1 }]);
 
     const runOne = (segs) => {
@@ -1194,7 +1207,7 @@ test('gesture budget needs more than one sample to degrade', () => {
 
 // ---- SIDE CHAINS ------------------------------------------------------------
 // By the time the cartoon sees them, side-chain atoms are ordinary 'L'
-// positions with ordinary bonds - _materialiseSidechains (viewer-mol.js) put
+// positions with ordinary bonds - _materialiseSidechains (core/mol.js) put
 // them there, against the FILE's backbone. What the cartoon owns is the one
 // thing that cannot be done earlier: it moves the backbone after that point,
 // so it has to move them with it. That is what these pin down.
@@ -2551,7 +2564,7 @@ test('smooth off leaves no gradient on ANY surface, sides included', () => {
 
 // 36. THE DRAWN POSITIONS ARE RIGID UNDER A VIEW ROTATION.
 //
-// The WebGL2 path (viewer-cartoon-gpu.js) captures the drawn positions ONCE,
+// The WebGL2 path (cartoon/paintgl.js) captures the drawn positions ONCE,
 // lifts them into model space, and re-projects them every frame - that is what
 // keeps click-picking, the sequence hover and the selection halo on the ribbon
 // when the model turns. The whole mechanism rests on one assumption about THIS

@@ -1,6 +1,7 @@
 # Cartoon renderer test pages
 
-Visual test harness for the `style="cartoon"` renderer (`py2Dmol/resources/viewer-cartoon.js`).
+Visual test harness for the `style="cartoon"` renderer
+(`src/cartoon/`).
 These are eyeball tests, not assertions — they exist because the cartoon
 failures that matter (paint order, silhouette breaks, tone pops) are things you
 see, not things you can easily assert.
@@ -17,7 +18,7 @@ from an environment that has them — a bare system `python3` will fail on
 Each page inlines the viewer JS at build time, so **rebuild after every edit to
 `viewer-*.js`** — a stale page is indistinguishable from a fix that did nothing.
 `build.py` runs against the working tree (it puts the repo root on `sys.path`),
-so it picks up `viewer-cartoon.js` directly; the `.min.js` bundle is only used
+so it picks up `cartoon/geom.js` directly; the `.min.js` bundle is only used
 by the packaged Python path.
 
 | Page | What it isolates |
@@ -75,7 +76,7 @@ row layout with 1YNE - 19,700 atoms - where 355D's 660 lay out identically.
 Unlike the pages above, these assert, and need no browser:
 
     node tests/smoke.js                                          # source
-    node tests/smoke.js py2Dmol/resources/viewer-cartoon.min.js  # bundle
+    node tests/smoke.js py2Dmol/resources/bundles/py2Dmol.notebook.min.js  # bundle
     node tests/interaction.js
     node tests/sequence.js
     node tests/copy_selection.js
@@ -85,13 +86,13 @@ properties of what gets painted: closed solids, no inked edge crossing its own
 face, junction construction, side chains following a flattened backbone, and
 the flat-slab and gesture-budget rules. Run it against the bundle too — a
 mangler can break what the source proves.
-`interaction.js` runs the gesture and animation predicates from `viewer-mol.js`
+`interaction.js` runs the gesture and animation predicates from `core/mol.js`
 against a mock canvas, plus `_materialiseSidechains`, side-chain picking, and
-orient's centre/extent arithmetic from `web/app.js` — all lifted out of the
+orient's centre/extent arithmetic from `src/app/` — all lifted out of the
 source text rather than reimplemented.
 
 `sequence.js` drives the sequence strip's input layer through a DOM stub:
-synthetic clicks, drags, taps and scrollbar drags against `viewer-seq.js`, with
+synthetic clicks, drags, taps and scrollbar drags against `panels/seq.js`, with
 the selection read back off the renderer. **Every shared behaviour is asserted
 through BOTH pointer types**, which is the point of the file — the strip used
 to carry two independent copies of the selection logic, and the touch copy was
@@ -354,7 +355,7 @@ thing across two - but the panel was wired to whichever object was last LOADED
 and nothing re-asked when the drawn set changed. Load a structure with no PAE,
 load a prediction that has one, hide the prediction: the matrix stayed on
 screen describing residues that were not, and a box drawn on it selected the
-other object's. The rule is in `paeObjectName` (viewer-mol.js): **in Multi
+other object's. The rule is in `paeObjectName` (core/mol.js): **in Multi
 there is no panel at all** - the matrix belongs to one structure and Multi is
 the mode for looking at several - and outside Multi it is the object on
 screen, when that object has a matrix. The probe gives the second object a
@@ -395,7 +396,7 @@ case) and then a ligand chain (where groups have to leave).
 
 It builds a two-object viewer through `view.add_pdb`, `set_color`, `set_sse`
 and `add_contacts`, renders the page `_display_viewer` produces, and asks the
-renderer what it made of it. The Python path loads viewer-mol.js and the
+renderer what it made of it. The Python path loads core/mol.js and the
 cartoon plugin and nothing else - no object list, no sequence strip - so what
 this covers is the RENDERER's multi-object handling reached through Python
 state: one object drawn to begin with, each object's per-position colour on its
@@ -421,7 +422,7 @@ per-object display state beside it — which positions show a side chain or a
 base, their colours, the forced secondary structure, and the contacts between
 them. All of it is keyed by position index, none of it used to be carried at
 all, so copying a posed selection returned a bare backbone. The last test in
-the file walks `web/app.js` and `viewer-mol.js` for per-object keys that
+the file walks `src/app/` and `core/mol.js` for per-object keys that
 `_remapObjectState` does not name, and fails on any it finds — that is how
 `sse` and `color` were discovered to be missing too.
 
@@ -476,7 +477,7 @@ Throw it and it coasts, with the app's own numbers: velocity smoothed at 0.5
 while dragging, applied per frame as `rotationMatrix*(v * 0.005)`, damped by
 0.95 until it falls under 1e-4. Whether to run it is decided by MEASURED frame
 cost rather than by the size of the structure — the same call
-`viewer-cartoon.js` makes for its gesture ink degrade, and for the reason it
+`cartoon/paint2d.js` makes for its gesture ink degrade, and for the reason it
 gives there: a segment count knows nothing about canvas size, detail, or the
 machine.
 
@@ -677,7 +678,7 @@ Two things this cost:
 sub-millisecond redraw and a 1.7 s rebuild.
 
 Rotation is the app's, not a yaw/pitch pair: `rotateView` accumulates the same
-screen-space increments `viewer-mol.js` does (`dx`/`dy` scaled by 0.01, left
+screen-space increments `core/mol.js` does (`dx`/`dy` scaled by 0.01, left
 multiplied onto the accumulated matrix), so a drag here behaves like a drag in
 index.html — no roll creeping in once the model is pitched, and no gimbal lock
 looking down the axis. The lab's yaw slider still steps to a named angle through
@@ -710,7 +711,7 @@ the costs that are not pixels are in `GPU3D_NOTES.md`.
 
 ## Paint order — `paint_order_audit.js`
 
-    CARTOON=py2Dmol/resources/viewer-cartoon.js node tests/paint_order_audit.js
+    CARTOON=src/cartoon/geom.js node tests/paint_order_audit.js
     CARTOON=... SC_ALL=1 node tests/paint_order_audit.js     # a side chain per residue
 
 **Nothing else in this repo measures paint order**, which is why every failure
@@ -768,7 +769,7 @@ a Set of position indices, alongside `color` and `sse`).
 Four hops, and the test walks all four because the failure was in the middle of
 them:
 
-1. **Capture** — `buildSidechainTable` (`web/utils.js`), at load, because that
+1. **Capture** — `buildSidechainTable` (`src/io/parse.js`), at load, because that
    is the only moment the atoms exist. **One conformer per residue, the first**:
    a residue modelled in two positions writes each atom twice, and taking both
    gives a side chain with two of every atom, bonded to each other by the
@@ -826,12 +827,12 @@ them:
    backbone frame**, never as world coordinates, using the renderer's own
    exported `localFrame` so capture and reconstruction cannot drift apart.
 2. **Carry** — frames are built field by field, so anything not named is
-   dropped in silence. This has happened twice: `web/app.js`'s `frameObj` (side
+   dropped in silence. This has happened twice: `src/app/`'s `frameObj` (side
    chains captured, stored, copied past, never reaching the renderer — reported
    as *"No side-chain atoms in this structure"* on 6MRR, which has 354) and
-   `viewer-mol.js`'s `extractedFrame` (a copied sub-structure with none at all).
+   `core/mol.js`'s `extractedFrame` (a copied sub-structure with none at all).
    Neither failed loudly; both just produced a structure that had none. The test
-   lifts `frameObj` out of `app.js` and *executes* it, and checks both literals
+   lifts `frameObj` out of `src/app/main.js` and *executes* it, and checks both literals
    by name — a rename fails the test rather than quietly stopping covering
    anything.
 
@@ -842,7 +843,7 @@ them:
    selection can therefore come across without its side chain, which is honest;
    re-anchoring to a frame the coefficients were never measured against would
    point it somewhere arbitrary.
-3. **Materialise** — `_materialiseSidechains` (`viewer-mol.js`) turns the
+3. **Materialise** — `_materialiseSidechains` (`core/mol.js`) turns the
    switched-on residues into ordinary `'L'` positions with explicit bonds, i.e.
    into a ligand. Both styles then draw them, depth-sort them and pick them with
    no new code — but a side chain is **not** a ligand for *width*:
@@ -1113,7 +1114,7 @@ The selection used to be inked into the primitives and depth-sorted with them,
 which meant a selected residue on the far side of the molecule was covered by
 everything in front of it — exactly the case you need it for. It is now painted
 as a **translucent yellow band over the finished frame** (`_paintSelectionHalo`,
-`viewer-mol.js`) and is never occluded.
+`core/mol.js`) and is never occluded.
 
 Drawn *inside* the render rather than on the sequence viewer's DOM overlay,
 which was the other candidate: that overlay is a separate canvas, skipped during
@@ -1148,14 +1149,14 @@ drag, only which residues are marked, so `beginSelectionPreview` snapshots the
 finished frame once and each `updateSelectionPreview` is that image blitted back
 plus one halo pass: **cost independent of structure size**. Any real render
 calls `_invalidateSelectionPreview`, so a rotation or frame step mid-drag cannot
-leave a stale picture behind. `setLocalPreview` in `viewer-seq.js` is the single
+leave a stale picture behind. `setLocalPreview` in `panels/seq.js` is the single
 funnel every drag path goes through — residues, chains and touch — so it is
 hooked once there.
 
 ## Click-selection
 
-Off in the renderer by default, turned on by `web/app.js`. The Python path loads
-`viewer-mol.js` and the cartoon plugin and nothing else — no sequence strip, no
+Off in the renderer by default, turned on by `src/app/`. The Python path loads
+`core/mol.js` and the cartoon plugin and nothing else — no sequence strip, no
 selection panel — so a click there changed a selection with no way to see it,
 act on it, or clear it except by clicking the background again. Selection is
 done in Python by scripting, which does not go through the mouse. The switch is
@@ -1229,7 +1230,7 @@ control sets how heavy the *backbone* is drawn; a contact is an annotation over
 the structure rather than part of it, and one that grew and shrank with the
 backbone stopped reading as a separate mark — the same reason a ligand keeps its
 own, and **the same width in both styles** — `CONTACT_WIDTH` in
-`viewer-cartoon.js` and `CONTACT_WIDTH_A` in `viewer-mol.js`, which
+`cartoon/geom.js` and `CONTACT_WIDTH_A` in `core/mol.js`, which
 `interaction.js` checks against each other, since a contact that changes weight
 when you switch style is the one thing this exists to stop. The value is **half** what
 tube used to draw at its widest: the Line Width slider tops out at 4.7,
@@ -1433,7 +1434,7 @@ give the same answer. Currently **63/75 cuts** reproduce exactly.
 
 `--fit` fits the table the backbone rebuild reads, on half the chains, reporting
 the other half: C to 0.21 Å rms, N to 0.17 Å, C=O direction to 8.8°. Paste its
-output back into `viewer-cartoon.js` as `PEPTIDE_TABLE`.
+output back into `cartoon/geom.js` as `PEPTIDE_TABLE`.
 
 `sheet_bench.js` scores strand frames in degrees over real H-bonded ladders:
 **partner face** (do neighbouring strands stack edge to edge) and **strand
@@ -1475,7 +1476,7 @@ Current, 98 chains / 4697 pairs: **13.0°** median overall, 11.3° interior,
 ## Nucleic rail frame — `na_frame.js`
 
     node tests/na_frame.js                                       # source
-    node tests/na_frame.js py2Dmol/resources/viewer-cartoon.min.js
+    node tests/na_frame.js py2Dmol/resources/bundles/py2Dmol.notebook.min.js
 
 The pair axis above decides where a plate lies; this scores the frame the
 backbone rail itself is swept along, read back from `_naFrame` after a render:
@@ -1497,7 +1498,7 @@ Current, 153 chains / 16,748 residues: aim **0.0°**, twist stdev **8.7°** with
 aim 17.6° median / 49.5° p90, twist stdev 28.9°, reversals 22.2%.
 
 **Run it against the bundle too.** The packaged Python path loads
-`viewer-cartoon.min.js`, and a bundle committed without being rebuilt scores
+`bundles/py2Dmol.notebook.min.js`, and a bundle committed without being rebuilt scores
 exactly like the code it was meant to replace — which is how a shipped fix
 came to be source-only for a day.
 
@@ -1505,7 +1506,7 @@ came to be source-only for a day.
 
 TM-align, and the five decisions the viewer makes around it. The algorithm is
 not maintained in this repo: it lives inside
-`py2Dmol/resources/viewer-align.js`, **generated** into that file from
+`src/align/align.js`, **generated** into that file from
 `../foldjs/lib/tmalign.js` — a port of `TMalign.cpp` 20220412 whose parity
 against the C++ is checked upstream to 1.1e-16.
 
@@ -1620,3 +1621,139 @@ Measured end to end on 2OMF + 2POR (two porins), and pinned: TM 0.705 against
 2OMF, RMSD 3.18 Å over 278 residues, identical to the same pair in node.
 Normalised the other way it is 0.787 — a probe that accepted both would be
 accepting the score this code deliberately does not report.
+
+## Cross-cell delivery in Colab — `colab.py`
+
+**Colab renders every cell output in its own iframe.** That one fact decides
+the notebook's whole live path, and it is why the path works in Jupyter for a
+reason that does not travel: in Jupyter everything is one document, so the
+script an `add()` writes finds `window.py2dmol_viewers[vid]` sitting beside it
+and calls it. In Colab the direct call finds nothing, the mailbox `<script>`
+node is in a document no `MutationObserver` of ours is watching, and
+**BroadcastChannel is the only bridge left**.
+
+Testing that needs no Colab — Colab's frontend is not open source anyway
+(`googlecolab/colabtools` is the Python client library alone). It needs the
+*shape*: separate documents, one origin, arbitrary load order. The probe stubs
+`IPython.display` so that `display()` returns a handle whose `update()`
+overwrites the cell it made — the whole of the contract `viewer.py` uses —
+collects what a real session emits, and serves each captured output as an
+iframe of its own.
+
+**Three arrival orders, because nothing says the viewer wins the race.** The
+viewer's output is half a megabyte of inlined bundle and an update cell's is a
+kilobyte, so on a notebook REOPEN the small ones routinely go first. All three
+orders must land the same three frames:
+
+| order | what it stands for |
+| --- | --- |
+| `viewer-first` | the lucky case, and the only one that ever worked |
+| `viewer-last` | a reopen: the updates have posted before the viewer's channel exists |
+| `viewer-last-reversed` | the same, with the replay itself out of order |
+
+**Two mechanisms make the last two pass, and each was verified by removing it.**
+
+`viewerReady` was **sent by the viewer and listened for by nobody** for as long
+as it existed — the one grep that found it found only the `postMessage`. It is
+answered now: each update cell keeps a handler on its channel and posts its
+payload again when it hears the announcement. Delete the handler and
+`viewer-last` goes to **0 frames of 3, and a blank canvas**.
+
+And `seq` is a **watermark** — `if (seq <= lastIncrementalSeq) return` — so an
+early frame arriving after a later one is discarded as stale. A replay is
+whatever order the iframes happened to run, so the viewer holds what arrives
+inside an 800 ms window after its own announcement and applies it sorted.
+Delete the sort and `viewer-last-reversed` keeps **1 frame of 3**: the last one.
+
+The window cannot wait for a gap to fill instead, because the sequence numbers
+are **not contiguous** — `_emit_to_output` spends one of its own on each
+`display_id`, so three `add()` calls are seq 1, 3 and 5. And it costs a live
+session nothing: in Jupyter the direct call has already applied the update by
+the time the broadcast copy of it arrives, and `seq` dedups the copy.
+
+**The mutation that guards the rest.** `BroadcastChannel` is replaced with a
+throwing stub in every iframe; the run must come back with **0 frames and 0
+ink**. Without that, a probe that had quietly found some other path — a shared
+document, a same-page fallback — would pass while proving nothing.
+
+**Two more properties, which are the other half of what a notebook promises.**
+
+*Reopening offline.* The emitted HTML names no external script, stylesheet or
+font and calls no `fetch` — checked statically against the payload, before any
+browser starts, because a reopened notebook has the `.ipynb` and nothing else.
+
+*`persistence=False` is a single slot.* It emits exactly one mailbox cell,
+overwritten, holding only the last unsent delta — so a reopen replays **one**
+frame of three. That is the documented meaning of the mode rather than a fault,
+but it is the difference between a notebook that comes back with its trajectory
+and one that comes back with its last frame, and nothing else in the suite
+said so.
+
+**Metadata set after the frames it describes.** Everything above is frames;
+the calls a reader makes next — `set_color`, `add_contacts`, `set_sse` — travel
+as *changed metadata* instead, which is a second path with its own applier, and
+the two had already drifted. Two faults came out of one run:
+
+`set_sse()` on a live viewer wrote the map in Python, packed it into the update
+and sent it, and `handleIncrementalStateUpdate` **dropped it on arrival** — its
+copy of the applier never learnt about `sse`, while `handleReplaceFrame`'s did.
+The same call through `show()` always worked, because the static path reads it.
+There is one applier now.
+
+`set_color(..., frame=N)` reached nothing at all. A frame is delivered **once**
+— `_sent_frame_count` sees to that — so a colour written into a frame the
+viewer already holds has no route: it is not new frame data and it was not in
+the metadata either. It rides as `frame_colors` now, keyed by frame index.
+Remove either handler and the probe names which one.
+
+**And taking it all off again.** Setting and unsetting were not the same path.
+Python packs the fields that are **not None**, so a field that goes away
+stopped appearing rather than appearing as a removal — never unequal to
+anything, never sent, and drawn for the rest of the session. Python could not
+even express it: `set_color(None)` returned on `_normalize_color` and
+`add_contacts([])` warned and refused. Now `None`/`[]` clears, removals travel
+as an explicit null, and the applier reads **the key rather than the value's
+truth**.
+
+The probe runs two objects in one viewer for this. `whole` has colour,
+contacts, bonds and eight SSE overrides set and then every one of them cleared
+— all four must come back empty. `part` keeps what it was not asked to lose:
+two chains coloured and one cleared, three positions coloured and one cleared,
+two frame colours and one cleared. A selective clear that took the rest would
+pass a check that only looked at `whole`.
+
+### The other half — `colab_check.ipynb`
+
+The harness reproduces the *shape*. It cannot answer whether the real Colab
+does what we think, because Colab's frontend is closed. `tests/colab_check.ipynb`
+is that half: run it in Colab, top to bottom, and read the *expect* line under
+each cell.
+
+Sections 1–3 are visual — a later cell reaching the viewer at all, then colour /
+SSE / contacts / a frame's own colour set after the frames, then every one of
+them taken off again. Section 4 is the manual one and the reason for the
+handshake: save, **Runtime → Disconnect and delete runtime**, reload, run
+nothing, and the viewer must still be there with three frames.
+
+Sections 5a and 5b check themselves. **5a** needs no browser — it drives a second
+viewer with `display` captured and reads the payloads back, asserting that every
+update cell answers `viewerReady`, that a removal travels as an explicit null
+rather than as silence, that a frame's colour travels as `frame_colors`, and
+that the viewer cell names no external resource. **5b** asks the browser: it
+opens the viewer's own `BroadcastChannel`, posts `viewerReady`, and counts the
+cell outputs that answer. A non-zero count proves the channel crosses Colab's
+output iframes, that the update cells are still live, and that they replay on
+request — the three things section 4 depends on. Locally it comes back
+`[1, 3, 5]`, which is also the clearest demonstration that the sequence numbers
+are not contiguous.
+
+5a is verified the same way everything else here is: drop the removal detection
+from `_send_incremental_update` and three of its seven lines turn to FAIL.
+
+**It starts six browsers in series** — each order is a different arrival
+sequence of the same outputs and they cannot share a page — so it carries its
+own cap in `run.sh` rather than raising the ceiling for every probe — **and it
+runs alone**, after the parallel batch rather than in it. Not because it
+measures time, but because six browsers holding four half-megabyte iframes
+each starved `embed.py` into a timeout when it ran alongside them. A probe
+heavy enough to change its neighbours' results has to run by itself.

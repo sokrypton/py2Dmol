@@ -113,7 +113,11 @@ window.addEventListener('load', () => {
                                      positions: 313236});
         await pick(names[1]);
         await setStyle('tube');
-        el('styleSelect').value = 'cartoon';
+        // 'richardson', not 'cartoon': the dropdown lists the four looks by
+        // name now, and setting .value to an option that is not there leaves it
+        // EMPTY - the handler then gets '' and refuses that instead, so this
+        // read as "the refusal said nothing" while the refusal worked fine.
+        el('styleSelect').value = 'richardson';
         el('styleSelect').dispatchEvent(new Event('change'));
         await settle(5);
         const msg = (document.getElementById('status-message') || {}).textContent || '';
@@ -130,7 +134,7 @@ window.addEventListener('load', () => {
 """
 JS = JS.replace("//HELPERS", HELPERS)
 check_js(JS if "PAGE_JS" not in globals() else PAGE_JS)
-src = open(os.path.join(ROOT, "index.html")).read()
+src = open(os.path.join(ROOT, "dev.html")).read()
 stamp = str(int(time.time() * 1000))
 src = re.sub(r'(<script src="(?!https?:)[^"]+?)(\?v=\d+)?(")',
              lambda m: m.group(1) + "?v=" + stamp + m.group(3), src)

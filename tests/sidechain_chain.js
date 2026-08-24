@@ -2,9 +2,9 @@
  *
  *   node tests/sidechain_chain.js [structure.cif ...]
  *
- * parse -> convertParsedToFrameData -> app.js's frameObj copy ->
+ * parse -> convertParsedToFrameData -> the web app's frameObj copy ->
  * _materialiseSidechains. Every hop is real code, and the middle one is lifted
- * out of web/app.js as source text rather than reimplemented, because that hop
+ * out of src/app/ as source text rather than reimplemented, because that hop
  * is exactly where this broke: frameObj is assembled field by field, so a field
  * nobody named is dropped in silence. Side chains were captured, stored, copied
  * past, and never reached the renderer - reported as "No side-chain atoms in
@@ -13,38 +13,45 @@
  * Default corpus is whatever .cif files sit in the repo root.
  */
 const fs=require('fs'), path=require('path'), vm=require('vm');
+const L=require('./lift.js');
+// ...and a reader that knows the web app is five files. A loop over file NAMES
+// cannot open 'the web app'; this maps that one name onto lift.js's
+// concatenation and reads everything else from disk.
+const readNamed = (f) => (f === 'the web app' ? L.app
+    : require('fs').readFileSync(f, 'utf8'));
+
 const ROOT=path.resolve(__dirname, '..');
 const sb={window:{addEventListener(){},dispatchEvent(){}},document:{createElement:()=>({getContext:()=>null})},console,performance:{now:()=>Date.now()},navigator:{},Event:function(){}};
 sb.window.window=sb.window; sb.self=sb.window; vm.createContext(sb);
-vm.runInContext(fs.readFileSync(ROOT+'/py2Dmol/resources/viewer-cartoon.js','utf8'),sb,{filename:'c'});
-vm.runInContext(fs.readFileSync(ROOT+'/web/utils.js','utf8'),sb,{filename:'u'});
+vm.runInContext(fs.readFileSync(ROOT+'/src/cartoon/geom.js','utf8'),sb,{filename:'c'});
+vm.runInContext(L.utils,sb,{filename:'u'});
 
-// the frameObj literal, lifted straight out of app.js so this cannot drift
-const app=fs.readFileSync(ROOT+'/web/app.js','utf8');
+// the frameObj literal, lifted straight out of src/app/ so this cannot drift
+const app=L.app;
 const i=app.indexOf('const frameObj = {');
 const j=app.indexOf('};', i);
 const lit=app.slice(i, j+2);
-// ...and the three names the literal closes over in app.js: which model of a
+// ...and the three names the literal closes over in src/app/: which model of a
 // multi-model file this is, and what the file was called. Stubbed rather than
 // trimmed out of the text, so the literal itself stays the shipped one.
 const mkFrameObj=new Function('frameData','models','name','i', lit+' return frameObj;');
 
 // EVERY FRAME IS BUILT FIELD BY FIELD, and a field nobody names is dropped in
-// silence. That has now happened twice: web/app.js's frameObj (side chains
-// captured, stored, and never reaching the renderer) and viewer-mol.js's
+// silence. That has now happened twice: the web app's frameObj (side chains
+// captured, stored, and never reaching the renderer) and core/mol.js's
 // extractedFrame (a copied sub-structure with no side chains at all). Neither
 // failed loudly - both just produced a structure that had none. So the literals
 // themselves are checked, by name, and a rename fails the test rather than
 // quietly stopping covering anything.
 function checkFrameBuilders(){
   const builders=[
-    ['web/app.js', 'const frameObj = {'],
-    ['web/app.js', 'const resolvedFrame = {'],
-    ['py2Dmol/resources/viewer-mol.js', 'const extractedFrame = {'],
+    ['the web app', 'const frameObj = {'],
+    ['the web app', 'const resolvedFrame = {'],
+    ['src/core/mol.js', 'const extractedFrame = {'],
   ];
   let bad=0;
   for(const [file,marker] of builders){
-    const src=fs.readFileSync(path.join(ROOT,file),'utf8');
+    const src=readNamed(file);
     const i=src.indexOf(marker);
     if(i<0){
       console.log(`FAIL ${file}: cannot find \`${marker}\` - it was renamed or removed,`
@@ -71,10 +78,10 @@ function checkFrameBuilders(){
 // for a 20-entry connectivity table is the whole point: a copy would drift and
 // then agree with itself.
 const lifted=(()=>{
-  const src=fs.readFileSync(path.join(ROOT,'web/utils.js'),'utf8');
+  const src=L.utils;
   const grab=(nm)=>{
     const i=src.indexOf('const '+nm+' = ');
-    if(i<0) throw new Error('not found in web/utils.js: '+nm);
+    if(i<0) throw new Error('not found in src/io/parse.js: '+nm);
     let a=src.indexOf('{',i), d=0, k=a;
     for(;k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){d--; if(!d)break;} }
     // eslint-disable-next-line no-eval
@@ -274,7 +281,7 @@ function checkSaveLoad(){
 function checkPdbPath(){
   let bad=0;
   for(const f of ['1UBQ.cif','4HHB.cif']){
-    const src=fs.readFileSync(path.join(ROOT,f),'utf8');
+    const src=readNamed(f);
     const viaCif=sidechainShape(runParse(src,false));
     for(const withEl of [true,false]){
       const viaPdb=sidechainShape(runParse(cifToPdb(src,withEl),true));
@@ -329,7 +336,7 @@ process.exit(failures?1:0);
 
 function run(file){
 const name=path.basename(file);
-const text=fs.readFileSync(file,'utf8');
+const text=readNamed(file);
 const p=/\.cif$/i.test(file)?sb.parseCIF(text):sb.parsePDB(text);
 const m=Array.isArray(p)?p:(p.models||p.frames); const first=Array.isArray(m[0])?m[0]:m;
 const fd=sb.convertParsedToFrameData(first);
@@ -502,7 +509,7 @@ FRACTION_CHECK: {
 }
 const fo=mkFrameObj(fd,[0],'test',0);
 if(!fo.sidechains){
-  console.log(`FAIL ${name}: ${nAt} atoms captured, then DROPPED by app.js's frameObj copy`);
+  console.log(`FAIL ${name}: ${nAt} atoms captured, then DROPPED by the web app's frameObj copy`);
   failures++; return;
 }
 if(fo.sidechains.pos.length!==nAt){
@@ -510,25 +517,24 @@ if(fo.sidechains.pos.length!==nAt){
 }
 
 // and now the renderer step
-const vm2=fs.readFileSync(ROOT+'/py2Dmol/resources/viewer-mol.js','utf8');
-const k=vm2.indexOf('\n        _materialiseSidechains(');
-let a=vm2.indexOf('{',k),d=0,b=a;
-for(;b<vm2.length;b++){if(vm2[b]==='{')d++;else if(vm2[b]==='}'){d--;if(!d)break;}}
-// ...plus the element-colour pair, so the gold a disulfide is drawn in is
-// checked against the shipped table rather than a copy of it
-const lift=(name)=>{
-  const i=vm2.indexOf('\n        '+name+'(');
-  if(i<0) throw new Error('cannot lift '+name+' from viewer-mol.js');
-  let x=vm2.indexOf('{',i),dd=0,y=x;
-  for(;y<vm2.length;y++){if(vm2[y]==='{')dd++;else if(vm2[y]==='}'){dd--;if(!dd)break;}}
-  return vm2.slice(i,y+1);
-};
-const elStatic=vm2.match(/\n        static get ELEMENT_COLORS\(\)[\s\S]*?\n        \}/);
-if(!elStatic) throw new Error('ELEMENT_COLORS is gone from viewer-mol.js');
-const Cls=new Function('window','return class V {'+vm2.slice(k,b+1)
-  +elStatic[0]+lift('_segmentElementColor')+lift('_segmentElementHalves')
+// THROUGH lift.js, which knows which files the renderer is spread across. This
+// read core/mol.js alone, and mergedObjectSet calls objectStateAbsent, which
+// moved to core/objstate.js - so the lifted class threw "objectStateAbsent is
+// not defined" at the first disulfide.
+const L=require('./lift.js');
+const lift=(name)=>L.method(name);
+// ...and the per-object field list those two walk, evaluated whole. The newline
+// matters: the region ends in a line comment.
+const OBJECT_STATE=new Function(
+  L.between('// >>> OBJECT_STATE BEGIN','// <<< OBJECT_STATE END')
+  +'\n; return OBJECT_STATE;')();
+const objectStateAbsent=new Function('OBJECT_STATE',
+  L.topFunction('objectStateAbsent')+'; return objectStateAbsent;')(OBJECT_STATE);
+const Cls=new Function('window','OBJECT_STATE','objectStateAbsent',
+  'return class V {'+lift('_materialiseSidechains')
+  +L.staticGet('ELEMENT_COLORS')+lift('_segmentElementColor')+lift('_segmentElementHalves')
   +lift('elementAt')+lift('_elementOwnerOf')+lift('shownSidechainSet')
-  +lift('mergedObjectSet')+'}')(sb.window);
+  +lift('mergedObjectSet')+'}')(sb.window,OBJECT_STATE,objectStateAbsent);
 const v=new Cls(); v.currentObjectName='o';
 // nothing merged: one object, its own indices - see shownSidechainSet
 v.multiState={enabled:false};
@@ -563,7 +569,7 @@ if(!out.position_types.slice(fo.coords.length).every(t=>t==='L')){
   console.log(`FAIL ${name}: appended atoms are not ligand positions`); failures++; return;
 }
 // A LIGAND ATOM'S NAME AND ELEMENT, all the way through. They are captured per
-// position, copied by app.js's frameObj, and have to come out of materialising
+// position, copied by the web app's frameObj, and have to come out of materialising
 // still in step with the coordinates - an array one short puts every element
 // on the wrong atom from there on, and _setDataField would silently swap it for
 // a row of blanks.
@@ -574,7 +580,7 @@ if(ligAt.length){
     failures++; return;
   }
   if(!fo.position_atoms||fo.position_atoms.length!==fd.coords.length){
-    console.log(`FAIL ${name}: app.js's frameObj dropped the ligand atom names`);
+    console.log(`FAIL ${name}: the web app's frameObj dropped the ligand atom names`);
     failures++; return;
   }
   const noEl=ligAt.filter((q)=>!fd.position_elements[q]);

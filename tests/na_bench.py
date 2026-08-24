@@ -14,7 +14,7 @@ Also reported, for context:
               direction to the partner's C4' - the older, weaker metric: it only
               checks a sign, so it can read 100% while every face is 30 deg off.
 
-The frame construction here MIRRORS viewer-cartoon.js (parallel transport of a
+The frame construction here MIRRORS cartoon/geom.js (parallel transport of a
 pair-seeded side vector, with damped rotational tracking). It is a replica, not
 the renderer itself - see --check, which reprints the facing numbers so they can
 be compared against the browser measurements.
@@ -142,7 +142,7 @@ def pair_up(res):
             if not (PMIN <= D[a, b] <= PMAX):
                 continue
             score = abs(D[a, b] - PIDEAL)
-            # real base geometry when the file gave it to us - see viewer-cartoon.js
+            # real base geometry when the file gave it to us - see cartoon/geom.js
             if res[a]["cen"] is not None and res[b]["cen"] is not None:
                 sep = float(np.linalg.norm(res[a]["cen"] - res[b]["cen"]))
                 if sep > BASE_SEP_MAX:

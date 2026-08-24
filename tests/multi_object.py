@@ -876,6 +876,12 @@ check_js(JS if "PAGE_JS" not in globals() else PAGE_JS)
 
 
 def build_probe():
+    # THE ONE PROBE ON THE DEPLOYED PAGE. Every other probe serves dev.html
+    # and the loose sources; this one serves index.html, which loads
+    # bundles/py2Dmol.web.min.js. It is the broadest probe there is, so running it
+    # against the bundle is the check that what the public downloads still
+    # works - a bundle committed stale, or a terser setting that breaks a
+    # name reached across files, fails here and nowhere else.
     src = open(os.path.join(ROOT, "index.html")).read()
     stamp = str(int(time.time() * 1000))
     src = re.sub(r'(<script src="(?!https?:)[^"]+?)(\?v=\d+)?(")',

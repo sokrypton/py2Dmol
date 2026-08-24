@@ -13,7 +13,7 @@
  * both bases of the pair, so it is only as right as the base it fits least.
  *
  * The axis is smoothed along the stem before use, which is what this exists to
- * guard - see the axSm pass in viewer-cartoon.js. Its value is concentrated at
+ * guard - see the axSm pass in cartoon/geom.js. Its value is concentrated at
  * the ENDS of helices, where the fitting window runs off the stem and the
  * predicted base normals stop being helical, so the report splits interior
  * pairs from end pairs.
@@ -26,7 +26,7 @@ const path = require('path');
 const vm = require('vm');
 
 const TRUTH = path.resolve(__dirname, 'out/na_truth.json');
-const SRC = path.resolve(__dirname, '../py2Dmol/resources/viewer-cartoon.js');
+const SRC = path.resolve(__dirname, '../src/cartoon/geom.js');
 
 function loadCartoon() {
     const sandbox = {
@@ -100,7 +100,7 @@ function mkRenderer(coords, names) {
     }
     const cartoon = loadCartoon();
     if (!cartoon || !cartoon.render) {
-        console.error('viewer-cartoon.js did not export render');
+        console.error('cartoon/geom.js did not export render');
         process.exit(1);
     }
     const chains = JSON.parse(fs.readFileSync(TRUTH, 'utf8'));

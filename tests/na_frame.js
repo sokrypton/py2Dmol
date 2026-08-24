@@ -2,7 +2,7 @@
  *
  *   python tests/na_table.py --build   # once, writes tests/out/na_truth.json
  *   node tests/na_frame.js             # report
- *   node tests/na_frame.js py2Dmol/resources/viewer-cartoon.min.js
+ *   node tests/na_frame.js py2Dmol/resources/bundles/py2Dmol.notebook.min.js
  *
  * The second form is the point of the argument: the bundle is what the
  * packaged Python path loads, and a bundle that was committed without being
@@ -31,7 +31,7 @@ const vm = require('vm');
 const TRUTH = path.resolve(__dirname, 'out/na_truth.json');
 const SRC = process.argv[2]
     ? path.resolve(process.argv[2])
-    : path.resolve(__dirname, '../py2Dmol/resources/viewer-cartoon.js');
+    : path.resolve(__dirname, '../src/cartoon/geom.js');
 
 function loadCartoon() {
     const sandbox = {

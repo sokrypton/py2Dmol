@@ -1,7 +1,7 @@
 # The WebGL2 cartoon renderer — where this stands
 
 The GPU path is no longer a prototype in `tests/`. It ships as
-`py2Dmol/resources/viewer-cartoon-gpu.js`, the app can switch to it from the
+`src/cartoon/paintgl.js`, the app can switch to it from the
 Style panel, and `py2Dmol.view(gpu=True)` turns it on from Python.
 
 `GPU3D_NOTES.md` is the long record of WHY each rule is what it is, and is worth
@@ -13,7 +13,7 @@ question: what exists, what works, what is half-done, and how to check any of it
 
 | file | what it is |
 |---|--:|
-| `py2Dmol/resources/viewer-cartoon-gpu.js` | **the renderer.** Shaders, capture, `facesOf`, `makeResident`, the outline, the paper, the palette and visibility textures, and the app entry. Ships with the viewer. |
+| `src/cartoon/paintgl.js` | **the renderer.** Shaders, capture, `facesOf`, `makeResident`, the outline, the paper, the palette and visibility textures, and the app entry. Ships with the viewer. |
 | `tests/gpu3d_core.js` | the **harness**: fixtures, `.cif` loading, the fake renderer the capture runs through, the colour schemes, the pixel diff, and the producer that turns a test page's controls into the parameter object. |
 | `tests/gpu3d_lab.html` | the measurement harness: reference panel, pixel diff, 36-view sweep. For numbers. |
 | `tests/gpu3d_view.html` | the plain viewer: one canvas, a renderer selector, the style controls. For looking. |
@@ -36,7 +36,7 @@ the previous build against the current markup. This has cost an hour twice.
 
 ## Changes to the SHIPPING 2D renderer
 
-`viewer-cartoon.js` has three opt-in hooks, all default off, all no-ops unless
+`cartoon/geom.js` has three opt-in hooks, all default off, all no-ops unless
 asked for:
 
 | hook | what it does | why |
@@ -102,7 +102,7 @@ crossing has to pick a winner.
 
 **What it does NOT do is decide the colour.** The tube's shading is screen-space
 occlusion - each segment darkened by everything in front of it - which is
-viewer-mol.js's own calculation. The hook therefore sits immediately before the
+core/mol.js's own calculation. The hook therefore sits immediately before the
 stroking loop, NOT earlier, and receives `{order, count, segments, segData,
 colors, shadows, tints, renderShadows, outlineWidthPx}`. Hooked earlier it read
 the unshaded `colors` and lost the style's whole look.

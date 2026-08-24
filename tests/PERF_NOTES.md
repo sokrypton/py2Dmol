@@ -309,7 +309,7 @@ the same work go faster.
   `tests/paint_order_audit.js` sidesteps this only because `_forceSec` skips
   the assignment.
 - **Test pages bundle the minified build.** `tests/out/*.html` embed
-  `viewer-cartoon.min.js`. After editing the source you must re-run terser AND
+  `bundles/py2Dmol.notebook.min.js`. After editing the source you must re-run terser AND
   regenerate the pages, or you are measuring the old renderer. Two rounds of
   results were invalidated this way — including a "pixel-identical" correctness
   result that was vacuous because the ink pass was not running at all.
@@ -463,7 +463,7 @@ conclusion the parser work reached from the other end. Four separate passes
 each walk 2.4M atom OBJECTS; the parse builds them, `convertParsedToFrameData`
 reads them into typed arrays, and the rest re-walks them for residue grouping
 and bonds. Whether that is worth doing is a design decision about the interface
-between `web/utils.js`, `web/app.js` and `viewer-mol.js`, not an optimisation.
+between `src/io/parse.js`, `src/app/` and `core/mol.js`, not an optimisation.
 
 ### The first thing the loader profile found: setCoords was quadratic
 
@@ -772,7 +772,7 @@ in the bench set alongside a capsid; they exercise different code.
 groups and 6,390 chains. Both remaining cliffs were per-ligand scans of a
 whole-structure list, exactly like isResidueConnected:
 
-- **`fileKnowsIt`** (viewer-mol.js, inside setCoords) walked every bond in the
+- **`fileKnowsIt`** (core/mol.js, inside setCoords) walked every bond in the
   structure to decide whether the file already describes ONE ligand's
   connectivity. Two billion comparisons. Now every bond is looked at once and
   charged to the group both its ends sit in - the same question from the other

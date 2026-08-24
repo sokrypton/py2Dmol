@@ -21,19 +21,35 @@ JOBS="${JOBS:-6}"
 fail=0
 
 if [[ "$LANE" == "all" || "$LANE" == "node" ]]; then
-  for f in py2Dmol/resources/viewer-mol.js py2Dmol/resources/viewer-cartoon.js \
-           py2Dmol/resources/viewer-cartoon-gpu.js py2Dmol/resources/viewer-pae.js \
-           py2Dmol/resources/viewer-seq.js; do
-    npx terser "$f" -c -m -o "${f%.js}.min.js" || { print "terser failed: $f"; exit 1 }
-  done
-  for f in interaction smoke sequence copy_selection sidechain_chain na_frame align; do
-    out=$(node tests/$f.js 2>&1)
-    if print -r -- "$out" | grep -q '^FAIL'; then
-      fail=1; print "NODE $f:"; print -r -- "$out" | grep '^FAIL' | head -3
+  # WHICH FILES, from tools/bundle.py rather than a copy of the list. This loop
+  # named five sources by hand: it built viewer-seq.js, which nothing consumes,
+  # and never built viewer-scatter.js, which viewer.py inlines - so the notebook
+  # could ship a scatter bundle older than its source and no test would know.
+  python3 tools/bundle.py build >/dev/null || { print "bundle build failed"; exit 1 }
+  # THE EXIT STATUS COUNTS, NOT JUST THE WORD "FAIL".
+  #
+  # This grepped for a line starting with FAIL and reported everything else as
+  # ok. A test that CRASHED - a lift that could not find its target, a syntax
+  # error, a missing file - prints a stack trace containing no such line, and
+  # was reported as passing. tests/interaction.js died on startup for a whole
+  # commit that way, and the suite said ALL GREEN.
+  for f in interaction smoke sequence copy_selection sidechain_chain na_frame align paint_trace math config; do
+    out=$(node tests/$f.js 2>&1); rc=$?
+    if (( rc != 0 )); then
+      fail=1; print "NODE $f: exit $rc"
+      print -r -- "$out" | grep -E '^FAIL|Error' | head -3
     else
       print "node $f: ok"
     fi
   done
+  # ...and the five hand-maintained lists of which JS files exist still agree
+  # with the one manifest they are supposed to derive from.
+  if python3 tools/bundle.py check >/dev/null 2>&1; then
+    print "node manifest: ok"
+  else
+    fail=1; print "NODE manifest:"; python3 tools/bundle.py check 2>&1 | grep '^FAIL' | head -3
+  fi
+
   # ...and every resource viewer.py opens is one setup.py ships. Static, so it
   # costs nothing; the wheel it protects is built by CI, where no revision
   # control plugin covers for a package_data omission.
@@ -43,9 +59,26 @@ if [[ "$LANE" == "all" || "$LANE" == "node" ]]; then
     fail=1; print "NODE packaging:"; python3 tests/packaging.py 2>&1 | grep '^FAIL' | head -3
   fi
 
-  # ...and the minified bundles draw the same picture as the sources
-  node tests/smoke.js py2Dmol/resources/viewer-cartoon.min.js >/dev/null 2>&1 \
-    && print "node smoke (min): ok" || { fail=1; print "NODE smoke (min): FAILED" }
+  # ...and every path a comment or a doc points a reader at still exists. The
+  # rename that split the renderer left 236 wrong pointers behind, and nothing
+  # in the suite could tell.
+  if python3 tests/paths.py >/dev/null 2>&1; then
+    print "node paths: ok"
+  else
+    fail=1; print "NODE paths:"; python3 tests/paths.py 2>&1 | grep '^FAIL' | head -3
+  fi
+
+  # ...and every SHIPPED BUNDLE puts the right names on the page and none of the
+  # wrong ones. This replaced running smoke.js against the notebook bundle,
+  # which cannot work now that the bundle is GPU-only: node has no WebGL2, so it
+  # correctly draws nothing here. The picture is checked where a picture can
+  # exist - minimal_input.py for the notebook bundle, embed.py for the embed,
+  # multi_object.py for the web one.
+  if node tests/bundles.js >/dev/null 2>&1; then
+    print "node bundles: ok"
+  else
+    fail=1; print "NODE bundles:"; node tests/bundles.js 2>&1 | grep '^FAIL' | head -3
+  fi
 fi
 
 # A BACKSTOP KILL, at twice the probe's own deadline. Each probe caps its wait
@@ -53,18 +86,27 @@ fi
 # impossible - but "should be impossible" is exactly what the 400-second stalls
 # were, and a suite that can hang is a suite nobody runs.
 CAP="${CAP:-60}"
+# ...in half-seconds, so 60 is thirty wall-clock. TWO PROBES NEED LONGER, and
+# say so here rather than by raising the ceiling for everything: tests/embed.py
+# drives its own eight viewers and then every live example on embed.html, which
+# is eleven more. Killed at thirty seconds it reported "no .canvas-box viewers
+# found" - what an unfinished page looks like, and nothing to do with the page.
+# tests/colab.py starts SIX browsers one after another, because each one is a
+# different arrival order of the same cell outputs and they cannot share a page.
+probe_cap () { [[ $1 == embed ]] && print 240 || { [[ $1 == colab ]] && print 160 || print $CAP } }
 run_probe () {   # name, then its arguments
   local name=$1; shift
   local log=/tmp/py2dmol-test-$name.log
+  local cap=$(probe_cap $name)
   python3 tests/$name.py "$@" >$log 2>&1 &
   local pid=$!
   local waited=0
-  while kill -0 $pid 2>/dev/null && (( waited < CAP )); do
+  while kill -0 $pid 2>/dev/null && (( waited < cap )); do
     sleep 0.5; waited=$((waited + 1))
   done
   if kill -0 $pid 2>/dev/null; then
     kill -9 $pid 2>/dev/null
-    print "PROBE $name: KILLED after ${CAP}s"; return 1
+    print "PROBE $name: KILLED after $((cap / 2))s"; return 1
   fi
   if wait $pid; then
     print "probe $name: ok"
@@ -76,7 +118,7 @@ run_probe () {   # name, then its arguments
 if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
   UI=(pick_empty pae_objects pae_visibility hidden_reload cut_ligands
       sidechain_toggle nucleic_multi save_multi selection_panel minimal_input
-      object_reload python_page style_per_object align_objects)
+      object_reload python_page style_per_object align_objects embed panel)
   pids=(); names=()
   for t in $UI; do
     ( run_probe $t ) & pids+=($!); names+=($t)
@@ -85,6 +127,13 @@ if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
   done
   ( run_probe multi_object 1BBH.cif 1EHZ.cif ) & pids+=($!); names+=(multi_object)
   for p in $pids; do wait $p || fail=1; done
+
+  # ...and then colab, ALONE. Not because it measures time - it does not - but
+  # because it is six browsers back to back, each holding four iframes of half
+  # a megabyte, and run in the batch above it starved tests/embed.py into a
+  # timeout. A probe heavy enough to change its neighbours' results is a probe
+  # that has to run by itself.
+  run_probe colab || fail=1
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "gpu" ]]; then

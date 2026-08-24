@@ -474,7 +474,7 @@ Reported from the screen, twice, and both reports were the same defect wearing
 different clothes: **one routine handles the broad faces and nobody handles the
 thickness bands.**
 
-**The 2D renderer** (`viewer-cartoon.js`, the `rib` branch). `paintFace` opens
+**The 2D renderer** (`cartoon/paint2d.js`, the `rib` branch). `paintFace` opens
 with `if (cel) { ...pathStrip; return; }`; `paintSide` had no `cel` branch at
 all. With smooth off the faces went flat and the two thickness bands kept their
 per-station linear gradients - one surface of every loop still airbrushed
@@ -760,7 +760,7 @@ down to face orientation being resolved at build time, which is a real effect
 and was the wrong answer: it accounted for a fraction of it.
 
 The renderer culls primitives that fall outside its viewport (`cullSeg`,
-viewer-cartoon.js, plus the matching test on the generic-segment path). That is
+cartoon/geom.js, plus the matching test on the generic-segment path). That is
 right for painting a frame and wrong for HARVESTING geometry - the mesh then
 holds only what was on screen at the capture view, and every rotation opens a
 hole where the frame happened not to look.
@@ -1326,7 +1326,7 @@ unchanged.
 ### Reading the two outline implementations against each other
 
 What the code says, after the pixels had been looked at. The 2D rim is
-`viewer-mol.js`'s two-step draw - a butt-capped stroke of
+`core/mol.js`'s two-step draw - a butt-capped stroke of
 `lineWidth + outlineWidth` under a round-capped stroke of `lineWidth` - and the
 GPU's is the skirt, `vRfill < dist <= vRfill + uGrowPx`, butt-cut where the
 chain continues.

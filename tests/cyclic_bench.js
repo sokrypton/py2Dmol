@@ -11,7 +11,7 @@
  * crosses the closure is cut in two. Overall and seam-only are both reported,
  * and the gap between them is the thing to drive to zero.
  *
- * Loads viewer-cartoon.js directly and calls the same exported entry point the
+ * Loads cartoon/geom.js directly and calls the same exported entry point the
  * renderer calls, so this cannot score a stale reimplementation.
  */
 const fs = require('fs');
@@ -19,7 +19,7 @@ const path = require('path');
 const vm = require('vm');
 
 const TRUTH = path.resolve(__dirname, 'out/cyclic_truth.json');
-const SRC = path.resolve(__dirname, '../py2Dmol/resources/viewer-cartoon.js');
+const SRC = path.resolve(__dirname, '../src/cartoon/geom.js');
 const SEAM = 4;   // residues each side of the closure counted as "seam"
 
 function loadCartoon() {

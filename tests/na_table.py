@@ -23,7 +23,7 @@ whose bin was well sampled score 12.6 deg, sparse ones 31-40.
 That tail is why the renderer treats predicted frames differently from stored
 ones: the pairing test widens to catch only gross violations, the pairing is
 used to fix the sign of a base that points away from its partner, and the
-ribbon's twist per residue is capped. See viewer-cartoon.js.
+ribbon's twist per residue is capped. See cartoon/geom.js.
 """
 import argparse
 import json
@@ -52,7 +52,7 @@ PURINES = {"DA", "DG", "A", "G", "RA", "RG", "I", "DI"}
 PURINE_RING = ["N9", "C8", "N7", "C5", "C6", "N1", "C2", "N3", "C4"]
 PYRIMIDINE_RING = ["N1", "C2", "N3", "C4", "C5", "C6"]
 
-# The bins the renderer reads (NA_NB13 / NA_NB14 in viewer-cartoon.js). Coarse
+# The bins the renderer reads (NA_NB13 / NA_NB14 in cartoon/geom.js). Coarse
 # on purpose: finer bins were swept and land within 0.5 deg of these, because
 # the limit is the spread inside a bin, not the bin size.
 NB13, NB14 = 8, 10
@@ -254,7 +254,7 @@ def main():
         print("  (node tests/na_bench.js scores the predictor the renderer ships)")
         import textwrap
         body = ", ".join(f"{x:g}" for x in np.round(grid.reshape(-1), 3))
-        print("\n// paste into viewer-cartoon.js as NA_BASE_TABLE:\n")
+        print("\n// paste into cartoon/geom.js as NA_BASE_TABLE:\n")
         print("\n".join("        " + line for line in textwrap.wrap(body, 92)))
 
 

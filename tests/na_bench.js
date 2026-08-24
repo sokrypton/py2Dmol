@@ -4,7 +4,7 @@
  *   node tests/na_bench.js             # report
  *
  * py2Dmol keeps one atom per nucleotide, the C4'. Where the base points is
- * predicted from that trace (predictBaseFrames in viewer-cartoon.js, reading
+ * predicted from that trace (predictBaseFrames in cartoon/geom.js, reading
  * NA_BASE_TABLE). This scores that prediction against the real ring geometry:
  *
  *   direction   angle between the predicted C4'->base-centroid direction and
@@ -15,7 +15,7 @@
  *   coverage    fraction of nucleotides that get a frame at all (the window
  *               needs i-1 .. i+2, padded at chain ends and breaks).
  *
- * Loads viewer-cartoon.js directly and calls its exported predictBaseFrames, so
+ * Loads cartoon/geom.js directly and calls its exported predictBaseFrames, so
  * this cannot score a stale reimplementation - tests/na_bench.py is the older
  * benchmark and does carry a replica of the frame construction.
  */
@@ -24,7 +24,7 @@ const path = require('path');
 const vm = require('vm');
 
 const TRUTH = path.resolve(__dirname, 'out/na_truth.json');
-const SRC = path.resolve(__dirname, '../py2Dmol/resources/viewer-cartoon.js');
+const SRC = path.resolve(__dirname, '../src/cartoon/geom.js');
 
 function loadCartoon() {
     const sandbox = {
@@ -54,7 +54,7 @@ const q = (a, p) => a[Math.floor(a.length * p)];
     }
     const api = loadCartoon();
     if (!api || !api.predictBaseFrames) {
-        console.error('viewer-cartoon.js did not export predictBaseFrames');
+        console.error('cartoon/geom.js did not export predictBaseFrames');
         process.exit(1);
     }
     const chains = JSON.parse(fs.readFileSync(TRUTH, 'utf8'));

@@ -2,7 +2,7 @@
 
     python3 tests/python_page.py
 
-The Python path builds its page from `_display_viewer` and loads viewer-mol.js
+The Python path builds its page from `_display_viewer` and loads core/mol.js
 and the cartoon plugin and nothing else - no object list, no sequence strip -
 so what it covers is the RENDERER'S multi-object handling, reached through the
 state that `view.set_color`, `set_sse` and `add_contacts` write:
@@ -48,6 +48,20 @@ def _check_state_round_trip():
     a.add_pdb(ROOT + '/6MRR.cif', name='pep')
     a.set_color('red', name='ubq', position=3)
     a.add_contacts([['A', 10, 'A', 20, 1.0]], name='pep')
+    # chain= AND position= TOGETHER MEANT THE UNION, and the selector on the JS
+    # side reads that pair as the intersection. One word cannot mean two things
+    # across two languages, and quietly changing which one Python meant would
+    # recolour existing notebooks - so the combination is refused by name.
+    # Either key ALONE is untouched, which is what the two calls below check.
+    try:
+        a.set_color('red', chain='A', position=3)
+        raise AssertionError('set_color(chain=, position=) must refuse the'
+                             ' combination - it used to mean the union while'
+                             ' a JS selector reads it as the intersection')
+    except ValueError as e:
+        assert 'ambiguous' in str(e), e
+    a.set_color('green', name='ubq', chain='A')
+    a.set_color('blue', name='ubq', position=7)
     path = os.path.join(tempfile.gettempdir(), 'py2dmol_state_check.json')
     a.save_state(path)
     st = json.load(open(path))

@@ -21,9 +21,16 @@
 //     get it backwards and everything flies apart instead of coming together,
 //     which is a silent 2x error - the score is identical either way.
 const fs = require('fs');
+const L = require('./lift.js');
+// ...and a reader that knows the web app is five files. A loop over file NAMES
+// cannot open 'the web app'; this maps that one name onto lift.js's
+// concatenation and reads everything else from disk.
+const readNamed = (f) => (f === 'the web app' ? L.app
+    : require('fs').readFileSync(f, 'utf8'));
+
 const path = require('path');
 
-// The seam inside viewer-align.js: everything before it is the generated copy
+// The seam inside align/align.js: everything before it is the generated copy
 // of foldjs's TM-align, everything after it is this repo's own code. Named
 // here so a source-text check can look at one half without the other.
 const END_MARK = '// <<< END GENERATED';
@@ -40,14 +47,14 @@ function helixFlat(n) {
 }
 
 global.self = global;
-eval(fs.readFileSync('py2Dmol/resources/viewer-align.js', 'utf8'));
+eval(fs.readFileSync('src/align/align.js', 'utf8'));
 const Align = global.Align;
 // The algorithm is inside that file, so the only way at it from out here is
 // what the file chooses to expose. tmAlign is exposed for exactly this: the
 // fixture below is only a test of the RANKING if the two scores it ranks by
 // can be read directly.
 const TM = Align.tmAlign ? Align : null;
-if (!TM) { console.log('FAIL: viewer-align.js does not expose tmAlign'); process.exit(1); }
+if (!TM) { console.log('FAIL: align/align.js does not expose tmAlign'); process.exit(1); }
 
 let fails = 0;
 const ok = (cond, msg) => { if (!cond) { console.log('FAIL: ' + msg); fails++; } };
@@ -67,7 +74,7 @@ const near = (a, b, tol, msg) => ok(Math.abs(a - b) <= tol,
     if (r.status === 2) {
         console.log('note: no ../foldjs checkout - the drift check did not run');
     } else {
-        ok(r.status === 0, "viewer-align.js's TM-align is not what"
+        ok(r.status === 0, "align/align.js's TM-align is not what"
             + ' foldjs/lib/tmalign.js derives to - regenerate with:'
             + ' node tests/vendor_tmalign.mjs --write');
     }
@@ -80,20 +87,23 @@ const near = (a, b, tol, msg) => ok(Math.abs(a - b) <= tol,
     // ways for a page to end up with half the feature - the aligner present and
     // its arithmetic missing, or the reverse.
     ok(typeof Align.makeSec === 'function' && Align.makeSec(helixFlat(8), 8).length === 8,
-        'viewer-align.js does not carry TM-align - it is loading it from somewhere');
-    const src = fs.readFileSync('py2Dmol/resources/viewer-align.js', 'utf8');
+        'align/align.js does not carry TM-align - it is loading it from somewhere');
+    const src = fs.readFileSync('src/align/align.js', 'utf8');
     ok(src.indexOf(END_MARK) > 0 && src.indexOf('// >>> BEGIN GENERATED') >= 0,
         'the generated region has lost its markers, so nothing can check it');
-    // ...counting the FILES it names, not the calls: importScripts takes a
-    // list, so one call can still name two files - which is exactly what the
-    // split version did.
+    // ...ONE file, and it names it by its own URL rather than spelling the
+    // filename out a second time. It did spell it out, and a rename then left
+    // the worker asking for a file that no longer existed - it failed to start
+    // and every alignment quietly ran on the main thread instead.
     const boot = /var boot = [^;]*;/.exec(src);
-    ok(boot && (boot[0].match(/JSON\.stringify\(base \+/g) || []).length === 1,
-        'the worker imports more than one file - there is only one to import: '
-        + (boot && boot[0]));
+    ok(boot && /JSON\.stringify\(SELF_URL\)/.test(boot[0]),
+        'the worker builds its import path from something other than SELF_URL,'
+        + ' so a rename can break it again: ' + (boot && boot[0]));
+    ok(boot && !/\.js'/.test(boot[0]),
+        'the worker boot names a filename literally: ' + (boot && boot[0]));
     // ...and nothing anywhere still points at the file that used to hold it
-    for (const f of ['index.html', 'py2Dmol/resources/viewer-mol.js', 'web/app.js']) {
-        ok(fs.readFileSync(f, 'utf8').indexOf('resources/tmalign.js') < 0,
+    for (const f of ['index.html', 'src/core/mol.js', 'the web app']) {
+        ok(readNamed(f).indexOf('resources/tmalign.js') < 0,
             `${f} still loads resources/tmalign.js, which no longer exists`);
     }
     ok(!fs.existsSync('py2Dmol/resources/tmalign.js'),
@@ -245,7 +255,7 @@ const asCoords = (flat, n) => Array.from({ length: n },
     ok(Align.FULL_SEARCH === false,
         'FULL_SEARCH is on - the full search is 2-4x slower for the same answer'
         + ' on 41 of 44 measured pairs; if this was deliberate, say so here');
-    const src = fs.readFileSync('py2Dmol/resources/viewer-align.js', 'utf8')
+    const src = fs.readFileSync('src/align/align.js', 'utf8')
         .split(END_MARK)[1];   // ...the hand-written half only
     ok(!/full:\s*(true|false)\b/.test(src),
         'a call site names the search settings itself instead of reading'

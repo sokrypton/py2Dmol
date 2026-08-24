@@ -8,7 +8,7 @@
  * and a full grid over 9 knobs is millions of evaluations.
  *
  * Reports the best setting found; apply it by editing the SS object in
- * viewer-cartoon.js. Deliberately NOT written back automatically - a number
+ * cartoon/geom.js. Deliberately NOT written back automatically - a number
  * that wins on 151 chains still has to look right on screen.
  */
 const fs = require('fs');
@@ -16,7 +16,7 @@ const path = require('path');
 const vm = require('vm');
 
 const TRUTH = path.resolve(__dirname, 'out/ss_truth.json');
-const SRC = path.resolve(__dirname, '../py2Dmol/resources/viewer-cartoon.js');
+const SRC = path.resolve(__dirname, '../src/cartoon/geom.js');
 
 function loadCartoon() {
     const sandbox = {

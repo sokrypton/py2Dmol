@@ -37,7 +37,7 @@ window.addEventListener('load', () => {
     const nums = f.residue_numbers || [];
     const names = f.position_names || [];
     // DERIVED from the frame, not stored on the object - see
-    // ligandGroupsForFrame in viewer-mol.js
+    // ligandGroupsForFrame in core/mol.js
     const groups = r.ligandGroupsOf(name) || new Map();
     let bad = [];
     let atoms = 0;
@@ -167,7 +167,7 @@ window.addEventListener('load', () => {
 """
 JS = JS.replace("//HELPERS", HELPERS)
 check_js(JS if "PAGE_JS" not in globals() else PAGE_JS)
-src=open(os.path.join(ROOT,"index.html")).read()
+src=open(os.path.join(ROOT,"dev.html")).read()
 stamp=str(int(time.time()*1000))
 src=re.sub(r'(<script src="(?!https?:)[^"]+?)(\?v=\d+)?(")', lambda m: m.group(1)+"?v="+stamp+m.group(3), src)
 open(PROBE,"w").write(src.replace("</body>", JS+"</body>"))

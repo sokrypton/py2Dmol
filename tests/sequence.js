@@ -2,7 +2,7 @@
  *
  *   node tests/sequence.js
  *
- * viewer-seq.js had no tests at all, which is how it came to hold two
+ * panels/seq.js had no tests at all, which is how it came to hold two
  * independent copies of the selection logic - one for the mouse, one for
  * touch - that had drifted apart: a tap on a chain label toggled that chain's
  * VISIBILITY while a click toggled its SELECTION, and dragging across chain
@@ -121,7 +121,7 @@ global.document = {
 global.CustomEvent = function CustomEvent(name) { this.name = name; };
 global.requestAnimationFrame = (fn) => { fn(); return 1; };
 
-eval(fs.readFileSync(path.join(ROOT, 'py2Dmol/resources/viewer-seq.js'), 'utf8'));
+eval(fs.readFileSync(path.join(ROOT, 'src/panels/seq.js'), 'utf8'));
 const SEQ = global.window.SEQ;
 if (!SEQ || !SEQ.buildView) throw new Error('viewer-seq did not install window.SEQ');
 
@@ -511,7 +511,7 @@ test('mouse and touch run one code path, not two copies', () => {
     // pointer type and not the other. Both listeners must be thin: they may
     // translate their own events, but the selection logic they reach has to be
     // the shared one, so neither may name the selection helpers directly.
-    const src = fs.readFileSync(path.join(ROOT, 'py2Dmol/resources/viewer-seq.js'), 'utf8');
+    const src = fs.readFileSync(path.join(ROOT, 'src/panels/seq.js'), 'utf8');
     const at = (ev2) => {
         const i = src.indexOf(`newCanvas.addEventListener('${ev2}'`);
         if (i < 0) throw new Error('no ' + ev2 + ' listener');
@@ -541,7 +541,7 @@ test('mouse and touch run one code path, not two copies', () => {
 test('no listener is registered under a name that can never fire', () => {
     // Two handlers sat here disabled by renaming their event, for long enough
     // that the live copy drifted from them.
-    const src = fs.readFileSync(path.join(ROOT, 'py2Dmol/resources/viewer-seq.js'), 'utf8');
+    const src = fs.readFileSync(path.join(ROOT, 'src/panels/seq.js'), 'utf8');
     const m = src.match(/addEventListener\('([a-zA-Z]+__[A-Z]+|[a-zA-Z]*_[a-zA-Z]*)'/g);
     if (m) throw new Error('dead listener names: ' + m.join(', '));
 });

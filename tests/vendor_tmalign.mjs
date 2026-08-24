@@ -1,4 +1,4 @@
-// Keep the TM-align half of py2Dmol/resources/viewer-align.js in step with foldjs.
+// Keep the TM-align half of src/align/align.js in step with foldjs.
 //
 //   node tests/vendor_tmalign.mjs           # check   (exit 1 if it differs)
 //   node tests/vendor_tmalign.mjs --write   # rewrite the generated region
@@ -29,7 +29,7 @@ import path from 'path';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const UPSTREAM = path.resolve(HERE, '../../foldjs/lib/tmalign.js');
-const TARGET = path.resolve(HERE, '../py2Dmol/resources/viewer-align.js');
+const TARGET = path.resolve(HERE, '../src/align/align.js');
 
 export const BEGIN = '// >>> BEGIN GENERATED: foldjs/lib/tmalign.js';
 export const END = '// <<< END GENERATED';

@@ -83,6 +83,19 @@ window.addEventListener('load', () => {
       r.viewerState.zoom = 1.7;
       r.viewerState.rotation = [[0, 1, 0], [-1, 0, 0], [0, 0, 1]];
       r.render('probe camera'); await settle();
+      // A CONTACT BETWEEN TWO OBJECTS, which belongs to neither and so travels
+      // by a different road than the rest of this: an object's contacts go
+      // with the object through OBJECT_STATE, and these live on the viewer.
+      // Nothing was carrying them, so a session came back with the structures
+      // and without the lines between them.
+      // ...BY POSITION, not by residue number: these are three different
+      // entries and only their position indices are known here.
+      r.crossContacts = [[{object: names[0], positions: [10]},
+                          {object: names[1], positions: [20]}, 1.0]];
+      r.objectsData[names[0]].contacts = [[5, 30, 1.0]];
+      r._invalidateSegmentCache(); r.reloadDrawn(); await settle();
+      R.contactsBefore = (r.segmentIndices || []).filter((x) => x.type === 'C').length;
+
       R.before = st(r, 'before save');
 
       // SAVE through the button's own path
@@ -98,6 +111,11 @@ window.addEventListener('load', () => {
 
       r.clearAllObjects();
       await until(() => !Object.keys(r.objectsData || {}).length, 2000);
+      // ...AND THE VIEWER'S CONTACTS WENT WITH THE RESET. They are not an
+      // object's, so clearing the objects left them in place - and without
+      // this the check below cannot tell a restored contact from one that was
+      // never cleared.
+      R.crossCleared = (r.crossContacts || []).length;
       R.cleared = st(r, 'cleared');
       await window.loadViewerState(JSON.parse(captured));
       // A RESTORE IS ASYNCHRONOUS: it parses each object's file and settles
@@ -107,6 +125,9 @@ window.addEventListener('load', () => {
       await until(() => Object.keys(r.objectsData || {}).length >= 2
           && r.coords && r.coords.length > 0);
       await settle();
+      r._invalidateSegmentCache(); r.reloadDrawn(); await settle();
+      R.contactsAfter = (r.segmentIndices || []).filter((x) => x.type === 'C').length;
+      R.crossAfter = (r.crossContacts || []).length;
       R.after = st(r, 'after load');
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});
@@ -117,7 +138,7 @@ window.addEventListener('load', () => {
 """
 JS = JS.replace("//HELPERS", HELPERS)
 check_js(JS if "PAGE_JS" not in globals() else PAGE_JS)
-src=open(os.path.join(ROOT,"index.html")).read()
+src=open(os.path.join(ROOT,"dev.html")).read()
 stamp=str(int(time.time()*1000))
 src=re.sub(r'(<script src="(?!https?:)[^"]+?)(\?v=\d+)?(")', lambda m: m.group(1)+"?v="+stamp+m.group(3), src)
 open(PROBE,"w").write(src.replace("</body>", JS+"</body>"))
@@ -150,6 +171,17 @@ for tag, s in (("before", b), ("after", a)):
 print(f"  cleared: drawn={R['cleared']['drawn']} rows={R['cleared']['rows']}")
 
 bad = []
+if R.get('contactsBefore') != 2:
+    bad.append(f"expected two contacts before saving, drew {R.get('contactsBefore')}")
+if R.get('crossCleared') != 0:
+    bad.append('Clear All left the viewer-level contacts in place - they are'
+               ' not an object\'s, so they outlived the objects their two ends'
+               ' name')
+if R.get('crossAfter') != 1 or R.get('contactsAfter') != 2:
+    bad.append(f"a session came back with {R.get('crossAfter')} cross-object"
+               f" contacts and {R.get('contactsAfter')} contact segments,"
+               ' expected 1 and 2 - an object\'s contacts travel through'
+               ' OBJECT_STATE and the viewer\'s need carrying separately')
 if R["cleared"]["n"]:
     bad.append("Clear All left coordinates behind, so the load is not from scratch")
 for field, what in [

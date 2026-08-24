@@ -77,6 +77,12 @@ graph TB
 
 ## File Structure
 
+> **This tree is out of date and is not maintained.** The renderer was split
+> across a dozen files and `web/utils.js` became three; the line counts here
+> predate all of it. For what exists and who loads it, read `CLAUDE.md`'s file
+> map or run `python3 tools/bundle.py show` — that manifest is the one list
+> every other list is derived from, and a test fails when they disagree.
+
 ```
 py2Dmol/
 ├── py2Dmol/                     # Python Package
@@ -97,7 +103,6 @@ py2Dmol/
 │   └── style.css                # Global styles
 │
 ├── index.html                   # Main web app entry (611 lines)
-├── msa.html                     # Standalone MSA viewer (330 lines)
 └── README.md                    # User documentation
 ```
 
@@ -557,7 +562,7 @@ The `render()` method follows this flow:
 
 ### Web App: `app.js`
 
-**Path**: `web/app.js`
+**Path**: `src/app.js`
 **Lines**: 6,529
 
 #### Initialization Flow

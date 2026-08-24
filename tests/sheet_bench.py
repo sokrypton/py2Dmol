@@ -14,7 +14,7 @@ Skolnick 2008): bin the local internal coordinates, look up the peptide. PULCHRA
 looks up a whole fragment and superimposes it; only C and N are needed here (O
 follows from sp2 geometry), so it is one table read per residue.
 
-This script fits that table - PEPTIDE_TABLE in viewer-cartoon.js - and reports
+This script fits that table - PEPTIDE_TABLE in cartoon/geom.js - and reports
 what it is worth on held-out chains. tests/ss_bench.js scores the secondary
 structure that DSSP then derives from the rebuilt backbone, and
 tests/sheet_bench.js scores the strand frames built on the sheet.
@@ -269,7 +269,7 @@ def main():
         flat = np.round(grid.reshape(-1), 3)
         body = ", ".join(f"{x:g}" for x in flat)
         import textwrap
-        print("\n// paste into viewer-cartoon.js as PEPTIDE_TABLE:\n")
+        print("\n// paste into cartoon/geom.js as PEPTIDE_TABLE:\n")
         print("\n".join("        " + line for line in textwrap.wrap(body, 92)))
 
 

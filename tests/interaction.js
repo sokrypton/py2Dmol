@@ -1,9 +1,9 @@
-// Gesture-degrade tests for viewer-mol.js: the outline drop during a gesture,
+// Gesture-degrade tests for core/mol.js: the outline drop during a gesture,
 // the inertia veto, and the settle that puts the outline back.
 //
 //   node tests/interaction.js
 //
-// viewer-mol.js needs a DOM to instantiate, so rather than mock a browser the
+// core/mol.js needs a DOM to instantiate, so rather than mock a browser the
 // methods under test are LIFTED OUT OF THE SOURCE TEXT and run against a mock
 // canvas. That way the logic exercised is the shipped code, not a paraphrase of
 // it that can drift away from it silently.
@@ -19,98 +19,76 @@
 //     the settle was lost for good, stranding the viewer with no outline.
 
 const fs=require('fs');
-const src=fs.readFileSync('py2Dmol/resources/viewer-mol.js','utf8');
+// EVERY SCAN IN THIS FILE READS lift.js, and lift.js owns the file list. That is
+// what lets the renderer split into siblings without 123 lifts failing at once;
+// see its header for why the match is indent-agnostic.
+const L=require('./lift.js');
+// ...and a reader that knows the web app is five files. A loop over file NAMES
+// cannot open 'the web app'; this maps that one name onto lift.js's
+// concatenation and reads everything else from disk.
+const readNamed = (f) => (f === 'the web app' ? L.app
+    : require('fs').readFileSync(f, 'utf8'));
+
+const src=L.src;
 // _materialiseSidechains rebuilds atoms through the cartoon plugin's own
-// localFrame - the same function web/utils.js stored them with. Load the real
+// localFrame - the same function src/io/parse.js stored them with. Load the real
 // plugin rather than stub it: two implementations of that frame is exactly how
 // capture and reconstruction would drift apart.
 global.window = { dispatchEvent(){}, addEventListener(){}, py2dmol_customColors:{} };
 global.Event = function Event(){};
-eval(fs.readFileSync('py2Dmol/resources/viewer-cartoon.js','utf8'));
+// both halves, in page order: the painter reads the geometry file's shading
+// vocabulary at load time and throws if it arrives first
+for (const rel of L.CARTOON) eval(fs.readFileSync(rel, 'utf8'));
 // helpers the lifted methods close over in the real file
-const molSrc = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
-// new Function bodies see globals only, so the lifted methods find it there
-eval('global.' + molSrc.split('\n').find((l) => l.includes('function hexToRgb'))
-    .trim().replace('function hexToRgb', 'hexToRgb = function'));
+const molSrc = L.src;
+// new Function bodies see globals only, so the lifted methods find it there.
+// Brace-matched rather than read as one line: it happens to be written on one
+// today and nothing should depend on it staying that way.
+eval('global.' + L.topFunction('hexToRgb').replace('function hexToRgb', 'hexToRgb = function'));
 // ...and the small predicates they call, for the same reason
-{
-    const m = molSrc.match(/\n    const isPerspective = [\s\S]*?;\n/);
-    if (!m) throw new Error('isPerspective not found in viewer-mol.js');
-    eval('global.' + m[0].trim().replace('const ', ''));
-}
+eval('global.' + L.constExpr('isPerspective'));
 // module-level constants the lifted methods close over, taken from the source
 // so the test scores the shipped values rather than a copy of them
 for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_GAIN',
     'SELECTION_HALO_MIN_PX', 'SELECTION_HALO_RADIUS_FRAC', 'SIDECHAIN_WIDTH', 'SIDECHAIN_REACH_A',
     'PICK_WIDTH_SCALE', 'CONTACT_WIDTH_A', 'HOVER_TEXT_LIGHT_CSS',
     'HOVER_TEXT_DARK_CSS', 'HOVER_TEXT_MARGIN']) {
-    const line = molSrc.split('\n').find((l) => l.trim().startsWith('const ' + name + ' ='));
-    if (!line) throw new Error('constant not found in viewer-mol.js: ' + name);
-    eval('global.' + line.trim().replace('const ', ''));
+    eval('global.' + L.constLine(name));
 }
 // ...and Vec3, which some of them construct (a view centre with no object is
 // new Vec3(0, 0, 0)). Same reasoning as the constants: taken from the source
 // so the test scores the shipped class.
-{
-    const at = molSrc.indexOf('class Vec3 {');
-    if (at < 0) throw new Error('Vec3 not found in viewer-mol.js');
-    let d = 0; let k = molSrc.indexOf('{', at);
-    for (; k < molSrc.length; k++) {
-        if (molSrc[k] === '{') d++; else if (molSrc[k] === '}' && !--d) break;
-    }
-    eval('global.Vec3 = ' + molSrc.slice(at, k + 1).replace('class Vec3', 'class'));
-}
+eval('global.Vec3 = ' + L.klass('Vec3').replace('class Vec3', 'class'));
 // ...and the module-level FUNCTIONS they call, for the same reason: a lifted
 // method that reaches one of these gets a ReferenceError, which reads as ten
 // unrelated halo tests breaking at once.
 for (const name of ['selectionBandFor', 'ligandGroupsForFrame',
     'objectStateAbsent']) {
-    const at = molSrc.indexOf('function ' + name + '(');
-    if (at < 0) throw new Error('function not found in viewer-mol.js: ' + name);
-    // brace-matched rather than "the next line that is a closing brace at four
-    // spaces" - these live at two different indents (one inside the factory,
-    // one at module scope) and the old rule silently lifted half a function.
-    let d = 0; let k = molSrc.indexOf('{', at);
-    for (; k < molSrc.length; k++) {
-        if (molSrc[k] === '{') d++;
-        else if (molSrc[k] === '}' && !--d) break;
-    }
-    eval('global.' + name + ' = ' + molSrc.slice(at, k + 1)
-        .replace('function ' + name, 'function'));
+    eval('global.' + name + ' = '
+        + L.topFunction(name).replace('function ' + name, 'function'));
 }
 // ...and the two module-level constants ligandGroupsForFrame closes over.
 global.LIGAND_GROUPS_BY_FRAME = new WeakMap();
 global.NO_LIGAND_GROUPS = new Map();
 // ...and the per-object field list, which several lifted methods walk
+// ...between its markers, not "everything before the factory declaration". The
+// newline matters: the region ends in a line comment and a return appended to
+// it would be commented out, silently, leaving OBJECT_STATE undefined.
 global.OBJECT_STATE = new Function(
-    molSrc.slice(molSrc.indexOf('const OBJECT_STATE = ['),
-        molSrc.indexOf('function initializePy2DmolViewer('))
-    + '; return OBJECT_STATE;')();
+    L.between('// >>> OBJECT_STATE BEGIN', '// <<< OBJECT_STATE END')
+    + '\n; return OBJECT_STATE;')();
 
 // orient's rotation solver, scored as shipped
-eval(fs.readFileSync('web/utils.js','utf8').match(
+eval(L.utils.match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyLookDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_transformedFrame','_parkedFrameIndex','setAlignTransform','clearAlignments','anyAlignment','_reapplyAfterAlign','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','_applyRecordVisibility','_composeAndApplyMask','_visibleForObject','_syncModelToMask','withSidechainAtoms','_baseCount','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','ligandGroupsOf','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyLookDefaults','autoClip','_autoClipDepth','_autoClipHalf','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_transformedFrame','_parkedFrameIndex','setAlignTransform','clearAlignments','anyAlignment','_reapplyAfterAlign','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','_applyRecordVisibility','_composeAndApplyMask','_visibleForObject','_syncModelToMask','withSidechainAtoms','_baseCount','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','ligandGroupsOf','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
 const body={};
-for(const nm of names){
- const i=src.indexOf('\n        '+nm+'(');
- if(i<0) throw new Error('method not found: '+nm);
- // THE BODY'S BRACE, not the first one after the name: a default argument can
- // be an object literal (`opts = {}`), and brace-matching from there lifts the
- // signature and nothing else. Walk the parameter list to its closing paren
- // first.
- let p=src.indexOf('(',i), pd=0, pk=p;
- for(;pk<src.length;pk++){ if(src[pk]==='(')pd++; else if(src[pk]===')'){pd--; if(!pd)break;} }
- // brace-match from the opening { of the body
- let j=src.indexOf('{',pk), d=0, k=j;
- for(;k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){d--; if(!d)break;} }
- body[nm]=src.slice(i,k+1);
-}
+for(const nm of names) body[nm]=L.method(nm);
 // ...and the STATICS the lifted methods reach through this.constructor. Only
 // the named methods are lifted, so a static one of them depends on is simply
 // absent and the method throws on a property of undefined.
-const statics=['ELEMENT_COLORS','CAPTURE_DEFAULTS','GIF_LIMITS'].map((nm)=>
- (src.match(new RegExp('\\n        static get '+nm+'\\(\\)[\\s\\S]*?\\n        \\}'))||[''])[0]).join('\n');
+const statics=['ELEMENT_COLORS','CAPTURE_DEFAULTS','GIF_LIMITS']
+ .map((nm)=>L.staticGet(nm)).join('\n');
 const Cls=new Function('document','window','return class V {'+names.map(n=>body[n]).join('\n')+statics+'}')
  ({createElement:()=>mkCanvas(0,0)}, global.window);
 function mkCtx(canvas){const ops=[];return {ops,canvas,fillStyle:'',
@@ -179,7 +157,7 @@ t('orient jumps rather than flies when a frame is unaffordable',()=>{
  // the shipped decision, and the shipped wind-back, exercised together
  const v=mk();
  const anim={duration:1000,startTime:0,active:true};
- const start=(now)=>{                       // mirrors web/app.js
+ const start=(now)=>{                       // mirrors src/app/
   anim.startTime=now;
   if(v.smoothAnimationOk && !v.smoothAnimationOk())
    anim.startTime=now-(anim.duration||0);
@@ -416,14 +394,20 @@ t('a changed selection does not keep the old residue\'s atoms', () => {
 
 
 // ---- ORIENT -----------------------------------------------------------------
-// The centre/extent maths from app.js's orient, lifted as source text so this
-// scores the shipped arithmetic rather than a paraphrase of it.
-const appSrc = fs.readFileSync('web/app.js', 'utf8');
+// The centre/extent maths from orient, lifted as source text so this scores the
+// shipped arithmetic rather than a paraphrase of it. It lived in src/app/main.js
+// until it became parts/orient.js - a notebook and an embed want to face a
+// structure at the reader too, and it was only in the app because it read the
+// app's dropdown for a name.
+const appSrc = L.app;
+const orientSrc = L.orient;
 const orientBody = (() => {
-    const a = appSrc.indexOf('        // Calculate extent from selected positions');
-    const b = appSrc.indexOf('// Calculate standard deviation for selected positions');
-    if (a < 0 || b < 0) throw new Error('orient extent block not found in web/app.js');
-    return appSrc.slice(a, b);
+    const a = orientSrc.indexOf('        // Calculate extent from selected positions');
+    const b = orientSrc.indexOf('// Calculate standard deviation for selected positions');
+    if (a < 0 || b < 0) {
+        throw new Error('orient extent block not found in parts/orient.js');
+    }
+    return orientSrc.slice(a, b);
 })();
 function orientExtent(coordsForBestView) {
     const sum = [0, 0, 0];
@@ -534,12 +518,16 @@ t('a structure with no pLDDT is not given one', () => {
 
 // ---- SELECTION PANEL --------------------------------------------------------
 // The panel IS the state: it appears with a selection and goes away without
-// one. Lifted from web/app.js and run against a stub DOM, because "a panel that
+// one. Lifted from src/app/ and run against a stub DOM, because "a panel that
 // never appears" and "a panel that never hides" both look like nothing at all
 // until someone uses the app.
 const panelBody = (() => {
-    const a = appSrc.indexOf('    function updateSelectionToolsState() {');
-    if (a < 0) throw new Error('updateSelectionToolsState not found in web/app.js');
+    // AT EITHER INDENT. It was nested inside setupEventListeners at four
+    // spaces; the selection panel is its own file now and it sits at column
+    // zero. Its sibling lift() below already tried both, and this did not.
+    let a = appSrc.indexOf('\nfunction updateSelectionToolsState() {');
+    if (a < 0) a = appSrc.indexOf('    function updateSelectionToolsState() {');
+    if (a < 0) throw new Error('updateSelectionToolsState not found in the web app');
     let b = appSrc.indexOf('{', a), d = 0, k = b;
     for (; k < appSrc.length; k++) {
         if (appSrc[k] === '{') d++;
@@ -551,7 +539,7 @@ const panelBody = (() => {
         // nested (four spaces) or top level - the panel calls both kinds
         let i = appSrc.indexOf('    function ' + name + '(');
         if (i < 0) i = appSrc.indexOf('\nfunction ' + name + '(');
-        if (i < 0) throw new Error(name + ' not found in web/app.js');
+        if (i < 0) throw new Error(name + ' not found in src/app/');
         let j = appSrc.indexOf('{', i), dd = 0, kk = j;
         for (; kk < appSrc.length; kk++) {
             if (appSrc[kk] === '{') dd++;
@@ -654,7 +642,7 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
     // eslint-disable-next-line no-new-func
     // the two label refreshers it calls at the end are covered by their own
     // tests; here they only need to exist
-    // findContact is defined next to the panel function in app.js; the panel
+    // findContact is defined next to the panel function in src/app/; the panel
     // asks it whether the pair already has a contact, to choose Add or Remove
     const f = new Function('document', 'getActiveSelection', 'viewerApi',
         'findContact', 'contactSlots',
@@ -701,7 +689,7 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
         // weight to load the width slider
         () => (hasContact ? { obj: { contacts: [['A', 1, 'B', 2, 1.5]] }, i: 0 } : null),
         // the chain form keeps its weight at 4 and colour at 5; the bare-index
-        // form at 2 and 3 - see contactSlots in app.js
+        // form at 2 and 3 - see contactSlots in src/app/
         (c) => ((typeof c[0] === 'number' && typeof c[1] === 'number')
             ? { w: 2, col: 3 } : { w: 4, col: 5 }));
     // querySelectorAll on the tools group: the enable/disable sweep
@@ -743,7 +731,7 @@ t('Undo appears once something is off its file coordinates', () => {
 });
 
 t('the aligner is a separate script, and the row goes with it', () => {
-    // viewer.py inlines its resources and does not carry tmalign.js, so a
+    // viewer.py inlines its resources and does not carry align/align.js, so a
     // notebook page has no window.Align. The row is simply not offered there -
     // which is a menu that does nothing, avoided.
     const n = panelRun([1, 2, 3], new Set(), false, null, null, new Set(), null,
@@ -765,7 +753,7 @@ t('a line separates what the selection IS from what to do with it', () => {
     if (!(mc < div && div < find)) {
         throw new Error('the divider is not between the property rows and Find');
     }
-    const css = fs.readFileSync('web/style.css', 'utf8');
+    const css = fs.readFileSync('src/app/style.css', 'utf8');
     if (!/\.selection-panel-divider\s*\{[^}]*background/.test(css)) {
         throw new Error('the divider has no line to draw');
     }
@@ -861,7 +849,7 @@ t('the panel says how big the selection is, and nothing more', () => {
         throw new Error('the ranges moved into the tooltip: '
             + three.selectionPanelCount.title);
     }
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     if (app.includes('describeSelectionRanges')) {
         throw new Error('describeSelectionRanges is back');
     }
@@ -1096,8 +1084,8 @@ t('the SSE menu shows the state it is in, not the word SSE', () => {
     }
     // NOTHING marks forced any more - not the text, not a class. It was one
     // more thing to read on a control whose job is one word.
-    if (/is-forced/.test(fs.readFileSync('web/app.js', 'utf8'))
-        || /is-forced/.test(fs.readFileSync('web/style.css', 'utf8'))) {
+    if (/is-forced/.test(L.app)
+        || /is-forced/.test(fs.readFileSync('src/app/style.css', 'utf8'))) {
         throw new Error('the forced/assigned distinction is back on the face');
     }
     // ...and disagreement is a state of its own, shown and not picked
@@ -1121,7 +1109,7 @@ t('the SSE menu shows the state it is in, not the word SSE', () => {
             + ' DO with mixed');
     }
     // ...and DSSP is the option that takes the override OFF
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     if (!/v === 'dssp' \? null : v/.test(app)) {
         throw new Error('picking DSSP no longer clears the forced structure');
     }
@@ -1196,7 +1184,7 @@ t('Elements is offered only where there are atoms to colour', () => {
     }
     // ...and it is the LABEL that hides, or the word stays on the row with no
     // control under it
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     if (!/const wrap = elTog\.closest \? elTog\.closest\('label'\) : null;/.test(app)) {
         throw new Error('the checkbox hides on its own, leaving its text behind');
     }
@@ -1241,7 +1229,7 @@ t('Show comes first on every row, and the style menu after it', () => {
         throw new Error('the Plate switch is offered for something not drawn');
     }
     // BOTH READ THE SAME ANSWER, worked out once from the object.
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     if (!/const mode = modes\.size === 1 \? \[\.\.\.modes\]\[0\] : '';/.test(app)) {
         throw new Error('the two controls no longer share one answer');
     }
@@ -1270,7 +1258,7 @@ t('a nucleotide is drawn as a plate or as its atoms, on one row', () => {
     const html = fs.readFileSync('index.html', 'utf8');
     if (html.indexOf('id="basesRow"') >= 0) throw new Error('the plate row is back');
     if (html.indexOf('id="plateShowToggle"') < 0) throw new Error('no Plate switch');
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     if (!/onToggle\('plateShowToggle', \(p2, v\) => \{/.test(app)
         || !/setSelectionSidechainMode\(p2, v \? 'plate' : 'full'\)/.test(app)) {
         throw new Error('the Plate switch is not wired');
@@ -1299,7 +1287,7 @@ t('a nucleotide is drawn as a plate or as its atoms, on one row', () => {
     // A BASE IS A SIDE CHAIN, in the table as well as on the panel: the
     // capture takes the base ring plus the two sugar atoms that carry it, so
     // every stick drawn is a real bond - C4' - O4' - C1' - N9/N1 - ring.
-    const utils = fs.readFileSync('web/utils.js', 'utf8');
+    const utils = L.utils;
     if (!/sidechainEntries\.push\(\{ pos: newIndex, residue, nucleic: true \}\)/.test(utils)) {
         throw new Error('nucleotides are not offered to the side-chain table');
     }
@@ -1317,14 +1305,14 @@ t('a nucleotide is drawn as a plate or as its atoms, on one row', () => {
     // ...AND THE FRAME IT IS EXPRESSED IN. A nucleic trace steps 5.5-6.5 A and
     // localFrame's default range is the peptide's 3.0-4.2, so every nucleotide
     // read as a chain break and no base could be built at all.
-    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    const cart = L.cartoon;
     if (!/NUCLEIC_STEP_MIN = 4\.5/.test(cart) || !/NUCLEIC_STEP_MAX = 7\.5/.test(cart)) {
         throw new Error('the nucleic step range is gone');
     }
     if (!/function localFrame\(at, n, i, out, wrap, stepMin, stepMax\)/.test(cart)) {
         throw new Error('localFrame takes no step range, so it cannot frame a base');
     }
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const mol = L.src;
     if (!/localFrame\(at, n, i, fr, null, nucLo, nucHi\)/.test(mol)) {
         throw new Error('_materialiseSidechains rebuilds a base through the peptide range');
     }
@@ -1734,7 +1722,7 @@ t('the halo is painted after the molecule, in both styles and in exports', () =>
     // it cannot be occluded only if it goes down last - and it has to be inside
     // the render, not on the sequence viewer's DOM overlay, or it would be
     // missing from saved images and skipped during drags
-    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src = L.src;
     // `this.` prefixed, so the method DEFINITION is not counted as a call -
     // without that this passed with the cartoon branch's call deleted
     const calls = src.split('this._paintOverlays(ctx').length - 1;
@@ -1750,9 +1738,9 @@ t('the halo is painted after the molecule, in both styles and in exports', () =>
     if (!/_paintHoverReadout/.test(src) || !/hoverSet\(\)/.test(src)) {
         throw new Error('the hover is not painted by the renderer');
     }
-    for (const f of ['py2Dmol/resources/viewer-mol.js', 'py2Dmol/resources/viewer-seq.js',
-        'web/app.js']) {
-        const t = fs.readFileSync(f, 'utf8');
+    for (const f of ['src/core/mol.js', 'src/panels/seq.js',
+        'the web app']) {
+        const t = readNamed(f);
         if (/highlightOverlay|drawHighlights/.test(t)) {
             throw new Error(f + ' still refers to the second highlight canvas');
         }
@@ -1761,7 +1749,7 @@ t('the halo is painted after the molecule, in both styles and in exports', () =>
     if (/const selSet = this\.selectionInk\(\);/.test(src)) {
         throw new Error('tube still inks the selection into the depth-sorted geometry');
     }
-    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    const cart = L.cartoon;
     if (/const selInk = renderer\.selectionInk/.test(cart)) {
         throw new Error('cartoon still inks the selection into the geometry');
     }
@@ -1854,7 +1842,7 @@ t('Within finds neighbours atom to atom, and keeps the seed', () => {
     // of coefficients, and a neighbourhood must not change when someone turns
     // it on. Two passes, or a 300,000-residue assembly rebuilds every side
     // chain to answer a question about twelve of them.
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const mol = L.src;
     const body = mol.slice(mol.indexOf('residuesWithin(seed, cutoff, opts) {'),
         mol.indexOf('_atomsOfResidues(want) {'));
     if (!/const coarse = cut \+ 2 \* REACH/.test(body)) {
@@ -1883,7 +1871,7 @@ t('Within finds neighbours atom to atom, and keeps the seed', () => {
     if (html.slice(toolsAt, toolsAt + 900).includes('id="selectNearby"')) {
         throw new Error('Find is still beside Select all');
     }
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     if (!/renderer\.residuesWithin\(seed, cutoff, \{ sidechainsOnly \}\)/.test(app)) {
         throw new Error('the button does not ask the renderer');
     }
@@ -1908,7 +1896,7 @@ t('side chain to side chain is the other question, and leaves the trace out', ()
     if (!v.residuesWithin(new Set([0]), 5).has(1)) {
         throw new Error('the any-atom search stopped finding trace neighbours');
     }
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const mol = L.src;
     const body = mol.slice(mol.indexOf('residuesWithin(seed, cutoff, opts) {'),
         mol.indexOf('_atomsOfResidues(want) {'));
     // index 0 of each list IS the trace point, so the exclusion is a slice
@@ -1978,7 +1966,7 @@ t('side chain to side chain is the other question, and leaves the trace out', ()
     if (!/>interactions</.test(row) || !/selection-panel-label">Find</.test(row)) {
         throw new Error('the row does not read "Find: interactions"');
     }
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     if (!/const INTERACTION_CUTOFF_A = 5;/.test(app)) {
         throw new Error('the cutoff is not a named 5 Angstrom');
     }
@@ -2031,7 +2019,7 @@ t('the ghost is stippled, not blended, and the shader ramps as the renderer does
     // A blended fill needs back-to-front order this path does not keep, so a
     // ghost in front of the slab would paint over what should show through it.
     // Dropping pixels needs no order at all.
-    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const gpu = fs.readFileSync('src/cartoon/paintgl.js', 'utf8');
     const at = gpu.indexOf('const CLIP_GLSL');
     const glsl = gpu.slice(at, gpu.indexOf('`;', at));
     if (!/uClipFade/.test(glsl) || !/clipCover/.test(glsl)) {
@@ -2046,7 +2034,7 @@ t('the ghost is stippled, not blended, and the shader ramps as the renderer does
     if (!/1\.0 \+ d \/ uClipFade/.test(glsl)) {
         throw new Error('the shader ramp is not the renderer ramp');
     }
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const mol = L.src;
     if (!/1 \+ d \/ w/.test(mol)) throw new Error('the renderer ramp changed shape');
     if (!/uniform1f\(gl\.getUniformLocation\(prog, 'uClipFade'\)/.test(gpu)) {
         throw new Error('the fade never reaches the shader');
@@ -2061,7 +2049,7 @@ t('the ghost is stippled, not blended, and the shader ramps as the renderer does
     // ...and there is a control for it
     const html = fs.readFileSync('index.html', 'utf8');
     if (html.indexOf('id="clipFadeSlider"') < 0) throw new Error('no Fade control');
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     if (!/setClipFade\(parseFloat\(fadeEl\.value\) \/ 100\)/.test(app)) {
         throw new Error('the Fade control is not wired to the renderer');
     }
@@ -2095,7 +2083,7 @@ t('the ghost is stippled, not blended, and the shader ramps as the renderer does
 t('the clip is one range control, and nothing is drawn over the picture', () => {
     // The box round the planes is gone: it was one more thing to read in the
     // viewport, and the two handles already say where the slab is.
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const mol = L.src;
     if (/_paintClipSlab|CLIP_NEAR_CSS/.test(mol)) {
         throw new Error('the clip still paints a box over the drawing');
     }
@@ -2180,11 +2168,59 @@ t('Auto fits the slab to the selection, and uncuts without one', () => {
     flat.viewerState = { rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], center: null };
     flat.objectsData = {}; flat.currentObjectName = 'o';
     flat.residueSelection = new Set([0, 1]);
-    const wide = flat.clipSlabForSelection();
-    if (Math.abs((wide.near - wide.far) - 26) > 1e-6) {
-        throw new Error(`a selection 20 A wide and flat to the screen got a slab`
-            + ` ${(wide.near - wide.far).toFixed(1)} A thick - it will be cut in`
-            + ' half the moment the model turns');
+    // THE SLAB IS A DEPTH AND IT RE-FITS AS THE MODEL TURNS.
+    //
+    // This used to require the WORST CASE: a selection 20 A wide and flat to
+    // the screen got a 26 A slab - its bounding radius doubled - so that
+    // turning it edge-on could not cut it in half. The price was that the cut
+    // never went far enough at any angle: measured on a trypsin pocket, a 3D
+    // radius of 8.2 A against an actual depth of 4.2, so a 22 A slab on a 40 A
+    // protein left three quarters of the model standing.
+    //
+    // The thickness follows the view instead. Flat to the screen, this
+    // selection is 0 A deep and gets the pad and nothing else.
+    flat.autoClip(new Set([0, 1]));
+    const pad = 1.5 + 0.5 * flat.lineWidth;            // 3
+    const faceOn = flat.clipNear - flat.clipFar;
+    if (Math.abs(faceOn - 2 * pad) > 1e-6) {
+        throw new Error(`a selection flat to the screen has no depth, so its`
+            + ` slab should be the pad twice over (${2 * pad} A) - got`
+            + ` ${faceOn.toFixed(1)}`);
+    }
+    // ...and turned edge-on, the SAME selection is 20 A deep, so the slab
+    // opens to hold it. This is the half the old worst-case bought, and it is
+    // bought here by recomputing rather than by over-cutting everywhere else.
+    flat.viewerState.rotation = [[0, 0, 1], [0, 1, 0], [-1, 0, 0]];
+    flat._refreshAutoClip();
+    const edgeOn = flat.clipNear - flat.clipFar;
+    if (Math.abs(edgeOn - (20 + 2 * pad)) > 1e-6) {
+        throw new Error(`turned edge-on the selection is 20 A deep and the slab`
+            + ` must open to ${20 + 2 * pad} A - got ${edgeOn.toFixed(1)}, so`
+            + ' it is not re-fitting and the selection is cut in half');
+    }
+    // ...AND BACK, which is the case that tells the two designs apart. Turned
+    // edge-on this fixture is 20 A deep and its 3D radius is 10, so both a
+    // fitted depth and a remembered radius give 26 - the numbers coincide and
+    // the assertion above passes either way. Face-on they do not: fitted is
+    // the pad twice over, remembered is still 26.
+    flat.viewerState.rotation = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    flat._refreshAutoClip();
+    const backAgain = flat.clipNear - flat.clipFar;
+    if (Math.abs(backAgain - 2 * pad) > 1e-6) {
+        throw new Error(`turned back face-on the slab must close to`
+            + ` ${2 * pad} A again - got ${backAgain.toFixed(1)}, so the`
+            + ' thickness is being carried rather than recomputed and the cut'
+            + ' is as generous as it ever was');
+    }
+    // ...and nothing it was fitted to falls outside it, which is the point
+    flat.viewerState.rotation = [[0, 0, 1], [0, 1, 0], [-1, 0, 0]];
+    flat._refreshAutoClip();
+    for (const i of [0, 1]) {
+        const z = -flat.coords[i].x;                   // the rotation above
+        if (z > flat.clipNear || z < flat.clipFar) {
+            throw new Error(`position ${i} is outside the slab that was fitted`
+                + ' to it');
+        }
     }
     // AND IT STAYS ON THE SELECTION THROUGH A ROTATION. A slab is camera space
     // and the site it was cut around is not, so turning the model moved one
@@ -2237,7 +2273,7 @@ t('Auto fits the slab to the selection, and uncuts without one', () => {
 });
 
 t('a clip cuts the ink with the fills, and double-click still takes the chain', () => {
-    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    const cart = L.cartoon;
     // THE 2D INK IS COLLECTED SEPARATELY FROM THE FILLS. The prim cull never
     // saw these curves, so a slab left the outline of everything it had cut
     // away drawn over empty paper - measured on 1TIM, 53,296 drawn pixels
@@ -2253,7 +2289,7 @@ t('a clip cuts the ink with the fills, and double-click still takes the chain', 
     // A DOUBLE CLICK IS A BULK OPERATION ON A NAME. The pick that precedes it
     // still has to land on something visible; the chain it widens to does not
     // stop at the near plane.
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const mol = L.src;
     const at = mol.indexOf('for (let k = 0; k < this.chains.length; k++) {');
     if (at < 0) throw new Error('the dblclick chain union moved');
     const body = mol.slice(at, mol.indexOf('}', mol.indexOf('next.add(k)', at)));
@@ -2277,7 +2313,7 @@ t('the nucleic trace is smoothed, and everything nucleic reads the same trace', 
     //     smoothed (this)     12.0 +/-  5.5
     //     a C1' trace         28.4 +/- 16.7
     //     a P trace           worst of the three off an ideal helix
-    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    const cart = L.cartoon;
     if (!/function smoothNucleicTrace\(/.test(cart)) {
         throw new Error('the nucleic trace is drawn raw again');
     }
@@ -2311,7 +2347,7 @@ t('the nucleic trace is smoothed, and everything nucleic reads the same trace', 
     if (!/renderer\.naSmooth !== false/.test(cart)) {
         throw new Error('there is no way to turn the smoothing off');
     }
-    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const gpu = fs.readFileSync('src/cartoon/paintgl.js', 'utf8');
     if (!/naSmooth === false \? 'naraw' : 'nasmooth'/.test(gpu)) {
         throw new Error('the GPU mesh signature ignores the smoothing, so'
             + ' switching it would repaint a mesh built the other way');
@@ -2385,12 +2421,15 @@ t('every projection sizes a position through the same rule', () => {
     // and the selection band over a zinc came out of the width of a BOND,
     // sitting inside the metal it was marking. Two of the four were fixed
     // before anyone noticed the other two were writing the same array.
-    const files = ['py2Dmol/resources/viewer-mol.js',
-        'py2Dmol/resources/viewer-cartoon.js',
-        'py2Dmol/resources/viewer-cartoon-gpu.js'];
+    // ...across every file that draws. The cartoon list comes from lift.js
+    // because it is two files now - the geometry and the 2D painter - and the
+    // write this is counting moved into the second one.
+    const files = ['src/core/mol.js',
+        ...L.CARTOON,
+        'src/cartoon/paintgl.js'];
     let writes = 0;
     for (const f of files) {
-        const lines = fs.readFileSync(f, 'utf8').split('\n');
+        const lines = readNamed(f).split('\n');
         for (let i = 0; i < lines.length; i++) {
             if (!/screenRadius\[[^\]]+\]\s*=/.test(lines[i])) continue;
             writes++;
@@ -2404,7 +2443,7 @@ t('every projection sizes a position through the same rule', () => {
     }
     if (writes < 3) throw new Error('found only ' + writes + ' projections - regex stale');
     // ...and the rule itself: exact for a lone atom, the old estimate otherwise
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const mol = L.src;
     const at = mol.indexOf('_positionRadiiPx(i, base, wm, pe, scale) {');
     if (at < 0) throw new Error('no shared rule to share');
     const body = mol.slice(at, mol.indexOf('\n        }', at));
@@ -2432,7 +2471,7 @@ t('the header is the title alone, and the page buttons keep quiet', () => {
         throw new Error('the strapline is back - it describes the two controls'
             + ' directly under it');
     }
-    const css = fs.readFileSync('web/style.css', 'utf8');
+    const css = fs.readFileSync('src/app/style.css', 'utf8');
     const rule = css.slice(css.indexOf('.page-head {'), css.indexOf('.page-head h1'));
     // SAVE, CLEAR ALL AND GPU ARE POSITIONED ABSOLUTELY against the same
     // container, so nothing pushes the header out of their way: a title long
@@ -2517,7 +2556,7 @@ t('the fetch panel folds its options away, in groups', () => {
     if (!/id="fetchOptionsButton"[\s\S]{0,200}aria-controls="fetchOptions"/.test(panel)) {
         throw new Error('the Options button does not name what it opens');
     }
-    const css = fs.readFileSync('web/style.css', 'utf8');
+    const css = fs.readFileSync('src/app/style.css', 'utf8');
     if (!/\.fetch-options\[hidden\]\s*\{\s*display:\s*none\s*!important/.test(css)) {
         throw new Error('[hidden] is a UA rule and display:flex outranks it -'
             + ' the options would stand open however the flag is set');
@@ -2552,10 +2591,10 @@ t('what the crystal was grown in is filtered, and the two lists agree', () => {
     const sandbox = { window: {}, console, document: {} };
     sandbox.window.window = sandbox.window;
     require('vm').createContext(sandbox);
-    require('vm').runInContext(fs.readFileSync('web/utils.js', 'utf8'), sandbox,
+    require('vm').runInContext(L.utils, sandbox,
         { filename: 'utils' });
     const js = sandbox.window.CRYSTAL_ADDITIVES;
-    if (!js || !js.size) throw new Error('web/utils.js exports no additive list');
+    if (!js || !js.size) throw new Error('src/io/parse.js exports no additive list');
     // the obvious ones go...
     for (const code of ['SO4', 'GOL', 'EDO', 'MPD', 'TRS', 'ACT', 'DMS', 'NA', 'CL']) {
         if (!js.has(code)) throw new Error(code + ' is not filtered');
@@ -2585,10 +2624,10 @@ t('what the crystal was grown in is filtered, and the two lists agree', () => {
         if (!pyCodes.has(code)) throw new Error('viewer.py is missing ' + code);
     }
     for (const code of pyCodes) {
-        if (!js.has(code)) throw new Error('web/utils.js is missing ' + code);
+        if (!js.has(code)) throw new Error('src/io/parse.js is missing ' + code);
     }
     // ...and the filter runs on the atom list, behind a switch
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     if (!/maybeFilterLigands\(maybeFilterAdditives\(/.test(app)) {
         throw new Error('the additive filter is not in the load path');
     }
@@ -2647,15 +2686,106 @@ t('what the crystal was grown in is filtered, and the two lists agree', () => {
     }
 });
 
+// PARTS OF THE CLASS THAT LIVE IN SIBLING FILES.
+//
+// A coherent block of methods - the shadow pass, and more to come - is its own
+// file, pushed onto window.py2dmolMolParts and installed on the prototype by
+// installMolParts. The class cannot simply be split in two, because it is
+// declared inside initializePy2DmolViewer and a sibling file at module scope
+// cannot reach into a closure.
+//
+// Both failure modes here are silent ones, which is why they are tested rather
+// than commented: a method that never arrives reads as "undefined is not a
+// function" somewhere deep in a frame, and a duplicate reads as one of two
+// implementations mysteriously not running.
+{
+    const installMolParts = new Function(
+        L.topFunction('installMolParts') + '; return installMolParts;')();
+
+    t('a part installs its methods onto the class', () => {
+        const saved = global.window.py2dmolMolParts;
+        try {
+            class C {}
+            global.window.py2dmolMolParts = [{ name: 'p', proto: { alpha() { return 1; } } }];
+            installMolParts(C);
+            eq(typeof C.prototype.alpha, 'function', 'the method arrived');
+            eq(new C().alpha(), 1, '...and it is the one that was pushed');
+        } finally { global.window.py2dmolMolParts = saved; }
+    });
+
+    t('a static keeps being a getter, rather than being read once', () => {
+        // Object.assign would INVOKE the getter and copy its value, turning
+        // `static get ELEMENT_COLORS()` from a fresh table per access into one
+        // shared mutable object. Nothing mutates it today, which is exactly
+        // why the change would go unnoticed.
+        const saved = global.window.py2dmolMolParts;
+        try {
+            class C {}
+            global.window.py2dmolMolParts = [{ name: 'p',
+                statics: { get TABLE() { return { a: 1 }; } } }];
+            installMolParts(C);
+            eq(C.TABLE.a, 1, 'the static reads');
+            eq(C.TABLE === C.TABLE, false, 'a fresh object per access, not one shared table');
+        } finally { global.window.py2dmolMolParts = saved; }
+    });
+
+    t('two parts defining the same method is an error, not last-one-wins', () => {
+        const saved = global.window.py2dmolMolParts;
+        try {
+            class C {}
+            global.window.py2dmolMolParts = [
+                { name: 'first', proto: { same() { return 1; } } },
+                { name: 'second', proto: { same() { return 2; } } }];
+            let threw = '';
+            try { installMolParts(C); } catch (e) { threw = e.message; }
+            eq(/first/.test(threw) && /second/.test(threw), true,
+                'the clash names both parts: ' + (threw || '(it did not throw)'));
+        } finally { global.window.py2dmolMolParts = saved; }
+    });
+
+    t('a part arriving after the first viewer is refused, loudly', () => {
+        // The notebook PREPENDS its scripts, so its document order is the
+        // reverse of the order viewer.py reads them - the easiest way to get a
+        // part loading too late, and the least visible.
+        const saved = global.window.py2dmolMolParts;
+        try {
+            class C {}
+            const parts = [];
+            global.window.py2dmolMolParts = parts;
+            installMolParts(C);
+            let threw = '';
+            try { parts.push({ name: 'late' }); } catch (e) { threw = e.message; }
+            eq(/late/.test(threw), true,
+                'a late part was accepted and would never be installed: '
+                + (threw || '(it did not throw)'));
+        } finally { global.window.py2dmolMolParts = saved; }
+    });
+
+    t('the shadow part is a real part, and the renderer no longer holds it', () => {
+        const shadow = fs.readFileSync(
+            'src/parts/shadow.js', 'utf8');
+        eq(/py2dmolMolParts/.test(shadow), true, 'the shadow file registers itself');
+        for (const m of ['_shadowPairExcluded', '_calculateShadowTint',
+            '_calculateFrameShadows', '_calculateShadowsExhaustive',
+            '_calculateShadowsWithGrid']) {
+            eq(shadow.includes('\n        ' + m + '('), true, m + ' is in the part');
+        }
+        const mol = fs.readFileSync('src/core/mol.js', 'utf8');
+        eq(/\n        _calculateShadowsWithGrid\(/.test(mol), false,
+            'the shadow methods are in BOTH files - the move left a copy behind');
+    });
+}
+
 t('a metal has a colour and a size of its own', () => {
     // A LONE ION USED TO TAKE WHATEVER THE LIGAND PALETTE HANDED IT - a zinc
     // came out orange in one chain and green in the next - and was drawn at
     // 0.6 A whatever it was, the 'L' segment baseline, thinner than the bonds
     // around it. Both are element facts and both now come from a table.
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
-    const at = mol.indexOf('static get ELEMENT_COLORS()');
-    if (at < 0) throw new Error('no element colour table');
-    const tbl = mol.slice(at, mol.indexOf('\n        }', at));
+    // ...lifted rather than found with indexOf. A bare search matched the
+    // PHRASE "static get ELEMENT_COLORS()" written in a comment above the
+    // class, then sliced forward to the next eight-space brace and scored a
+    // stretch of code with no zinc in it.
+    const tbl = L.staticGet('ELEMENT_COLORS');
     // PyMOL's own values (layer1/Color.cpp, floats x 255), so the drawing
     // agrees with the viewer everyone reads structures in
     for (const [el, rgb] of [['ZN', [125, 128, 176]], ['FE', [224, 102, 51]],
@@ -2674,7 +2804,7 @@ t('a metal has a colour and a size of its own', () => {
     if (/\n\s*C:\s*\{/.test(tbl)) {
         throw new Error('carbon has an element colour, so every ligand is now grey');
     }
-    // ...and the size, shared with viewer-mol.js so the click target and the
+    // ...and the size, shared with core/mol.js so the click target and the
     // selection band are the circle that is actually drawn
     const sandbox = {
         window: { addEventListener() {}, dispatchEvent() {} },
@@ -2684,20 +2814,47 @@ t('a metal has a colour and a size of its own', () => {
     sandbox.window.window = sandbox.window;
     require('vm').createContext(sandbox);
     require('vm').runInContext(
-        fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8'),
+        L.cartoon,
         sandbox, { filename: 'cartoon' });
     const rad = sandbox.window.py2dmolCartoon.loneAtomRadiusA;
-    if (!rad) throw new Error('loneAtomRadiusA is not exported, so viewer-mol.js'
+    if (!rad) throw new Error('loneAtomRadiusA is not exported, so core/mol.js'
         + ' cannot size a click target from the same number that drew the ball');
-    // van der Waals, so ZINC IS SMALLER THAN CARBON (1.39 against 1.70). It
-    // reads as wrong and it is right; anyone "fixing" it should fail here.
-    if (!(rad('ZN') < rad('C'))) throw new Error('these are not vdW radii');
+    // ZINC IS SMALLER THAN CARBON. It reads as wrong and it is right; anyone
+    // "fixing" it should fail here. True of both radii this ever used - vdW
+    // 1.39 against 1.70, ionic 0.74 against 1.70 - because it is a fact about
+    // the elements rather than about the table.
+    if (!(rad('ZN') < rad('C'))) throw new Error('a zinc is drawn bigger than a carbon');
     if (!(rad('K') > rad('NA') && rad('NA') > rad('ZN'))) {
-        throw new Error('the element order is wrong: K > Na > Zn by vdW radius');
+        throw new Error('the element order is wrong: K > Na > Zn');
     }
-    if (rad('XX') !== rad('C')) throw new Error('an unknown element should take carbon\'s');
-    if (!mol.includes('loneAtomRadiusA')) {
-        throw new Error('viewer-mol.js sizes lone atoms from something else again');
+
+    // ...AND THE NUMBERS ARE PYMOL'S, from its ElementTable. Not a principle -
+    // a reference. The published vdW sets disagree above argon and the choice
+    // between them is arbitrary, so the one that matters is the one people have
+    // on screen beside this. Two rounds of "the calcium is the wrong size" were
+    // both the distance from this column: Alvarez's 2.31 too big, an ionic 1.00
+    // too small.
+    const PYMOL_VDW = {
+        H: 1.20, C: 1.70, N: 1.55, O: 1.52, F: 1.47, NA: 2.27, MG: 1.73,
+        AL: 2.00, P: 1.80, S: 1.80, CL: 1.75, K: 2.75, CA: 1.80, MN: 1.73,
+        FE: 1.80, CU: 1.40, ZN: 1.39, SE: 1.90, BR: 1.85, SR: 1.80, I: 1.98,
+        AU: 1.66, HG: 1.55, PB: 2.02,
+    };
+    for (const [el, want] of Object.entries(PYMOL_VDW)) {
+        if (Math.abs(rad(el) - want) > 1e-9) {
+            throw new Error(`${el} is drawn at ${rad(el)} A and PyMOL uses`
+                + ` ${want} - these are meant to be the same table`);
+        }
+    }
+    // ...INCLUDING ITS DEFAULT, which is 1.80 and not carbon's: an element the
+    // table does not reach is far more likely to be a heavy atom than a light
+    // one, and 1.70 made every one of them a carbon.
+    if (rad('XX') !== 1.80) {
+        throw new Error(`an unknown element is drawn at ${rad('XX')} A, and`
+            + " PyMOL's default is 1.80");
+    }
+    if (!L.src.includes('loneAtomRadiusA')) {
+        throw new Error('core/mol.js sizes lone atoms from something else again');
     }
 });
 
@@ -2712,7 +2869,7 @@ t('the tube follows the view centre, so Orient goes where it says', () => {
     // and left the GPU's at (299, 278) - the whole structure still sitting in
     // the middle of the canvas, which is what "Orient moves it somewhere else"
     // looks like from the outside.
-    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const gpu = fs.readFileSync('src/cartoon/paintgl.js', 'utf8');
     const at = gpu.indexOf('const VSTUBE');
     const vs = gpu.slice(at, gpu.indexOf('`;', at));
     if (!/uniform vec3 uShift/.test(vs)) {
@@ -2754,7 +2911,7 @@ t('one segment owns the ball at a joint, and both paint it', () => {
     // Nothing needs to win: both segments paint the ball in the OWNER's
     // colour, decided on the CPU, so the depth buffer's choice stops being
     // visible. The geometry is untouched.
-    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const gpu = fs.readFileSync('src/cartoon/paintgl.js', 'utf8');
     const at = gpu.indexOf('const FSTUBE');
     const fsrc = gpu.slice(at, gpu.indexOf('`;', at));
     if (!/col = vJColA/.test(fsrc) || !/col = vJColB/.test(fsrc)) {
@@ -2808,7 +2965,7 @@ t('a lone atom reaches the GPU, as a disc', () => {
     sandbox.window.window = sandbox.window;
     require('vm').createContext(sandbox);
     require('vm').runInContext(
-        fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8'),
+        fs.readFileSync('src/cartoon/paintgl.js', 'utf8'),
         sandbox, { filename: 'gpu' });
     const G = sandbox.window.py2dmolCartoonGPU;
     if (!G || !G.facesOf) throw new Error('the GPU module did not load');
@@ -2844,7 +3001,7 @@ t('every varying the shared fragment shader reads is written by BOTH vertex shad
     // block, so the whole GPU path then falls back to the 2D one with a single
     // console line, and the picture still looks almost right: it took a run
     // where GPU and 2D came back pixel-identical to notice.
-    const src = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const src = fs.readFileSync('src/cartoon/paintgl.js', 'utf8');
     const lit = (name) => {
         const at = src.indexOf('const ' + name + ' = `');
         if (at < 0) throw new Error('no shader called ' + name);
@@ -2876,7 +3033,7 @@ t('a cut duplex is smoothed exactly as the uncut one was', () => {
     // 0.382 A off the helix. So the last turn of every duplex was pulled off
     // its own axis, which is what "the ends are not smoothed like the middle"
     // looks like from the outside.
-    const src = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    const src = L.cartoon;
     const sandbox = {
         window: { addEventListener() {}, dispatchEvent() {} },
         document: { createElement: () => ({ getContext: () => null }) },
@@ -2923,7 +3080,7 @@ t('hiding a base rebuilds the GPU mesh, because a plate is geometry', () => {
     // mesh was reused and the GPU went on drawing the plate: measured on 1BNA,
     // 64,454 drawn pixels with the bases hidden and 64,454 with them shown,
     // against the 2D pass's 50,030.
-    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const gpu = fs.readFileSync('src/cartoon/paintgl.js', 'utf8');
     const at = gpu.indexOf('function signatureOf(');
     const sig = gpu.slice(at, gpu.indexOf('\n}', at));
     // ...named through mergedObjectSet, because several objects can be on
@@ -2937,7 +3094,7 @@ t('hiding a base rebuilds the GPU mesh, because a plate is geometry', () => {
         throw new Error('the plates switch is not in the signature either');
     }
     // ...and the 2D pass is what it has to agree with
-    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    const cart = L.cartoon;
     if (!/const baseShown = \(res\) => !baseSet \|\| baseSet\.has\(res\)/.test(cart)) {
         throw new Error('the 2D pass no longer decides plates per residue');
     }
@@ -2994,9 +3151,9 @@ t('the backbone hides per selection, and the side chains keep their CA', () => {
 
     // every draw path asks it, on BOTH endpoints - so the cut lands at the
     // edge of the selection rather than a residue short of it
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
-    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
-    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    const mol = L.src;
+    const gpu = fs.readFileSync('src/cartoon/paintgl.js', 'utf8');
+    const cart = L.cartoon;
     if (!/bbHidden\.has\(segInfo\.idx1\) && bbHidden\.has\(segInfo\.idx2\)/.test(mol)) {
         throw new Error('the 2D tube path draws the backbone regardless');
     }
@@ -3030,7 +3187,7 @@ t('the backbone hides per selection, and the side chains keep their CA', () => {
     }
     // and it lives on the selection panel, travels with a Copy, and is saved
     const html = fs.readFileSync('index.html', 'utf8');
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     // MAIN CHAIN'S "Show" IS THE BACKBONE. It used to hide the whole residue,
     // with a second toggle beside it for the chain alone - two controls where
     // one says "draw this part", which is what Show means on every other row.
@@ -3054,7 +3211,13 @@ t('the backbone hides per selection, and the side chains keep their CA', () => {
     // ends in "onPair('mainchainPair'" too, and the slice started there.
     const mcAt = app.indexOf("\n        onPair('mainchainPair'");
     const mcPress = app.slice(mcAt, mcAt + 900);
-    if (!/if \(v\) setSelectionVisible\(p2, true, false\)/.test(mcPress)) {
+    // ...MATCHED WITHOUT ITS ARITY. This required the literal
+    // `setSelectionVisible(p2, true, false)`, so dropping a dead third
+    // argument that every call site passed the same way failed it - reported
+    // as "Show switches the backbone on but leaves the residue out of the
+    // mask", which was not true and sent me looking at the wrong file. What
+    // this cares about is that Show puts the residue back in the mask.
+    if (!/if \(v\) setSelectionVisible\(p2, true[,)]/.test(mcPress)) {
         throw new Error('Show switches the backbone on but leaves the residue'
             + ' out of the mask, so nothing appears');
     }
@@ -3103,7 +3266,7 @@ t('framing a residue uses its atoms, not its trace point', () => {
     }
     // the orient path asks for it, and reads the LIVE coordinates - the
     // appended atoms sit past the end of the stored frame's array
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.orient;
     if (!/renderer\.framingPositions\(selectedPositionIndices\)/.test(app)) {
         throw new Error('Orient still frames on one point per residue');
     }
@@ -3130,8 +3293,8 @@ t('no clip code path touches visibility', () => {
     // outlives the control that wrote it: residues stayed hidden after the slab
     // was reset, and only Show all brought them back. Clipping is a camera
     // state - it may not write to the thing that hides residues.
-    const both = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8')
-        + fs.readFileSync('web/app.js', 'utf8');
+    const both = L.src
+        + L.app;
     // every line mentioning clip, and none of them may also mention the mask
     for (const line of both.split('\n')) {
         if (!/\bclip/i.test(line)) continue;
@@ -3152,7 +3315,7 @@ t('the clip track measures the view, the rest state measures the object', () => 
     // in this view, so moving a knob cuts something straight away - padded, it
     // spent the first 6 Angstrom of a 36 Angstrom structure doing nothing. The
     // REST STATE is a radius, so parking a knob at the end cuts nothing however
-    // the structure is then turned. The ends mean off; app.js stores the rest
+    // the structure is then turned. The ends mean off; src/app/ stores the rest
     // state for a knob within one step of its limit.
     const v = clipViewer([[0, 0, -10], [30, 0, 4], [0, -18, 22]]);
     v.lineWidth = 3;
@@ -3165,7 +3328,7 @@ t('the clip track measures the view, the rest state measures the object', () => 
         throw new Error('the rest state does not reach past the view - a knob '
             + 'parked at the end would cut as soon as the structure turned');
     }
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     const at = app.indexOf('WITHIN ONE STEP OF THE END IS AT THE END');
     if (at < 0) throw new Error('the end-of-track rule is gone');
     const block = app.slice(at, at + 700);
@@ -3184,7 +3347,7 @@ t('the clip is per object, and the capture ignores it', () => {
     // A slab is Angstrom along the camera's depth and objects differ in size by
     // orders of magnitude, so it rides with the per-object view state rather
     // than staying on screen when you switch.
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const mol = L.src;
     const at = mol.indexOf('_switchToObject(newObjectName) {');
     const body = mol.slice(at, mol.indexOf('\n        _exitOverlayMode', at));
     if (!/clipNear: this\.clipNear/.test(body) || !/this\.clipNear = \(typeof saved\.clipNear/.test(body)) {
@@ -3195,7 +3358,7 @@ t('the clip is per object, and the capture ignores it', () => {
     // primitive, only drop it, so a mesh harvested under a slab is missing
     // every piece that straddles a plane - measured 40,617 ink pixels against
     // 41,520 for the same slab over a complete mesh.
-    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const gpu = fs.readFileSync('src/cartoon/paintgl.js', 'utf8');
     const cap = gpu.slice(gpu.indexOf('const keep = {'), gpu.indexOf('const keep = {') + 2500);
     if (!/renderer\.clipNear = null/.test(cap)) {
         throw new Error('captureFrom harvests the mesh through the clip');
@@ -3209,8 +3372,8 @@ t('every draw path asks the same clip test', () => {
     // Four paths draw: 2D tube, 2D cartoon, and both GPU programs. The two
     // canvas paths cull whole primitives by depth (a canvas cannot cut one);
     // the GPU cuts per fragment. They must at least be reading the same slab.
-    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
-    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    const gpu = fs.readFileSync('src/cartoon/paintgl.js', 'utf8');
+    const cart = L.cartoon;
     if (!/clipped\(vZv\)/.test(gpu) || !/clipped\(zSurf\)/.test(gpu)) {
         throw new Error('a GPU program draws without the clip test - the ribbon '
             + 'and the tube must both be cut');
@@ -3239,7 +3402,7 @@ t('every draw path asks the same clip test', () => {
 // model - spent 30 ms of clamped timers per model and took 8.3 seconds to load
 // 39 positions. Yielded on TIME, the same file takes 164 ms.
 t('a load yields on time, not on steps', () => {
-    const u = fs.readFileSync('web/utils.js', 'utf8');
+    const u = L.utils;
     if (!/function yieldIfBusy/.test(u)) {
         throw new Error('yieldIfBusy is gone - loads are yielding per step again');
     }
@@ -3247,8 +3410,8 @@ t('a load yields on time, not on steps', () => {
     if (!/YIELD_EVERY_MS/.test(body)) throw new Error('the yield has no time budget');
     // the drainers and the loader loop must all use it: any one left on the
     // unconditional yield is a per-step timer again
-    for (const [file, want] of [['web/utils.js', 2], ['web/app.js', 2]]) {
-        const src2 = fs.readFileSync(file, 'utf8');
+    for (const [file, want] of [['the parser', 2], ['the web app', 2]]) {
+        const src2 = file === 'the parser' ? L.utils : readNamed(file);
         const n = (src2.match(/await yieldIfBusy\(\)/g) || []).length;
         if (n < want) {
             throw new Error(file + ' has ' + n + ' time-budgeted yields, expected '
@@ -3256,7 +3419,7 @@ t('a load yields on time, not on steps', () => {
         }
     }
     // ...and the per-model loop must not hold an unconditional one
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     const loop = app.slice(app.indexOf('for (let i = 0; i < models.length'),
         app.indexOf('rawFrames.push(frameObj)'));
     if (/await yieldToBrowser\(\)/.test(loop)) {
@@ -3273,7 +3436,7 @@ t('a load yields on time, not on steps', () => {
 // against 6,988, and a drawing with almost no lines on it. A twentieth of an
 // Angstrom makes each piece a closed solid and the rule works by construction.
 t('the ribbon keeps its outline at zero thickness', () => {
-    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const gpu = fs.readFileSync('src/cartoon/paintgl.js', 'utf8');
     const m = gpu.match(/const GPU_RIBBON_THICK = ([0-9.]+);/);
     if (!m) throw new Error('GPU_RIBBON_THICK is gone');
     const v = parseFloat(m[1]);
@@ -3302,9 +3465,9 @@ t('the ribbon keeps its outline at zero thickness', () => {
 // there. All four projections have to agree about it: the two 2D paths, the
 // picking projection, and the GPU's.
 t('a hidden or clipped selection is still marked', () => {
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
-    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
-    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const mol = L.src;
+    const cart = L.cartoon;
+    const gpu = fs.readFileSync('src/cartoon/paintgl.js', 'utf8');
     // picking projection
     if (!/const wanted = \(i\) => !mask \|\| mask\.has\(i\) \|\| \(marked && marked\.has\(i\)\)/.test(mol)) {
         throw new Error('_projectForPicking drops hidden positions, band and all');
@@ -3327,7 +3490,7 @@ t('a hidden or clipped selection is still marked', () => {
 //
 // The build-up is three layers in an illustrator's order, revealed along the
 // chain by a pen whose pace follows the local curvature, and every bit of it is
-// canvas compositing in viewer-cartoon.js. The GPU knows nothing about it: with
+// canvas compositing in cartoon/geom.js. The GPU knows nothing about it: with
 // the GPU on it drew the finished picture while the animation ran invisibly -
 // measured 33% of the way through, the canvas held 99.5% of the finished ink
 // against 31% on the 2D path. The GPU is the default on this page, so that was
@@ -3368,8 +3531,8 @@ t('Capture draws on the GPU too, at the size it is exporting', () => {
         else window.py2dmolCartoon = had.c;
     }
 
-    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const gpu = fs.readFileSync('src/cartoon/paintgl.js', 'utf8');
+    const mol = L.src;
     if (/ctx\.canvas !== renderer\.canvas/.test(gpu)
         || /ctx\.canvas !== this\.canvas/.test(mol)) {
         throw new Error('a draw path still insists on the screen canvas');
@@ -3409,7 +3572,7 @@ t('Capture draws on the GPU too, at the size it is exporting', () => {
 });
 
 t('Draw takes the 2D path, whatever the GPU setting says', () => {
-    const src2 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src2 = L.src;
     const at = src2.indexOf('const gpuOk = this.useGPU === true');
     if (at < 0) throw new Error('the cartoon GPU gate moved');
     const gate = src2.slice(at, at + 260);
@@ -3439,7 +3602,7 @@ t('a zero-thickness ribbon picks its side per PIECE, as the reference does', () 
     // out as a clean edge, and the GPU used the per-station normal instead -
     // which flips sides part-way through a piece and puts the pale inner face
     // through the outer one as a wedge (6MRR).
-    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const gpu = fs.readFileSync('src/cartoon/paintgl.js', 'utf8');
     const at = gpu.indexOf('if (aSheet > 0.5) {');
     if (at < 0) throw new Error('the zero-thickness side test is gone');
     const branch = gpu.slice(at, at + 300);
@@ -3461,7 +3624,7 @@ t('a zero-thickness ribbon picks its side per PIECE, as the reference does', () 
 });
 
 t('the occlusion pass is shared, and stays off the low texture units', () => {
-    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const gpu = fs.readFileSync('src/cartoon/paintgl.js', 'utf8');
     const at = gpu.indexOf('function runOcclusion(cv, o) {');
     if (at < 0) throw new Error('runOcclusion is gone - the tube and the cartoon '
         + 'have two copies of the occlusion again');
@@ -3867,9 +4030,16 @@ t('contacts still exchange no shadow with the structure', () => {
 // to the current frame's arrays and a copied sub-structure renumbers them,
 // while a chain and residue number name the same pair whatever happens.
 const contactBody = (() => {
-    const a = appSrc.indexOf('    const contactKeyOf = ');
-    const b = appSrc.indexOf('    // SIDE CHAINS, per residue.');
-    if (a < 0 || b < 0) throw new Error('contact helpers not found in web/app.js');
+    // ...at either indent, for the same reason as panelBody above: these moved
+    // from inside setupEventListeners to the top of src/app/selection.js.
+    const find = (four) => {
+        const flat = '\n' + four.replace(/^ {4}/, '');
+        const i = appSrc.indexOf(flat);
+        return i >= 0 ? i + 1 : appSrc.indexOf(four);
+    };
+    const a = find('    const contactKeyOf = ');
+    const b = find('    // SIDE CHAINS, per residue.');
+    if (a < 0 || b < 0) throw new Error('contact helpers not found in the web app');
     return appSrc.slice(a, b);
 })();
 function contactApi(objectsData) {
@@ -4232,10 +4402,10 @@ t('everything the selection panel sets is written to a saved session', () => {
     // Each of these is stored somewhere different, and the save path used to
     // name its fields ONE BY ONE - anything not listed was dropped in silence,
     // which happened three times in this codebase. There is one list now
-    // (OBJECT_STATE in viewer-mol.js) and the save and the restore are each a
+    // (OBJECT_STATE in core/mol.js) and the save and the restore are each a
     // loop over it, so this checks the list and the two loops.
     const app = appSrc;
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const mol = L.src;
     const saved = app.slice(app.indexOf('const objToSave = {'),
         app.indexOf('const stateData', app.indexOf('const objToSave = {')));
     if (!/objectStateToJSON\(objectData\)/.test(saved)) {
@@ -4280,9 +4450,9 @@ t('a contact is the same width in both styles, and neither follows Line Width', 
     // which is the one thing this is for. The value is what tube used to draw
     // at its widest: the Line Width slider tops out at 4.7 and TYPE_BASELINES
     // gives a contact half of it.
-    const cartoonSrc = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    const cartoonSrc = L.cartoon;
     const line = cartoonSrc.split('\n').find((l) => l.trim().startsWith('const CONTACT_WIDTH ='));
-    if (!line) throw new Error('CONTACT_WIDTH not found in viewer-cartoon.js');
+    if (!line) throw new Error('CONTACT_WIDTH not found in cartoon/geom.js');
     const cartoonW = parseFloat(line.split('=')[1]);
     if (Math.abs(cartoonW - CONTACT_WIDTH_A) > 1e-9) {
         throw new Error('the cartoon draws contacts at ' + cartoonW + ' and tube at '
@@ -4291,10 +4461,9 @@ t('a contact is the same width in both styles, and neither follows Line Width', 
     }
     // and it is HALF what tube used to draw at its widest: the Line Width
     // slider's maximum, times the 0.5 contact baseline, halved again
-    const html = fs.readFileSync('index.html', 'utf8');
-    const sl = html.slice(html.indexOf('id="lineWidthSlider"') - 120,
-        html.indexOf('>', html.indexOf('id="lineWidthSlider"')));
-    const lwMax = parseFloat(/max="([0-9.]+)"/.exec(sl)[1]);
+    // ...from the panel's own table, not from a page's markup: the panel is
+    // built by parts/panel.js now and neither page carries it.
+    const lwMax = Number(L.panelItems().lineWidthSlider.max);
     const want = lwMax * 0.5 / 2;
     if (Math.abs(CONTACT_WIDTH_A - want) > 1e-9) {
         throw new Error('a full-weight contact is ' + CONTACT_WIDTH_A + ', not '
@@ -4392,12 +4561,12 @@ t('the saved config agrees with the live state rather than the starting one', ()
 
 
 t('click-selection is off unless something turns it on', () => {
-    // The Python path loads viewer-mol.js and the cartoon plugin and nothing
+    // The Python path loads core/mol.js and the cartoon plugin and nothing
     // else - no sequence strip, no selection panel - so a click there changed a
     // selection with no way to see it, act on it, or clear it except by
     // clicking the background again. Selection is done in Python by scripting,
     // which does not go through the mouse.
-    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src = L.src;
     if (!/this\.selectionEnabled = false;/.test(src)) {
         throw new Error('the renderer does not default click-selection to off');
     }
@@ -4418,10 +4587,10 @@ t('click-selection is off unless something turns it on', () => {
     gated('// empty background: deselect, as in PyMOL', 900);
     // and the web app is what turns it on
     if (!/renderer\.selectionEnabled = true/.test(appSrc)) {
-        throw new Error('web/app.js never enables click-selection, so the panel'
+        throw new Error('src/app/ never enables click-selection, so the panel'
             + ' can only ever be reached from the sequence strip');
     }
-    // the PYTHON page must not: it loads neither app.js nor the strip
+    // the PYTHON page must not: it loads neither src/app/ nor the strip
     const py = fs.readFileSync('py2Dmol/viewer.py', 'utf8');
     if (/selectionEnabled\s*=\s*true/i.test(py)) {
         throw new Error('the Python path turns click-selection on, but has no'
@@ -4435,13 +4604,9 @@ t('click-selection is off unless something turns it on', () => {
 // renderer, which runs through a config key name shared across three files and
 // nothing but the name.
 t('detect cyclic is off by default in the web app, and on in Python', () => {
-    const html = fs.readFileSync('index.html', 'utf8');
-    const i = html.indexOf('id="detectCyclicCheckbox"');
-    if (i < 0) throw new Error('no Detect Cyclic toggle in the Options panel');
-    // the INPUT tag only, so a `checked` anywhere else on the page cannot
-    // stand in for one here
-    const tag = html.slice(html.lastIndexOf('<', i), html.indexOf('>', i));
-    if (/\bchecked\b/.test(tag)) {
+    const cyclic = L.panelItems().detectCyclicCheckbox;
+    if (!cyclic) throw new Error('no Detect Cyclic toggle in the panel table');
+    if (cyclic.checked) {
         throw new Error('the Detect Cyclic toggle ships checked; it is opt-in'
             + ' because the test is a distance one and a folded linear chain'
             + ' passes it');
@@ -4449,7 +4614,7 @@ t('detect cyclic is off by default in the web app, and on in Python', () => {
     // ...and the config behind it agrees, or the toggle shows one thing on
     // load while the renderer does another
     if (!/detect_cyclic:\s*false/.test(appSrc)) {
-        throw new Error('web/app.js does not default detect_cyclic to false,'
+        throw new Error('src/app/ does not default detect_cyclic to false,'
             + ' so the unchecked toggle disagrees with what is drawn');
     }
     const py = fs.readFileSync('py2Dmol/viewer.py', 'utf8');
@@ -4459,12 +4624,12 @@ t('detect cyclic is off by default in the web app, and on in Python', () => {
             + ' the web app is the point');
     }
 
-    // THE KEY NAME IS THE WHOLE WIRING. app.js writes it onto
+    // THE KEY NAME IS THE WHOLE WIRING. src/app/ writes it onto
     // window.viewerConfig.rendering, which the renderer normalises in place and
     // keeps as its own this.config; nothing else connects the two, so a rename
     // on either side leaves a toggle that changes a field no one reads.
     if (!/rendering\?\.detect_cyclic/.test(src)) {
-        throw new Error('viewer-mol.js no longer reads'
+        throw new Error('core/mol.js no longer reads'
             + ' config.rendering.detect_cyclic, so the toggle is orphaned');
     }
 
@@ -4662,28 +4827,12 @@ t('the Capture button does not change identity with the animation state', () => 
 // ONE METHOD'S BODY, brace-matched. Slicing to the first "\n        }" reads
 // past the end the moment the method has a nested block - which is how a check
 // on _deliverVideo went on passing with the line it checks for deleted.
-function methodBody(name) {
-    const at = src.indexOf('\n        ' + name + '(');
-    if (at < 0) throw new Error(name + ' is gone');
-    let d = 0; let k = src.indexOf('{', at);
-    const start = k;
-    for (; k < src.length; k++) {
-        if (src[k] === '{') d++; else if (src[k] === '}' && !--d) break;
-    }
-    return src.slice(start, k + 1);
-}
+function methodBody(name) { return L.method(name); }
 
 function capturePanelBody() {
     // the BUILDER, which is where the controls are; _toggleSaveImagePanel is
     // now just open-or-close around it
-    const at = src.indexOf('        _buildSavePanel(anchorEl) {');
-    if (at < 0) throw new Error('_buildSavePanel is gone');
-    let d = 0; let k = src.indexOf('{', at);
-    const start = k;
-    for (; k < src.length; k++) {
-        if (src[k] === '{') d++; else if (src[k] === '}' && !--d) break;
-    }
-    return src.slice(start, k + 1);
+    return L.method('_buildSavePanel');
 }
 
 // EVERY FORMAT'S SINK IS BUILT AND DRIVEN, here, in Node.
@@ -4861,7 +5010,7 @@ t('one capture model: defaults, formats and sizes', () => {
     // nothing recordable - no video row at all - wrote them over the settings:
     // the bitrate came back 5 where the default is 12, because 5 was the
     // number written in that function.
-    const panel = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const panel = L.src;
     const rv = panel.slice(panel.indexOf('const readVideo = () => {'),
         panel.indexOf('const closePanel') > 0 ? panel.indexOf('const closePanel')
             : panel.indexOf('const recRow'));
@@ -4890,7 +5039,7 @@ t('one capture model: defaults, formats and sizes', () => {
         throw new Error('GIF is not offered where the encoder is loaded');
     }
     // ...and NOT where it is missing, which is the notebook: viewer.html loads
-    // py2Dmol's own resources and nothing else, so web/utils.js is not there.
+    // py2Dmol's own resources and nothing else, so src/io/parse.js is not there.
     if (withMR(['video/webm'], false).includes('gif')) {
         throw new Error('GIF is offered without an encoder to write it');
     }
@@ -4933,7 +5082,7 @@ t('one capture model: defaults, formats and sizes', () => {
 t('the GIF encoder writes a GIF, and only the web app has one', () => {
     // Written here rather than loaded, and gated by WHERE it is loaded: the
     // notebook viewer pulls in py2Dmol's own resources and nothing else.
-    const u = fs.readFileSync('web/utils.js', 'utf8');
+    const u = L.utils;
     if (!/window\.py2dmolGif = py2dmolGif/.test(u)) {
         throw new Error('the encoder is not exposed for the panel to find');
     }
@@ -5026,8 +5175,7 @@ t('the capture panel follows the window size', () => {
     // recording sizes, the whole Video menu - and all of them were computed
     // when the panel was built, so dragging the window wider left the panel
     // promising the old numbers.
-    const at = src.indexOf('        _updateCanvasDimensions() {');
-    const body = src.slice(at, src.indexOf('\n        }', at));
+    const body = L.method('_updateCanvasDimensions');
     if (!/_rebuildSavePanel\(true\)/.test(body)) {
         throw new Error('a resize does not refresh the capture panel, or does'
             + ' not clear a line describing the size it used to be');
@@ -5306,8 +5454,8 @@ t('the save panel sizes its controls consistently', () => {
 
 // No page ships a record button any more; the Save panel is the one way in.
 t('no page offers a separate record button', () => {
-    for (const f of ['index.html', 'msa.html', 'py2Dmol/resources/viewer.html']) {
-        const html = fs.readFileSync(f, 'utf8');
+    for (const f of ['index.html', 'py2Dmol/resources/viewer.html']) {
+        const html = readNamed(f);
         if (/id="recordButton"/.test(html)) {
             throw new Error(f + ' still has a record button - two entry points'
                 + ' for "make a video" is what made this confusing');
@@ -5404,9 +5552,9 @@ t('setBasesFor reports whether anything actually changed', () => {
 // The renderer must read the set, and must read ABSENT as all - otherwise every
 // nucleic structure ever saved comes back with no rungs.
 t('the renderer draws every base until a selection says otherwise', () => {
-    const cs = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    const cs = L.cartoon;
     if (!/bases instanceof Set/.test(cs)) {
-        throw new Error('viewer-cartoon.js does not consult objectsData[..].bases');
+        throw new Error('cartoon/geom.js does not consult objectsData[..].bases');
     }
     if (!/!baseSet \|\| baseSet\.has\(res\)/.test(cs)) {
         throw new Error('the renderer does not read an absent set as "all bases"');
@@ -5441,8 +5589,15 @@ t('the global Bases checkbox is gone from the style panel', () => {
 // file arrived - it is not: it is a question about the structure that can be
 // asked at any time. Three cells per row is also what makes the two line up.
 t('the style toggles are one flow, and each style reads as whole lines', () => {
-    const html = fs.readFileSync('index.html', 'utf8');
-    const at = (id) => html.indexOf('id="' + id + '"');
+    // ONE ROW OF THE TABLE IS ONE WRAPPING FLOW. The panel is data now, so
+    // "are these in the same container" is a question about the table rather
+    // than about how many <div>s a page happened to write.
+    const rows = L.panelRows();
+    const rowOf = (id) => rows.findIndex((r) => r.some((i) => i.id === id));
+    const at = (id) => {
+        const r = rowOf(id);
+        return r < 0 ? -1 : r * 100 + rows[r].findIndex((i) => i.id === id);
+    };
     // THE ORDER IS THE LAYOUT. The toggles are one wrapping container of
     // third-width cells, so a cell belonging to the other style collapses and
     // the rest pack themselves - which only reads as whole lines if the
@@ -5454,7 +5609,7 @@ t('the style toggles are one flow, and each style reads as whole lines', () => {
         'colorblindCheckbox', 'darkCheckbox', 'detectCyclicCheckbox'];
     const pos = ids.map(at);
     ids.forEach((id, k) => {
-        if (pos[k] < 0) throw new Error(id + ' is gone from index.html');
+        if (pos[k] < 0) throw new Error(id + ' is gone from the panel table');
     });
     for (let k = 1; k < pos.length; k++) {
         if (pos[k] < pos[k - 1]) {
@@ -5462,22 +5617,17 @@ t('the style toggles are one flow, and each style reads as whole lines', () => {
                 + ': expected ' + ids.join(', '));
         }
     }
-    // ...ONE container, not two: no row boundary anywhere among them
-    const span = html.slice(pos[0], pos[pos.length - 1]);
-    if ((span.match(/class="toggle-item/g) || []).length !== 0) {
+    // ...ONE row, not two: every one of them in the same flow
+    if (new Set(ids.map(rowOf)).size !== 1) {
         throw new Error('the toggles are split across rows again, so hiding a'
             + ' cartoon-only one leaves a gap instead of closing up');
-    }
-    if (!/flex-wrap: wrap/.test(html.slice(Math.max(0, pos[0] - 400), pos[0]))) {
-        throw new Error('the toggle container does not wrap, so the cells'
-            + ' cannot pack themselves');
     }
     // ...and the sliders are one flow too, which is what puts Shadow beside
     // Ortho in tube
     const sliders = ['pencilSlider', 'shadowSlider', 'outlineTintSlider',
         'detailSlider', 'orthoSlider'].map(at);
-    const sspan = html.slice(sliders[0], sliders[sliders.length - 1]);
-    if ((sspan.match(/class="toggle-item/g) || []).length !== 0) {
+    if (new Set(['pencilSlider', 'shadowSlider', 'outlineTintSlider',
+        'detailSlider', 'orthoSlider'].map(rowOf)).size !== 1) {
         throw new Error('Shadow and Ortho are in different rows, so tube shows'
             + ' each of them alone on a line');
     }
@@ -5526,7 +5676,7 @@ t('the drawn objects are asked for in one place, and default to the edited one',
     // that used to read currentObjectName for that reads this instead, so the
     // day it returns several names the callers need no changing - and it does
     // return several, by default.
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const mol = L.src;
     const at = mol.indexOf('drawnObjects() {');
     if (at < 0) throw new Error('nothing owns the list of drawn objects');
     const body = mol.slice(at, mol.indexOf('\n        }', at));
@@ -5557,7 +5707,7 @@ t('the drawn objects are asked for in one place, and default to the edited one',
 
 t('an object switch draws once, and after the frames are in', () => {
     // A switch is followed by half a dozen things that each ask for a render -
-    // the visibility mask, the scatter, the sequence view, and app.js
+    // the visibility mask, the scatter, the sequence view, and src/app/
     // re-running the Ortho slider - and every one of them fires while
     // this.coords still holds the PREVIOUS object, because the frames are
     // loaded by the caller afterwards. That was cheap while every object was
@@ -5566,7 +5716,7 @@ t('an object switch draws once, and after the frames are in', () => {
     // in memory and threw it away. Measured on 4UG0 -> 6MRR, one
     // render('orthoSlider') of 1,146 ms with 17,550 positions loaded, to draw
     // a picture of 68 - and 38 ms for the whole switch once held.
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const mol = L.src;
     const sw = mol.slice(mol.indexOf('_switchToObject(newObjectName) {'));
     const head = sw.slice(0, 1800);
     if (!/this\._switchQuiet = true/.test(head)) {
@@ -5597,7 +5747,7 @@ t('a saved session carries each object\'s clip and style', () => {
     // objects change, but the SAVE copied only the fields that live in
     // viewerState the whole time - so a session came back unclipped, and every
     // object came back in whatever style the session as a whole was saved in.
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     const save = app.slice(app.indexOf('const isCurrent = objectName'),
         app.indexOf('objects.push(objToSave)'));
     for (const k of ['clipNear', 'clipFar', 'clipFade', 'style', 'styleChosen']) {
@@ -5621,10 +5771,8 @@ t('a saved session carries each object\'s clip and style', () => {
 });
 
 t('the colour modes are ordered by how often they are reached for', () => {
-    const html = fs.readFileSync('index.html', 'utf8');
-    const at = html.indexOf('id="colorSelect"');
-    const sel = html.slice(at, html.indexOf('</select>', at));
-    const order = [...sel.matchAll(/<option value="(\w+)"/g)].map((m) => m[1]);
+    const opts = L.panelItems().colorSelect.options;
+    const order = opts.map((o) => o[0]);
     // Auto first because it is the answer most of the time, then the three
     // that apply to any structure, then the two that only mean anything on a
     // prediction. Entropy is last and hidden until an MSA is loaded, and
@@ -5632,8 +5780,7 @@ t('the colour modes are ordered by how often they are reached for', () => {
     // than one object on screen - with one it colours everything the same.
     const want = ['auto', 'rainbow', 'chain', 'object', 'ss', 'plddt',
         'deepmind', 'entropy'];
-    const hiddenUntilUseful = [...sel.matchAll(/<option value="(\w+)"[^>]*hidden/g)]
-        .map((m) => m[1]);
+    const hiddenUntilUseful = opts.filter((o) => o[2] && o[2].hidden).map((o) => o[0]);
     for (const nm of ['object', 'entropy']) {
         if (!hiddenUntilUseful.includes(nm)) {
             throw new Error(nm + ' is offered before it means anything');
@@ -5651,7 +5798,7 @@ t('a style belongs to its object, and a width to its style', () => {
     // the object: what is right for a ribosome is not right for the peptide
     // beside it, and switching between the two should not mean setting the
     // style again each time.
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const mol = L.src;
     const sw = mol.slice(mol.indexOf('_switchToObject(newObjectName) {'));
     const save = sw.slice(0, sw.indexOf('// Restore viewer state'));
     if (!/style: this\.style/.test(save) || !/styleChosen: !!this\.styleChosen/.test(save)) {
@@ -5708,7 +5855,7 @@ t('a style belongs to its object, and a width to its style', () => {
         // the width following ANY switch once it was set, which is how a tube
         // radius arrived in cartoon as a ribbon width.
         if (/_lineWidthUserSet/.test(fs.readFileSync(
-            'py2Dmol/resources/viewer-mol.js', 'utf8'))) {
+            'src/core/mol.js', 'utf8'))) {
             throw new Error('the single-latch width is back');
         }
     } finally {
@@ -5722,7 +5869,7 @@ t('a large structure opens as tube, and a chosen style is left alone', () => {
     // Past a couple of thousand residues the ribbon is a tangle at any zoom
     // that fits it on screen, and the first thing to do with it is turn it
     // down.
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     // ...AND WHERE THAT LINE IS DRAWN IS A DECISION, so it is written down
     // here too. The rule below is exercised with its own number, which would
     // go on passing whatever the shipped one drifted to.
@@ -5733,7 +5880,7 @@ t('a large structure opens as tube, and a chosen style is left alone', () => {
             + ' from structures that still read perfectly well as one');
     }
     const at = app.indexOf('function tubeByDefaultIfBig(');
-    if (at < 0) throw new Error('the size rule is gone from web/app.js');
+    if (at < 0) throw new Error('the size rule is gone from src/app/');
     let d = 0; let k = app.indexOf('{', at);
     const start = k;
     for (; k < app.length; k++) {
@@ -5807,7 +5954,7 @@ t('a large structure opens as tube, and a chosen style is left alone', () => {
             + ' the rule then never fires on a first load');
     }
     // the two places that mark a style as chosen: the dropdown and a saved view
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const mol = L.src;
     if (!/renderer\.styleChosen = true;/.test(mol)) {
         throw new Error('picking a style in the Style panel no longer records it,'
             + ' so the next load would choose again over the top of it');
@@ -5821,18 +5968,25 @@ t('the JR palettes are gone, everywhere they were named', () => {
     // Purged rather than hidden: a palette left in the table but out of the
     // menu is still reachable from Python and from a saved session, and then
     // the two surfaces disagree about what exists.
-    for (const f of ['py2Dmol/resources/viewer-cartoon.js',
-        'py2Dmol/resources/viewer-mol.js', 'py2Dmol/viewer.py',
-        'web/app.js', 'index.html', 'README.md']) {
-        const src = fs.readFileSync(f, 'utf8');
+    for (const f of ['src/cartoon/geom.js',
+        'src/core/mol.js', 'py2Dmol/viewer.py',
+        'the web app', 'index.html', 'README.md']) {
+        const src = readNamed(f);
         const hit = /\bjr[12]\b|\bJR[12]\b/.exec(src);
         if (hit) throw new Error(f + ' still names ' + hit[0]);
     }
     // ...and the palette table is down to the two that are left
-    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    const cart = L.cartoon;
+    // ...brace-matched, and the keys found at whatever indent the table sits
+    // at. This sliced to the first `\n    };` and read keys at eight spaces,
+    // which stopped being true the moment the file's IIFE body was dedented:
+    // the slice ran past the end and the nested entries counted as keys.
     const at = cart.indexOf('const SS_PALETTES = {');
-    const table = cart.slice(at, cart.indexOf('\n    };', at));
-    const keys = (table.match(/^        (\w+): \{/gm) || []).map((m) => m.trim());
+    const table = cart.slice(at, L.matchBrace(cart, at) + 1);
+    const inner = /^(\s+)\w+: \{/m.exec(table);
+    const keys = (table.match(
+        new RegExp('^' + (inner ? inner[1] : '    ') + '(\\w+): \\{', 'gm')) || [])
+        .map((m) => m.trim());
     if (keys.join(' ') !== 'pymol: { jmol: {') {
         throw new Error('the palette table holds ' + JSON.stringify(keys));
     }
@@ -5853,7 +6007,7 @@ t('ligands are loaded by default, in the page and in the Python viewer', () => {
     if (!/\bchecked\b/.test(m[0])) {
         throw new Error('the Load Ligands switch no longer starts on');
     }
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     if (!/loadLigands:\s*true/.test(app)) {
         throw new Error('the config still starts with ligands off, so the switch'
             + ' shows on and the loader drops them');
@@ -5873,17 +6027,29 @@ t('the GPU is on by default, on the page and in the Python viewer', () => {
             + 'a capsid then draws its first frame on the 2D path, 1.8 s '
             + 'against 0.3, and every frame after it 840 ms against 26');
     }
+    // ...AND THE PYTHON SIDE CHOOSES THE SAME THING BY PICKING A BUNDLE. It
+    // cannot switch at runtime - a build ships one painter - so `gpu` selects
+    // which file is written into the cell. It defaults to the GPU for the same
+    // reason the checkbox above is ticked, and False exists because a notebook
+    // with no WebGL2 has nothing to fall back to: it draws nothing and says so
+    // on a console the reader may not have open.
+    //
+    // (This asserted the opposite while the notebook had a single bundle. A
+    // flag with nothing to select could only agree or lie, and it lied - see
+    // tests/config.js.)
     const py = fs.readFileSync('py2Dmol/viewer.py', 'utf8');
-    if (!/"gpu":\s*True/.test(py)) {
-        throw new Error('the Python viewer no longer defaults to the GPU');
+    if (!/\bgpu\s*=\s*True\b/.test(py)) {
+        throw new Error('viewer.py lost its gpu setting - it is how a notebook'
+            + ' without WebGL2 asks for the painter it can actually use');
     }
-    if (!/gpu=True/.test(py)) {
-        throw new Error("view()'s own default disagrees with DEFAULT_CONFIG");
+    if (!/notebook\.cpu\.min\.js/.test(py)) {
+        throw new Error('viewer.py never names the CPU notebook bundle, so'
+            + ' gpu=False cannot reach a different painter');
     }
     // ...and the flag is not called cartoon anything any more: it drives both
     // styles, and the name said otherwise for as long as it only drove one.
-    for (const f of ['py2Dmol/resources/viewer-mol.js', 'web/app.js', 'py2Dmol/viewer.py']) {
-        if (/cartoonGPU|cartoon_gpu\b/.test(fs.readFileSync(f, 'utf8'))) {
+    for (const f of ['src/core/mol.js', 'the web app', 'py2Dmol/viewer.py']) {
+        if (/cartoonGPU|cartoon_gpu\b/.test(readNamed(f))) {
             throw new Error(f + ' still calls the backend flag a cartoon one');
         }
     }
@@ -5905,7 +6071,7 @@ t('the alignment chain can be named, and a wrong name is reported', () => {
     if (!/id="alignChainInput"/.test(html)) {
         throw new Error('the Align chain field is gone from index.html');
     }
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     const i = app.indexOf("const wanted = ");
     if (i < 0) throw new Error('the alignment never reads the field');
     const block = app.slice(i, i + 1600);
@@ -5968,15 +6134,13 @@ t('Cyclic left the fetch panel', () => {
 // mode. The halves then land on whatever bond now sits at that index, and
 // carbon bonds come out red - reported exactly that way.
 t('half-colours cannot be served beside the wrong segments', () => {
-    const src2 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src2 = L.src;
     if (/this\.segmentHalfColors/.test(src2)) {
         throw new Error('the half-colours are back in a field of their own, so a'
             + ' cached colour array can be paired with another segment list');
     }
     const grab = (n) => {
-        const i2 = src2.indexOf('\n        ' + n + '(');
-        if (i2 < 0) throw new Error('cannot lift ' + n);
-        return src2.slice(i2, src2.indexOf('\n        }', i2) + 10);
+        return L.method(n);
     };
     const st = src2.match(/\n        static get ELEMENT_COLORS\(\)[\s\S]*?\n        \}/);
     if (!st) throw new Error('ELEMENT_COLORS is gone');
@@ -6077,9 +6241,9 @@ t('turning element colours off actually stops the colouring', () => {
 // which is why colour-by-element skipped ligands entirely until its element was
 // captured alongside its name.
 t('a ligand atom carries its own name and element out of the file', () => {
-    const u = fs.readFileSync('web/utils.js', 'utf8');
+    const u = L.utils;
     const m = u.match(/function elementOfAtom\(atom\)[\s\S]*?\n\}/);
-    if (!m) throw new Error('elementOfAtom is gone from web/utils.js');
+    if (!m) throw new Error('elementOfAtom is gone from src/io/parse.js');
     // eslint-disable-next-line no-new-func
     const el = new Function(m[0] + '; return elementOfAtom;')();
     if (el({ element: 'Cl', atomName: 'CL1' }) !== 'CL') {
@@ -6440,7 +6604,7 @@ t('every selection toggle has a name of its own', () => {
 let _costRecorder;
 const costRecorder = (...args) => {
     if (!_costRecorder) {
-        const cSrc = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+        const cSrc = L.cartoon;
         const key = cSrc.indexOf('const costKey = `${renderer.currentObjectName}');
         if (key < 0) throw new Error('the costKey line moved - nothing here scores it');
         const a = cSrc.lastIndexOf('{', key);          // the block it opens
@@ -6855,7 +7019,7 @@ t('a map longer than the array is refused', () => {
 // overlayState.frameIdMap directly, which is how the overlay came to sever
 // side chains from their backbone and shade them as a source of their own.
 t('nothing gates connectivity or shadows on the frame map directly', () => {
-    const src2 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src2 = L.src;
     if (src2.indexOf('\n        sourceGroups()') < 0) throw new Error('sourceGroups is gone');
     // the segment builder: where bonds and chain breaks are decided
     const at = src2.indexOf('// Generate Segment Definitions ONCE');
@@ -7072,7 +7236,7 @@ t('a merged view gives each object a colour of its own', () => {
     // than dragged in whole. The palette here is a stand-in on purpose: what
     // is being scored is which colour each position is sent to, not which
     // colours the palette holds.
-    const src3 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src3 = L.src;
     const grab3 = (n) => {
         const i2 = src3.indexOf('\n        ' + n + '(');
         if (i2 < 0) throw new Error('cannot lift ' + n);
@@ -7244,7 +7408,7 @@ t('nothing writes a bond list back onto an object', () => {
     // The object's list is DECLARED now - addFrame writes it, an edit
     // renumbers it, _resolvedFrame reads it as the fallback for a frame with
     // none of its own - and nothing writes it from the draw path.
-    const src4 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src4 = L.src;
     const at = src4.indexOf('        setCoords(');
     const body = src4.slice(at, at + 2500);
     if (/objectsData\[this\.currentObjectName\]\.bonds = bonds/.test(body)) {
@@ -7425,20 +7589,18 @@ t('the selection of one object is not the selection of another', () => {
 // throws the rest of them off the screen, and reads as the toggle deleting
 // them.
 t('nothing in the app reloads a single frame behind the merge\'s back', () => {
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     const hits = app.split('\n')
         .map((l, k) => [k + 1, l])
         .filter(([, l]) => /_loadFrameData\s*\(/.test(l) && !/reloadDrawn/.test(l));
     if (hits.length) {
-        throw new Error('app.js calls _loadFrameData directly at line(s) '
+        throw new Error('src/app/ calls _loadFrameData directly at line(s) '
             + hits.map(([k]) => k).join(', ')
             + ' - use reloadDrawn, which keeps a multi-object view together');
     }
     // ...and reloadDrawn actually knows about the merge
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
-    const at = mol.indexOf('        reloadDrawn(');
-    if (at < 0) throw new Error('reloadDrawn is gone');
-    const body = mol.slice(at, mol.indexOf('\n        }', at));
+    const mol = L.src;
+    const body = L.method('reloadDrawn');
     if (!/multiState[\s\S]*_applyShownObjects/.test(body)) {
         throw new Error('reloadDrawn no longer rebuilds the merge');
     }
@@ -7449,7 +7611,7 @@ t('nothing in the app reloads a single frame behind the merge\'s back', () => {
 // the same chain would come out a different colour in every frame, which is not
 // what the overlay has ever looked like.
 t('the overlay does not get one chain colour per frame', () => {
-    const src5 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src5 = L.src;
     const at = src5.indexOf('this._chainColorKeys = (loaded.length > 1)');
     if (at < 0) throw new Error('the chain colour keys are gone');
     const around = src5.slice(at - 700, at + 200);
@@ -7468,14 +7630,12 @@ t('the overlay does not get one chain colour per frame', () => {
 // the state moved - leaving it lit over a view that was not overlaid, so the
 // next press would turn overlay ON while reading as off.
 t('the overlay button follows the state, not just the button', () => {
-    const src6 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src6 = L.src;
     if (!/_syncOverlayButton\(\) \{/.test(src6)) {
         throw new Error('the overlay button styling is not shared');
     }
     for (const fn of ['_enterOverlayMode', '_exitOverlayMode']) {
-        const at = src6.indexOf('        ' + fn + '(');
-        if (at < 0) throw new Error(fn + ' is gone');
-        const body = src6.slice(at, src6.indexOf('\n        }\n', at));
+        const body = L.method(fn);
         if (!/_syncOverlayButton\(\)/.test(body)) {
             throw new Error(fn + ' changes the overlay state without telling the button');
         }
@@ -7567,10 +7727,8 @@ t('an object loaded while several are shown joins them', () => {
 // several objects merged, loading "the frame" rebuilds the current object by
 // itself, so pressing play dropped the other structures on the first tick.
 t('every playback path loads through the one rule', () => {
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
-    const at = mol.indexOf('        _loadFrameForPlayback(');
-    if (at < 0) throw new Error('_loadFrameForPlayback is gone');
-    const body = mol.slice(at, mol.indexOf('\n        }', at));
+    const mol = L.src;
+    const body = L.method('_loadFrameForPlayback');
     if (!/overlayState[\s\S]*multiState[\s\S]*_applyShownObjects/.test(body)) {
         throw new Error('the playback rule no longer covers both merges');
     }
@@ -7605,7 +7763,7 @@ t('the merges do not spread whole arrays into push', () => {
     if (!spreadThrows) throw new Error('this engine spreads ' + cap
         + ' arguments - pick a bigger array for this test');
 
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const mol = L.src;
     for (const fn of ['_mergeFrameRange', '_mergeObjects']) {
         const at = mol.indexOf('        ' + fn + '(');
         if (at < 0) throw new Error(fn + ' is gone');
@@ -7643,7 +7801,7 @@ t('Hide all survives a rebuild - an empty mask is an answer', () => {
 // object's saved pose throws the other off the screen. Same complaint as
 // clicking a name hiding the other, in a different disguise.
 t('switching the edited object leaves a merged picture alone', () => {
-    const src7 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src7 = L.src;
     const at = src7.indexOf('_switchToObject(newObjectName) {');
     if (at < 0) throw new Error('_switchToObject is gone');
     const body = src7.slice(at, src7.indexOf('\n        setFrame(', at));
@@ -7719,7 +7877,7 @@ t('an object nobody has touched is drawn whole, an emptied one is not', () => {
 // click selected a whole chain of a molecule that was not on screen.
 // tests/pick_empty.py is the same fault, clicked in a browser.
 t('an empty canvas retires the screen positions it no longer has', () => {
-    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src = L.src;
 
     const inv = src.indexOf('_invalidateScreenProjection() {');
     if (inv < 0) throw new Error('the projection is never invalidated');
@@ -7755,7 +7913,7 @@ t('an empty canvas retires the screen positions it no longer has', () => {
         throw new Error('the nucleic base plates are picked without asking'
             + ' which frame drew them');
     }
-    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    const cart = L.cartoon;
     if (!/renderer\._naPickId = fid;/.test(cart)) {
         throw new Error('nothing stamps the base plates, so they can never be'
             + ' picked at all');
@@ -7784,8 +7942,8 @@ t('everything can be switched off, and the objects survive it', () => {
 // Delete that left the ligand bonds pointing at whatever had moved into their
 // slots.
 t('the per-object fields are declared once and walked, not listed per operation', () => {
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const mol = L.src;
+    const app = L.app;
 
     // the renumbering is a loop over the list, not a paragraph per field
     const remap = mol.slice(mol.indexOf('_renumberObjectState(src, dst, map, selected) {'),
@@ -7813,8 +7971,8 @@ t('the per-object fields are declared once and walked, not listed per operation'
     // ...and what an absent value means is the field's business, not the
     // caller's: passing 'all' where the field says 'none' inverts it
     const callers = (mol + app
-        + fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8')
-        + fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8'))
+        + L.cartoon
+        + fs.readFileSync('src/cartoon/paintgl.js', 'utf8'))
         .match(/mergedObjectSet\('[a-zA-Z]+', *'(all|none)'\)/g) || [];
     if (callers.length) {
         throw new Error('callers are still deciding what an absent set means: '
@@ -7831,7 +7989,7 @@ t('the per-object fields are declared once and walked, not listed per operation'
 // its bases as protein residues of the object beside it, every frame failed,
 // and all 347 atoms were dropped in silence.
 t('side chains are rebuilt from the frame being loaded, not the last one', () => {
-    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src = L.src;
     const at = src.indexOf('_materialiseSidechains(data) {');
     const body = src.slice(at, src.indexOf('\n        }\n', src.indexOf('frameAt', at)));
     if (/const posTypes = this\.positionTypes/.test(body)) {
@@ -7849,7 +8007,7 @@ t('side chains are rebuilt from the frame being loaded, not the last one', () =>
 // vanished until something else happened to redraw. Measured: 8,946 yellow
 // pixels missing, and they stayed missing.
 t('leaving the merge paints after the state is put back, not during', () => {
-    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src = L.src;
     const at = src.indexOf('const carriedOut = this._selectionAsOwners();');
     if (at < 0) throw new Error('the merged-to-single branch has moved');
     const body = src.slice(at, src.indexOf('THE TWO MERGES ARE EXCLUSIVE', at));
@@ -7876,9 +8034,12 @@ t('leaving the merge paints after the state is put back, not during', () => {
 // on screen. The array holds exactly what is drawn; the picker's stored frame
 // is the fallback for when nothing is loaded at all.
 t('Orient measures the drawn array, not the picker\'s object', () => {
-    const app = fs.readFileSync('web/app.js', 'utf8');
-    const at = app.indexOf('function applyBestViewRotation(');
-    if (at < 0) throw new Error('applyBestViewRotation is gone');
+    // ...in parts/orient.js, where the function is orientToBestView. The app
+    // keeps a four-line wrapper of the same old name that supplies the renderer
+    // and the picker's object; the arithmetic this checks came with the move.
+    const app = L.orient;
+    const at = app.indexOf('function orientToBestView(');
+    if (at < 0) throw new Error('orientToBestView is gone from parts/orient.js');
     const body = app.slice(at, app.indexOf('\nfunction ', at + 10));
     if (/renderer\.coords\.length >= frame\.coords\.length/.test(body)) {
         throw new Error('Orient takes the array only when it is longer than the'
@@ -7905,7 +8066,7 @@ t('Orient measures the drawn array, not the picker\'s object', () => {
 // went out whenever an eye was clicked). They live next to each other now, and
 // nothing may write the live mask without filing it down.
 t('every write to the mask is filed under the objects it describes', () => {
-    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src = L.src;
     // the writers, and what each is allowed to be
     const allowed = [
         ['setVisibility', /_saveVisibilityToObjects\(\)/],          // files it
@@ -7947,10 +8108,10 @@ t('every write to the mask is filed under the objects it describes', () => {
     // ONE RULE FOR THE ATOMS, three callers
     const rule = src.indexOf('withSidechainAtoms(set, inPlace = false) {');
     if (rule < 0) throw new Error('the side-chain atom rule has no home');
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     if (/for \(const \[idx, e\] of scMap\) if \(e && set\.has\(e\.owner\)\) set\.add\(idx\)/
         .test(app)) {
-        throw new Error('web/app.js has its own copy of the atom rule again');
+        throw new Error('src/app/ has its own copy of the atom rule again');
     }
     if (!/withSidechainAtoms/.test(app)) {
         throw new Error('the panel no longer takes the atoms along at all');
@@ -7966,7 +8127,7 @@ t('every write to the mask is filed under the objects it describes', () => {
 // positions are drawn as a ribbon because the last file was small. An eye
 // toggle there cost 1.2 s on the GPU path; in tube the same toggle is 60 ms.
 t('the style follows what is drawn, not the last file loaded', () => {
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     const at = app.indexOf('function tubeByDefaultForDrawn(');
     if (at < 0) throw new Error('nothing applies the rule to the drawn set');
     const body = app.slice(at, app.indexOf('\nfunction ', at + 10));
@@ -8002,7 +8163,7 @@ t('the style follows what is drawn, not the last file loaded', () => {
 // without naming a detail got 2, the lowest setting, while the slider's own
 // default and Python's both say 4.
 t('the default detail is the one the slider and Python agree on', () => {
-    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src = L.src;
     const block = src.slice(src.indexOf('rendering: {'), src.indexOf('shadow_strength'));
     const m = /detail: ([0-9.]+)/.exec(block);
     if (!m) throw new Error('no default detail in DEFAULT_CONFIG');
@@ -8031,10 +8192,10 @@ t('the default detail is the one the slider and Python agree on', () => {
 // see the coordinates MOVE inside a frame, which is what an alignment and a
 // live-mode replace() both do.
 t('what the coordinate array is, said once', () => {
-    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src = L.src;
     const lift = (name) => {
         const at = src.indexOf('        ' + name + '() {');
-        if (at < 0) throw new Error(name + ' not found in viewer-mol.js');
+        if (at < 0) throw new Error(name + ' not found in core/mol.js');
         let d = 0; let k = src.indexOf('{', at);
         for (; k < src.length; k++) {
             if (src[k] === '{') d++;
@@ -8078,8 +8239,8 @@ t('what the coordinate array is, said once', () => {
     }
     // ...and every cache built on the coordinates asks for it rather than
     // writing its own list
-    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
-    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    const gpu = fs.readFileSync('src/cartoon/paintgl.js', 'utf8');
+    const cart = L.cartoon;
     if (!/r\._coordsKey \? r\._coordsKey\(\)/.test(gpu)) {
         throw new Error('the mesh keys do not ask what the coordinates are');
     }
@@ -8098,7 +8259,7 @@ t('what the coordinate array is, said once', () => {
 // key, and the explicit invalidations stay for the other direction: the array
 // unchanged and the segments not (a contact added, the backbone hidden).
 t('the segment cache is keyed on the array it was built from', () => {
-    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src = L.src;
     if (!/cachedSegmentIndicesCoords === this\.coords/.test(src)) {
         throw new Error('the segment cache does not compare the array it was'
             + ' built from, so a new array with the same frame and object'
@@ -8121,7 +8282,7 @@ t('the segment cache is keyed on the array it was built from', () => {
 // - which builds new frame objects - gets a new answer for free, and there is
 // no invalidation for the next feature to forget.
 t('ligand groups follow the frames rather than being stored and refreshed', () => {
-    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src = L.src;
     if (!/const LIGAND_GROUPS_BY_FRAME = new WeakMap\(\)/.test(src)) {
         throw new Error('the groups are not cached against the frame');
     }
@@ -8134,9 +8295,9 @@ t('ligand groups follow the frames rather than being stored and refreshed', () =
     }
     // ...and every reader goes through the accessor
     for (const [file, src2] of [
-        ['viewer-mol.js', src],
-        ['viewer-seq.js', fs.readFileSync('py2Dmol/resources/viewer-seq.js', 'utf8')],
-        ['viewer-pae.js', fs.readFileSync('py2Dmol/resources/viewer-pae.js', 'utf8')],
+        ['core/mol.js', src],
+        ['panels/seq.js', fs.readFileSync('src/panels/seq.js', 'utf8')],
+        ['panels/pae.js', fs.readFileSync('src/panels/pae.js', 'utf8')],
     ]) {
         // ...the OBJECT's field. `section.ligandGroups` is the strip's own
         // per-section copy, already offset into merged indices, and has
@@ -8145,16 +8306,16 @@ t('ligand groups follow the frames rather than being stored and refreshed', () =
             .filter((r) => /^(object|obj|o|objectsData\w*)\./.test(r));
         // viewer-seq keeps one as the fallback for a renderer too old to have
         // the accessor; nothing else may read the field
-        if (reads.length > (file === 'viewer-seq.js' ? 1 : 0)) {
+        if (reads.length > (file === 'panels/seq.js' ? 1 : 0)) {
             throw new Error(file + ' reads object.ligandGroups directly: '
                 + reads.join(', '));
         }
     }
-    // the derivation is guarded for a page without utils.js
+    // the derivation is guarded for a page without src/io/parse.js
     const fn = src.slice(src.indexOf('function ligandGroupsForFrame('),
         src.indexOf('function initializePy2DmolViewer('));
     if (!/typeof groupLigandAtoms !== 'function'/.test(fn)) {
-        throw new Error('the derivation assumes web/utils.js is loaded');
+        throw new Error('the derivation assumes src/io/parse.js is loaded');
     }
 });
 
@@ -8165,7 +8326,7 @@ t('ligand groups follow the frames rather than being stored and refreshed', () =
 // purpose. A recorded key cannot be wrong that way; it can only be incomplete,
 // so it names everything that decides the CONTENTS of the array.
 t('the array says what it holds rather than being deduced', () => {
-    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src = L.src;
     const key = src.slice(src.indexOf('_arrayKey() {'),
         src.indexOf('_noteArrayLoaded() {')).replace(/\s+/g, ' ');
     if (!key) throw new Error('_arrayKey is gone');
@@ -8234,7 +8395,7 @@ t('the object being edited comes back from an empty canvas', () => {
 // the same object - and Multi greys it out, opens the list and hands the
 // question to the eyes. There is no All row: the eyes are the whole control.
 t('Multi is a mode, and the picker is what it replaces', () => {
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     const html = fs.readFileSync('index.html', 'utf8');
 
     // THE MODE IS THE RENDERER'S SHOWN SET and nothing else, so it cannot
@@ -8254,7 +8415,7 @@ t('Multi is a mode, and the picker is what it replaces', () => {
             + ' so it keeps the EDITED object rather than the one you were'
             + ' looking at');
     }
-    const molSrc2 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const molSrc2 = L.src;
     const leave = molSrc2.slice(molSrc2.indexOf('leaveMultiObject() {'),
         molSrc2.indexOf('Load whatever drawnObjects() now says'));
     if (!/drawn\.indexOf\(this\.currentObjectName\) >= 0/.test(leave)
@@ -8343,7 +8504,7 @@ t('Multi is a mode, and the picker is what it replaces', () => {
     }
     // ...and it is there whatever is loaded: it used to appear only with a
     // second object, which hid Multi from the one object that was open
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const mol = L.src;
     if (/row\.style\.display = \(objectCount <= 1\)/.test(mol)) {
         throw new Error('the object row disappears with one object loaded');
     }
@@ -8357,7 +8518,7 @@ t('Multi is a mode, and the picker is what it replaces', () => {
 t('what a finished load says fits on one line', () => {
     // ...the CODE, not the comments: loadSummary's own docstring quotes the
     // line it replaced, which is the clearest way to say what it is for.
-    const app = fs.readFileSync('web/app.js', 'utf8')
+    const app = L.app
         .split('\n').filter((l) => !/^\s*(\*|\/\/)/.test(l)).join('\n');
     for (const gone of ['Successfully fetched and loaded', 'Successfully loaded',
         'pick Cartoon in Style', 'total frame$']) {
@@ -8384,8 +8545,8 @@ t('what a finished load says fits on one line', () => {
 // tab, and the renderer warned to the CONSOLE and put the dropdown back -
 // which from the outside is a menu that flicks back to Tube on its own.
 t('refusing the cartoon style is not silent', () => {
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const mol = L.src;
+    const app = L.app;
     if (!/if \(this\.onStyleRefused\) this\.onStyleRefused\(fit\)/.test(mol)) {
         throw new Error('the renderer no longer reports a refused style');
     }
@@ -8406,7 +8567,7 @@ t('refusing the cartoon style is not silent', () => {
 // interfering with each other - select a tube object and the cartoon beside it
 // is suddenly drawn with tube's thickness.
 t('each style remembers its own settings', () => {
-    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src = L.src;
     const list = src.slice(src.indexOf('static get STYLE_SETTINGS()'),
         src.indexOf('_keepStyleSettings('));
     if (!list) throw new Error('there is no list of what a style owns');
@@ -8448,7 +8609,7 @@ t('each style remembers its own settings', () => {
 // time an object was switched off and on - "I want to see things appear and
 // disappear", not zoom.
 t('an eye does not move the camera; an object that just arrived does', () => {
-    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src = L.src;
     const at = src.indexOf('_applyShownObjects(skipRender = false');
     const body = src.slice(at, src.indexOf('\n        }\n', at) + 1);
     if (/if \(ms\.stats && !sameSources\)/.test(body)) {
@@ -8497,7 +8658,7 @@ t('an eye does not move the camera; an object that just arrived does', () => {
 // by another name: two structures loaded as two objects came up stacked on
 // each other whatever their coordinates said. Align Frames is for FRAMES.
 t('loading an object does not move it to the origin', () => {
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const app = L.app;
     const at = app.indexOf('const alignedTogether = isTrajectory && shouldAlign;');
     if (at < 0) throw new Error('the centring block moved');
     const body = app.slice(at, app.indexOf('STEP 4', at)).replace(/\s+/g, ' ');
@@ -8524,7 +8685,7 @@ t('loading an object does not move it to the origin', () => {
 // covers the precedence, which no fixture in the repo has per-frame bonds to
 // show).
 t('a frame with its own bonds is not overruled by the object', () => {
-    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src = L.src;
     const at = src.indexOf('_resolvedFrame(object, frameIndex) {');
     if (at < 0) throw new Error('_resolvedFrame is gone');
     const body = src.slice(at, src.indexOf('\n        }', at)).replace(/\s+/g, ' ');
@@ -8547,7 +8708,7 @@ t('a frame with its own bonds is not overruled by the object', () => {
 // which follows the drawn set, said there was nothing on screen while the
 // panels described the object that had just arrived.
 t('a file loaded while everything is off is the thing you see', () => {
-    const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const src = L.src;
     const at = src.indexOf('addObject(name) {');
     if (at < 0) throw new Error('addObject is gone');
     const head = src.slice(at, at + 1600);
@@ -8593,10 +8754,10 @@ t('asking for nothing and asking with a stale name are different', () => {
 // files are on screen - so the mask admitted both, the strip lit both labels,
 // and the PAE map counted both.
 t('chain identity carries the object through every path that compares it', () => {
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
-    const seq = fs.readFileSync('py2Dmol/resources/viewer-seq.js', 'utf8');
-    const pae = fs.readFileSync('py2Dmol/resources/viewer-pae.js', 'utf8');
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const mol = L.src;
+    const seq = fs.readFileSync('src/panels/seq.js', 'utf8');
+    const pae = fs.readFileSync('src/panels/pae.js', 'utf8');
+    const app = L.app;
 
     // THE MASK, and there is one place in it that compares a chain now: the
     // per-object composer. It used to be three - a merged branch, an overlay
@@ -8618,7 +8779,7 @@ t('chain identity carries the object through every path that compares it', () =>
     }
     // ...what the panel writes when it hides something
     if (!/renderer\.chainKeyAt \? renderer\.chainKeyAt\(i\)/.test(app)) {
-        throw new Error('app.js derives the chain set from bare ids');
+        throw new Error('src/app/ derives the chain set from bare ids');
     }
     // ...the strip's chain buttons
     if (!/chainSelection\?\.has\(chainKey\)/.test(seq)) {
@@ -8647,7 +8808,7 @@ t('two objects with the same chain id are two different chains', () => {
 // reach a whole chain - the click, the toggle-off, and a shift range across
 // labels - and all three have to carry the object.
 t('every route to a whole chain names the object it belongs to', () => {
-    const seq = fs.readFileSync('py2Dmol/resources/viewer-seq.js', 'utf8');
+    const seq = fs.readFileSync('src/panels/seq.js', 'utf8');
     if (!/const positionsOfChain = \(chainId, objectName\)/.test(seq)) {
         throw new Error('positionsOfChain does not take an object');
     }
@@ -8677,7 +8838,7 @@ t('every route to a whole chain names the object it belongs to', () => {
 //   * a drag across chain labels tracked "the chain we are over" by id, so
 //     moving from one object's chain A to another's looked like standing still.
 t('the strip looks a chain up by object and chain, never by chain alone', () => {
-    const seq = fs.readFileSync('py2Dmol/resources/viewer-seq.js', 'utf8');
+    const seq = fs.readFileSync('src/panels/seq.js', 'utf8');
     if (!/function cellsOfChain\(layout, chainId, objectName\)/.test(seq)) {
         throw new Error('the shared (object, chain) lookup is gone');
     }
@@ -8806,7 +8967,7 @@ t('a selection inside one object edits only that object', () => {
 //     to each other by distance, which would have reached across the join.
 //   * the hover readout, which said "A GLY 39" for two different residues.
 t('nothing in the segment builder groups by a bare chain id', () => {
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const mol = L.src;
     const at = mol.indexOf('// Generate Segment Definitions ONCE');
     const to = mol.indexOf('this.cachedSegmentIndices = this.segmentIndices.map', at);
     const body = mol.slice(at, to);
@@ -8849,7 +9010,7 @@ t('nothing in the segment builder groups by a bare chain id', () => {
 });
 
 t('the 3D hover readout says which object', () => {
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const mol = L.src;
     const at = mol.indexOf('window.SEQ.setHoveredResidue({');
     if (at < 0) throw new Error('the 3D hover no longer reports a residue');
     const call = mol.slice(at, at + 400);
@@ -8864,10 +9025,10 @@ t('the 3D hover readout says which object', () => {
 // the first one's conservation, so every path that fills renderer.entropy goes
 // through entropyForDrawn.
 t('nothing fills the entropy vector from a single object', () => {
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
-    const app = fs.readFileSync('web/app.js', 'utf8');
+    const mol = L.src;
+    const app = L.app;
     const offenders = [];
-    for (const [file, src] of [['viewer-mol.js', mol], ['web/app.js', app]]) {
+    for (const [file, src] of [['core/mol.js', mol], ['the web app', app]]) {
         src.split('\n').forEach((line, k) => {
             // the RENDERER's vector, not an MSA's own entropy array
             if (!/(renderer|this)\.entropy = /.test(line)) return;
@@ -8892,7 +9053,7 @@ t('nothing fills the entropy vector from a single object', () => {
 // The mask speaks merged indices, so a box drawn on the second object's matrix
 // hid the FIRST object's residues, and the chain set it wrote was bare ids.
 t('a PAE box lands on the object whose matrix it was drawn on', () => {
-    const pae = fs.readFileSync('py2Dmol/resources/viewer-pae.js', 'utf8');
+    const pae = fs.readFileSync('src/panels/pae.js', 'utf8');
     // in - and the offset is the PANEL'S object, which is not the object
     // being edited once several are on screen (see paeObjectName)
     if (!/sourceOffsetOf\(PAE\.paeObject\(this\.mainRenderer\)\)/.test(pae)) {
@@ -8935,7 +9096,7 @@ t('a PAE box lands on the object whose matrix it was drawn on', () => {
 // current object alone, editing a contact in the other one changed nothing on
 // screen.
 t('the GPU cache keys cover every drawn object', () => {
-    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const gpu = fs.readFileSync('src/cartoon/paintgl.js', 'utf8');
     const at = gpu.indexOf('function contactKeyOf(');
     if (at < 0) throw new Error('the contact key is gone');
     const body = gpu.slice(at, gpu.indexOf('\n}', at));
@@ -9002,15 +9163,29 @@ t('a contact belongs to the object that owns both its ends', () => {
     delete objectsData.two.contacts;
     api.addSelectionContact([3, 4]);
 
-    // a pair spanning two objects is refused, not stored somewhere useless
+    // A PAIR SPANNING TWO OBJECTS GOES ON THE VIEWER'S LIST, and touches
+    // neither object. This USED to be refused - "there is nowhere to store it"
+    // - and that was true while both ends of a contact were resolved inside
+    // one object's slice of the merged array. The viewer's list holds ends
+    // written as ADDRESSES, which name their object and so need no slice.
     const before = JSON.stringify(objectsData);
     api.addSelectionContact([0, 4]);
-    eq(JSON.stringify(objectsData), before, 'a cross-object pair stored nothing');
-    // ...and says so, rather than appearing to work
-    if (!/different objects/.test(r._status || '')) {
-        throw new Error('a cross-object contact was refused in silence: '
-            + (r._status || 'nothing said'));
+    eq(JSON.stringify(objectsData), before,
+        'a cross-object pair must not be filed on either object');
+    if (!r.crossContacts || r.crossContacts.length !== 1) {
+        throw new Error('a cross-object contact was not stored on the viewer'
+            + " list: " + JSON.stringify(r.crossContacts));
     }
+    const [e1, e2] = r.crossContacts[0];
+    eq(e1.object, 'one', 'the first end names its object');
+    eq(e2.object, 'two', 'the second end names the OTHER object');
+    eq(e1.residues[0], 10, 'the first end carries its author residue number');
+    eq(e2.residues[0], 21, 'the second end carries its author residue number');
+    // ...and not twice, in either order
+    api.addSelectionContact([4, 0]);
+    eq(r.crossContacts.length, 1,
+        'the same cross-object pair was stored twice - a contact has no'
+        + ' direction, so the reversed pair is the same contact');
 });
 
 // THE STRIP ASKS THE OWNING OBJECT, never the edited one, for anything about a
@@ -9020,7 +9195,7 @@ t('a contact belongs to the object that owns both its ends', () => {
 // another object's section whenever the edited object had no frames - a state
 // a Copy passes through.
 t('the strip reads a position from the object that owns it', () => {
-    const seq = fs.readFileSync('py2Dmol/resources/viewer-seq.js', 'utf8');
+    const seq = fs.readFileSync('src/panels/seq.js', 'utf8');
     const at = seq.indexOf('const chainIdOfItem = ');
     if (at < 0) throw new Error('chainIdOfItem is gone');
     const body = seq.slice(at, seq.indexOf('\n        };', at));
@@ -9063,7 +9238,7 @@ t('a multi-object copy ends on what it made', () => {
 // own container, so the renderer falls back to the document - which on a grid
 // would hand this renderer another viewer's picker, and both would drive it.
 t('the picker is only taken from the document when there is one of them', () => {
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const mol = L.src;
     const at = mol.indexOf("const objectSelect = containerElement.querySelector('#objectSelect')");
     if (at < 0) throw new Error('the picker lookup is gone');
     const call = mol.slice(at, at + 500);

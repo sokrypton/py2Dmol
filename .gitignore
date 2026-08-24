@@ -13,7 +13,7 @@ implementation_plan.md
 .vscode/
 .idea/
 *.cif
-/.ipynb_checkpoints
+.ipynb_checkpoints/
 *.json
 node_modules/
 *.egg-info/

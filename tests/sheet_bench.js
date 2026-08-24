@@ -15,7 +15,7 @@
  *   strand twist   angle between the faces of consecutive residues in a strand.
  *                  This is "does the ribbon roll along its own length".
  *
- * Loads viewer-cartoon.js directly and calls the SAME exported functions the
+ * Loads cartoon/geom.js directly and calls the SAME exported functions the
  * renderer calls, so this cannot score a stale reimplementation.
  */
 const fs = require('fs');
@@ -23,7 +23,7 @@ const path = require('path');
 const vm = require('vm');
 
 const TRUTH = path.resolve(__dirname, 'out/sheet_truth.json');
-const SRC = path.resolve(__dirname, '../py2Dmol/resources/viewer-cartoon.js');
+const SRC = path.resolve(__dirname, '../src/cartoon/geom.js');
 
 function loadCartoon() {
     const sandbox = {
@@ -146,7 +146,7 @@ function run(api, chains, opts) {
     }
     const api = loadCartoon();
     if (!api || !api.buildSheetFrames) {
-        console.error('viewer-cartoon.js did not export buildSheetFrames');
+        console.error('cartoon/geom.js did not export buildSheetFrames');
         process.exit(1);
     }
     const chains = JSON.parse(fs.readFileSync(TRUTH, 'utf8'))

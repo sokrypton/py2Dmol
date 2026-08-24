@@ -1,7 +1,7 @@
 /* The GPU cartoon MEASUREMENT HARNESS, shared by gpu3d_lab.html (the numbers)
  * and gpu3d_view.html (the picture).
  *
- * The renderer itself now lives in py2Dmol/resources/viewer-cartoon-gpu.js and
+ * The renderer itself now lives in src/cartoon/paintgl.js and
  * ships with the viewer. What is left here is everything that only makes sense
  * beside a test page: loading a fixture or a .cif, building the fake renderer
  * the capture runs through, the colour schemes, the pixel diff, and the one
@@ -202,7 +202,7 @@ function segColors(sc2) {
     // paint, the mesh inherits.
     //
     // Demonstrated here rather than assumed. The four values are copied from
-    // viewer-mol.js's ELEMENT_COLORS, which is a static getter on a class that
+    // core/mol.js's ELEMENT_COLORS, which is a static getter on a class that
     // is not exported - so this IS a duplicate, and the original is the one to
     // change. Carbon is deliberately absent there too: it keeps the chain
     // colour, which is what makes the coloured atoms read as exceptions.

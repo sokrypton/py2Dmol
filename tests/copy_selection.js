@@ -10,7 +10,7 @@
  * selection; none of it was carried at all, so copying a posed selection gave
  * back a bare backbone.
  *
- * `_remapObjectState` is lifted out of viewer-mol.js as source text rather
+ * `_remapObjectState` is lifted out of core/mol.js as source text rather
  * than reimplemented - a paraphrase of a renumbering agrees with itself
  * forever.
  */
@@ -19,21 +19,21 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const SRC = fs.readFileSync(path.join(ROOT, 'py2Dmol/resources/viewer-mol.js'), 'utf8');
+// EVERY SCAN HERE READS lift.js, which owns the file list: OBJECT_STATE and its
+// remappers live in core/objstate.js now, and _remapObjectState in
+// core/mol.js, so a scan of one file would find half of what it needs.
+const L = require('./lift.js');
+const SRC = L.src;
+
+/** The statements inside a method, given the whole method's text. */
+function bodyOf(text) {
+    return text.slice(text.indexOf('{') + 1, text.lastIndexOf('}'));
+}
 
 // ---- lift the method --------------------------------------------------------
 function liftMethod(name) {
-    const at = SRC.indexOf(`        ${name}(src, dst, selectedIndices) {`);
-    if (at < 0) throw new Error(`${name} moved or changed signature - nothing here scores it`);
-    let depth = 0;
-    let k = SRC.indexOf('{', at);
-    const body = k;
-    for (; k < SRC.length; k++) {
-        if (SRC[k] === '{') depth++;
-        else if (SRC[k] === '}' && !--depth) break;
-    }
     return new Function('src', 'dst', 'selectedIndices',
-        `return (function () {${SRC.slice(body + 1, k)}}).call(this);`);
+        `return (function () {${bodyOf(L.method(name))}}).call(this);`);
 }
 const remapRaw = liftMethod('_remapObjectState');
 
@@ -41,28 +41,20 @@ const remapRaw = liftMethod('_remapObjectState');
 // is one loop over OBJECT_STATE now - the field-by-field version was five
 // chances to forget a field, and the bonds were forgotten for as long as they
 // existed - so lifting the method alone lifts an empty loop.
+// ...found by its markers, not by "everything before the factory declaration".
+// The region is a file of its own now, so the old slice had nothing to slice.
+// The trailing newline matters: the region ends in a line comment, and a return
+// appended to it would be commented out.
 function liftModuleScope() {
-    const at = SRC.indexOf('const OBJECT_STATE = [');
-    const end = SRC.indexOf('function initializePy2DmolViewer(');
-    if (at < 0 || end < 0) throw new Error('OBJECT_STATE moved out of module scope');
-    return SRC.slice(at, end);
+    return L.between('// >>> OBJECT_STATE BEGIN', '// <<< OBJECT_STATE END') + '\n';
 }
 // ...evaluated in a function rather than with eval: a `const` inside an eval
 // is scoped to the eval and nothing outside can see it, which reads as
 // "OBJECT_STATE is not defined" in twelve tests at once.
 const OBJECT_STATE = new Function(
     liftModuleScope() + '; return OBJECT_STATE;')();
-const renumberRaw = (() => {
-    const at = SRC.indexOf('        _renumberObjectState(src, dst, map, selected) {');
-    if (at < 0) throw new Error('_renumberObjectState moved or changed signature');
-    let depth = 0; let k = SRC.indexOf('{', at); const body = k;
-    for (; k < SRC.length; k++) {
-        if (SRC[k] === '{') depth++;
-        else if (SRC[k] === '}' && !--depth) break;
-    }
-    return new Function('src', 'dst', 'map', 'selected', 'OBJECT_STATE',
-        `return (function () {${SRC.slice(body + 1, k)}}).call(this);`);
-})();
+const renumberRaw = new Function('src', 'dst', 'map', 'selected', 'OBJECT_STATE',
+    `return (function () {${bodyOf(L.method('_renumberObjectState'))}}).call(this);`);
 
 // A stub `this`: the chain/residue lookup the contact filter needs, and the
 // generic renumber the remap delegates to.
@@ -230,10 +222,12 @@ test('a cut out of an aligned structure stays where the alignment put it', () =>
 test('extractSelection actually carries the state across', () => {
     // The remap can be perfect and never called. This is the line that copies
     // a pose rather than a backbone.
-    const at = SRC.indexOf('extractSelection() {');
-    if (at < 0) throw new Error('extractSelection moved');
-    const end = SRC.indexOf('\n        }\n', at);
-    const body = SRC.slice(at, end);
+    // ...THE ONE THAT DOES THE WORK, by name. indexOf('extractSelection() {')
+    // also matches `_extractSelection() {`, and once the thin per-object
+    // wrapper moved to parts/multi.js it came FIRST in the source order
+    // and the check scored the wrapper - which delegates and so contains no
+    // remap at all.
+    const body = L.method('_extractSelection');
     if (!body.includes('_remapObjectState')) {
         throw new Error('extractSelection never calls _remapObjectState - a copy'
             + ' gets the coordinates and none of the display state');
@@ -247,10 +241,10 @@ test('extractSelection actually carries the state across', () => {
 test('every per-object key is in the field list or excluded on purpose', () => {
     // THE TRAP THIS WHOLE FILE EXISTS FOR: state carried field by field drops
     // whatever nobody wrote down. There is one list now - OBJECT_STATE in
-    // viewer-mol.js - and every lifecycle operation walks it, so this test is
+    // core/mol.js - and every lifecycle operation walks it, so this test is
     // the gate on the list: a new per-object key fails until it is either
     // registered or named here as something else.
-    const app = fs.readFileSync(path.join(ROOT, 'web/app.js'), 'utf8');
+    const app = L.app;
     const written = new Set();
     for (const m of app.matchAll(/\bobj\.([A-Za-z_][A-Za-z0-9_]*)\s*=/g)) written.add(m[1]);
     for (const m of SRC.matchAll(/\bobject\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s/g)) written.add(m[1]);
@@ -336,7 +330,7 @@ test('a copied RNA keeps its bases', () => {
 // copy that counted ALL of them read 0.2881 at residue 105 of AF-P0A8I3 where
 // the parent read 0.2569.
 test('a copied region keeps the parent\'s own conservation numbers', () => {
-    const msa = fs.readFileSync(path.join(ROOT, 'py2Dmol/resources/viewer-msa.js'), 'utf8');
+    const msa = fs.readFileSync(path.join(ROOT, 'src/panels/msa.js'), 'utf8');
     const at = msa.indexOf('function extractMSASubset');
     if (at < 0) throw new Error('extractMSASubset is gone');
     const body = msa.slice(at, msa.indexOf('\n    function ', at + 10));
@@ -360,7 +354,7 @@ test('a copied region keeps the parent\'s own conservation numbers', () => {
         throw new Error('the subset does not carry each sequence\'s coverage and '
             + 'identity from the alignment it came out of');
     }
-    const msaSrc = fs.readFileSync(path.join(ROOT, 'py2Dmol/resources/viewer-msa.js'), 'utf8');
+    const msaSrc = fs.readFileSync(path.join(ROOT, 'src/panels/msa.js'), 'utf8');
     const cov = msaSrc.slice(msaSrc.indexOf('function filterByCoverage'),
         msaSrc.indexOf('function filterByIdentity'));
     if (!/typeof seq\.coverage === 'number'/.test(cov)) {
