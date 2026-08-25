@@ -1,8 +1,16 @@
+import re
+from pathlib import Path
+
 from setuptools import setup, find_packages
+
+# ...read out of the package rather than retyped here. Importing it would pull
+# in numpy and IPython before they are installed, so this reads the line.
+_init = Path(__file__).parent.joinpath('py2Dmol', '__init__.py').read_text()
+VERSION = re.search(r'^__version__ = "([^"]+)"', _init, re.M).group(1)
 
 setup(
     name='py2Dmol',
-    version='1.7.0',
+    version=VERSION,
     author='sokrypton',
     author_email='so3@mit.edu',
     description='A Python library for visualizing protein structures in 2D.',

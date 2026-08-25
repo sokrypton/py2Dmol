@@ -181,7 +181,7 @@ try {
 // a number in prose is a promise like any other. Checked loosely - within a
 // tenth - because the point is catching a bundle that has changed shape, not
 // policing a rebuild that moved it by a kilobyte.
-for (const doc of ['README.md', 'embed.html']) {
+for (const doc of ['README.md', 'embed.html', 'CHANGELOG.md']) {
     const text = fs.readFileSync(doc, 'utf8');
     let found = 0;
     for (const name of ['embed', 'embed.cpu']) {

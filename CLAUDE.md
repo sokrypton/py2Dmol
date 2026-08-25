@@ -148,7 +148,7 @@ public downloads is exercised on every run.
   chooses is which file is written into the cell. It exists because a notebook
   **cannot fall back** — no WebGL2 meant no picture, said on a console the
   reader may not have open, to someone who never chose a painter and has no
-  checkbox to change one. The CPU notebook is also 93 KB smaller and is the
+  checkbox to change one. The CPU notebook is also 92 KB smaller and is the
   only one that can save an SVG.
 - **One painter per bundle, and outside the website it is the GPU.** The
   notebook and both embeds ship `cartoon/paintgl.js` and no 2D painter, with
@@ -171,8 +171,8 @@ public downloads is exercised on every run.
   needs the 2D painter** (the GPU refuses an export context by design), so the
   Save panel hides it when `window.py2dmolCartoonPaint` is absent.
 
-  The embed ships both ways round — `py2Dmol.embed.min.js` (416 KB, WebGL2) and
-  `py2Dmol.embed.cpu.min.js` (344 KB, 2D, and the only one that can save an SVG).
+  The embed ships both ways round — `py2Dmol.embed.min.js` (495 KB, WebGL2) and
+  `py2Dmol.embed.cpu.min.js` (408 KB, 2D, and the only one that can save an SVG).
   That is a second artefact where `embed-tube` was not worth one: it draws the
   same picture from the same geometry, so nothing is given up but speed.
 - 🔴 **A preset name reaches the cartoon in two steps, and the order is the

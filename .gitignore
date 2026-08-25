@@ -25,3 +25,7 @@ __pycache__/
 # Benchmark input for `python tests/ss_bench.py --build` (DSSP ground truth).
 # 3.8 MB and not needed to run the viewer; place it in the repo root to rebuild.
 natives.zip
+
+# setuptools build directory
+build/
+dist/

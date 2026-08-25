@@ -127,6 +127,24 @@ if not shipped:
     bad.append("no package_data for 'py2Dmol' found in setup.py - this check has"
                " stopped reading it and would pass forever")
 
+# --- ONE VERSION, and setup.py reads it rather than repeating it ------------
+# It used to carry its own literal, which is a second number that has to agree
+# with the package's and can only be found not to in a built wheel. setup.py
+# greps py2Dmol/__init__.py for it now - so what this guards is that the grep
+# still finds something, and that nothing has quietly put a literal back.
+_init_src = open("py2Dmol/__init__.py").read()
+_setup_src = open("setup.py").read()
+_m = re.search(r'^__version__ = "([^"]+)"', _init_src, re.M)
+if not _m:
+    bad.append("py2Dmol/__init__.py has no __version__ line - setup.py reads it"
+               " from there and will fail to build at all")
+else:
+    print(f"version {_m.group(1)}, from py2Dmol/__init__.py")
+    if re.search(r"version\s*=\s*['\"][0-9]", _setup_src):
+        bad.append("setup.py has a literal version= again - two numbers that"
+                   " must agree are two that can disagree, and the wheel is"
+                   " where you find out")
+
 if "--wheel" in sys.argv:
     # ...and say so when the environment is answering a different question. A
     # revision-control plugin makes include_package_data sweep in every tracked

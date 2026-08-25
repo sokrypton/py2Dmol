@@ -57,7 +57,7 @@ DEFAULT_CONFIG = {
         # WHICH PAINTER, BY PICKING THE BUNDLE. A bundle carries exactly one,
         # and the renderer works out which from what is loaded - so this is not
         # a runtime switch, it chooses the file inlined into the cell. True
-        # writes the WebGL2 one, False the 2D one, which is 93 KB smaller,
+        # writes the WebGL2 one, False the 2D one, which is 92 KB smaller,
         # needs no WebGL2 and is the only one that can save an SVG.
         "gpu": True,
     },
@@ -1393,7 +1393,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # console and draws nothing. gpu=False is the answer to that, and
             # to wanting an SVG - vector output is the primitives replayed into
             # an export context, which the GPU cannot give you because it holds
-            # a raster. It is also 93 KB smaller, which is paid per show() cell.
+            # a raster. It is also 92 KB smaller, which is paid per show() cell.
             # NO TUBE-AND-CPU FOURTH FILE. The tube is drawn by the renderer
             # itself, so that combination wants neither cartoon painter and
             # would be the smallest of all - and it would be a fourth artefact
