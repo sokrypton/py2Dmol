@@ -203,6 +203,43 @@ for (const doc of ['README.md', 'embed.html', 'CHANGELOG.md']) {
     }
 }
 
+// --- AND THE SHADERS ARRIVE STRIPPED -----------------------------------------
+// terser does not look inside strings, so cartoon/paintgl.js's GLSL - which is
+// commented like the rest of the project - was copied into every GPU bundle
+// byte for byte: 65 KB of the 118 KB that file used to minify to.
+// tools/bundle.py strips it on the way in, and the source keeps every word.
+//
+// COUNTED, NOT MEASURED. A size check drifts and passes for the wrong reason
+// the moment something else grows. What a comment leaves behind cannot be
+// mistaken: a GLSL line comment has nowhere to hide in minified JavaScript.
+//
+// And the newline is TWO CHARACTERS here. terser turns the template literal
+// into an ordinary string, so every shader line break is a backslash and an n
+// rather than an actual newline - the obvious regex matches nothing at all and
+// the check passes on a bundle that was never stripped. It did, until the
+// unstripped build was measured beside the stripped one: 659 comments and 1042
+// indented lines against 0 and 70.
+{
+    const gl = fs.readFileSync(fileFor('embed'), 'utf8');
+    if (!/#version 300 es/.test(gl)) {
+        bad('the embed bundle carries no GLSL at all - the strip has eaten the'
+            + ' shaders rather than their comments');
+    }
+    const comments = (gl.match(/\\n *\/\//g) || []).length;
+    const indented = (gl.match(/\\n {2,}/g) || []).length;
+    if (comments) {
+        bad(`${comments} GLSL comments reached the bundle - tools/bundle.py is`
+            + ' not stripping the shader literals');
+    }
+    // ...not zero: the SHORT shaders are left alone, and a handful of them are
+    // indented. 70 today against 1042 unstripped, so the gap is the signal.
+    if (indented > 200) {
+        bad(`${indented} indented shader lines reached the bundle`);
+    }
+    console.log(`  shaders: ${comments} comments, ${indented} indented lines`
+        + ' (unstripped is 659 and 1042)');
+}
+
 if (!Object.keys(EXPECT).length) bad('nothing is checked - this would pass forever');
 console.log(fail ? `${fail} problems` : 'ok');
 process.exit(fail ? 1 : 0);

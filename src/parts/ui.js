@@ -16,6 +16,35 @@
 // viewerId is ASSIGNED here (`viewerId = resolvedViewerId`). As a parameter
 // that assignment is local, which is what it always effectively was: this block
 // ran last in the factory and nothing read the outer binding afterwards.
+// THE PER-FRAME FIELDS THE STATIC PAYLOAD CARRIES, and which of them an OBJECT
+// can answer for when a frame does not.
+//
+// viewer.py holds the other half of this list, as FRAME_INHERITED and
+// FRAME_ALWAYS, and tests/config.js checks the two still name the same things.
+// They did not, three times: `align`, `allow_reflection`, `position_atoms` and
+// `position_elements` were each sent by Python and dropped here, and every one
+// of them was a feature that quietly did not happen - a trajectory that never
+// superposed, and element colouring that never coloured. Adding a field is
+// adding a row here and a name there.
+//
+// `coords` is not in the list because it is not optional; it is set first and
+// a frame without it never reaches this loop.
+const STATIC_FRAME_FIELDS = [
+    ['chains', 'chains'],
+    ['position_types', 'position_types'],
+    ['bonds', 'bonds'],
+    ['plddts', null],
+    ['pae', null],
+    ['position_names', null],
+    ['residue_numbers', null],
+    ['position_atoms', null],
+    ['position_elements', null],
+    ['color', null],
+    ['scatter', null],
+    ['align', null],
+    ['allow_reflection', null],
+];
+
 function wireViewerUI(containerElement, viewerId, Pseudo3DRenderer) {
 // ============================================================================
 // PAE RENDERER
@@ -912,6 +941,61 @@ if (orientButton) {
     }
 }
 
+// THE SLAB PYTHON ASKED FOR, from either path. `null` turns it off; a selector
+// is resolved here rather than in Python, because positionsFor is the project's
+// one way of naming residues and translating it twice is two ways.
+const applyClipSelector = (sel) => {
+    if (typeof renderer.autoClip !== 'function') return;
+    if (!sel) {
+        renderer.setClipSlab(null, null);
+    } else {
+        renderer.autoClip(positionsFor(renderer, sel));
+    }
+    if (renderer._syncClipButton) renderer._syncClipButton();
+    renderer.render('clip');
+};
+renderer._applyClipSelector = applyClipSelector;
+
+// CLIP, the same way. parts/clip.js is in every bundle - the slab, the
+// tracking and the refit all ship to the notebook and to both embeds - and
+// none of it was reachable from either, because the only control was
+// index.html's panel and the only API was the embed's v.clip(). Shipping the
+// code without a way to it is the whole of what was wrong.
+//
+// A toggle rather than that panel: the panel exists on the website to set a
+// mode and commit it on close, and there is nothing to set here. The depth is
+// the SELECTION'S depth, which the renderer refits every frame, so pressing it
+// twice is the whole interface.
+const clipButton = containerElement.querySelector('#clipButton');
+if (clipButton) {
+    if (typeof renderer.autoClip !== 'function') {
+        clipButton.hidden = true;          // a build without parts/clip.js
+    } else {
+        const syncClip = () => {
+            const on = renderer.clipSlabOn && renderer.clipSlabOn();
+            clipButton.setAttribute('aria-pressed', on ? 'true' : 'false');
+        };
+        syncClip();
+        clipButton.addEventListener('click', () => {
+            if (renderer.clipSlabOn && renderer.clipSlabOn()) {
+                renderer.setClipSlab(null, null);
+            } else {
+                // WHAT IS SELECTED, or everything when nothing is. Clipping to
+                // the whole structure is not a no-op - it is the structure's
+                // own depth, which is the honest answer to "clip to what I can
+                // see" and leaves the picture alone rather than emptying it.
+                const sel = renderer.residueSelection;
+                renderer.autoClip(sel && sel.size ? sel : null);
+            }
+            syncClip();
+            renderer.render('clipButton');
+        });
+        // ...and the button follows the slab however it was changed - the API,
+        // a style change, a reset - rather than only what it did itself.
+        renderer._syncClipButton = syncClip;
+    }
+}
+
 // Hand-drawn build-up. A checkbox rather than a plain button so it takes
 // the same pressed skin as Colorblind and Dark beside it, and so it reads
 // as ON while the drawing is being made. The renderer clears it when the
@@ -1005,10 +1089,14 @@ if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (windo
 
             if (obj.name && obj.frames && obj.frames.length > 0) {
 
-                const staticChains = obj.chains; // Might be undefined
-                const staticPositionTypes = obj.position_types; // Might be undefined
+                // WHAT THE OBJECT SAYS when a frame does not. Only three
+                // fields have one, and they are named in STATIC_FRAME_FIELDS.
+                const staticLevel = {
+                    chains: obj.chains,
+                    position_types: obj.position_types,
+                    bonds: obj.bonds,
+                };
                 const staticContacts = obj.contacts; // Might be undefined
-                const staticBonds = obj.bonds; // Might be undefined
 
                 for (let i = 0; i < obj.frames.length; i++) {
                     const lightFrame = obj.frames[i];
@@ -1017,34 +1105,22 @@ if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (windo
                     const n = lightFrame.coords ? lightFrame.coords.length : 0;
 
                     // Re-construct the full frame data with proper inheritance
-                    const fullFrameData = {
-                        coords: lightFrame.coords,  // Required
-                        // Resolve with fallbacks: frame-level > object-level > undefined
-                        chains: lightFrame.chains || staticChains || undefined,
-                        position_types: lightFrame.position_types || staticPositionTypes || undefined,
-                        plddts: lightFrame.plddts || undefined,  // Will use inheritance or default in setCoords
-                        pae: lightFrame.pae || undefined,  // Will use inheritance or default
-                        position_names: lightFrame.position_names || undefined,  // Will default in setCoords
-                        residue_numbers: lightFrame.residue_numbers || undefined,  // Will default in setCoords
-                        bonds: lightFrame.bonds || staticBonds || undefined,  // Bonds for connectivity
-                        color: lightFrame.color || undefined,  // Frame-level color from Python
-                        scatter: lightFrame.scatter || undefined,  // Scatter point for this frame
-                        // ...AND THE REQUEST TO SUPERPOSE, which addFrame reads
-                        // off the frame as `align`. This rebuild names its
-                        // fields one by one, so a field it does not name is a
-                        // field it throws away - and it did not name this one.
-                        // align=True is the DEFAULT and the whole of what
-                        // Python sends about superposition since best_view and
-                        // kabsch left viewer.py: the browser does the work now,
-                        // and the payload carries the request rather than the
-                        // result. So `add()` then `show()` - the ordinary way
-                        // to use the library - dropped it silently and drew
-                        // every frame where its file put it, while `show()`
-                        // then `add()` worked, because the live path hands the
-                        // payload frame to addFrame unchanged.
-                        align: lightFrame.align || undefined,
-                        allow_reflection: lightFrame.allow_reflection || undefined
-                    };
+                    // ONE LIST, and the object-level fallbacks beside it -
+                    // see STATIC_FRAME_FIELDS. This was a hand-written run of
+                    // `name: lightFrame.name || undefined` lines, and what that
+                    // shape cost was not the length: a field left out of the
+                    // run is a field thrown away in silence. Three were.
+                    // `align` and `allow_reflection` meant a trajectory loaded
+                    // with add() then show() never superposed, and the two
+                    // per-atom columns meant element colouring - on by default
+                    // - did nothing at all in a notebook. Both worked on every
+                    // other path, which is why neither showed up as an error.
+                    const fullFrameData = { coords: lightFrame.coords };
+                    for (const [key, fallback] of STATIC_FRAME_FIELDS) {
+                        fullFrameData[key] = lightFrame[key]
+                            || (fallback ? staticLevel[fallback] : undefined)
+                            || undefined;
+                    }
 
                     renderer.addFrame(fullFrameData, obj.name);
                 }
@@ -1128,6 +1204,12 @@ if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (windo
                     renderer.currentObjectName]?.rotation_matrix) {
                 window.py2dmolOrient.orientToBestView(renderer, {animate: false});
             }
+            // ...AND THE SLAB, AFTER THE ORIENTATION. The depth is measured
+            // along the view, so fitting it before the camera has been turned
+            // measures it down the wrong axis. It rides in the config because
+            // it is the viewer's rather than any object's - see viewer.py's
+            // _display_viewer.
+            if (config.clip) applyClipSelector(config.clip);
             // Update PAE container visibility after initial load
             // Use requestAnimationFrame to ensure PAE renderer is initialized
             requestAnimationFrame(() => {
@@ -1245,7 +1327,7 @@ const applyMetadataToObject = (obj, meta) => {
     return needsRerender;
 };
 
-const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject, seq = null) => {
+const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject, seq = null, viewerBlock = null) => {
     /**
      * Processes incremental updates sent from Python.
      * Python only sends NEW frames and CHANGED metadata to minimize data transfer.
@@ -1367,6 +1449,14 @@ const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject
             renderer._invalidateSegmentCache();
             renderer.setFrame(renderer.currentFrame);
         }
+    }
+
+    // ...AND WHAT IS THE VIEWER'S RATHER THAN AN OBJECT'S. Last, because a slab
+    // is fitted to residues and those residues have to be loaded first. The key
+    // is read rather than its value's truth: `{clip: null}` is Python turning
+    // the slab OFF, and an absent block is Python not mentioning it.
+    if (viewerBlock && 'clip' in viewerBlock) {
+        applyClipSelector(viewerBlock.clip);
     }
 };
 
@@ -1559,9 +1649,12 @@ if (viewerId) {
 
             if (operation === 'incrementalStateUpdate') {
                 // Unpack new frames and changed metadata from args
-                const [newFramesByObject, changedMetadataByObject] = args;
+                // ...and the viewer-level block, which older cell outputs
+                // replayed from a saved notebook simply do not carry.
+                const [newFramesByObject, changedMetadataByObject, viewerBlock] = args;
                 deliver(seq, () => handleIncrementalStateUpdate(
-                    newFramesByObject, changedMetadataByObject, seq));
+                    newFramesByObject, changedMetadataByObject, seq,
+                    viewerBlock || null));
             } else if (operation === 'replaceFrame') {
                 const [frame, metaArg, objectName] = args;  // persistence no longer needed
                 deliver(seq, () => handleReplaceFrame(frame, metaArg, objectName, seq));

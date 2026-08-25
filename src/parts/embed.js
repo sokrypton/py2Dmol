@@ -247,6 +247,11 @@ const SHELL = (id) => `
            chosen for looks. The grid row lines these two up anyway. -->
       <button id="orientButton" class="controlButton"
               title="Orient to best view">Orient</button>
+      <!-- Clip is a toggle here and a panel on the website - see viewer.html.
+           parts/clip.js is in every bundle, so this is reachable everywhere
+           the shell is; it was only ever unreachable for want of a control. -->
+      <button id="clipButton" class="controlButton"
+              title="Clip to the selection (press again to clear)">Clip</button>
       <label class="controlButton btn-toggle" title="Toggle auto-rotation">
         <input type="checkbox" id="rotationCheckbox"><span>Rotate</span>
       </label>

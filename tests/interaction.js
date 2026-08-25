@@ -8510,6 +8510,57 @@ t('Multi is a mode, and the picker is what it replaces', () => {
     }
 });
 
+// THE TWO PAGES DRAW THE SAME CONTROLS AND HAVE TO AGREE ON THE ORDER.
+//
+// index.html has always read Orient/Rotate, then Style/Capture, then the object
+// picker, then the panels those buttons open. viewer.html shipped Style/Capture
+// first, the picker in the middle, and Orient/Rotate underneath - the same
+// failure as the style panel that was written out in both files under a note
+// saying to edit both, which had already been missed in both directions by the
+// time anyone looked.
+//
+// BOTH pages are checked, not just the one that drifted. Pinning viewer.html
+// against index.html and leaving index.html free only moves which file is
+// allowed to wander off.
+//
+// Order, not identity. The pages differ in ways that do not matter to a reader
+// moving between them: index.html has a Clip toggle and the viewer does not,
+// index.html wraps its buttons in .toolbar-row where the viewer uses .btn-row,
+// and Orient is a <label> there against a <button> here - which is why the id
+// is per page below. Where the controls sit relative to each other is the part
+// that does matter.
+t('both pages order their controls the same way', () => {
+    const PAGES = {
+        'index.html': 'orientToggle',
+        'py2Dmol/resources/viewer.html': 'orientButton',
+    };
+    for (const [file, orientId] of Object.entries(PAGES)) {
+        const html = fs.readFileSync(file, 'utf8');
+        const at = (id) => {
+            const i = html.indexOf(`id="${id}"`);
+            if (i < 0) throw new Error(`${file} has no #${id}`);
+            return i;
+        };
+        const seq = [orientId, 'rotationCheckbox', 'styleToggle',
+            'saveImageButton', 'objectSelect', 'stylePanelMount'];
+        for (let k = 1; k < seq.length; k++) {
+            if (!(at(seq[k - 1]) < at(seq[k]))) {
+                throw new Error(`${file}: #${seq[k - 1]} should come before`
+                    + ` #${seq[k]}`);
+            }
+        }
+        // The picker between the buttons and the panel is the load-bearing
+        // half: everything inside those panels acts on the object named here,
+        // and a panel acting on an object whose name is buried underneath it is
+        // the bug the order prevents.
+        if (!(at('saveImageButton') < at('objectSelect')
+            && at('objectSelect') < at('stylePanelMount'))) {
+            throw new Error(`${file}: the picker is not between the buttons`
+                + ' and the style panel');
+        }
+    }
+});
+
 // A STATUS LINE IS A RECEIPT, NOT A MANUAL.
 //
 // It read: "Successfully fetched and loaded 1 object(s) (1 total frame).

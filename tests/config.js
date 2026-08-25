@@ -132,6 +132,82 @@ if (sb.normalizeConfig({ gpu: false }).rendering.gpu !== false) {
     bad('gpu:false does not survive as false');
 }
 
+// --- THE TWO HALVES OF THE FRAME FIELD LIST HAVE TO NAME THE SAME THINGS ----
+//
+// viewer.py builds each frame of the static payload from FRAME_INHERITED and
+// FRAME_ALWAYS; parts/ui.js takes it apart again with STATIC_FRAME_FIELDS.
+// They were two hand-written runs of `if`s, and they disagreed three times
+// over - `align`, `allow_reflection`, `position_atoms` and `position_elements`
+// were each sent by one side and dropped by the other. Nothing failed: a
+// trajectory simply did not superpose, and element colouring simply did not
+// colour, on the notebook path alone.
+//
+// So this reads BOTH lists out of the source and compares them. A field added
+// to one and not the other fails here, in the node lane, in seconds.
+{
+    const uiSrc = fs.readFileSync('src/parts/ui.js', 'utf8');
+    const block = /const STATIC_FRAME_FIELDS = \[([\s\S]*?)\];/.exec(uiSrc);
+    if (!block) {
+        bad('src/parts/ui.js no longer declares STATIC_FRAME_FIELDS - the static'
+            + ' loader has gone back to naming its fields one at a time, which'
+            + ' is the shape that lost three of them');
+    } else {
+        const js = new Set([...block[1].matchAll(/\['(\w+)'/g)].map((m) => m[1]));
+        const pyList = (name) => {
+            const m = new RegExp(name
+                + '\\s*=\\s*(?:frozenset\\()?[({]([\\s\\S]*?)[)}]').exec(py);
+            return m ? [...m[1].matchAll(/"(\w+)"/g)].map((x) => x[1]) : null;
+        };
+        const inherited = pyList('FRAME_INHERITED');
+        const always = pyList('FRAME_ALWAYS');
+        if (!inherited || !always) {
+            bad('viewer.py no longer declares FRAME_INHERITED / FRAME_ALWAYS');
+        } else {
+            const pySet = new Set([...inherited, ...always]);
+            const missingInJs = [...pySet].filter((k) => !js.has(k));
+            const extraInJs = [...js].filter((k) => !pySet.has(k));
+            if (missingInJs.length) {
+                bad(`viewer.py sends ${missingInJs.join(', ')} and parts/ui.js`
+                    + ' does not unpack it - the field reaches the page and is'
+                    + ' thrown away, which is how align and the per-atom columns'
+                    + ' were lost');
+            }
+            if (extraInJs.length) {
+                bad(`parts/ui.js unpacks ${extraInJs.join(', ')} and viewer.py`
+                    + ' never sends it');
+            }
+            console.log(`frame fields: ${pySet.size} named on both sides`);
+            if (pySet.size < 10) {
+                bad(`only ${pySet.size} fields found - the scan has stopped`
+                    + ' matching and this check proves nothing');
+            }
+        }
+    }
+}
+
+// --- THE SLAB IS THE VIEWER'S, and it rides top-level -----------------------
+// clip is not a rendering key: it belongs to the camera, survives switching
+// objects, and is a SELECTOR rather than a setting. It reaches the page as an
+// unknown top-level key, which normalizeConfig carries through untouched by its
+// carry-over loop - the same loop that cannot save `rendering.gpu`, because
+// `rendering` is in knownKeys and a bare `clip` is not.
+{
+    const sel = { object: 'm', positions: [0, 1, 2] };
+    const out = sb.normalizeConfig({ clip: sel });
+    if (JSON.stringify(out.clip) !== JSON.stringify(sel)) {
+        bad(`normalizeConfig dropped clip: ${JSON.stringify(out.clip)} - the`
+            + ' notebook asks for its slab through the config, so this is the'
+            + ' whole of view.clip() on the static path');
+    }
+    if (sb.normalizeConfig({}).clip !== undefined) {
+        bad('an empty config invents a clip');
+    }
+}
+if (!/def clip\(/.test(py)) {
+    bad('viewer.py has no clip() - parts/clip.js is in every bundle and the'
+        + ' notebook could not reach it');
+}
+
 // --- ONE FLAT LIST OF STYLE NAMES, and what each stands for -----------------
 // The API takes a single name; inside it is still a (style, preset) pair. This
 // is the translation, and getting it wrong is silent: the viewer draws A

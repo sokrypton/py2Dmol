@@ -163,6 +163,14 @@ window.addEventListener('load', async () => {
           frameColors: o.frames.map(f => (f.color && f.color.value) || null),
         });
         out.meta = read(obj);
+        out.clip = r.clipSlabOn && r.clipSlabOn()
+            ? Math.round((r.clipNear - r.clipFar) * 10) / 10 : null;
+        // w.positionsFor, not positionsFor: this runs in the HOST page and
+        // the viewer is in an iframe - which is the whole point of the file.
+        const whole = (r.clipSlabForSelection && w.positionsFor)
+            ? r.clipSlabForSelection(w.positionsFor(r, {object: 'm'})) : null;
+        out.clipWhole = whole
+            ? Math.round((whole.near - whole.far) * 10) / 10 : null;
         for (const [n, o] of Object.entries(r.objectsData)) out.objs[n] = read(o);
       }
       // INK IS PIXELS UNLIKE THE CORNER, not pixels with alpha. The
@@ -333,6 +341,11 @@ def build_metadata_cells():
     v.add_contacts([['A', 5, 'A', 20, 1.0]], name='m')
     for i in range(4, 12):
         v.set_sse('H', name='m', position=i)
+    # ...and the SLAB, which is the viewer's rather than any object's, so it
+    # cannot travel in a map keyed by object name. It rides as `viewer` beside
+    # `frames` and `meta`, and a cell output written before that key existed
+    # simply does not carry it.
+    v.clip(name='m', position=(0, 3))
     return [c['html'] for c in CELLS]
 
 
@@ -355,6 +368,15 @@ if (m.get('frameColors') or [None]) != [None, 'blue', None]:
     bad.append(f'set_color(frame=1) delivered {m.get("frameColors")} - a frame'
                ' is sent once and once only, so a colour set on a frame the'
                ' viewer already has has to travel as metadata or not at all')
+print(f"  clip across the iframe: {R.get('clip')} A"
+      f" (whole object {R.get('clipWhole')} A)")
+if not R.get('clip'):
+    bad.append('view.clip() on a live viewer left no slab - it is the VIEWER\'s,'
+               ' not an object\'s, so it travels as `viewer` beside frames and'
+               ' meta rather than in the per-object map')
+elif not (R.get('clip') < (R.get('clipWhole') or 0) - 1):
+    bad.append(f"the slab is {R.get('clip')} A against {R.get('clipWhole')} A for"
+               ' the whole object - the selector did not survive the trip')
 
 # --- 5. and taking it all off again -------------------------------------------
 # SETTING AND UNSETTING ARE NOT THE SAME PATH. Python packs only the fields that

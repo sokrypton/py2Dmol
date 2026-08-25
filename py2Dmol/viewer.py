@@ -57,7 +57,7 @@ DEFAULT_CONFIG = {
         # WHICH PAINTER, BY PICKING THE BUNDLE. A bundle carries exactly one,
         # and the renderer works out which from what is loaded - so this is not
         # a runtime switch, it chooses the file inlined into the cell. True
-        # writes the WebGL2 one, False the 2D one, which is 92 KB smaller,
+        # writes the WebGL2 one, False the 2D one, which is 46 KB smaller,
         # needs no WebGL2 and is the only one that can save an SVG.
         "gpu": True,
     },
@@ -340,6 +340,30 @@ CRYSTAL_ADDITIVES = {
     'NA', 'K', 'CS', 'RB', 'LI', 'CL', 'BR', 'IOD', 'F',
 }
 
+
+
+
+# THE PER-FRAME FIELDS, ONCE. Four places used to enumerate these - this
+# module builds the payload and the light frame, parts/ui.js rebuilds it on
+# arrival, and core/mol.js hands it to setCoords - and every one of them was a
+# hand-written run of `if`s. They disagreed, silently and repeatedly: `align`,
+# `allow_reflection`, `position_atoms` and `position_elements` were each lost
+# by one side or the other, and each loss was a feature that simply did not
+# happen rather than an error anyone could see.
+#
+# INHERITED: sent on frame 0, and after that only when the value changes. A
+# trajectory writes chains once and 999 frames say nothing about them.
+FRAME_INHERITED = (
+    "plddts", "position_names", "residue_numbers", "position_atoms",
+    "position_elements", "position_types", "chains", "bonds", "scatter",
+)
+# ...except this one, which is sent even when it is None, because "this frame
+# has no confidence values" and "this frame says nothing, so keep the last
+# ones" are different instructions.
+FRAME_SEND_NONE = frozenset({"plddts"})
+# ALWAYS: a property of the frame itself, sent whenever it is set. `align` is
+# the REQUEST to superpose, which the browser acts on - see addFrame.
+FRAME_ALWAYS = ("pae", "color", "align", "allow_reflection")
 
 
 def _strip_advanced_color(holder, advanced_color):
@@ -651,6 +675,12 @@ class view:
         self._mailbox_handle = None       # DisplayHandle for mailbox (persistence=False)
         self._latest_output_handle = None   # DisplayHandle of last add() for replace() updates (persistence=True)
         self._persistence = bool(persistence)
+        # THE SLAB IS THE VIEWER'S, not an object's - it is a property of the
+        # camera, and it survives switching between objects. Held as a SELECTOR
+        # rather than as two depths: the renderer refits it every frame from the
+        # residues it names, so it stays over them as the structure turns.
+        self._clip = None
+        self._sent_clip = False          # not None: None is a value it can take
 
 
     def _emit_to_output(self, html_content: str, payload_json: Optional[str] = None, update_last_add: bool = False) -> None:
@@ -995,8 +1025,18 @@ class view:
                 # Update tracking: mark this metadata as sent (deep copy to avoid aliasing)
                 self._sent_metadata[obj_name] = copy.deepcopy(current_metadata)
 
+        # ...AND WHAT BELONGS TO THE VIEWER RATHER THAN TO AN OBJECT. The slab
+        # is the camera's: it survives switching objects, so it cannot travel in
+        # a map keyed by object name. `False` is the unsent marker because None
+        # is a value clip can take - it is how the slab is turned off.
+        viewer_block = None
+        if self._clip != self._sent_clip:
+            viewer_block = {"clip": self._clip}
+            self._sent_clip = copy.deepcopy(self._clip)
+
         # Skip update if nothing new to send
-        if not new_frames_by_object and not changed_metadata_by_object:
+        if (not new_frames_by_object and not changed_metadata_by_object
+                and viewer_block is None):
             return
 
         # Increment sequence for delivery
@@ -1004,7 +1044,8 @@ class view:
         payload = {
             "seq": self._live_seq,
             "frames": new_frames_by_object,
-            "meta": changed_metadata_by_object
+            "meta": changed_metadata_by_object,
+            "viewer": viewer_block
         }
 
         payload_json = json.dumps(payload)
@@ -1014,6 +1055,7 @@ class view:
             f'const p={payload_json};'
             f'const f=p.frames||p.new_frames||{{}};'
             f'const m=p.meta||p.changed_meta||{{}};'
+            f'const vw=p.viewer||null;'
             f'const vid="{viewer_id}";'
             # ...AND ANSWER A LATER ANNOUNCEMENT. BroadcastChannel does not
             # retain, so a post made before the viewer's iframe opened its
@@ -1024,10 +1066,10 @@ class view:
             # holds its payload and posts it again on hearing that. The channel
             # is kept alive by the handler on it.
             f'try{{const ch=new BroadcastChannel("py2dmol_"+vid);'
-            f'const send=()=>ch.postMessage({{operation:"{OP_INCREMENTAL_UPDATE}",args:[f,m],seq:p.seq}});'
+            f'const send=()=>ch.postMessage({{operation:"{OP_INCREMENTAL_UPDATE}",args:[f,m,vw],seq:p.seq}});'
             f'ch.onmessage=(e)=>{{if(e.data&&e.data.operation==="viewerReady")send();}};'
             f'send();}}catch(e){{}}'
-            f'if(window.py2dmol_viewers&&window.py2dmol_viewers[vid]){{window.py2dmol_viewers[vid].handleIncrementalStateUpdate(f,m,p.seq);}}'
+            f'if(window.py2dmol_viewers&&window.py2dmol_viewers[vid]){{window.py2dmol_viewers[vid].handleIncrementalStateUpdate(f,m,p.seq,vw);}}'
             f'}})();'
         )
 
@@ -1127,6 +1169,19 @@ class view:
 
         viewer_id = self.config["viewer_id"]
 
+        # ...AND THE SLAB, WHICH IS THE VIEWER'S. It rides in the config rather
+        # than in the object payload because it belongs to the camera and
+        # survives switching objects. normalizeConfig carries an unknown
+        # top-level key through untouched, which is what makes this the cheap
+        # route; the live path sends it separately, as `viewer` beside `frames`
+        # and `meta`. Set here rather than in clip() so that clip() before
+        # show() and clip() after both arrive.
+        if self._clip is not None:
+            self.config["clip"] = self._clip
+        else:
+            self.config.pop("clip", None)
+        self._sent_clip = copy.deepcopy(self._clip)
+
         # Setup viewer config - store per viewer to avoid global overwrites
         # Initialize the configs object if it doesn't exist
         config_script = f"""<script>
@@ -1146,118 +1201,46 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     continue
 
                 light_frames = []
-                # Track previous frame data for change detection
-                prev_plddts = None
-                prev_chains = None
-                prev_position_types = None
-                prev_position_names = None
-                prev_residue_numbers = None
-                prev_position_atoms = None
-                prev_position_elements = None
-                prev_bonds = None
-                prev_scatter = None
+                # WHAT THE PREVIOUS FRAME SENT, so an unchanged field can be
+                # left out. One dict rather than ten prev_* locals.
+                prev = {}
 
                 for frame_idx, frame in enumerate(py_obj.get("frames", [])):
                     # Skip frames without coords (they're invalid)
                     if "coords" not in frame or not frame["coords"]:
                         continue
 
-                    light_frame = {}
-                    if "name" in frame and frame["name"] is not None:
+                    light_frame = {"coords": frame["coords"]}
+                    if frame.get("name") is not None:
                         light_frame["name"] = frame["name"]
 
-                    # Coords are required - we already checked above
-                    light_frame["coords"] = frame["coords"]
+                    # ONE LIST, WALKED - see FRAME_INHERITED above. This was ten
+                    # copies of the same six lines, one per field, and the cost
+                    # of that shape was not the lines: a field simply left out
+                    # of the run is a field that never reaches the browser, and
+                    # three were. `align` and `allow_reflection` were missing
+                    # for as long as the browser has done the fitting, so a
+                    # trajectory loaded with add() then show() never superposed;
+                    # and the JS side of this same rebuild had lost the two
+                    # per-atom columns, which killed element colouring in every
+                    # notebook. Adding a field is adding a name to the tuple now,
+                    # and tests/config.js checks the two sides still agree.
+                    for key in FRAME_INHERITED:
+                        cur = frame.get(key)
+                        if frame_idx == 0 or cur != prev.get(key):
+                            # plddts travels even as None: that is the
+                            # difference between "no confidence values" and
+                            # "the same ones as the frame before".
+                            if cur is not None or key in FRAME_SEND_NONE:
+                                light_frame[key] = cur
+                            prev[key] = cur
 
-                    # Only include other fields if they differ from previous frame
-                    # Always include for frame 0
-
-                    # plddts
-                    curr_plddts = frame.get("plddts")
-                    if frame_idx == 0 or curr_plddts != prev_plddts:
-                        # Send the value even if None to explicitly signal "no plddt" vs inheriting
-                        light_frame["plddts"] = curr_plddts
-                        prev_plddts = curr_plddts
-
-                    # pae (always include if present, usually only in frame 0)
-                    if "pae" in frame and frame["pae"] is not None:
-                        light_frame["pae"] = frame["pae"]
-
-                    # position_names
-                    curr_position_names = frame.get("position_names")
-                    if frame_idx == 0 or curr_position_names != prev_position_names:
-                        if curr_position_names is not None:
-                            light_frame["position_names"] = curr_position_names
-                        prev_position_names = curr_position_names
-
-                    # residue_numbers
-                    curr_residue_numbers = frame.get("residue_numbers")
-                    if frame_idx == 0 or curr_residue_numbers != prev_residue_numbers:
-                        if curr_residue_numbers is not None:
-                            light_frame["residue_numbers"] = curr_residue_numbers
-                        prev_residue_numbers = curr_residue_numbers
-
-                    # a ligand atom's own name and element, sent the same way:
-                    # they never change between frames of one structure, so
-                    # after the first they cost nothing
-                    curr_position_atoms = frame.get("position_atoms")
-                    if frame_idx == 0 or curr_position_atoms != prev_position_atoms:
-                        if curr_position_atoms is not None:
-                            light_frame["position_atoms"] = curr_position_atoms
-                        prev_position_atoms = curr_position_atoms
-                    curr_position_elements = frame.get("position_elements")
-                    if frame_idx == 0 or curr_position_elements != prev_position_elements:
-                        if curr_position_elements is not None:
-                            light_frame["position_elements"] = curr_position_elements
-                        prev_position_elements = curr_position_elements
-
-                    # position_types
-                    curr_position_types = frame.get("position_types")
-                    if frame_idx == 0 or curr_position_types != prev_position_types:
-                        if curr_position_types is not None:
-                            light_frame["position_types"] = curr_position_types
-                        prev_position_types = curr_position_types
-
-                    # chains
-                    curr_chains = frame.get("chains")
-                    if frame_idx == 0 or curr_chains != prev_chains:
-                        if curr_chains is not None:
-                            light_frame["chains"] = curr_chains
-                        prev_chains = curr_chains
-                    
-                    # bonds
-                    curr_bonds = frame.get("bonds")
-                    if frame_idx == 0 or curr_bonds != prev_bonds:
-                        if curr_bonds is not None:
-                            light_frame["bonds"] = curr_bonds
-                        prev_bonds = curr_bonds
-
-                    # scatter
-                    curr_scatter = frame.get("scatter")
-                    if frame_idx == 0 or curr_scatter != prev_scatter:
-                        if curr_scatter is not None:
-                            light_frame["scatter"] = curr_scatter
-                        prev_scatter = curr_scatter
-
-                    # color (always include if present)
-                    if "color" in frame and frame["color"] is not None:
-                        light_frame["color"] = frame["color"]
-
-                    # ...AND THE REQUEST TO SUPERPOSE. Since best_view and
-                    # kabsch left viewer.py the browser does the fitting, and
-                    # what Python sends is the REQUEST rather than the result -
-                    # so a payload that drops `align` is a payload that says
-                    # "leave every frame where its file put it". This whitelist
-                    # named every field but that one, so add() then show() - the
-                    # ordinary way to use the library, and align=True by default
-                    # - never superposed anything, while show() then add() did,
-                    # because the live path sends the frame dict whole. A
-                    # 60-residue helix and the same helix turned 90 degrees came
-                    # out 7.07 A apart instead of 0.
-                    if frame.get("align"):
-                        light_frame["align"] = True
-                        if frame.get("allow_reflection"):
-                            light_frame["allow_reflection"] = True
+                    # ...and the ones that ride whenever they are set, because
+                    # they belong to the frame rather than to the run of them.
+                    for key in FRAME_ALWAYS:
+                        val = frame.get(key)
+                        if val is not None and val is not False:
+                            light_frame[key] = val
 
                     light_frames.append(light_frame)
 
@@ -1409,7 +1392,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # console and draws nothing. gpu=False is the answer to that, and
             # to wanting an SVG - vector output is the primitives replayed into
             # an export context, which the GPU cannot give you because it holds
-            # a raster. It is also 92 KB smaller, which is paid per show() cell.
+            # a raster. It is also 46 KB smaller, which is paid per show() cell.
             # NO TUBE-AND-CPU FOURTH FILE. The tube is drawn by the renderer
             # itself, so that combination wants neither cartoon painter and
             # would be the smallest of all - and it would be a fourth artefact
@@ -2147,6 +2130,58 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         else:
             # persistence=False: Replace all frames (streaming mode, no history)
             target_obj["frames"] = [frame_data]
+
+    def clip(self, name=None, chain=None, position=None):
+        """
+        Cut a slab as deep as a selection, and keep it over that selection.
+
+        The depth is the selection's own depth along the view - there is no
+        thickness to set. To cut deeper, clip to less. The renderer refits it
+        every frame, so it follows the residues as the structure turns rather
+        than staying at a fixed depth.
+
+        Args:
+            name (str, optional): Object to clip to. Defaults to the last added.
+            chain (str, optional): Clip to a whole chain.
+            position (int, list, tuple, range, optional): Position index or
+                indices. A 2-tuple is a half-open range, matching set_color.
+
+        Examples:
+            view.clip(position=(40, 60))   # a slab over residues 40-59
+            view.clip(chain="B")           # ...as deep as chain B
+            view.clip()                    # off
+
+        Note:
+            The same slab the website's Clip panel sets and the embed's
+            `v.clip(sel)` asks for - one implementation, in parts/clip.js,
+            which every build already carried and none but the website could
+            reach.
+        """
+        if name is None and chain is None and position is None:
+            self._clip = None
+        else:
+            # ...written in the JS selector's own words, so nothing has to
+            # translate it on arrival. `positions` is the renderer's index into
+            # what it draws, which is what Python's `position` has always meant.
+            sel = {}
+            if name is not None:
+                sel["object"] = str(name)
+            if chain is not None:
+                sel["chain"] = str(chain)
+            if position is not None:
+                if isinstance(position, int):
+                    sel["positions"] = [int(position)]
+                elif isinstance(position, tuple) and len(position) == 2:
+                    sel["positions"] = list(range(int(position[0]), int(position[1])))
+                elif isinstance(position, (list, range)):
+                    sel["positions"] = [int(p) for p in position]
+                else:
+                    raise ValueError(
+                        "position must be an int, list, range or (start, end)"
+                        " tuple.")
+            self._clip = sel
+        if self._is_live:
+            self._send_incremental_update()
 
     def set_sse(self, sse, name=None, chain=None, position=None):
         """

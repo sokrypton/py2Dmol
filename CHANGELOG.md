@@ -55,15 +55,20 @@ result.
   `base_plates`, `detail`, `fade`, `highlight`, `outline_tint`, `shade`, `bg`
   and `ss_palette` beside it.
 - **`view(gpu=...)`** — WebGL2 by default; `gpu=False` inlines the 2D painter
-  instead, which is 92 KB smaller and the only build that can save an SVG. A
+  instead, which is 46 KB smaller and the only build that can save an SVG. A
   notebook cannot fall back at runtime, so this chooses which bundle is written
   into the cell.
+- **`view.clip(name=, chain=, position=)`**, and a Clip button in the notebook
+  and embed shells. `parts/clip.js` was in every bundle already — the slab, the
+  tracking and the per-frame refit — and only the website could reach any of it.
+  The depth is the selection's own depth along the view, so to cut deeper, clip
+  to less; `clip()` with nothing turns it off.
 - **`set_sse(sse, name=, chain=, position=)`** — force a region to helix, strand
   or coil, or pass `None` to return it to the automatic assignment.
 - **Structural alignment** — TM-align, vendored from foldjs, running in a worker.
 - **Cross-object contacts** — a contact whose two ends are in different objects.
-- **An embeddable build**: `py2Dmol.embed.min.js` (495 KB, WebGL2) and
-  `py2Dmol.embed.cpu.min.js` (408 KB, 2D and SVG-capable), documented by
+- **An embeddable build**: `py2Dmol.embed.min.js` (449 KB, WebGL2) and
+  `py2Dmol.embed.cpu.min.js` (410 KB, 2D and SVG-capable), documented by
   `embed.html`, with one selector grammar shared with the Python API.
 
 ### Fixed

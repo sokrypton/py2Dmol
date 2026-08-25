@@ -158,6 +158,53 @@ window.addEventListener('load', () => {
       R.alignFlags = ((r.objectsData['spun'] || {}).frames || [])
           .map((f) => f.align === true);
 
+      // THE PER-ATOM COLUMNS, which the static loader was dropping. It
+      // rebuilds each frame field by field and never named these two, so
+      // hasElementsFor() answered false on every notebook and element
+      // colouring - which is ON by default - was dead there while working on
+      // the website. The atom named CA with element CA is the point of having
+      // both: in a protein CA is the alpha carbon, and here it is calcium.
+      const wasOn = r.currentObjectName;
+      r._switchToObject('lig');
+      r.setFrame(0);
+      await settle();
+      const ligAll = new Set();
+      for (let i = 0; i < r.coords.length; i++) ligAll.add(i);
+      R.elements = {
+        n: r.coords.length,
+        els: (r.positionElements || []).slice(0, 4),
+        atoms: (r.positionAtoms || []).slice(0, 4),
+        has: r.hasElementsFor ? r.hasElementsFor(ligAll) : null,
+        elementAt0: r.elementAt ? r.elementAt(0) : null,
+      };
+      // ...and BACK, or every check below measures a four-atom ligand
+      r._switchToObject(wasOn);
+      r.setFrame(0);
+      await settle();
+
+      // THE SLAB PYTHON ASKED FOR, and the button that also drives it.
+      R.clip = { fn: typeof r.autoClip === 'function',
+                 button: !!document.querySelector('#clipButton') };
+      if (R.clip.fn) {
+        R.clip.on = r.clipSlabOn();
+        R.clip.thickness = R.clip.on
+            ? Math.round((r.clipNear - r.clipFar) * 10) / 10 : null;
+        R.clip.extent = Math.round(r.viewerState.extent);
+        // ...what clipping to the WHOLE object would give, so "thinner than
+        // the structure" is measured against the structure rather than a
+        // number typed here
+        const whole = r.clipSlabForSelection(positionsFor(r, {object: 'spun'}));
+        R.clip.wholeThickness = whole
+            ? Math.round((whole.near - whole.far) * 10) / 10 : null;
+        const cb = document.querySelector('#clipButton');
+        if (cb) {
+          R.clip.pressed = cb.getAttribute('aria-pressed');
+          cb.click(); await settle();
+          R.clip.afterClick = r.clipSlabOn();
+          R.clip.pressedAfter = cb.getAttribute('aria-pressed');
+        }
+      }
+
       R.tube = await look('tube');
       R.cartoon = await look('cartoon');
 
@@ -223,7 +270,27 @@ def main():
         v.add(_t, name=name, align=want)
         v.add(_t @ _R.T, name=name, align=want)
         v.add(_t @ _R.T @ _R.T, name=name, align=want)
+    # ...AND A SLAB, asked for from PYTHON. parts/clip.js is in every bundle -
+    # the notebook has always carried the code - and until now nothing in
+    # Python or in this page could reach it. Three residues of a 60-residue
+    # trace, so the slab must come out markedly thinner than the structure's
+    # own depth; clipping to all 60 is the control, because a slab that is
+    # simply the whole extent would pass a "there is a slab" check.
+    # ...AND A LIGAND, whose atoms carry an element each. These are the two
+    # per-atom columns, and they are the ONLY reason element colouring can
+    # work: a backbone position stands for a whole residue and has neither.
+    # Built here rather than loaded, because the .cif files are not in the
+    # repo - and this is the public API, which is what the transport is for.
+    _lig = np.array([[0., 0., 0.], [1.5, 0., 0.], [3.0, 0., 0.], [4.5, 0., 0.]])
+    v.add(_lig, name='lig',
+          position_types=['L'] * 4,
+          position_atoms=['CA', 'C1', 'N1', 'O1'],
+          position_elements=['CA', 'C', 'N', 'O'])
+
+    v.clip(name='spun', position=(0, 3))
     body = v._display_viewer(static_data=v.objects)
+    assert v.config.get('clip') == {'object': 'spun', 'positions': [0, 1, 2]}, \
+        f"viewer.py did not put the selector in the config: {v.config.get('clip')}"
     open(PROBE, 'w').write('<!doctype html><html><head><meta charset="utf-8">'
                            '</head><body>' + body + JS + '</body></html>')
     box = []
@@ -261,6 +328,8 @@ def main():
     print(f"  absent: {R.get('absent')}")
     print(f"  align: flags {R.get('alignFlags')}, asked-for {R.get('alignSpun')},"
           f" refused {R.get('alignUnspun')}")
+    print(f"  clip:  {R.get('clip')}")
+    print(f"  elements: {R.get('elements')}")
     print(f"  orient button {R.get('orientButton')}, moved the camera"
           f" {R.get('orientMoved')}; painter {R.get('painter')},"
           f" Draw offered {R.get('draw')}, {R.get('drawNeighbours')}/4 neighbours")
@@ -319,6 +388,46 @@ def main():
             bad.append(f'align=False came back {unspun} A apart, so this'
                        ' fixture cannot tell aligned from unaligned and the'
                        ' check above proves nothing')
+
+    e = R.get('elements') or {}
+    if e.get('els') != ['CA', 'C', 'N', 'O']:
+        bad.append(f"the ligand's elements arrived as {e.get('els')} - the static"
+                   ' loader rebuilds each frame field by field and a field it'
+                   ' does not name is one it throws away, so element colouring'
+                   ' was dead in every notebook')
+    if e.get('atoms') != ['CA', 'C1', 'N1', 'O1']:
+        bad.append(f"the ligand's atom names arrived as {e.get('atoms')}")
+    if not e.get('has'):
+        bad.append('hasElementsFor says no on a ligand that carries elements')
+    if e.get('elementAt0') != 'CA':
+        bad.append(f"elementAt(0) is {e.get('elementAt0')!r}, not the calcium the"
+                   ' file names - which is why the element cannot simply be read'
+                   ' off the atom name: CA is an alpha carbon everywhere else')
+
+    c = R.get('clip') or {}
+    if not c.get('fn'):
+        bad.append('parts/clip.js is not in the notebook bundle, so nothing'
+                   ' Python asks for can be honoured')
+    if not c.get('button'):
+        bad.append('the notebook page has no Clip control - the slab shipped in'
+                   ' every bundle and only the website could reach it')
+    elif not c.get('on'):
+        bad.append('view.clip() from Python left no slab on the page - the'
+                   ' request rides in the config, which normalizeConfig carries'
+                   ' as an unknown top-level key, and ui.js applies AFTER the'
+                   ' orientation because depth is measured along the view')
+    elif not (c.get('thickness') < c.get('wholeThickness') - 1):
+        bad.append(f"clipping to 3 of 60 residues gave {c.get('thickness')} A"
+                   f" against {c.get('wholeThickness')} A for the whole object -"
+                   ' the selector did not reach positionsFor, so the slab is'
+                   ' just the structure')
+    if c.get('pressed') != 'true':
+        bad.append(f"the Clip button reads {c.get('pressed')!r} while a slab is"
+                   ' on - it does not follow the slab, only its own clicks')
+    if c.get('afterClick') is not False:
+        bad.append('pressing Clip with a slab on did not clear it')
+    if c.get('pressedAfter') != 'false':
+        bad.append('the Clip button still reads pressed after clearing')
 
     if not R.get('orientButton'):
         bad.append('the notebook page has no Orient control - the website has one'

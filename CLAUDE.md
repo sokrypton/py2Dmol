@@ -148,15 +148,19 @@ public downloads is exercised on every run.
   chooses is which file is written into the cell. It exists because a notebook
   **cannot fall back** — no WebGL2 meant no picture, said on a console the
   reader may not have open, to someone who never chose a painter and has no
-  checkbox to change one. The CPU notebook is also 92 KB smaller and is the
+  checkbox to change one. The CPU notebook is also 46 KB smaller and is the
   only one that can save an SVG.
 - **One painter per bundle, and outside the website it is the GPU.** The
   notebook and both embeds ship `cartoon/paintgl.js` and no 2D painter, with
   nothing behind it: no WebGL2 means no picture, said on the console. It buys
   26 ms a frame on a capsid against 840.
 
-  Minified, `paint2d.js` is 25 KB and `paintgl.js` 118 KB — nearly five times,
+  Minified, `paint2d.js` is 25 KB and `paintgl.js` 71 KB — nearly three times,
   not the two the line counts suggest, because `paint2d.js` is 81% comment.
+  It was 118 KB until `tools/bundle.py` learnt to strip the shader literals:
+  **terser does not look inside strings**, so 65 KB of commented, indented GLSL
+  was being copied into every GPU bundle byte for byte. The source keeps every
+  word of it; only the download loses them.
   So the change goes three ways depending on what each bundle held before, and
   only the notebook — the one that carried **both** — got smaller:
   notebook 478→453 and embed 321→415. It also ended `embed-tube`, which was the
@@ -171,8 +175,8 @@ public downloads is exercised on every run.
   needs the 2D painter** (the GPU refuses an export context by design), so the
   Save panel hides it when `window.py2dmolCartoonPaint` is absent.
 
-  The embed ships both ways round — `py2Dmol.embed.min.js` (495 KB, WebGL2) and
-  `py2Dmol.embed.cpu.min.js` (408 KB, 2D, and the only one that can save an SVG).
+  The embed ships both ways round — `py2Dmol.embed.min.js` (449 KB, WebGL2) and
+  `py2Dmol.embed.cpu.min.js` (410 KB, 2D, and the only one that can save an SVG).
   That is a second artefact where `embed-tube` was not worth one: it draws the
   same picture from the same geometry, so nothing is given up but speed.
 - 🔴 **A preset name reaches the cartoon in two steps, and the order is the
@@ -249,6 +253,16 @@ public downloads is exercised on every run.
   embed's own `addFrame` all arrive through. What Python sends is the
   **request** (`align`, `allow_reflection`), not the result. Both were in numpy
   only because the JS side had no SVD before `svd3` replaced numeric.js.
+- **A capability in the bundle that no interface reaches is not shipped.**
+  `parts/clip.js` is in every build and only `index.html` could get to it: the
+  website had a Clip panel, the embed had `v.clip(sel)`, the notebook had
+  neither an API nor a button. `view.clip(name=, chain=, position=)` and a Clip
+  button in both shells close it. The slab is the VIEWER'S, not an object's —
+  it belongs to the camera and survives switching objects — so it travels
+  top-level in the config on the static path (`normalizeConfig` carries an
+  unknown top-level key untouched) and as `viewer` beside `frames` and `meta`
+  on the live one. It could not ride in the per-object metadata map at all.
+  Applied AFTER the orientation, because depth is measured along the view.
 - **Subsystems are optional and guarded.** `if (window.PAE)`, `if (window.MSA)`,
   `typeof C2S === 'undefined'`. A build without one loses a feature, not a page.
 - **Prove a move changed nothing.** `node tests/paint_trace.js` digests every
@@ -464,6 +478,26 @@ public downloads is exercised on every run.
   2.31 (too big) and a Shannon ionic 1.00 (too small) against PyMOL's 1.80.
   `tests/interaction.js` checks the whole column, because an ordering plus a
   bound is what let 1.00 through.
+- **ONE LIST OF THE PER-FRAME FIELDS PER SIDE, and a test that they agree.**
+  `viewer.py`'s `FRAME_INHERITED` / `FRAME_ALWAYS` and `parts/ui.js`'s
+  `STATIC_FRAME_FIELDS` replace two hand-written runs of `if`s that had
+  disagreed three times over. `tests/config.js` reads both out of the source
+  and names any field one side sends and the other drops. Adding a field is
+  adding a name to each list. The payload is byte-identical across the change,
+  checked by generating it from the committed `viewer.py` and the new one.
+- 🔴 **THE STATIC LOADER DROPPED THE PER-ATOM COLUMNS, so element
+  colouring was dead in every notebook.** Third field the same rebuild has
+  thrown away — `parts/ui.js` names each frame field one by one and never named
+  `position_atoms` or `position_elements`, which Python sends and only a LIGAND
+  fills. `hasElementsFor()` answered false on the whole notebook path while the
+  feature worked perfectly on the website. **`align` and these were found the
+  same way**: counting the field names on each side of the payload and reading
+  off which were missing — viewer.py's `light_frame` names 15, `ui.js` named 12.
+- **The atom name and the element are two things, and 3PTB proves it.**
+  `ATOM 2 C CA . ILE` is the alpha carbon — element `C`, atom name `CA`.
+  `HETATM 1630 CA CA . CA` is the calcium ion — element `CA`, atom name `CA`.
+  Same name, different elements, in one file, which is why the format carries
+  an element column and why it cannot be inferred from the name.
 - **Element colouring is ON by default — the opposite of side chains.** Absent
   means ALL for `elements` and NONE for `sidechains`. It only ever applies to
   atoms that have an element to read: ligand atoms and drawn side chains. And

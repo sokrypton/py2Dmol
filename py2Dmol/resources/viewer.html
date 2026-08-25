@@ -110,8 +110,10 @@ input[type="range"] { border: none !important; outline: none !important; box-sha
 .btn-row .controlButton { width: 100%; min-width: 0; height: 28px; }
 .btn-row .btn-toggle { display: block; }
 .btn-row .btn-toggle span { width: 100%; box-sizing: border-box; }
-/* Style panel: inline expand under the Style button. Rows carry
-   data-style="cartoon|tube" (untagged = shared) and are shown/hidden by
+/* Style panel: expands in place at the bottom of the column, below the object
+   picker rather than directly under the Style button - index.html puts it
+   there too, because everything in it acts on the object named above it. Rows
+   carry data-style="cartoon|tube" (untagged = shared) and are shown/hidden by
    syncStylePanel() in core/mol.js. */
 #styleToggle { width: 100%; }
 /* Open state reuses the pressed look of the other toggle buttons, which is
@@ -212,20 +214,13 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
     </div>
     <div id="rightPanelContainer">
         <div class="control-group">
-            <div class="btn-row auto">
-                <button id="styleToggle" class="controlButton" aria-expanded="false" aria-controls="stylePanel"
-                    title="Render style and its settings">Style</button>
-                <button id="saveImageButton" class="controlButton" title="Capture an image or a video">Capture</button>
-            </div>
-            <!-- The Style panel is BUILT by parts/panel.js and inserted here by
-                 ui.js. It used to be written out in full in this file AND again
-                 in the other page, under a note saying to edit both - which had
-                 already been missed in both directions. -->
-            <div id="stylePanelMount"></div>
-            <div class="toggle-item">
-                <label for="objectSelect">Object:</label>
-                <select id="objectSelect"></select>
-            </div>
+            <!-- BUTTON ORDER FOLLOWS index.html: Orient and Rotate, then Style
+                 and Capture. The two pages draw the same controls in different
+                 containers - a .btn-row grid here, a .toolbar-row flex there -
+                 but a reader moving between them should not have to re-find
+                 them. index.html also has Clip in its first row; this page does
+                 not wire one, so the row is the same order two buttons short
+                 rather than a gap left for it. -->
             <div class="btn-row auto">
                 <!-- ORIENT IS AN ACTION AND ROTATE IS A STATE, written
                      differently for that reason: a <button> you press against a
@@ -236,11 +231,38 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
                      embed's shell gets it from the same place. -->
                 <button id="orientButton" class="controlButton"
                     title="Orient to best view">Orient</button>
+                <!-- A TOGGLE, NOT index.html's PANEL. There the slab has a
+                     panel whose closing commits, so Clip reads as a mode; here
+                     there is nothing to set - the depth comes from what is
+                     selected - so it is press to cut, press again to stop. -->
+                <button id="clipButton" class="controlButton"
+                    title="Clip to the selection (press again to clear)">Clip</button>
                 <label class="controlButton btn-toggle" title="Toggle auto-rotation">
                     <input type="checkbox" id="rotationCheckbox">
                     <span>Rotate</span>
                 </label>
             </div>
+            <div class="btn-row auto">
+                <button id="styleToggle" class="controlButton" aria-expanded="false" aria-controls="stylePanel"
+                    title="Render style and its settings">Style</button>
+                <button id="saveImageButton" class="controlButton" title="Capture an image or a video">Capture</button>
+            </div>
+            <!-- THE PICKER SITS BETWEEN THE BUTTONS AND THE PANELS, which is
+                 the order index.html uses. tests/interaction.js checks BOTH
+                 pages for it - it checked neither until this moved, and pinning
+                 one against the other would only decide which file is allowed
+                 to wander off. The reason is not symmetry: everything inside
+                 those panels acts on the object named here, and that is not
+                 guessable when the name is buried underneath them. -->
+            <div class="toggle-item">
+                <label for="objectSelect">Object:</label>
+                <select id="objectSelect"></select>
+            </div>
+            <!-- The Style panel is BUILT by parts/panel.js and inserted here by
+                 ui.js. It used to be written out in full in this file AND again
+                 in the other page, under a note saying to edit both - which had
+                 already been missed in both directions. -->
+            <div id="stylePanelMount"></div>
         </div>
     </div>
 </div>
