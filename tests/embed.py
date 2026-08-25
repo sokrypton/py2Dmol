@@ -150,6 +150,41 @@ const drivePage = async () => {
     const s = sig(box.id);
     out.viewers[box.id] = s ? s.ink : null;
   }
+  // ...AND WHETHER THE PAGE'S OWN CSS HAS REACHED INTO THEM.
+  //
+  // Every selector in the shell is scoped so it cannot take a host page's
+  // dropdowns, and for a long time nothing defended the other direction. This
+  // page styles a bare button element - a 13px font, fatter padding, and a
+  // margin of 0 .3rem .4rem 0 - which is an ordinary thing for a page to do.
+  // The shell states height and padding so those held; MARGIN did not. Orient
+  // and Clip are buttons and took 4.8px on the right and 6.4px underneath,
+  // Rotate is a label and took none, so the row came out unevenly spaced and
+  // the column 13px taller. An embed has to look the same in any page.
+  out.strayMargins = [];
+  out.rowGaps = [];
+  out.colCount = D.querySelectorAll('#rightPanelContainer').length;
+  out.btnRowCount = D.querySelectorAll('.btn-row').length;
+  out.shellIds = [...D.querySelectorAll('[id]')].map(e => e.id)
+    .filter(x => /right|btn-row|control/i.test(x)).slice(0, 6);
+  for (const col of D.querySelectorAll('#rightPanelContainer')) {
+    for (const c of col.querySelectorAll('button, select, input, label')) {
+      const m = getComputedStyle(c).margin;
+      if (m && m !== '0px') out.strayMargins.push((c.id || c.tagName) + ':' + m);
+    }
+    // ...and the two gaps a reader compares: between buttons in a row, and
+    // between the rows. They are the same number in the sheet and must be the
+    // same number on screen.
+    const row = col.querySelector('.btn-row');
+    const rows = [...col.querySelectorAll('.btn-row')];
+    if (row && row.children.length > 1 && rows.length > 1) {
+      const a = row.children[0].getBoundingClientRect();
+      const b = row.children[1].getBoundingClientRect();
+      const r0 = rows[0].getBoundingClientRect();
+      const r1 = rows[1].getBoundingClientRect();
+      out.rowGaps.push([Math.round(b.left - a.right), Math.round(r1.top - r0.bottom)]);
+    }
+  }
+
   // ...AND THE CODE EACH SECTION PRINTS. There are no button rows any more:
   // a section is one complete example, run once at load and displayed
   // verbatim beside itself. So the check is that the box filled and that what
@@ -1292,6 +1327,24 @@ def run():
 R = run()
 os.path.exists(PROBE) and os.remove(PROBE)
 bad = []
+PAGE = R.get('page') or {}
+stray = PAGE.get('strayMargins') or []
+if stray:
+    bad.append('the page\'s own CSS reached into the viewer chrome: '
+               + ', '.join(stray[:4]) + ' - every selector in the shell is'
+               ' scoped so it cannot take the host page\'s controls, and it has'
+               ' to reset what it does not set for the same reason')
+gaps = PAGE.get('rowGaps') or []
+uneven = [g for g in gaps if g[0] != g[1]]
+if uneven:
+    bad.append(f'{len(uneven)} of {len(gaps)} viewers space their buttons and'
+               f' their rows differently, e.g. {uneven[0]} - the sheet gives'
+               ' both the same number, so anything else came from outside')
+if not gaps:
+    bad.append('no button rows measured - this check has stopped finding the'
+               f' chrome and would pass forever (cols={PAGE.get("colCount")},'
+               f' rows={PAGE.get("btnRowCount")})')
+
 if R.get('threw'):
     bad.append('the embed threw: ' + R['threw'])
 for e in R.get('errors', []):

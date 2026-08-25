@@ -106,7 +106,7 @@ public downloads is exercised on every run.
 
   | lines | file | | lines | function |
   |---|---|---|---|---|
-  | 11,406 | `core/mol.js` | | 5,238 | `cartoon/geom.js` `render()` |
+  | 11,441 | `core/mol.js` | | 1,912 | `cartoon/geom.js` `render()` |
   | 10,317 | `cartoon/geom.js` | | 2,449 | `cartoon/paint2d.js` `paintPrims()` |
   | 8,413 | `app/ (total)` | | 1,459 | `parts/ui.js` `wireViewerUI()` |
   | 5,834 | `cartoon/paintgl.js` | | 1,084 | `cartoon/geom.js` `mergeBondRuns()` |
@@ -150,9 +150,21 @@ public downloads is exercised on every run.
   reader may not have open, to someone who never chose a painter and has no
   checkbox to change one. The CPU notebook is also 46 KB smaller and is the
   only one that can save an SVG.
-- **One painter per bundle, and outside the website it is the GPU.** The
-  notebook and both embeds ship `cartoon/paintgl.js` and no 2D painter, with
-  nothing behind it: no WebGL2 means no picture, said on the console. It buys
+- **One painter per bundle, and outside the website it is the GPU** — but that
+  is a statement about the CARTOON and only the cartoon. The notebook and both
+  embeds ship `cartoon/paintgl.js` and no 2D painter, with nothing behind it:
+  no WebGL2 means no cartoon, said on the console. **The TUBE is not a painter
+  and does not participate**: it is stroked by `_drawFrame` in the core, so it
+  draws on a machine with no WebGL2 (measured: 10,663 px against the GPU's
+  10,412) and it exports SVG on every build, because `_gpuWillTake` refuses an
+  export context — there is no vector to hand back from a raster — and the core
+  stroke catches it. So SVG is offered for the tube everywhere and for the
+  cartoon only where the 2D painter is, and both halves of that are enforced:
+  the Save panel hides it, `saveImage` refuses it, and a panel left open while
+  the style changes is rebuilt. Without those it wrote a 359-byte file with
+  nothing in it. Carrying `paint2d` in the GPU bundles would end the asymmetry
+  for +25 KB; removing the core tube stroke would end it the other way for
+  about 2 KB and cost the tube both its SVG and its no-WebGL2 picture. It buys
   26 ms a frame on a capsid against 840.
 
   Minified, `paint2d.js` is 25 KB and `paintgl.js` 71 KB — nearly three times,
@@ -263,6 +275,19 @@ public downloads is exercised on every run.
   unknown top-level key untouched) and as `viewer` beside `frames` and `meta`
   on the live one. It could not ride in the per-object metadata map at all.
   Applied AFTER the orientation, because depth is measured along the view.
+- 🔴 **THE SCOPING GOES BOTH WAYS, and only one way was defended.** Every
+  selector in `parts/embed.js`'s `SHELL_CSS` is prefixed `#${id}` so the shell
+  cannot take a host page's dropdowns — and nothing stopped the host page taking
+  the shell's. `embed.html` styles a bare `button` element, as any page may:
+  13px font, fatter padding, and `margin: 0 .3rem .4rem 0`. The shell states
+  height and padding, so those held; **margin did not**. Orient and Clip are
+  buttons and took 4.8px on the right and 6.4px underneath, Rotate is a label
+  and took none — so the row spaced unevenly and the column stood 13px taller,
+  **on that page only**, which is why every measurement of a bare test page said
+  it was fine. The shell resets `margin`, `box-sizing` and `font-family` on its
+  own controls now. `tests/embed.py` measures the real page: no stray margins
+  inside `#rightPanelContainer`, and the gap between buttons equal to the gap
+  between rows.
 - **Subsystems are optional and guarded.** `if (window.PAE)`, `if (window.MSA)`,
   `typeof C2S === 'undefined'`. A build without one loses a feature, not a page.
 - **Prove a move changed nothing.** `node tests/paint_trace.js` digests every
@@ -279,6 +304,31 @@ public downloads is exercised on every run.
   separately, on the prims, because extracting the base plates left a dangling
   `hasColorOverrides` in exactly that branch: every nucleic example went blank
   and the trace still said eleven fixtures unchanged.
+- 🔴 **THIS FILE IS AN IIFE, SO MODULE SCOPE IS BRACE DEPTH ONE.** Its
+  declarations sit at column zero because the wrapper is a boundary, not an
+  indent level — so **indentation cannot tell you what is free**. Classify by
+  brace depth. Of the 25 names that looked module-scope in `render()`'s run
+  loop, 24 were; `emitSlabInk` is written flush left at depth TWO, inside
+  `render()`, and the extraction shipped without it. `paint_trace` said
+  `emitSlabInk is not defined` in one line — the argument for running it
+  before the browser rather than after.
+- **`render()` IS DOWN TO 1,912, and the way it was cut is the pattern.**
+  `drawSticks` took 1,463 lines - side chains, ligands, contacts, and the
+  ribbon-surface geometry they meet the backbone on. Three measurements made it
+  a mechanical move rather than a rewrite: `free_vars.js` named 40 free names,
+  **13 of which are module-scope in the same file and need no passing**, which
+  it cannot tell you - classify them before believing the number; nothing in the
+  range is REASSIGNED, checked rather than assumed, so a context object is safe
+  and the arrays it writes into are mutated in place; and the boundary is the
+  `});` of `mergeBondRuns`, which was one line further than it looked and cost a
+  parse error. Proved by `paint_trace`: 11 fixtures, 15,905 ops, byte-identical
+  before and after. `drawRun` then took the run loop's BODY, 1,888 lines, and
+  needed two things a straight move does not: the single `continue` at the
+  body's own level becomes `return` (the other 23 belong to inner loops), and
+  `naSlabHalfT` is LOOP-CARRIED — a nucleic run records what its slab came out
+  as, the rest of that run reads it back, and so does the code after the loop —
+  so it lives on the context and is deliberately not destructured. What is left
+  is `drawSticks` (1,473) and `mergeBondRuns` (1,084), both already top-level.
 - **Check before you cut.** `node tools/free_vars.js <file> <from> <to>` lists
   what a range closes over. Anything in *must handle* has to be hoisted, passed
   or recomputed first. **It is a heuristic and wrong in both directions**: it

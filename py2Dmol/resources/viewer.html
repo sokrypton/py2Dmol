@@ -33,9 +33,19 @@
 }
 #canvas { background: #ffffff; cursor: grab; display: block; touch-action: none; }
 #canvas:active { cursor: grabbing; }
+/* ONE CONTROL HEIGHT FOR THE WHOLE VIEWER, in one place.
+   Every button, select and toggle face here is --ctl-h high: the player strip,
+   the menu rows, the Style panel's selects and the Capture panel's fields,
+   which measure it off the button they open from. It was five separate numbers
+   and they had drifted to three - 28 on the player, 24 in the menu, 28 in the
+   Capture panel - which is what "uneven" looks like when every individual rule
+   is internally consistent. The panel's TOGGLES are deliberately smaller; that
+   is --ctl-h-sm, and it is stated once too. */
+:root { --ctl-h: 24px; --ctl-h-sm: 22px; }
 select, .controlButton {
-    font-size: 12px; padding: 4px 8px; border: 1px solid #e5e7eb; border-radius: 6px;
-    height: 28px; background: white; color: #374151; cursor: pointer; font-family: inherit;
+    font-size: 12px; padding: 3px 6px; border: 1px solid #e5e7eb; border-radius: 6px;
+    height: var(--ctl-h); background: white; color: #374151; cursor: pointer;
+    font-family: inherit;
 }
 select:hover, .controlButton:hover:not(:disabled) { border-color: #d1d5db; background: #f9fafb; }
 select:active, .controlButton:active:not(:disabled) { background: #f3f4f6; }
@@ -58,10 +68,17 @@ input[type="range"] { border: none !important; outline: none !important; box-sha
 /* The toggle face is the span AFTER the checkbox. Matched by position, not by
    a .btn-label class, so the markup can stay identical to index.html's
    (plain <span>) - the skin is this stylesheet's job alone. */
+/* THE TOGGLE FACE: what it LOOKS like. Its SIZE belongs to the context, and
+   there are exactly two - the button row, where it lines up beside Orient and
+   Style, and the style panel, where it is a 15px label and has no business
+   being as tall as a button. Height used to be declared here at 28px and the
+   panel overrode it, which is two rules fighting over one number; a third
+   context would have had to join the fight. Each context now says its own
+   size, and nothing overrides anything. */
 .btn-toggle input[type="checkbox"]+span {
-    display: block; padding: 4px 8px; cursor: pointer; background: white; color: #374151;
+    display: block; cursor: pointer; background: white; color: #374151;
     border: 1px solid #e5e7eb; border-radius: 6px; text-align: center; width: 100%;
-    height: 28px; line-height: 18px; box-sizing: border-box; font-size: 12px; font-weight: 500;
+    box-sizing: border-box; font-size: 12px; font-weight: 500;
 }
 .btn-toggle input[type="checkbox"]+span:hover { background: #f9fafb; border-color: #d1d5db; }
 .btn-toggle input[type="checkbox"]+span:active { background: #f3f4f6; }
@@ -77,13 +94,17 @@ input[type="range"] { border: none !important; outline: none !important; box-sha
 #frameSlider { flex: 1 1 140px; width: auto; min-width: 120px; margin: 0; flex-shrink: 1; }
 #frameCounter { color: #374151; min-width: 50px; font-size: 12px; flex-shrink: 0; }
 #speedButton { min-width: 28px; padding: 0 5px; }
+/* COMPACT, because this column is the whole menu in a notebook cell and an
+   embed. The numbers below were measured rather than guessed: the panel was
+   348px of a 460px column, and the toggles - five of them, wrapping onto three
+   lines - were 28px each for a 15px label. */
 #rightPanelContainer {
-    display: flex; flex-direction: column; gap: 5px; width: 180px; border: 1px solid #e5e7eb;
-    border-radius: 10px; padding: 8px; background: #f9fafb; flex-shrink: 0;
+    display: flex; flex-direction: column; gap: 3px; width: 180px; border: 1px solid #e5e7eb;
+    border-radius: 8px; padding: 4px; background: #f9fafb; flex-shrink: 0;
     flex: 0 0 auto;
 }
-.control-group { display: flex; flex-direction: column; gap: 5px; }
-.toggle-item { display: flex; align-items: center; gap: 5px; width: 100%; flex-wrap: wrap; }
+.control-group { display: flex; flex-direction: column; gap: 3px; }
+.toggle-item { display: flex; align-items: center; gap: 4px; width: 100%; flex-wrap: wrap; }
 /* :not(.btn-toggle): toggle BUTTONS are labels too (index.html markup), and
    the 52px caption width must not apply to them. */
 .toggle-item label:not(.btn-toggle) { font-size: 12px; font-weight: 500; color: #6b7280; width: 52px; flex-shrink: 0; white-space: nowrap; }
@@ -91,7 +112,7 @@ input[type="range"] { border: none !important; outline: none !important; box-sha
    share the line with its label. A flex item's default min-width is its
    content width, so the Color select ("Secondary structure") used to hold
    its intrinsic width and poke out of the panel (or wrap under the label). */
-.toggle-item select { flex: 1 1 0; min-width: 0; padding: 0 4px; height: 24px; }
+.toggle-item select { flex: 1 1 0; min-width: 0; padding: 0 4px; height: var(--ctl-h); }
 /* Toggle buttons inline in a row share it equally. Basis 62px: three fit on
    one line, the four cartoon toggles (Smooth/Arrows/Shade/Bases) wrap into
    a tidy 2x2 instead of clipping their labels at quarter width. */
@@ -103,13 +124,17 @@ input[type="range"] { border: none !important; outline: none !important; box-sha
     display: flex; align-items: center; gap: 5px;
 }
 .toggle-item .half:empty { display: none; }   /* index.html's spacer cell */
-.btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
 /* auto variant: columns are created per visible child, so hiding one makes
    the survivor span the full width instead of leaving a half-empty grid. */
 .btn-row.auto { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 1fr; }
-.btn-row .controlButton { width: 100%; min-width: 0; height: 28px; }
+.btn-row .controlButton { width: 100%; min-width: 0; }
 .btn-row .btn-toggle { display: block; }
-.btn-row .btn-toggle span { width: 100%; box-sizing: border-box; }
+/* The face is not a .controlButton, so it states the shared height itself
+   rather than inheriting it - same number, one source. */
+.btn-row .btn-toggle input[type="checkbox"]+span {
+    height: var(--ctl-h); line-height: 16px; padding: 3px 6px;
+}
 /* Style panel: expands in place at the bottom of the column, below the object
    picker rather than directly under the Style button - index.html puts it
    there too, because everything in it acts on the object named above it. Rows
@@ -118,12 +143,27 @@ input[type="range"] { border: none !important; outline: none !important; box-sha
 #styleToggle { width: 100%; }
 /* Open state reuses the pressed look of the other toggle buttons, which is
    the only cue now that the caret is gone. */
+/* A BUTTON THAT LATCHES HAS TO LOOK LATCHED. Clip is a mode - press to cut,
+   press again to stop - and it carried aria-pressed for anything reading the
+   page while showing the reader nothing at all, so the only way to tell a
+   clipped viewer from an unclipped one was to look at the structure and guess.
+   The same pressed skin the Style button uses when its panel is open, and the
+   same one the checkbox toggles beside it wear. */
+.controlButton[aria-pressed="true"] { background: #e5e7eb; border-color: #d1d5db; color: #374151; }
+.controlButton[aria-pressed="true"]:hover { background: #d1d5db; border-color: #9ca3af; }
 #styleToggle[aria-expanded="true"] { background: #e5e7eb; border-color: #d1d5db; color: #374151; }
 #styleToggle[aria-expanded="true"]:hover { background: #d1d5db; border-color: #9ca3af; }
+/* THE MOUNT IS NOT A BOX. It holds the style panel, which is hidden until the
+   Style button opens it - and an empty flex child still takes its gap, so the
+   closed column carried 3px below the last control that nothing above it had.
+   8px under, 5px over, which is exactly the kind of unevenness you see without
+   being able to name. `display: contents` makes the panel itself the flex
+   child: no box when it is hidden, the ordinary gap when it is not. */
+#stylePanelMount { display: contents; }
 #stylePanel {
     display: flex; flex-direction: column; gap: 3px;
     border: 1px solid #e5e7eb; border-radius: 8px; background: #ffffff;
-    padding: 6px; margin-top: -1px;
+    padding: 5px; margin-top: -1px;
 }
 /* Range inputs have no intrinsic height (appearance:none, 5px track), so as
    flex items in a column they collapse to the track and the labels overflow.
@@ -137,7 +177,12 @@ input[type="range"] { border: none !important; outline: none !important; box-sha
 #stylePanel .toggle-item { min-height: 16px; row-gap: 3px; }
 #stylePanel .half { min-height: 16px; }
 /* Three toggles share 164px; the default 8px side padding clips "Shadow". */
-#stylePanel .btn-toggle input[type="checkbox"]+span { padding: 4px 2px; }
+/* Five toggles wrap onto three lines here, so every pixel costs three: 28px
+   for a 15px label was 18px of the panel spent on air. The 2px sides are what
+   stop "Shadow" clipping at three-to-a-row. */
+#stylePanel .btn-toggle input[type="checkbox"]+span {
+    height: var(--ctl-h-sm); line-height: 16px; padding: 2px;
+}
 /* A toggle FOLLOWING a select (Colorblind, in the Color row) wraps onto its
    own full-width line - index.html's markup, but this panel is too narrow to
    hold both side by side. */
@@ -231,16 +276,16 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
                      embed's shell gets it from the same place. -->
                 <button id="orientButton" class="controlButton"
                     title="Orient to best view">Orient</button>
+                <label class="controlButton btn-toggle" title="Toggle auto-rotation">
+                    <input type="checkbox" id="rotationCheckbox">
+                    <span>Rotate</span>
+                </label>
                 <!-- A TOGGLE, NOT index.html's PANEL. There the slab has a
                      panel whose closing commits, so Clip reads as a mode; here
                      there is nothing to set - the depth comes from what is
                      selected - so it is press to cut, press again to stop. -->
                 <button id="clipButton" class="controlButton"
                     title="Clip to the selection (press again to clear)">Clip</button>
-                <label class="controlButton btn-toggle" title="Toggle auto-rotation">
-                    <input type="checkbox" id="rotationCheckbox">
-                    <span>Rotate</span>
-                </label>
             </div>
             <div class="btn-row auto">
                 <button id="styleToggle" class="controlButton" aria-expanded="false" aria-controls="stylePanel"

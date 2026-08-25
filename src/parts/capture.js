@@ -623,6 +623,23 @@
                 }
 
                 if (typeof C2S === 'undefined') throw new Error('canvas2svg library not loaded');
+                // ...AND NOTHING TO DRAW WITH IS NOT AN EMPTY FILE, IT IS AN
+                // ERROR. The cartoon's vector path IS the 2D painter - geom.js
+                // only builds the primitive list, and paintgl hands back a
+                // raster - so on a build without it an export context is
+                // offered a cartoon that nothing can paint into it, and C2S
+                // dutifully serialises 359 bytes of nothing. The Save panel
+                // hides SVG for this case, and this is what catches every other
+                // route to it: saveAsSvg() called from code, and the window
+                // where the panel was opened in the tube and the style changed
+                // underneath it.
+                if (this.style === 'cartoon'
+                    && typeof window.py2dmolCartoonPaint !== 'function') {
+                    throw new Error('SVG export of the cartoon needs the 2D'
+                        + ' painter, which this build does not carry - the tube'
+                        + ' exports either way, and py2Dmol.view(gpu=False)'
+                        + ' carries it.');
+                }
                 const svgCtx = new C2S(width, height);
                 this._renderToContext(svgCtx, width, height);
                 const svgString = svgCtx.getSerializedSvg();

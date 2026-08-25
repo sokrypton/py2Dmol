@@ -2828,6 +2828,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     this.styleSelect.value = uiName;
                 }
                 if (this._syncStylePanel) this._syncStylePanel();
+            // ...AND THE SAVE PANEL, WHOSE FORMATS DEPEND ON THE STYLE. It is
+            // built fresh on open, so switching style while it is OPEN left it
+            // offering what the old style could do: SVG stayed on the menu
+            // after a tube became a cartoon on a build with no 2D painter, and
+            // that combination writes a 359-byte file with nothing in it.
+            if (this._savePanel && !this._captureBusy) this._rebuildSavePanel();
                 if (!quiet) this.render('setStyle');
                 return;
             }
@@ -2850,6 +2856,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.styleSelect.value = tubeName;
             }
             if (this._syncStylePanel) this._syncStylePanel();
+            // ...AND THE SAVE PANEL, WHOSE FORMATS DEPEND ON THE STYLE. It is
+            // built fresh on open, so switching style while it is OPEN left it
+            // offering what the old style could do: SVG stayed on the menu
+            // after a tube became a cartoon on a build with no 2D painter, and
+            // that combination writes a 359-byte file with nothing in it.
+            if (this._savePanel && !this._captureBusy) this._rebuildSavePanel();
             if (!quiet) this.render('setStyle');
         }
 
@@ -2939,6 +2951,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.styleSelect.value = uiName;
             }
             if (this._syncStylePanel) this._syncStylePanel();
+            // ...AND THE SAVE PANEL, WHOSE FORMATS DEPEND ON THE STYLE. It is
+            // built fresh on open, so switching style while it is OPEN left it
+            // offering what the old style could do: SVG stayed on the menu
+            // after a tube became a cartoon on a build with no 2D painter, and
+            // that combination writes a 359-byte file with nothing in it.
+            if (this._savePanel && !this._captureBusy) this._rebuildSavePanel();
             this.render('setPreset');
         }
 

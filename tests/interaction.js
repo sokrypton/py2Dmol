@@ -5412,12 +5412,30 @@ t('the save panel can still record a trajectory', () => {
 // field belonged to which output. Reported directly.
 t('the save panel sizes its controls consistently', () => {
     const body = capturePanelBody();
-    const H = body.match(/const H = (\d+);/);
-    if (!H) throw new Error('the panel has no single control height');
-    const h = Number(H[1]);
-    if (h < 26) {
-        throw new Error("the panel's controls are " + h + 'px high - under 26'
-            + ' they are hard to read and hard to hit');
+    // ONE HEIGHT, AND IT IS MEASURED RATHER THAN COPIED.
+    //
+    // This used to be `const H = 28;` under a note saying both pages' buttons
+    // were 28 too - true when it was written, and false the moment the
+    // notebook's went to 24. A number copied from somewhere else goes stale in
+    // silence: the Capture panel's selects stood 4px taller than the Style
+    // panel's in a 180px column, which reads as two kinds of control.
+    //
+    // It is taken off the ANCHOR - the Capture button the panel opens from,
+    // visible by definition. Querying for the skin class instead finds
+    // #playButton first, and that is display:none whenever there is one frame.
+    if (!/const H = \(\(\) => \{/.test(body)) {
+        throw new Error('the save panel hardcodes its control height again -'
+            + ' it has to measure the page, or it goes stale the next time the'
+            + ' buttons beside it change size');
+    }
+    if (!/anchorEl\s*\?\s*Math\.round\(anchorEl\.getBoundingClientRect\(\)\.height\)/
+        .test(body)) {
+        throw new Error('the height is not measured off the anchor');
+    }
+    // ...with a guard, because a hidden element measures zero and a zero-high
+    // field is worse than a stale one
+    if (!/h >= 16 && h <= 48/.test(body)) {
+        throw new Error('the measured height has no sane-range guard');
     }
     // fields built from it, and the buttons too where the page has no skin of
     // its own to lend them
@@ -8529,20 +8547,30 @@ t('Multi is a mode, and the picker is what it replaces', () => {
 // and Orient is a <label> there against a <button> here - which is why the id
 // is per page below. Where the controls sit relative to each other is the part
 // that does matter.
-t('both pages order their controls the same way', () => {
+t('all three shells order their controls the same way', () => {
+    // ORDER, NOT IDENTITY. The three differ in ways that do not matter to a
+    // reader moving between them - index.html draws Orient as a <label> and the
+    // other two as a <button>, and the embed has no object picker at all - so
+    // each names its own sequence and the shared shape is what is compared.
     const PAGES = {
-        'index.html': 'orientToggle',
-        'py2Dmol/resources/viewer.html': 'orientButton',
+        'index.html': ['orientToggle', 'rotationCheckbox', 'clipToggle',
+            'styleToggle', 'saveImageButton', 'objectSelect', 'stylePanelMount'],
+        'py2Dmol/resources/viewer.html': ['orientButton', 'rotationCheckbox',
+            'clipButton', 'styleToggle', 'saveImageButton', 'objectSelect',
+            'stylePanelMount'],
+        // the embed's shell is markup inside a JS file, and had drifted
+        // furthest: Style and Capture came FIRST, and Clip sat between Orient
+        // and Rotate on both it and viewer.html while index.html put it last.
+        'src/parts/embed.js': ['orientButton', 'rotationCheckbox', 'clipButton',
+            'styleToggle', 'saveImageButton', 'stylePanelMount'],
     };
-    for (const [file, orientId] of Object.entries(PAGES)) {
+    for (const [file, seq] of Object.entries(PAGES)) {
         const html = fs.readFileSync(file, 'utf8');
         const at = (id) => {
             const i = html.indexOf(`id="${id}"`);
             if (i < 0) throw new Error(`${file} has no #${id}`);
             return i;
         };
-        const seq = [orientId, 'rotationCheckbox', 'styleToggle',
-            'saveImageButton', 'objectSelect', 'stylePanelMount'];
         for (let k = 1; k < seq.length; k++) {
             if (!(at(seq[k - 1]) < at(seq[k]))) {
                 throw new Error(`${file}: #${seq[k - 1]} should come before`
@@ -8550,14 +8578,41 @@ t('both pages order their controls the same way', () => {
             }
         }
         // The picker between the buttons and the panel is the load-bearing
-        // half: everything inside those panels acts on the object named here,
-        // and a panel acting on an object whose name is buried underneath it is
-        // the bug the order prevents.
-        if (!(at('saveImageButton') < at('objectSelect')
-            && at('objectSelect') < at('stylePanelMount'))) {
+        // half: everything in those panels acts on the object named there.
+        if (seq.includes('objectSelect')
+            && !(at('saveImageButton') < at('objectSelect')
+                && at('objectSelect') < at('stylePanelMount'))) {
             throw new Error(`${file}: the picker is not between the buttons`
                 + ' and the style panel');
         }
+    }
+});
+
+// AN SVG THE CARTOON CANNOT PRODUCE MUST NOT BE OFFERED, OR ACCEPTED.
+//
+// The cartoon's vector path IS the 2D painter: geom.js builds the primitive
+// list and paintgl hands back a raster, so on a GPU-only build there is nothing
+// to draw into an export context and C2S serialises 359 bytes of nothing. The
+// tube is different - it is stroked by _drawFrame in the core - which is why
+// SVG is offered for the tube on every build and for the cartoon only where the
+// painter is.
+//
+// The Save panel is built fresh on OPEN, so it used to keep offering whatever
+// the style could do when it was opened: open in tube, switch to cartoon, and
+// SVG was still on the menu. Two guards now - the panel is rebuilt when the
+// style changes, and saveImage refuses outright, which is what catches
+// saveAsSvg() called from code.
+t('SVG is refused where the cartoon has no painter to make one', () => {
+    const cap = fs.readFileSync('src/parts/capture.js', 'utf8');
+    if (!/py2dmolCartoonPaint[\s\S]{0,120}throw new Error\('SVG export/.test(cap)) {
+        throw new Error('src/parts/capture.js does not refuse an SVG cartoon on a'
+            + ' build with no 2D painter - the file comes out empty instead');
+    }
+    const mol = fs.readFileSync('src/core/mol.js', 'utf8');
+    const n = (mol.match(/_rebuildSavePanel\(\)/g) || []).length;
+    if (n < 3) {
+        throw new Error(`only ${n} style exits rebuild the save panel - a panel`
+            + ' opened in one style goes on offering that style\'s formats');
     }
 });
 

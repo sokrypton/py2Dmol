@@ -228,6 +228,24 @@ const SHELL = (id) => `
 <div id="rightPanelContainer">
   <div class="control-group">
     <div class="btn-row auto">
+      <!-- ORIENT IS AN ACTION AND ROTATE IS A STATE, and they are written
+           differently here for that reason: a <button> you press against a
+           checkbox that stays down. index.html draws Orient as a fake toggle to
+           line the toolbar up, and it has to reach past the checkbox to the
+           <span> to stop the browser latching it - a workaround for markup
+           chosen for looks. The grid row lines these two up anyway. -->
+      <button id="orientButton" class="controlButton"
+              title="Orient to best view">Orient</button>
+      <label class="controlButton btn-toggle" title="Toggle auto-rotation">
+        <input type="checkbox" id="rotationCheckbox"><span>Rotate</span>
+      </label>
+      <!-- Clip is a toggle here and a panel on the website - see viewer.html.
+           parts/clip.js is in every bundle, so this is reachable everywhere
+           the shell is; it was only ever unreachable for want of a control. -->
+      <button id="clipButton" class="controlButton"
+              title="Clip to the selection (press again to clear)">Clip</button>
+    </div>
+    <div class="btn-row auto">
       <button id="styleToggle" class="controlButton" aria-expanded="false"
               aria-controls="stylePanel" title="Render style and its settings">Style</button>
       <!-- CAPTURE, not Save. index.html has called it that for a while - it
@@ -238,24 +256,6 @@ const SHELL = (id) => `
               title="Capture an image or a video">Capture</button>
     </div>
     <div id="stylePanelMount"></div>
-    <div class="btn-row auto">
-      <!-- ORIENT IS AN ACTION AND ROTATE IS A STATE, and they are written
-           differently here for that reason: a <button> you press against a
-           checkbox that stays down. index.html draws Orient as a fake toggle to
-           line the toolbar up, and it has to reach past the checkbox to the
-           <span> to stop the browser latching it - a workaround for markup
-           chosen for looks. The grid row lines these two up anyway. -->
-      <button id="orientButton" class="controlButton"
-              title="Orient to best view">Orient</button>
-      <!-- Clip is a toggle here and a panel on the website - see viewer.html.
-           parts/clip.js is in every bundle, so this is reachable everywhere
-           the shell is; it was only ever unreachable for want of a control. -->
-      <button id="clipButton" class="controlButton"
-              title="Clip to the selection (press again to clear)">Clip</button>
-      <label class="controlButton btn-toggle" title="Toggle auto-rotation">
-        <input type="checkbox" id="rotationCheckbox"><span>Rotate</span>
-      </label>
-    </div>
   </div>
 </div>`;
 
@@ -286,27 +286,57 @@ const SHELL_CSS = (id) => `
    against a fixed-height host it clamps and the column scrolls; against an
    auto-height one the percentage has nothing to resolve against, counts as
    none, and the host grows to fit as it should. */
-#${id} #rightPanelContainer { display: flex; flex-direction: column; gap: 5px;
-  width: 190px; border: 1px solid #e5e7eb; border-radius: 10px; padding: 8px;
+/* COMPACT: measured, not guessed - see viewer.html, whose numbers these
+   mirror. The panel is the whole menu in an embed. */
+#${id} #rightPanelContainer { display: flex; flex-direction: column; gap: 3px;
+  width: 190px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 4px;
   background: #f9fafb; flex: 0 0 auto; max-height: 100%; overflow-y: auto; }
-#${id} .control-group { display: flex; flex-direction: column; gap: 5px; }
-#${id} select, #${id} .controlButton { font-size: 12px; padding: 4px 8px; height: 28px;
+#${id} .control-group { display: flex; flex-direction: column; gap: 3px; }
+/* THE HOST PAGE'S RULES REACH IN, AND THIS IS WHERE THEY STOP.
+   Every selector here is scoped so the shell cannot take a host page's
+   dropdowns - but the traffic goes both ways, and nothing defended the other
+   direction. embed.html styles a bare button element (as any page may): a
+   13px font, fatter padding, and a margin of 0 .3rem .4rem 0. Backticks are
+   not available in this note - SHELL_CSS is itself a template literal, and a
+   pair of them here ended the string and stopped the bundle parsing. The
+   shell states height and
+   padding, so those held - and MARGIN did not. Orient and Clip are buttons
+   and took 4.8px on the right and 6.4px underneath; Rotate is a label and
+   took none, so the row came out unevenly spaced and the column 13px taller.
+   Reset what we do not set, scoped, so an embed looks the same in any page. */
+#${id} button, #${id} select, #${id} input, #${id} label {
+  margin: 0; box-sizing: border-box; font-family: inherit; }
+/* ONE CONTROL HEIGHT, scoped to this viewer - see viewer.html. Five rules
+   used to repeat the number and had drifted to three. */
+#${id} { --ctl-h: 24px; --ctl-h-sm: 22px; }
+#${id} select, #${id} .controlButton { font-size: 12px; padding: 3px 6px; height: var(--ctl-h);
   border: 1px solid #e5e7eb; border-radius: 6px; background: #fff; color: #374151;
   cursor: pointer; font-family: inherit; }
 #${id} .controlButton { min-width: 40px; display: inline-flex; align-items: center;
   justify-content: center; white-space: nowrap; font-weight: 500; }
 #${id} .controlButton:hover:not(:disabled) { background: #f3f4f6; }
 #${id} #styleToggle { width: 100%; }
+/* Clip latches, so it has to look latched - see viewer.html. */
+#${id} .controlButton[aria-pressed="true"] { background: #e5e7eb; border-color: #d1d5db; }
 #${id} #styleToggle[aria-expanded="true"] { background: #e5e7eb; border-color: #d1d5db; }
-#${id} .btn-row { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 5px; }
+#${id} .btn-row { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 3px; }
 #${id} .btn-toggle { padding: 0; border: none; background: transparent; display: block; }
 #${id} .btn-toggle input[type="checkbox"] { position: absolute; opacity: 0; width: 0; height: 0; }
-#${id} .btn-toggle input[type="checkbox"] + span { display: block; padding: 4px 6px;
+/* The face is the LOOK; the SIZE belongs to the context - see viewer.html,
+   whose two contexts these mirror. Declaring a height here and overriding it
+   below is two rules arguing over one number. */
+#${id} .btn-toggle input[type="checkbox"] + span { display: block;
   border: 1px solid #e5e7eb; border-radius: 6px; background: #fff; text-align: center;
-  height: 28px; line-height: 18px; font-weight: 500; cursor: pointer; }
+  font-weight: 500; cursor: pointer; box-sizing: border-box; }
 #${id} .btn-toggle input[type="checkbox"]:checked + span { background: #e5e7eb;
   border-color: #d1d5db; }
-#${id} #stylePanel { display: flex; flex-direction: column; gap: 3px; padding: 6px;
+#${id} .btn-row .btn-toggle input[type="checkbox"] + span {
+  height: var(--ctl-h); line-height: 16px; padding: 3px 6px; }
+#${id} #stylePanel .btn-toggle input[type="checkbox"] + span {
+  height: var(--ctl-h-sm); line-height: 16px; padding: 2px; }
+/* The mount is not a box - see viewer.html. */
+#${id} #stylePanelMount { display: contents; }
+#${id} #stylePanel { display: flex; flex-direction: column; gap: 3px; padding: 5px;
   border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
 #${id} #stylePanel .toggle-item { display: flex; flex-wrap: wrap; align-items: center;
   gap: 5px; min-height: 16px; }
@@ -314,7 +344,7 @@ const SHELL_CSS = (id) => `
   align-items: center; gap: 5px; }
 #${id} #stylePanel label:not(.btn-toggle) { width: 52px; flex-shrink: 0;
   font-weight: 500; color: #6b7280; }
-#${id} #stylePanel select { flex: 1 1 0; min-width: 0; height: 24px; padding: 0 4px; }
+#${id} #stylePanel select { flex: 1 1 0; min-width: 0; height: var(--ctl-h); padding: 0 4px; }
 #${id} #stylePanel input[type="range"] { flex: 1 1 0; min-width: 0; margin: 0; }
 #${id} #stylePanel .btn-toggle { flex: 1 1 62px; min-width: 0; }
 #${id} #stylePanel .toggle-item select ~ .btn-toggle { flex: 1 1 100%; }

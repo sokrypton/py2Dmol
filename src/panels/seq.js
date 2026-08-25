@@ -208,6 +208,32 @@ function cellsOfChain(layout, chainId, objectName) {
     return out;
 }
 
+/**
+ * EVERY POSITION OF ONE CHAIN, from the layout when it drew the cells and from
+ * the object's frame when it did not.
+ *
+ * CHAIN MODE DRAWS NO CELLS. The layout's `residuePositions` are pushed only on
+ * the sequence-mode branch, so in chain mode the strip is chain labels and
+ * nothing else - and everything that counted a chain by walking those cells got
+ * zero. positionsOfChain has carried this fallback for the click path all
+ * along, which is why selecting a chain reached the 3D view while the strip
+ * showed nothing at all.
+ */
+function chainPositionSet(renderer, layout, chainId, objectName) {
+    const out = new Set(cellsOfChain(layout, chainId, objectName));
+    if (out.size) return out;
+    const name = objectName || (renderer && renderer.currentObjectName);
+    const obj = renderer && renderer.objectsData ? renderer.objectsData[name] : null;
+    const frame = obj && obj.frames ? obj.frames[0] : null;
+    const off = (renderer && renderer.sourceOffsetOf) ? renderer.sourceOffsetOf(name) : 0;
+    if (frame && frame.chains) {
+        for (let i = 0; i < frame.chains.length; i++) {
+            if (frame.chains[i] === chainId) out.add(i + off);
+        }
+    }
+    return out;
+}
+
 function getSelectableItemAtPosition(x, y, layout, sequenceViewMode) {
     if (!layout || !layout.selectableItems) return null;
 
@@ -751,6 +777,22 @@ function renderSequenceCanvas() {
             const total = new Map();
             const picked = new Map();
             const keyOf = (o, c) => (o || '') + '\u0000' + c;
+            // CHAIN MODE HAS NO CELLS TO COUNT. The tally below walks the cells
+            // the layout drew, and in chain mode it drew none - only labels -
+            // so every chain came out with a total of zero and no label was
+            // ever boxed. Selecting a chain lit the structure and left the
+            // strip blank, which reads as the click not working at all.
+            if (!(layout.residuePositions || []).length) {
+                for (const cp of layout.chainLabelPositions) {
+                    const set = chainPositionSet(renderer, layout, cp.chainId, cp.object);
+                    if (!set.size) continue;
+                    const k = keyOf(cp.object, cp.chainId);
+                    total.set(k, set.size);
+                    let hit = 0;
+                    for (const i of set) if (target.has(i)) hit++;
+                    if (hit) picked.set(k, hit);
+                }
+            }
             for (const rp of (layout.residuePositions || [])) {
                 const rd = rp.residueData;
                 if (!rd) continue;

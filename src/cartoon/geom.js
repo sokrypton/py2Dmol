@@ -6334,9 +6334,332 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
     // ...and the half-WIDTH, because a slab has two pairs of surfaces and a
     // side chain may leave through either - see ribbonSurfaceToward.
     const protHalfW = new Float64Array(n);
-    for (let runIdx = 0; runIdx < runs.length; runIdx++) {
+    // ONE RUN AT A TIME - see drawRun. The body was 1,888 lines inside this
+    // loop; the context is built once rather than per run.
+    const runCtx = {
+        arrowsOn, at, baseFramesRot, bbSeg, colors,
+        cullSeg, emitSlabInk, fl, frameProbe, hasColorOverrides,
+        inkWanted, loopCont, loopSquare, n, naFrames,
+        naHalfT, naPos, naWidthA, pairOf, persp,
+        positionTypes, prims, project, protHalfT, protHalfW,
+        protSide, q0, registerJoint, renderer, rich,
+        rotated, runClose, runs, sec, selInk,
+        sheetSides, sideOf, ssColor, ssPal, vis,
+        widthScale,
+        naSlabHalfT,
+    };
+    for (let runIdx = 0; runIdx < runs.length; runIdx++) drawRun(runIdx, runCtx);
+    // ...and the one thing a run leaves behind for the code after the loop.
+    naSlabHalfT = runCtx.naSlabHalfT;
+
+    // THE STICKS, drawn from one context rather than from render()'s own
+    // scope - see drawSticks. 1,463 lines of render() lived here.
+    drawSticks({
+        at, baseInk, baseLineWidthPixels, colors, displayHeight,
+        displayWidth, fl, frameProbe, genericSegs, inkCurves,
+        inkWanted, mask, noViewCull, outlineW, persp,
+        prims, project, protHalfT, protHalfW, protSide,
+        registerJoint, renderer, rotated, scale, segments,
+        selInk, vs,
+    });
+
+    // --- depth range for shading ---
+    let zMin = Infinity;
+    let zMax = -Infinity;
+    for (const g of prims) {
+        if (g.z < zMin) zMin = g.z;
+        if (g.z > zMax) zMax = g.z;
+    }
+    const zSpan = zMax - zMin;
+    const nearOf = (z) => (zSpan > 1e-6 ? (z - zMin) / zSpan : 0.75);
+
+    const strokePath = (pts) => {
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let j = 1; j < pts.length; j++) ctx.lineTo(pts[j][0], pts[j][1]);
+        ctx.stroke();
+    };
+
+    if (renderer._dumpCand) {
+        renderer._candDump = inkCurves.map((cv) => ({
+            vis: cv.vis.map((v) => (v ? 1 : 0)).join(''),
+            pts: cv.pts.map((q) => [+q[0].toFixed(1), +q[1].toFixed(1), +q[2].toFixed(2)]),
+        }));
+    }
+    // FAST ink: the painter approximation - candidates as depth-sorted
+    // overlapping chunks biased UP one slab thickness. Skips the entire
+    // occlusion grid, which is what makes fast mode actually fast; the
+    // known artifact (user-accepted for interaction) is dotted ink along
+    // inner edges at near-ties. The perfect pass replaces the frame the
+    // moment the gesture ends.
+    if (!perfectInk && outlineW) {
+        const bias = 0.3 * widthScale;
+        for (const cv of inkCurves) {
+            const pts = cv.pts;
+            const vis = cv.vis;
+            let run = null;
+            const flushRun = () => {
+                if (run && run.length > 1) {
+                    for (let a = 0; a + 1 < run.length; a += 1) {
+                        const cp = run.slice(a, Math.min(run.length, a + 3));
+                        if (cp.length < 2) break;
+                        let zq = -Infinity;
+                        for (const pq of cp) {
+                            if (pq[2] > zq) zq = pq[2];
+                        }
+                        // cv.c, not col: `col` belongs to the per-interval
+                        // loop far above and is out of scope here, so this
+                        // threw "col is not defined" the moment the fast ink
+                        // path ran. It stayed latent for a long time because
+                        // nothing selected that path automatically; it is
+                        // reachable now only via renderer._quality='fast'.
+                        prims.push({ kind: 'ribStroke', pts: cp, z: zq + bias, c: cv.c,
+                        gs0: cv.gs0 });
+                        if (a + 3 >= run.length) break;
+                    }
+                }
+                run = null;
+            };
+            for (let s = 0; s < vis.length; s++) {
+                if (vis[s]) {
+                    if (!run) run = [pts[s]];
+                    run.push(pts[s + 1]);
+                } else {
+                    flushRun();
+                }
+            }
+            flushRun();
+        }
+    }
+
+    // ---- BASE PLATES -------------------------------------------------
+    // Built per PAIR, in one frame shared by both halves, so the two bases
+    // of a pair are exactly coplanar and collinear - independent
+    // per-residue frames left them at visibly different angles, which is
+    // what stopped them reading as base pairs.
+    //
+    // The frame is exact rather than fitted. The MIDPOINT of a pair lies on
+    // the helix axis by construction, so consecutive pair midpoints give
+    // the local axis direction directly - no smoothing window (which a
+    // 12-mer duplex is too short to fill anyway) and no fitted constants.
+    // The base-pair plane is perpendicular to that axis.
+    const rbfP = baseFramesRot;
+    // ...and the rungs, which read the frames above and write only prims
+    // and the pick list. See parts of this file that no longer live here.
+    buildBasePlates({
+        renderer, prims, colors, n, vis,
+        project, persp, fl, naPos, naFrames,
+        rbfP, pairOf, bbSeg, frameProbe, naHalfT,
+        naSlabHalfT, naWidthA, naPlateWA, widthScale, inkWanted,
+        selInk, emitSlabInk, hasColorOverrides,
+    });
+    // which is exactly why masking the grain FIRST protects the paper
+    // without any per-pixel work.
+    const pencilWanted = Math.max(0, Math.min(1,
+        renderer.cartoonPencil !== undefined
+            ? renderer.cartoonPencil : (rich ? PENCIL_DEFAULT : 0)));
+    // Applied on EVERY frame, dragging included. It was skipped during
+    // gestures when it cost 26 ms - half the frame - but the GPU
+    // compositing path below runs in 0.6-1.6 ms, so skipping saves nothing
+    // worth having and costs something real: the grain popped in the moment
+    // the view settled, which reads as the render changing under you.
+    const pencilOn = pencilWanted > 0.001;
+    let realCtx = null;
+    let offCv = null;
+    if (pencilOn && typeof document !== 'undefined'
+        && ctx.canvas && ctx.drawImage && ctx.createPattern) {
+        const dw = ctx.canvas.width;
+        const dh = ctx.canvas.height;
+        if (dw > 0 && dh > 0) {
+            offCv = renderer._pencilOff;
+            if (!offCv || offCv.width !== dw || offCv.height !== dh) {
+                offCv = document.createElement('canvas');
+                offCv.width = dw; offCv.height = dh;
+                renderer._pencilOff = offCv;
+            }
+            const oc = offCv.getContext('2d');
+            if (oc) {
+                oc.setTransform(1, 0, 0, 1, 0, 0);
+                oc.clearRect(0, 0, dw, dh);
+                // carry the real context's transform so every coordinate
+                // computed above lands in the same place
+                let m = null;
+                if (ctx.getTransform) { try { m = ctx.getTransform(); } catch (e) { m = null; } }
+                if (m) oc.setTransform(m.a, m.b, m.c, m.d, m.e, m.f);
+                else {
+                    const k = dw / Math.max(1, displayWidth);
+                    oc.setTransform(k, 0, 0, k, 0, 0);
+                }
+                realCtx = ctx;
+                ctx = oc;
+            } else {
+                offCv = null;
+            }
+        }
+    }
+
+    // ---- PAINT BACKEND SEAM --------------------------------------------
+    // Every filled quad in the cartoon goes through painter.quad(). The
+    // default backend below issues the canvas path calls this code always
+    // made, so nothing changes; the point is that the geometry is now handed
+    // over as DATA at a single choke point.
+    //
+    // Why here: profiling puts ~73% of a large frame in paint, and that cost
+    // is draw-call COUNT - 262k calls at 10000 residues, ~1.9 us each, 4.2
+    // fills per primitive with a different tone on every one. Batching at the
+    // canvas level is therefore impossible (measured: no runs to merge, and
+    // dropping the seam stroke bought only ~7%). A GPU backend wins by
+    // consuming these same quads as vertex data - 260k triangles is one draw
+    // call - and gets hardware depth testing, which also retires the
+    // painter's-algorithm sorting this file works so hard around.
+    //
+    // A backend implements: quad(x0,y0,x1,y1,x2,y2,x3,y3, fillStyle,
+    // strokeStyle, lineWidth) and is set as renderer.cartoonPainter.
+    // SVG export keeps working through the canvas backend unchanged.
+    const painter = renderer.cartoonPainter || {
+        quad: (x0, y0, x1, y1, x2, y2, x3, y3, fill, strokeStyle, lw) => {
+            ctx.fillStyle = fill;
+            ctx.beginPath();
+            ctx.moveTo(x0, y0);
+            ctx.lineTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.lineTo(x3, y3);
+            ctx.lineTo(x0, y0);
+            ctx.fill();
+            if (strokeStyle) {
+                ctx.strokeStyle = strokeStyle;
+                ctx.lineWidth = lw || 1;
+                ctx.stroke();
+            }
+        },
+        begin: () => {},
+        end: () => {},
+    };
+    if (painter.begin) painter.begin(displayWidth, displayHeight);
+
+    // --- paint, back to front ---
+    if (renderer._phase) renderer._phase.build = (typeof performance !== 'undefined'
+        ? performance.now() : 0);
+    // set renderer._primProbe = null before a render to receive the sorted
+    // primitive list - each carries gs0 (its position along the backbone,
+    // in residues) and c, which is what makes a colour boundary measurable
+    // in residue units rather than in pixels
+    if (renderer._primProbe === null) renderer._primProbe = prims;
+    // THE CLIP SLAB, on the 2D path, is a CULL rather than a cut: a canvas
+    // paints whole primitives, so a piece straddling a plane is kept or
+    // dropped by its own depth and the cut comes out stepped at the scale
+    // of one station (a residue over `detail`). The GPU path cuts per
+    // fragment and is exact; this is the fallback, and it is the same slab
+    // - renderer.clipAccepts is the single test both ask.
+    // THE BACKBONE SWITCH, at the same place the clip cuts. Two questions,
+    // both per prim: is this backbone at all - only the ribbon and the loop
+    // tube are, while sticks, joints, base plates and contact lines are
+    // what a side chain is made of - and does it belong to a residue whose
+    // backbone the user hid. The CA stays either way: the sticks are drawn
+    // from it and it is a point on a face, not a prim of its own.
+    const bbHide = renderer.backboneHiddenSet ? renderer.backboneHiddenSet() : null;
+    if (bbHide) {
+        const isBackbonePrim = (kd) => kd === 'rib' || kd === 'ribStroke' || kd === 'tube';
+        // WHICH RESIDUE A PRIM IS, from the position it carries along the
+        // backbone. A piece spans a fraction of a residue to a couple of
+        // them, so it is asked at its MIDDLE - the ends of a piece are
+        // shared with its neighbours and would each answer twice.
+        const resOf = (g) => {
+            if (typeof g.gs0 !== 'number') return -1;
+            const ns = (g.Lp && g.Lp.length) || (g.pts && g.pts.length) || 1;
+            const step = typeof g.gsStep === 'number' ? g.gsStep : 0;
+            return Math.round(g.gs0 + step * (ns - 1) / 2);
+        };
+        let k = 0;
+        for (let i = 0; i < prims.length; i++) {
+            const g = prims[i];
+            if (isBackbonePrim(g.kind) && bbHide.has(resOf(g))) continue;
+            prims[k++] = g;
+        }
+        prims.length = k;
+    }
+    if (renderer.clipSlabOn && renderer.clipSlabOn()) {
+        let k = 0;
+        for (let i = 0; i < prims.length; i++) {
+            if (renderer.clipAccepts(prims[i].z)) prims[k++] = prims[i];
+        }
+        prims.length = k;
+    }
+    prims.sort((a, b) => a.z - b.z);
+    if (renderer._phase) { renderer._phase.prims = prims.length;
+        renderer._phase.sorted = (typeof performance !== 'undefined' ? performance.now() : 0); }
+    // GEOMETRY ONLY. A consumer that wants the primitives and not the
+    // picture - the GPU prototype harvesting a mesh - has everything it
+    // came for by this line: the prims are built, and _primProbe already
+    // holds them. Everything past here paints a frame nobody will look at,
+    // and the ink pass alone is the larger half of it. Measured on 1UBQ,
+    // 13 ms of a 44 ms capture.
+    //
+    // The sort above is deliberately kept: it costs nothing next to the
+    // paint and it leaves the list in the order the painter would use,
+    // which a consumer comparing against a painted reference wants.
+    // GEOMETRY DONE. Everything above builds `prims`; everything below
+    // paints them. The seam was already here as a probe hook - the GPU
+    // path sets _probeOnly and takes the primitive list without paying for
+    // a frame nobody looks at - and this makes it a real boundary with a
+    // written-down interface instead of one shared closure.
+    //
+    // THE HANDOFF IS THE INTERFACE: every render() local the painting half
+    // reads. tools/free_vars.js proposed most of it; the rest came from
+    // running tests/paint_trace.js and adding what it said was missing,
+    // because the heuristic cannot see a name a nested scope redeclares -
+    // and missed `n`, which is simply `renderer.coords.length`.
+    if (renderer._probeOnly) return;
+    return paintPrims({
+        renderer, ctx, displayWidth, displayHeight, colors, SELECTION_INK_WIDTH,
+        _t0, anim, at, baseLineWidthPixels, cacheRebuilt, chainU,
+        edgeTone, fl, inkCurves, inkW, inkWanted, jointMinOrder,
+        lightOn, nearOf, offCv, outlineW, paintInkW, painter,
+        pencilWanted, perfectInk, persp, prims, project, pxScale,
+        realCtx, rich, rotated, scale, sketchMax, sketchSegs,
+        sketching, soft, strokePath, wobble, n, vis,
+    });
+}
+
+// ONE RUN OF THE CHAIN - a stretch of consecutive polymer positions - turned
+// into ribbon, sheet, arrow, tube or nucleic rail. This was the body of the
+// `for (runIdx)` loop in render(), and 1,888 of its lines.
+//
+// free_vars named 68 free variables here and THREE of those readings are
+// wrong, each in a way worth writing down.
+//
+// `e` is not mentioned in the range at all. The heuristic invents it, as
+// CLAUDE.md records it doing once before, and passing it dutifully is what
+// threw at the call site that time.
+//
+// 24 of them are module scope and need no passing - but THIS FILE IS AN IIFE,
+// so module scope is brace depth ONE, not zero, and those declarations sit at
+// column zero because the wrapper is a boundary rather than an indent level.
+// Classifying them by indentation says they are all module scope, and one is
+// not: emitSlabInk is written flush left at depth TWO, inside render(). It is
+// the only name in the 25 that has to be passed, the extraction shipped
+// without it, and `emitSlabInk is not defined` is what paint_trace said.
+//
+// TWO THINGS ARE NOT PLAIN ARGUMENTS. `continue` at the body's own level -
+// there is exactly one, the empty-run guard - becomes `return`. And
+// naSlabHalfT is LOOP-CARRIED: a nucleic run records what its slab came out
+// as, the rest of that run reads it back, and so does the code after the
+// loop. It lives on the context for that reason and is deliberately not
+// destructured, because a local copy would be written and thrown away.
+function drawRun(runIdx, ctx) {
+    const {
+        arrowsOn, at, baseFramesRot, bbSeg, colors,
+        cullSeg, emitSlabInk, fl, frameProbe, hasColorOverrides,
+        inkWanted, loopCont, loopSquare, n, naFrames,
+        naHalfT, naPos, naWidthA, pairOf, persp,
+        positionTypes, prims, project, protHalfT, protHalfW,
+        protSide, q0, registerJoint, renderer, rich,
+        rotated, runClose, runs, sec, selInk,
+        sheetSides, sideOf, ssColor, ssPal, vis,
+        widthScale,
+    } = ctx;
         const [lo, hi] = runs[runIdx];
-        if (hi <= lo) continue;
+        if (hi <= lo) return;
         const isProt = positionTypes[lo] === 'P';
         // head-to-tail closure segment for this run, or -1
         const closeSeg = runClose[runIdx];
@@ -7126,7 +7449,7 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
         // the same property. The control is in Angstrom and now means the
         // same thing whatever it is pointed at.
         const thickScale = thickScaleRaw;
-        if (!isProt) naSlabHalfT = thickScale;
+        if (!isProt) ctx.naSlabHalfT = thickScale;
 
         // HELIX RATIO, OVERRIDABLE. RICH_TH_REL.H is 0 - a richardson helix
         // is exactly flat, which is the look - but a zero-thickness piece
@@ -7692,7 +8015,7 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
                 //
                 // If it is wanted, the change is `halfT(i)` here, and it
                 // needs looking at on its own with the ink rules stable.
-                const htFlat = !isProt ? (naSlabHalfT !== null ? naSlabHalfT : naHalfT)
+                const htFlat = !isProt ? (ctx.naSlabHalfT !== null ? ctx.naSlabHalfT : naHalfT)
                     : (squareLoop ? hw
                         : (renderer.cartoonThickness !== undefined
                             ? renderer.cartoonThickness / 2
@@ -8223,8 +8546,33 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
             }
         }
         flushTubeRun();
-    }
+}
 
+// SIDE CHAINS, LIGANDS AND CONTACTS: everything drawn as a STICK rather than
+// as a ribbon, and the ribbon-surface geometry the sticks meet the backbone
+// on. Cut out of render(), which was 5,238 lines in one function.
+//
+// A CONTEXT OBJECT, because the block reads 27 things and reassigns none of
+// them: seven of the projection (project, persp, scale, at, fl, vs, rotated),
+// five of the style (baseLineWidthPixels, outlineW, protHalfW, protHalfT,
+// protSide), four it writes into (prims, inkCurves, genericSegs,
+// registerJoint), five flags (inkWanted, baseInk, selInk, noViewCull,
+// frameProbe), and render()'s own parameters. The arrays are mutated in
+// place, which is why passing them by value is safe; nothing here rebinds a
+// name, which was checked before the cut rather than assumed.
+//
+// The thirteen module-scope names it also uses - LIGAND_*, CONTACT_*, LIGHT,
+// SS, SC_FLUSH_EPS, loneAtomRadiusA, mergeBondRuns, ringTables - need no
+// passing, because this function sits beside them.
+function drawSticks(ctx) {
+    const {
+        at, baseInk, baseLineWidthPixels, colors, displayHeight,
+        displayWidth, fl, frameProbe, genericSegs, inkCurves,
+        inkWanted, mask, noViewCull, outlineW, persp,
+        prims, project, protHalfT, protHalfW, protSide,
+        registerJoint, renderer, rotated, scale, segments,
+        selInk, vs,
+    } = ctx;
     // Where the ribbon's SURFACE is at residue `j`, on the side that `tip`
     // lies on. The slab's face normal is tangent x side; the tangent is
     // taken from the drawn neighbours so it follows the ribbon rather than
@@ -9687,263 +10035,6 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
         fl, bondList, deg, inc, at,
         stickBox, stickFrame, stickHT, stickHW,
         stickIsFlat, registerJoint,
-    });
-
-    // --- depth range for shading ---
-    let zMin = Infinity;
-    let zMax = -Infinity;
-    for (const g of prims) {
-        if (g.z < zMin) zMin = g.z;
-        if (g.z > zMax) zMax = g.z;
-    }
-    const zSpan = zMax - zMin;
-    const nearOf = (z) => (zSpan > 1e-6 ? (z - zMin) / zSpan : 0.75);
-
-    const strokePath = (pts) => {
-        ctx.beginPath();
-        ctx.moveTo(pts[0][0], pts[0][1]);
-        for (let j = 1; j < pts.length; j++) ctx.lineTo(pts[j][0], pts[j][1]);
-        ctx.stroke();
-    };
-
-    if (renderer._dumpCand) {
-        renderer._candDump = inkCurves.map((cv) => ({
-            vis: cv.vis.map((v) => (v ? 1 : 0)).join(''),
-            pts: cv.pts.map((q) => [+q[0].toFixed(1), +q[1].toFixed(1), +q[2].toFixed(2)]),
-        }));
-    }
-    // FAST ink: the painter approximation - candidates as depth-sorted
-    // overlapping chunks biased UP one slab thickness. Skips the entire
-    // occlusion grid, which is what makes fast mode actually fast; the
-    // known artifact (user-accepted for interaction) is dotted ink along
-    // inner edges at near-ties. The perfect pass replaces the frame the
-    // moment the gesture ends.
-    if (!perfectInk && outlineW) {
-        const bias = 0.3 * widthScale;
-        for (const cv of inkCurves) {
-            const pts = cv.pts;
-            const vis = cv.vis;
-            let run = null;
-            const flushRun = () => {
-                if (run && run.length > 1) {
-                    for (let a = 0; a + 1 < run.length; a += 1) {
-                        const cp = run.slice(a, Math.min(run.length, a + 3));
-                        if (cp.length < 2) break;
-                        let zq = -Infinity;
-                        for (const pq of cp) {
-                            if (pq[2] > zq) zq = pq[2];
-                        }
-                        // cv.c, not col: `col` belongs to the per-interval
-                        // loop far above and is out of scope here, so this
-                        // threw "col is not defined" the moment the fast ink
-                        // path ran. It stayed latent for a long time because
-                        // nothing selected that path automatically; it is
-                        // reachable now only via renderer._quality='fast'.
-                        prims.push({ kind: 'ribStroke', pts: cp, z: zq + bias, c: cv.c,
-                        gs0: cv.gs0 });
-                        if (a + 3 >= run.length) break;
-                    }
-                }
-                run = null;
-            };
-            for (let s = 0; s < vis.length; s++) {
-                if (vis[s]) {
-                    if (!run) run = [pts[s]];
-                    run.push(pts[s + 1]);
-                } else {
-                    flushRun();
-                }
-            }
-            flushRun();
-        }
-    }
-
-    // ---- BASE PLATES -------------------------------------------------
-    // Built per PAIR, in one frame shared by both halves, so the two bases
-    // of a pair are exactly coplanar and collinear - independent
-    // per-residue frames left them at visibly different angles, which is
-    // what stopped them reading as base pairs.
-    //
-    // The frame is exact rather than fitted. The MIDPOINT of a pair lies on
-    // the helix axis by construction, so consecutive pair midpoints give
-    // the local axis direction directly - no smoothing window (which a
-    // 12-mer duplex is too short to fill anyway) and no fitted constants.
-    // The base-pair plane is perpendicular to that axis.
-    const rbfP = baseFramesRot;
-    // ...and the rungs, which read the frames above and write only prims
-    // and the pick list. See parts of this file that no longer live here.
-    buildBasePlates({
-        renderer, prims, colors, n, vis,
-        project, persp, fl, naPos, naFrames,
-        rbfP, pairOf, bbSeg, frameProbe, naHalfT,
-        naSlabHalfT, naWidthA, naPlateWA, widthScale, inkWanted,
-        selInk, emitSlabInk, hasColorOverrides,
-    });
-    // which is exactly why masking the grain FIRST protects the paper
-    // without any per-pixel work.
-    const pencilWanted = Math.max(0, Math.min(1,
-        renderer.cartoonPencil !== undefined
-            ? renderer.cartoonPencil : (rich ? PENCIL_DEFAULT : 0)));
-    // Applied on EVERY frame, dragging included. It was skipped during
-    // gestures when it cost 26 ms - half the frame - but the GPU
-    // compositing path below runs in 0.6-1.6 ms, so skipping saves nothing
-    // worth having and costs something real: the grain popped in the moment
-    // the view settled, which reads as the render changing under you.
-    const pencilOn = pencilWanted > 0.001;
-    let realCtx = null;
-    let offCv = null;
-    if (pencilOn && typeof document !== 'undefined'
-        && ctx.canvas && ctx.drawImage && ctx.createPattern) {
-        const dw = ctx.canvas.width;
-        const dh = ctx.canvas.height;
-        if (dw > 0 && dh > 0) {
-            offCv = renderer._pencilOff;
-            if (!offCv || offCv.width !== dw || offCv.height !== dh) {
-                offCv = document.createElement('canvas');
-                offCv.width = dw; offCv.height = dh;
-                renderer._pencilOff = offCv;
-            }
-            const oc = offCv.getContext('2d');
-            if (oc) {
-                oc.setTransform(1, 0, 0, 1, 0, 0);
-                oc.clearRect(0, 0, dw, dh);
-                // carry the real context's transform so every coordinate
-                // computed above lands in the same place
-                let m = null;
-                if (ctx.getTransform) { try { m = ctx.getTransform(); } catch (e) { m = null; } }
-                if (m) oc.setTransform(m.a, m.b, m.c, m.d, m.e, m.f);
-                else {
-                    const k = dw / Math.max(1, displayWidth);
-                    oc.setTransform(k, 0, 0, k, 0, 0);
-                }
-                realCtx = ctx;
-                ctx = oc;
-            } else {
-                offCv = null;
-            }
-        }
-    }
-
-    // ---- PAINT BACKEND SEAM --------------------------------------------
-    // Every filled quad in the cartoon goes through painter.quad(). The
-    // default backend below issues the canvas path calls this code always
-    // made, so nothing changes; the point is that the geometry is now handed
-    // over as DATA at a single choke point.
-    //
-    // Why here: profiling puts ~73% of a large frame in paint, and that cost
-    // is draw-call COUNT - 262k calls at 10000 residues, ~1.9 us each, 4.2
-    // fills per primitive with a different tone on every one. Batching at the
-    // canvas level is therefore impossible (measured: no runs to merge, and
-    // dropping the seam stroke bought only ~7%). A GPU backend wins by
-    // consuming these same quads as vertex data - 260k triangles is one draw
-    // call - and gets hardware depth testing, which also retires the
-    // painter's-algorithm sorting this file works so hard around.
-    //
-    // A backend implements: quad(x0,y0,x1,y1,x2,y2,x3,y3, fillStyle,
-    // strokeStyle, lineWidth) and is set as renderer.cartoonPainter.
-    // SVG export keeps working through the canvas backend unchanged.
-    const painter = renderer.cartoonPainter || {
-        quad: (x0, y0, x1, y1, x2, y2, x3, y3, fill, strokeStyle, lw) => {
-            ctx.fillStyle = fill;
-            ctx.beginPath();
-            ctx.moveTo(x0, y0);
-            ctx.lineTo(x1, y1);
-            ctx.lineTo(x2, y2);
-            ctx.lineTo(x3, y3);
-            ctx.lineTo(x0, y0);
-            ctx.fill();
-            if (strokeStyle) {
-                ctx.strokeStyle = strokeStyle;
-                ctx.lineWidth = lw || 1;
-                ctx.stroke();
-            }
-        },
-        begin: () => {},
-        end: () => {},
-    };
-    if (painter.begin) painter.begin(displayWidth, displayHeight);
-
-    // --- paint, back to front ---
-    if (renderer._phase) renderer._phase.build = (typeof performance !== 'undefined'
-        ? performance.now() : 0);
-    // set renderer._primProbe = null before a render to receive the sorted
-    // primitive list - each carries gs0 (its position along the backbone,
-    // in residues) and c, which is what makes a colour boundary measurable
-    // in residue units rather than in pixels
-    if (renderer._primProbe === null) renderer._primProbe = prims;
-    // THE CLIP SLAB, on the 2D path, is a CULL rather than a cut: a canvas
-    // paints whole primitives, so a piece straddling a plane is kept or
-    // dropped by its own depth and the cut comes out stepped at the scale
-    // of one station (a residue over `detail`). The GPU path cuts per
-    // fragment and is exact; this is the fallback, and it is the same slab
-    // - renderer.clipAccepts is the single test both ask.
-    // THE BACKBONE SWITCH, at the same place the clip cuts. Two questions,
-    // both per prim: is this backbone at all - only the ribbon and the loop
-    // tube are, while sticks, joints, base plates and contact lines are
-    // what a side chain is made of - and does it belong to a residue whose
-    // backbone the user hid. The CA stays either way: the sticks are drawn
-    // from it and it is a point on a face, not a prim of its own.
-    const bbHide = renderer.backboneHiddenSet ? renderer.backboneHiddenSet() : null;
-    if (bbHide) {
-        const isBackbonePrim = (kd) => kd === 'rib' || kd === 'ribStroke' || kd === 'tube';
-        // WHICH RESIDUE A PRIM IS, from the position it carries along the
-        // backbone. A piece spans a fraction of a residue to a couple of
-        // them, so it is asked at its MIDDLE - the ends of a piece are
-        // shared with its neighbours and would each answer twice.
-        const resOf = (g) => {
-            if (typeof g.gs0 !== 'number') return -1;
-            const ns = (g.Lp && g.Lp.length) || (g.pts && g.pts.length) || 1;
-            const step = typeof g.gsStep === 'number' ? g.gsStep : 0;
-            return Math.round(g.gs0 + step * (ns - 1) / 2);
-        };
-        let k = 0;
-        for (let i = 0; i < prims.length; i++) {
-            const g = prims[i];
-            if (isBackbonePrim(g.kind) && bbHide.has(resOf(g))) continue;
-            prims[k++] = g;
-        }
-        prims.length = k;
-    }
-    if (renderer.clipSlabOn && renderer.clipSlabOn()) {
-        let k = 0;
-        for (let i = 0; i < prims.length; i++) {
-            if (renderer.clipAccepts(prims[i].z)) prims[k++] = prims[i];
-        }
-        prims.length = k;
-    }
-    prims.sort((a, b) => a.z - b.z);
-    if (renderer._phase) { renderer._phase.prims = prims.length;
-        renderer._phase.sorted = (typeof performance !== 'undefined' ? performance.now() : 0); }
-    // GEOMETRY ONLY. A consumer that wants the primitives and not the
-    // picture - the GPU prototype harvesting a mesh - has everything it
-    // came for by this line: the prims are built, and _primProbe already
-    // holds them. Everything past here paints a frame nobody will look at,
-    // and the ink pass alone is the larger half of it. Measured on 1UBQ,
-    // 13 ms of a 44 ms capture.
-    //
-    // The sort above is deliberately kept: it costs nothing next to the
-    // paint and it leaves the list in the order the painter would use,
-    // which a consumer comparing against a painted reference wants.
-    // GEOMETRY DONE. Everything above builds `prims`; everything below
-    // paints them. The seam was already here as a probe hook - the GPU
-    // path sets _probeOnly and takes the primitive list without paying for
-    // a frame nobody looks at - and this makes it a real boundary with a
-    // written-down interface instead of one shared closure.
-    //
-    // THE HANDOFF IS THE INTERFACE: every render() local the painting half
-    // reads. tools/free_vars.js proposed most of it; the rest came from
-    // running tests/paint_trace.js and adding what it said was missing,
-    // because the heuristic cannot see a name a nested scope redeclares -
-    // and missed `n`, which is simply `renderer.coords.length`.
-    if (renderer._probeOnly) return;
-    return paintPrims({
-        renderer, ctx, displayWidth, displayHeight, colors, SELECTION_INK_WIDTH,
-        _t0, anim, at, baseLineWidthPixels, cacheRebuilt, chainU,
-        edgeTone, fl, inkCurves, inkW, inkWanted, jointMinOrder,
-        lightOn, nearOf, offCv, outlineW, paintInkW, painter,
-        pencilWanted, perfectInk, persp, prims, project, pxScale,
-        realCtx, rich, rotated, scale, sketchMax, sketchSegs,
-        sketching, soft, strokePath, wobble, n, vis,
     });
 }
 

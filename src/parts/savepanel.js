@@ -180,10 +180,45 @@
             const ROW = 'display:grid; align-items:center; gap:6px;'
                 + ' grid-template-columns:repeat(auto-fill, minmax(84px, 1fr));'
                 + ' min-width:0;';
-            // ONE SIZE FOR EVERY CONTROL, and big enough to read: two rows of
-            // controls at different weights make the eye work out which number
-            // belongs to which output.
-            const H = 28;
+            // THE PAGE'S OWN BUTTON, WHERE THE PAGE HAS ONE.
+            //
+            // These were styled inline because the two pages skin their
+            // buttons differently and one class renders invisible on the
+            // other - but that left Save and Turn as the only controls in the
+            // viewer that do not look like the buttons beside them, which is
+            // exactly what a button should not do. So the skin is LOOKED UP:
+            // index.html has .btn.btn-grey.btn-small, the notebook viewer has
+            // .controlButton. A page with neither keeps the inline style.
+            const skin = ['btn btn-grey btn-small', 'controlButton'].find((c) => {
+                try {
+                    return !!document.querySelector('.' + c.trim().split(/\s+/).join('.'));
+                } catch (e) { return false; }
+            }) || '';
+
+            // ONE SIZE FOR EVERY CONTROL, AND THE PAGE DECIDES WHAT IT IS.
+            //
+            // This was a hardcoded 28, under a note saying that both pages'
+            // buttons were 28 too - which was true when it was written and
+            // stopped being true the moment the notebook's buttons went to 24.
+            // A number copied from somewhere else is a number that goes stale
+            // silently: the Capture panel's selects stood 4px taller than the
+            // Style panel's, in a column 180px wide where that reads as two
+            // different kinds of control.
+            //
+            // So it is MEASURED off the skin found above, which is the same
+            // lookup the buttons already use. 28 remains the answer for a page
+            // with no CSS at all - the standalone HTML export ships none, and
+            // every control in it is inline-styled for exactly that reason.
+            // MEASURED OFF THE ANCHOR, which is the Capture button this panel
+            // is opening from and is therefore visible by definition. Querying
+            // for the skin class instead finds #playButton first, and that is
+            // display:none whenever the object has one frame - a measured
+            // height of zero, which the guard below caught and turned back into
+            // the stale 28 it was meant to replace.
+            const H = (() => {
+                const h = anchorEl ? Math.round(anchorEl.getBoundingClientRect().height) : 0;
+                return (h >= 16 && h <= 48) ? h : 28;
+            })();
             // BOX-SIZING, or a field told to fill its cell overflows it by its
             // own padding and border: 100% plus 12px of padding and 2px of
             // frame stuck 14px out of a 160px panel.
@@ -201,21 +236,6 @@
             const BTN = `flex:0 0 auto; padding:0 8px; height:${H}px; line-height:1;`
                 + ' cursor:pointer; font-size:12px; border:1px solid #d1d5db;'
                 + ' border-radius:6px; background:#fff; box-sizing:border-box;';
-            // THE PAGE'S OWN BUTTON, WHERE THE PAGE HAS ONE.
-            //
-            // These were styled inline because the two pages skin their
-            // buttons differently and one class renders invisible on the
-            // other - but that left Save and Turn as the only controls in the
-            // viewer that do not look like the buttons beside them, which is
-            // exactly what a button should not do. So the skin is LOOKED UP:
-            // index.html has .btn.btn-grey.btn-small, the notebook viewer has
-            // .controlButton, and both are 28px high, which is this panel's
-            // height already. A page with neither keeps the inline style.
-            const skin = ['btn btn-grey btn-small', 'controlButton'].find((c) => {
-                try {
-                    return !!document.querySelector('.' + c.trim().split(/\s+/).join('.'));
-                } catch (e) { return false; }
-            }) || '';
             const button = (text, title) => {
                 // Only the layout is ours when the page has a skin: its height,
                 // padding, border and hover are the page's business, and
@@ -238,12 +258,25 @@
             // action column is fixed at the right, so Save and the record dot
             // are always in the same place, on top of each other, whatever is
             // showing between.
+            // THE SAME RHYTHM AS EVERYTHING ELSE IN THE COLUMN. This box had
+            // its own numbers - 8px of padding against the style panel's 5, a
+            // 6px top margin on top of the container's own 3px gap, and 6px
+            // between rows against 3 - so it read as a different piece of
+            // furniture sitting in the same drawer. Inline, because this panel
+            // has to survive a page with no CSS at all (the standalone HTML
+            // export ships none), so the numbers are repeated here rather than
+            // inherited - but they are the same numbers.
+            //
+            // No top margin: the container spaces its children with a gap, and
+            // a margin on top of that is the gap counted twice. Where there is
+            // no gap the panel simply sits against the button that opened it,
+            // which is what "expands in place" means.
             p.style.cssText = 'display:grid;'
                 + ' grid-template-columns:auto minmax(0,1fr) auto;'
-                + ' gap:6px 8px; align-items:center;'
+                + ' gap:3px 6px; align-items:center;'
                 + ' box-sizing:border-box; max-width:100%;'
                 + ' border:1px solid #e5e7eb; border-radius:8px; background:#fff;'
-                + ' padding:8px; margin-top:6px;';
+                + ' padding:5px;';
 
             const el = (tag, css, text) => {
                 const n = document.createElement(tag);
