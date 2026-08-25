@@ -382,12 +382,21 @@
 
 
 /* Specific button overrides (for backward compatibility) */
-#fetch-btn {
-    min-width: 100px;
-}
 
-#upload-button {
-    min-width: 170px;
+/* THE LOAD ROW'S THREE BUTTONS ARE ONE SET, so they are one size. They were
+   three different widths - Fetch pinned at 100, Upload at 170, and Options
+   left to size itself at 98 - which read as three unrelated controls rather
+   than the three ways of getting a structure onto the page. Upload was the
+   odd one: 170px for a label that needs 96 with its icon.
+
+   One rule rather than three numbers, and 100px because that is what the
+   WIDEST of them needs - "Options" plus its caret - so nothing is clipped and
+   nothing is padded out to match a number no label asked for. .btn is already
+   inline-flex and centred, so the contents stay put. */
+#fetch-btn,
+#upload-button,
+#fetchOptionsButton {
+    min-width: 100px;
 }
 
 #example-button-1,

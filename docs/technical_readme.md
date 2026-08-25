@@ -1876,7 +1876,7 @@ const colorblindSafeChainColors = [
   - **Data flow**: scatter_config serialized per-object, converted to scatterConfig on load
   - **Use cases**: Different objects can have different scatter plots (e.g., "RMSD vs Energy" for one object, "PC1 vs PC2" for another)
   - **Backward compatibility**: Not required - scatter feature not yet public
-  - **Files modified**: `viewer.py`, `viewer-mol.js`, `app.js`, `technical_readme.md`
+  - **Files modified**: `viewer.py`, `viewer-mol.js`, `app.js`, `docs/technical_readme.md`
   - **Key benefit**: Enables multi-object scatter plots with different labels/limits that persist when switching objects
 
 ### Previous Changes (2025-12-11)

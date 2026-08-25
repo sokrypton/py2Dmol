@@ -2032,7 +2032,7 @@ let tubeCentre = [0, 0, 0];
  *
  * Objects carry their own style, so a merge can hold a ribosome drawn as a
  * tube beside a peptide drawn as a ribbon. They are different geometry models
- * and stay different (see GPU_LIFECYCLE.md) - but they draw into the SAME
+ * and stay different (see docs/GPU_LIFECYCLE.md) - but they draw into the SAME
  * framebuffer with the SAME depth buffer, so interleaving them correctly costs
  * nothing: whoever is nearer wins, per pixel, with no sorting anywhere.
  *

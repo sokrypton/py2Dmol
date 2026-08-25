@@ -29,3 +29,6 @@ natives.zip
 # setuptools build directory
 build/
 dist/
+*.pdb
+*.a3m
+*.zip

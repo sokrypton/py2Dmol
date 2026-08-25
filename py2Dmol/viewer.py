@@ -301,7 +301,7 @@ The `persistence` parameter controls whether output cells are preserved after no
 - Uses DisplayHandle.update() throughout for safety
 - MUST use display_id when calling display() for update() to work
 
-For complete documentation, see: technical_readme.md → "Persistence Modes"
+For complete documentation, see: docs/technical_readme.md → "Persistence Modes"
 """
 
 # CRYSTALLISATION ADDITIVES - what a structure carries because of how it was

@@ -63,13 +63,13 @@ ALLOWED = {
         'the allowlist entry above quotes it',
 }
 
-# technical_readme.md is 1,992 lines dated 2025-12-12 and says of itself that it
+# docs/technical_readme.md is 1,992 lines dated 2025-12-12 and says of itself that it
 # is "out of date and is not maintained". Its paths are stale because ALL of it
 # is - the line counts, the file tree, the function inventory - and rewriting the
 # paths alone would make a stale document look current. It is excluded whole,
 # and that is a decision to revisit by deleting or rewriting it, not by adding
 # entries above.
-SKIP_FILES = {'technical_readme.md'}
+SKIP_FILES = {'docs/technical_readme.md'}
 
 
 def tracked():

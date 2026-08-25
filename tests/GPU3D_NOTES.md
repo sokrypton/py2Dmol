@@ -8,7 +8,7 @@ in `PERF_NOTES.md` turns out to be the ceiling for swapping the painter, not for
 a 3D port.
 The reason to want a depth buffer here is correctness: the painter sorts whole
 bodies by one depth key, which is why a side chain can land on top of a ribbon
-that is genuinely in front of it. `PAINT_ORDER.md` records six attempts to fix
+that is genuinely in front of it. `docs/PAINT_ORDER.md` records six attempts to fix
 that by choosing better keys; none improved both error directions.
 
     python3 -m http.server 8080

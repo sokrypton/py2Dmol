@@ -745,7 +745,7 @@ tiling is the only approach measured anywhere that improves both side-chain
 error categories at once.
 
 The full history — six approaches, what each measured, and why each failed — is
-in `PAINT_ORDER.md` at the repo root. The work itself is on the `paint-order/*` branches.
+in `docs/PAINT_ORDER.md` at the repo root. The work itself is on the `paint-order/*` branches.
 
 ## Side-chain clearance — `bleed.py`
 

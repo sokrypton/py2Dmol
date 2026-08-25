@@ -1305,7 +1305,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Several objects shown at once, merged into one coordinate array
             // the same way the overlay merges frames - see _mergeObjects and
-            // MULTI_OBJECT_PLAN.md. The two are mutually exclusive: a merge is
+            // docs/MULTI_OBJECT_PLAN.md. The two are mutually exclusive: a merge is
             // of frames or of objects, never both.
             this.multiState = {
                 enabled: false,              // Is more than one object merged in?
@@ -1437,7 +1437,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // which is every session today; the object list will write names
             // into it. Read through drawnObjects(), never directly, so the
             // day it holds several the callers need no changing.
-            // See MULTI_OBJECT_PLAN.md.
+            // See docs/MULTI_OBJECT_PLAN.md.
             this.shownObjects = null;
 
             // CONTACTS THAT BELONG TO NO ONE OBJECT, because their two ends are
@@ -5535,7 +5535,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          *
          * That the merge is real and not a composite is what buys shadowing,
          * depth sorting, picking and both GPU paths with no new code. The price
-         * is that ONE style draws the lot; see MULTI_OBJECT_PLAN.md.
+         * is that ONE style draws the lot; see docs/MULTI_OBJECT_PLAN.md.
          *
          * @param {string[]} names - objects to merge, in drawing order
          * @returns {Object|null} merged data, plus sourceIdMap (position ->
@@ -9702,7 +9702,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * sorting anywhere. (The 2D path cannot do this. Its painter resolves
          * overlap by paint order, and two independent sorts cannot be merged
          * without one depth-sorted stream across both models - which is the
-         * problem PAINT_ORDER.md records every attempt at.)
+         * problem docs/PAINT_ORDER.md records every attempt at.)
          *
          * Each painter is shown only its own objects, by swapping the
          * visibility mask for the duration: both of them already build their
