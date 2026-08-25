@@ -1243,6 +1243,22 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     if "color" in frame and frame["color"] is not None:
                         light_frame["color"] = frame["color"]
 
+                    # ...AND THE REQUEST TO SUPERPOSE. Since best_view and
+                    # kabsch left viewer.py the browser does the fitting, and
+                    # what Python sends is the REQUEST rather than the result -
+                    # so a payload that drops `align` is a payload that says
+                    # "leave every frame where its file put it". This whitelist
+                    # named every field but that one, so add() then show() - the
+                    # ordinary way to use the library, and align=True by default
+                    # - never superposed anything, while show() then add() did,
+                    # because the live path sends the frame dict whole. A
+                    # 60-residue helix and the same helix turned 90 degrees came
+                    # out 7.07 A apart instead of 0.
+                    if frame.get("align"):
+                        light_frame["align"] = True
+                        if frame.get("allow_reflection"):
+                            light_frame["allow_reflection"] = True
+
                     light_frames.append(light_frame)
 
                 # Create object serialization - even if no frames, we may have metadata

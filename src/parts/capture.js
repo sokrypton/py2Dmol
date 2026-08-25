@@ -783,6 +783,22 @@
 
         // Shared gate: the build-up is a cartoon-style thing.
         _canDraw() {
+            // ...AND THE 2D PAINTER, which outside the website is usually not
+            // in the download. _gpuWillTake returns false while drawMode is on
+            // - the pencil, the wash and the grain have no WebGL2 port - so
+            // without a 2D painter behind it this asks for one that is not
+            // there. parts/panel.js does not build the toggle on such a build;
+            // this is the backstop for setDrawMode() called from code, and it
+            // says so rather than leaving a blank canvas.
+            if (!window.py2dmolCartoonPaint) {
+                const m = 'The drawing animation needs the 2D painter, which'
+                    + ' this build does not carry.';
+                if (typeof setStatus === 'function') setStatus(m, true);
+                else console.warn('py2Dmol: ' + m);
+                this.drawMode = false;
+                if (this.drawCheckbox) this.drawCheckbox.checked = false;
+                return false;
+            }
             if (this.style === 'cartoon') return true;
             const msg = 'The drawing animation needs the cartoon style.';
             if (typeof setStatus === 'function') setStatus(msg, true);

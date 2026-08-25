@@ -94,6 +94,22 @@ v.set_sse('H', name='pep', position=5)
 # 10-20 exists in ubq and in pep, so each must resolve inside its own window
 v.add_contacts([['A', 10, 'A', 20, 1.0]], name='ubq')
 v.add_contacts([['A', 10, 'A', 20, 1.0]], name='pep')
+
+# ...and two more, THE SAME LENGTH, one carrying chains and one carrying none.
+# The renderer's per-field caches let a frame that omits `chains` inherit the
+# last array it saw, which is right within an object - a trajectory writes them
+# on frame 0 and omits them after - and was guarded by nothing but
+# `length === n`. Two objects of equal length therefore inherited each other's:
+# switch from the two-chain one to the one-chain one and it was drawn as two
+# chains, split at a break that is not in it. The lengths must MATCH for this to
+# probe anything, which is why they are built rather than loaded.
+import numpy as _np
+_t = _np.linspace(0, 8 * _np.pi, 60)
+_helix = _np.stack([_np.cos(_t) * 5, _np.sin(_t) * 5, _t * 1.5], axis=1)
+v.add(_helix, align=False, name='twochain', chains=['A'] * 30 + ['B'] * 30)
+v.add(_helix, align=False, name='nochain')          # no chains at all
+v.add(_helix, align=False, name='nochain')          # ...and a second frame
+
 body = v._display_viewer(static_data=v.objects)
 
 JS = """
@@ -115,8 +131,30 @@ window.addEventListener('load', () => {
       const col = (i) => { const c = r.getAtomColor(i, r._getEffectiveColorMode(i));
         return [c.r, c.g, c.b].join(','); };
       R.colourOfThird = col(3);
-      // ...now show BOTH, which the renderer supports even with no list UI
-      r.setShownObjects(R.objects);
+      // --- TWO OBJECTS OF THE SAME LENGTH, and only one of them has chains.
+      // BEFORE the merge below, and never through setShownObjects: both of
+      // those build a chains array of their own, so neither ever asks the
+      // per-field caches anything. The route that inherits is the single
+      // object one - _switchToObject then setFrame - which is what the object
+      // picker calls, and it was reusing the LAST object's arrays whenever the
+      // new one omitted them and the lengths happened to match.
+      const pick = async (name) => { r._switchToObject(name); r.setFrame(0); await settle(); };
+      await pick('twochain');
+      R.twoChain = [...new Set(r.chains)].sort().join('');
+      await pick('nochain');
+      R.noChain = [...new Set(r.chains)].sort().join('');
+      R.noChainN = r.coords.length;
+      // ...and the inheritance the cache exists for: frame 1 of twochain
+      // carries no chains of its own and must still be AB
+      await pick('twochain');
+      r.setFrame(1); await settle();
+      R.inheritF0 = [...new Set(r.chains)].sort().join('');
+      await pick('ubq');
+
+      // ...now show BOTH, which the renderer supports even with no list UI.
+      // Named rather than "all of them": the page carries two more objects for
+      // the equal-length check below, and this measures the merge of these two.
+      r.setShownObjects(['ubq', 'pep']);
       await settle();
       R.bothDrawn = r.drawnObjects();
       R.bothN = r.coords.length;
@@ -178,6 +216,9 @@ print(f"  both shown: {R['bothDrawn']} ({R['bothN']} positions,"
 print(f"  residue 3: ubq {R['ubqThird']}, pep {R['pepThird']}")
 print(f"  forced SSE: pep 5 -> {R['sseAt']!r}, ubq 5 -> {R['sseOther']!r}")
 print(f"  contacts: {R['contactSegs']}")
+print(f"  equal-length objects: twochain {R.get('twoChain')!r},"
+      f" nochain {R.get('noChain')!r} ({R.get('noChainN')} positions),"
+      f" inherited within twochain {R.get('inheritF0')!r}")
 
 bad = []
 if not SAME:
@@ -199,6 +240,19 @@ if R['ubqThird'] == R['pepThird']:
 if R['sseAt'] != 'H' or R['sseOther'] != 'none':
     bad.append(f"forced SSE reads {R['sseAt']!r} on the object given it and"
                f" {R['sseOther']!r} on the other")
+if R.get('twoChain') != 'AB':
+    bad.append(f"the two-chain object reads {R.get('twoChain')!r}, so this pair"
+               " cannot show the inheritance and the check below proves nothing")
+if R.get('noChain') != 'A':
+    bad.append(f"an object with no chains of its own reads {R.get('noChain')!r}"
+               " after a two-chain object of the SAME LENGTH was shown - the"
+               " per-field caches are the renderer's, not the object's, and"
+               " `length === n` is not enough to tell two objects apart")
+if R.get('inheritF0') != 'AB':
+    bad.append(f"twochain reads {R.get('inheritF0')!r} - dropping the caches"
+               " between objects has broken the inheritance they exist for,"
+               " where a later frame omits what frame 0 carried")
+
 owners = [c[2] for c in R['contactSegs']]
 if sorted(owners) != ['pep', 'ubq'] or any(c[2] != c[3] for c in R['contactSegs']):
     bad.append(f"the two contacts resolved to {R['contactSegs']} - each names"

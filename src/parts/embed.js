@@ -178,17 +178,11 @@ function show(target, text, options) {
         const col = el.querySelector('#rightPanelContainer');
         if (col) col.hidden = true;
     }
-    // ...and the one control in the shell that wireViewerUI does not wire.
-    // Orient is not in the notebook's markup at all - on the website the button
-    // lives in index.html and app/main.js wires it, because only that page has
-    // an #objectSelect to ask WHICH object. An embed has no such dropdown, so
-    // this is the whole of it: the current object, flown to.
-    if (wantsChrome) {
-        const orientButton = el.querySelector('#orientButton');
-        if (orientButton) {
-            orientButton.addEventListener('click', () => renderer.orient());
-        }
-    }
+    // Orient is wired by wireViewerUI, from viewer.html's markup and this
+    // shell's alike - it used to be wired HERE, on the reasoning that only
+    // index.html has an #objectSelect to ask which object. viewer.html has one
+    // too, so that was never the difference and the notebook was simply
+    // missing the button. Wiring it in both places fired the flight twice.
     // CLICKING PICKS A RESIDUE, which the renderer keeps off by default and an
     // embed wants on.
     //

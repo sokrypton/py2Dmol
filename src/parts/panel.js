@@ -113,7 +113,14 @@ const STYLE_PANEL_ROWS = [
      { kind: 'toggle', id: 'arrowsCheckbox', label: 'Arrows', style: 'cartoon',
        checked: true,
        title: 'Arrowheads on the C-terminal end of each beta strand' },
+     // DRAW IS THE 2D PAINTER'S, and outside the website that painter is
+     // usually not in the download at all. _gpuWillTake returns false while
+     // drawMode is on - the pencil, the wash and the grain have no WebGL2
+     // port - so on a GPU-only build ticking this asks for a painter that is
+     // not there. needs2d drops the item rather than the row, because the
+     // toggles beside it are nothing to do with the painter.
      { kind: 'toggle', id: 'drawCheckbox', label: 'Draw', style: 'cartoon',
+       needs2d: true,
        title: 'Build the picture up by hand: pencil sketch, colour wash, then ink' },
      { kind: 'toggle', id: 'colorblindCheckbox', label: 'Colorblind',
        title: 'Colorblind-safe colors' },
@@ -188,7 +195,14 @@ function buildItem(item) {
  */
 function buildStylePanel() {
     const panel = el('div', { id: 'stylePanel', hidden: true });
-    for (const items of STYLE_PANEL_ROWS) {
+    // WHICH PAINTER IS IN THIS DOWNLOAD IS SETTLED BEFORE THE PANEL IS BUILT,
+    // so an item that only one painter can honour is simply not made. This is
+    // the same question core/mol.js asks to derive useGPU, and the same one the
+    // Save panel asks before offering SVG.
+    const has2d = typeof window !== 'undefined' && !!window.py2dmolCartoonPaint;
+    for (const all of STYLE_PANEL_ROWS) {
+        const items = all.filter((i) => !(i.needs2d && !has2d));
+        if (!items.length) continue;
         const styles = new Set(items.map((i) => i.style || ''));
         const row = el('div', {
             class: 'toggle-item',

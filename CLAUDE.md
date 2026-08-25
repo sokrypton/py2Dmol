@@ -195,6 +195,21 @@ public downloads is exercised on every run.
   so the `_recallStyleSettings` short cut above returned without restoring it.
   Black was a first-visit-only effect: 3d, tube, 3d again left it white, on the
   website dropdown as much as anywhere.
+- **A control belongs to whichever painter can honour it, and the panel is
+  built after that is settled.** `Draw` is the 2D painter's — `_gpuWillTake`
+  returns false while `drawMode` is on, because the pencil, the wash and the
+  grain have no WebGL2 port — so on a GPU-only build ticking it asked for a
+  painter that is not in the download. `needs2d` on the ITEM drops it;
+  dropping the ROW would take Smooth, Arrows, Colorblind and Dark with it.
+  `_canDraw` refuses by name as the backstop for `setDrawMode()` from code.
+  Same question the Save panel asks before offering SVG.
+- **Three shells carry the same controls, and Orient was in two of them.**
+  The website's lives in `index.html` and `app/main.js` wires it; the embed
+  grew its own in `parts/embed.js`; `py2Dmol/resources/viewer.html` — the page
+  a notebook cell actually shows — had neither, on a note claiming only
+  `index.html` has an `#objectSelect` to say which object. It has one too. It
+  is wired in `parts/ui.js` now, from the markup both shells carry, and the
+  embed's own listener went with it — wiring it twice flew the camera twice.
 - **The Style panel is data, in `parts/panel.js`, and is BUILT at runtime.**
   It used to be two hundred lines of markup in `index.html` and again in
   `viewer.html`, under a note saying to edit both — which had already been
@@ -212,6 +227,21 @@ public downloads is exercised on every run.
   profile, and `setPreset` only makes sense for one of them — but do not put it
   back in front of a caller: `cartoon` was never a look on its own, and two
   fields that must agree are two fields that can disagree.
+- 🔴 **THE STATIC PAYLOAD IS BUILT FIELD BY FIELD TOO, and it dropped
+  `align`.** Same shape of fault as `normalizeConfig` below: `_display_viewer`
+  assembles a `light_frame` key by key, so a key it does not name is a key it
+  throws away — and it named every one but the request to superpose. Since the
+  fitting moved to the browser the payload carries the REQUEST, not the result,
+  so dropping it means "leave every frame where its file put it". `align=True`
+  is the DEFAULT, and `add()` then `show()` is the ordinary way to use the
+  library, so a trajectory simply did not superpose — while `show()` then
+  `add()` did, because the live path sends the frame dict whole. A helix and
+  the same helix turned 90 degrees came out 7.07 A apart instead of 0.
+  `parts/ui.js`'s static loader rebuilds the frame field by field as well and
+  had to be told separately; **both ends** are needed and each fails silently
+  on its own. Checked in `tests/minimal_input.py`, which loads one object that
+  asks for alignment and one that refuses it — a single object cannot tell
+  "aligned" from "the frames were never moved".
 - **The browser owns the viewing geometry now.** `best_view` and `kabsch` both
   left `viewer.py`: the angle is chosen by `parts/orient.js` when the first
   frame lands, and each frame is superposed on the one before it in
@@ -328,6 +358,27 @@ public downloads is exercised on every run.
   bug.** It is one mailbox cell, overwritten, holding only the last unsent
   delta — so a reopened notebook replays one frame where `persistence=True`,
   which writes a cell per `add()`, replays the trajectory.
+- 🔴 **THE PER-FIELD CACHES ARE THE RENDERER'S, NOT THE OBJECT'S.**
+  `_setDataField` falls back to the last array it saw whenever a frame does not
+  carry one, which is right WITHIN an object — a trajectory writes `chains` on
+  frame 0 and omits them after — and wrong the moment the object changes. The
+  only guard was `length === n`, so **two objects of the same length inherited
+  each other's**: switch from a 60-residue two-chain complex to a 60-residue
+  model that carries no chains, and it is drawn as two chains, split at a break
+  that is not in it. All seven fields do it — `plddts`, `chains`,
+  `positionTypes`, `positionNames`, `residueNumbers`, `positionAtoms`,
+  `positionElements`. `setCoords` drops the caches when
+  `_dataCacheObject !== currentObjectName`, and that check lives THERE rather
+  than inside `_setDataField` because the seven calls share the decision: the
+  first would flip the owner and the other six would then read the stale arrays
+  as if they belonged.
+  **Only one route reaches it.** The merge builds its own arrays
+  (`fill(frame.chains, () => Array(n).fill('A'))`), and so does
+  `setShownObjects` even for a single object — so neither ever asks the caches
+  anything, and a test written through either passes with the fix removed. The
+  route that inherits is `_switchToObject` then `setFrame`, which is what the
+  object picker calls. `tests/python_page.py` builds two equal-length objects
+  for this and switches between them **before** its merge step.
 - **One selector, and it lives in `core/mol.js`.** `positionsFor` turns
   `'B'` / `[3,4,5]` / `{object,chain,positions,range,residues,type,near,not}`
   into a Set of position indices. It began in `parts/embed.js`, which put the

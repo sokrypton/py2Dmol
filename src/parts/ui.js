@@ -892,6 +892,26 @@ if (shadowSlider) {
 }
 rotationCheckbox.checked = renderer.autoRotate;
 
+// ORIENT, FOR EVERY SURFACE THAT MOUNTS THIS PANEL. The notebook had no such
+// control at all - the website's lives in index.html and app/main.js wires it,
+// and the embed had grown its own copy in parts/embed.js on the reasoning that
+// only index.html has an #objectSelect to say WHICH object. viewer.html has one
+// too, so that was never the difference; the notebook was simply missing a
+// button. Wired here, both shells get it from one place.
+//
+// parts/orient.js is optional like every other subsystem, so the control goes
+// away with it rather than throwing when pressed.
+const orientButton = containerElement.querySelector('#orientButton');
+if (orientButton) {
+    if (!window.py2dmolOrient) {
+        orientButton.hidden = true;
+    } else {
+        orientButton.addEventListener('click', () => {
+            window.py2dmolOrient.orientToBestView(renderer, { animate: true });
+        });
+    }
+}
+
 // Hand-drawn build-up. A checkbox rather than a plain button so it takes
 // the same pressed skin as Colorblind and Dark beside it, and so it reads
 // as ON while the drawing is being made. The renderer clears it when the
@@ -1008,7 +1028,22 @@ if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (windo
                         residue_numbers: lightFrame.residue_numbers || undefined,  // Will default in setCoords
                         bonds: lightFrame.bonds || staticBonds || undefined,  // Bonds for connectivity
                         color: lightFrame.color || undefined,  // Frame-level color from Python
-                        scatter: lightFrame.scatter || undefined  // Scatter point for this frame
+                        scatter: lightFrame.scatter || undefined,  // Scatter point for this frame
+                        // ...AND THE REQUEST TO SUPERPOSE, which addFrame reads
+                        // off the frame as `align`. This rebuild names its
+                        // fields one by one, so a field it does not name is a
+                        // field it throws away - and it did not name this one.
+                        // align=True is the DEFAULT and the whole of what
+                        // Python sends about superposition since best_view and
+                        // kabsch left viewer.py: the browser does the work now,
+                        // and the payload carries the request rather than the
+                        // result. So `add()` then `show()` - the ordinary way
+                        // to use the library - dropped it silently and drew
+                        // every frame where its file put it, while `show()`
+                        // then `add()` worked, because the live path hands the
+                        // payload frame to addFrame unchanged.
+                        align: lightFrame.align || undefined,
+                        allow_reflection: lightFrame.allow_reflection || undefined
                     };
 
                     renderer.addFrame(fullFrameData, obj.name);

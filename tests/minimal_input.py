@@ -110,6 +110,54 @@ window.addEventListener('load', () => {
       R.orient.identity = [0, 1, 2].every((i) => [0, 1, 2].every((j) =>
           Math.abs(R.orient.rotation[i][j] - (i === j ? 1 : 0)) < 1e-6));
 
+      // ...AND THE READER CAN ASK FOR IT AGAIN. The notebook had no Orient
+      // control at all: the website's is in index.html, the embed had grown
+      // its own in parts/embed.js, and this page - the one a notebook cell
+      // actually shows - had neither. Wired in parts/ui.js now, from the same
+      // markup both shells carry.
+      const ob = document.querySelector('#orientButton');
+      R.orientButton = !!ob;
+      if (ob) {
+        r.viewerState.rotation = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+        r.render('probe');
+        await settle();
+        ob.click();
+        await until(() => JSON.stringify(r.viewerState.rotation)
+            !== JSON.stringify([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), 4000);
+        R.orientMoved = JSON.stringify(r.viewerState.rotation)
+            !== JSON.stringify([[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
+      }
+
+      // ...AND DRAW IS NOT OFFERED, because this build has no 2D painter to
+      // honour it. Its neighbours in the same row must survive: needs2d drops
+      // the ITEM, and dropping the row would take Smooth and Dark with it.
+      R.painter = { has2d: !!window.py2dmolCartoonPaint,
+                    hasGPU: !!window.py2dmolCartoonGPU };
+      R.draw = !!document.querySelector('#drawCheckbox');
+      R.drawNeighbours = ['#smoothCheckbox', '#arrowsCheckbox', '#darkCheckbox',
+                          '#colorblindCheckbox']
+          .filter((q) => document.querySelector(q)).length;
+
+      // RMSD of each frame against frame 0, off the stored coordinates. The
+      // asked-for object must be superposed and the other must not.
+      const rmsds = (name) => {
+        const fs = (r.objectsData[name] || {}).frames || [];
+        if (!fs.length) return null;
+        const f0 = fs[0].coords;
+        return fs.map((f) => {
+          let s = 0;
+          for (let i = 0; i < f0.length; i++) {
+            const a = f.coords[i]; const b = f0[i];
+            s += (a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2;
+          }
+          return +Math.sqrt(s / f0.length).toFixed(2);
+        });
+      };
+      R.alignSpun = rmsds('spun');
+      R.alignUnspun = rmsds('unspun');
+      R.alignFlags = ((r.objectsData['spun'] || {}).frames || [])
+          .map((f) => f.align === true);
+
       R.tube = await look('tube');
       R.cartoon = await look('cartoon');
 
@@ -162,6 +210,19 @@ def trace():
 def main():
     v = py2Dmol.view(style='cartoon')
     v.add(trace())                      # ...and nothing else
+    # ...AND THE SAME TRACE TURNED 90 DEGREES, as a second frame of a second
+    # object. align=True is the default and the browser does the fitting now,
+    # so what a payload carries is the REQUEST - and this page is the static
+    # path, which is where it was being dropped. A third frame turned again,
+    # because a single pair cannot tell "aligned" from "the second frame was
+    # already there". `spun` asks for it; `unspun` says align=False and must
+    # come back exactly as it was written.
+    _t = trace()
+    _R = np.array([[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]])
+    for name, want in (('spun', True), ('unspun', False)):
+        v.add(_t, name=name, align=want)
+        v.add(_t @ _R.T, name=name, align=want)
+        v.add(_t @ _R.T @ _R.T, name=name, align=want)
     body = v._display_viewer(static_data=v.objects)
     open(PROBE, 'w').write('<!doctype html><html><head><meta charset="utf-8">'
                            '</head><body>' + body + JS + '</body></html>')
@@ -198,6 +259,11 @@ def main():
               f" SSE {s.get('sse')!r} {s.get('tally')}; {s.get('coldMs')}ms cold,"
               f" {s.get('warmMs')}ms warm, {s.get('allMs')}ms over all of it")
     print(f"  absent: {R.get('absent')}")
+    print(f"  align: flags {R.get('alignFlags')}, asked-for {R.get('alignSpun')},"
+          f" refused {R.get('alignUnspun')}")
+    print(f"  orient button {R.get('orientButton')}, moved the camera"
+          f" {R.get('orientMoved')}; painter {R.get('painter')},"
+          f" Draw offered {R.get('draw')}, {R.get('drawNeighbours')}/4 neighbours")
     print(f"  panel:  {R.get('after')}")
     o = R.get('orient') or {}
     print(f"  orient: module {o.get('module')}, from python"
@@ -236,6 +302,40 @@ def main():
     a = R.get('absent') or {}
     if not a.get('sidechainTable'):
         bad.append('a side-chain table was invented for a structure with no atoms')
+    spun = R.get('alignSpun') or []
+    unspun = R.get('alignUnspun') or []
+    if len(spun) != 3 or len(unspun) != 3:
+        bad.append(f'the alignment fixture did not load: {spun} / {unspun}')
+    else:
+        if not all(f is True for f in (R.get('alignFlags') or [])):
+            bad.append('the static payload carries no `align` on its frames -'
+                       ' viewer.py builds a light frame field by field and a'
+                       ' field it does not name is one it throws away')
+        if max(spun) > 0.01:
+            bad.append(f'align=True left the frames {spun} A apart - the'
+                       ' browser does the fitting now, so a payload that drops'
+                       ' the request draws every frame where its file put it')
+        if max(unspun) < 1.0:
+            bad.append(f'align=False came back {unspun} A apart, so this'
+                       ' fixture cannot tell aligned from unaligned and the'
+                       ' check above proves nothing')
+
+    if not R.get('orientButton'):
+        bad.append('the notebook page has no Orient control - the website has one'
+                   ' in index.html and the embed shell carries one, and this is'
+                   ' the page a notebook cell actually shows')
+    if not R.get('orientMoved'):
+        bad.append('pressing Orient did not move the camera')
+    if (R.get('painter') or {}).get('has2d'):
+        bad.append('the default notebook bundle carries the 2D painter, so the'
+                   ' Draw check below cannot show anything - see tests/bundles.js')
+    if R.get('draw'):
+        bad.append('Draw is offered on a build with no 2D painter behind it:'
+                   ' _gpuWillTake returns false while drawMode is on, so ticking'
+                   ' it asks for a painter that is not in the download')
+    if R.get('drawNeighbours') != 4:
+        bad.append(f"only {R.get('drawNeighbours')} of Draw's 4 row neighbours"
+                   ' survived - needs2d must drop the ITEM, not the row')
     if a.get('hasSidechainsFor') or a.get('hasElementsFor') or a.get('hasBasesFor'):
         bad.append(f'the panel offers rows it has no data for: {a}')
     if not a.get('hasSseFor'):

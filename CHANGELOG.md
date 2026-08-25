@@ -82,6 +82,13 @@ result.
   viewer's channel existed and their frames were lost. They answer the
   announcement now, and because the replay arrives in whatever order the iframes
   ran, the viewer holds it briefly and applies it sorted.
+- **`align=True` actually superposes a trajectory loaded with `add()` then
+  `show()`.** The fitting moved to the browser, so the payload carries the
+  request rather than the result — and `_display_viewer` builds its frames
+  field by field and never named it, as did the static loader on the other
+  side. Both ends were dropping it, each silently. `show()` then `add()` was
+  unaffected, because the live path sends the frame whole. A helix and the same
+  helix turned 90 degrees came out 7.07 A apart instead of 0.
 - **`set_sse()` and `set_color(frame=N)` reached a live viewer at all.** The
   first was dropped on arrival by a second, drifted copy of the metadata
   applier; the second had no route, because a frame is delivered once.

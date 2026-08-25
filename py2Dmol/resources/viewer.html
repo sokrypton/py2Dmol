@@ -227,6 +227,15 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
                 <select id="objectSelect"></select>
             </div>
             <div class="btn-row auto">
+                <!-- ORIENT IS AN ACTION AND ROTATE IS A STATE, written
+                     differently for that reason: a <button> you press against a
+                     checkbox that stays down. index.html draws Orient as a fake
+                     toggle to line its toolbar up, and has to reach past the
+                     checkbox to the <span> to stop the browser latching it -
+                     markup chosen for looks. Wired in parts/ui.js, so the
+                     embed's shell gets it from the same place. -->
+                <button id="orientButton" class="controlButton"
+                    title="Orient to best view">Orient</button>
                 <label class="controlButton btn-toggle" title="Toggle auto-rotation">
                     <input type="checkbox" id="rotationCheckbox">
                     <span>Rotate</span>

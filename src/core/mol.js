@@ -6755,6 +6755,35 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.colorsNeedUpdate = true;
             this.plddtColorsNeedUpdate = true;
 
+            // THE CACHES BELONG TO ONE OBJECT, and nothing said so.
+            //
+            // _setDataField falls back to the last array it saw whenever the
+            // frame does not carry one, which is right WITHIN an object - a
+            // trajectory writes chains on frame 0 and omits them after - and
+            // wrong the moment the object changes. The only guard was
+            // `length === n`, so two objects of the SAME LENGTH inherit each
+            // other's: load a 60-residue two-chain complex, switch to a
+            // 60-residue single-chain model that carries no chains of its own,
+            // and it is drawn as two chains, coloured by a chain break that is
+            // not in it. Every field routed through here does it - plddts,
+            // types, names, residue numbers, atoms and elements alike.
+            //
+            // So the run of calls below is one object's, and the caches are
+            // dropped when that object is not the one they were filled for.
+            // Here rather than inside _setDataField, because the seven calls
+            // share the decision: the first would flip the owner and the other
+            // six would then read the stale arrays as if they belonged.
+            if (this._dataCacheObject !== this.currentObjectName) {
+                this._dataCacheObject = this.currentObjectName;
+                this.cachedPlddts = null;
+                this.cachedChains = null;
+                this.cachedPositionTypes = null;
+                this.cachedPositionNames = null;
+                this.cachedResidueNumbers = null;
+                this.cachedPositionAtoms = null;
+                this.cachedPositionElements = null;
+            }
+
             // Use provided data if available, otherwise inherit from cache, otherwise use defaults
             this._setDataField('plddts', 'cachedPlddts', plddts, n, (n) => Array(n).fill(50.0));
             this._setDataField('chains', 'cachedChains', chains, n, (n) => Array(n).fill('A'));
