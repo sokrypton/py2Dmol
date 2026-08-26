@@ -62,7 +62,17 @@ def _check_state_round_trip():
         assert 'ambiguous' in str(e), e
     a.set_color('green', name='ubq', chain='A')
     a.set_color('blue', name='ubq', position=7)
+    # ...AND THE TWO THINGS THAT BELONG TO THE VIEWER, which the round trip was
+    # losing. They are stored as private fields and written into the config on
+    # the way out, and _display_viewer POPS the key when the field is None - so
+    # load_state restored them into the config and the next show() threw them
+    # away. A saved slab came back off; a saved set of objects came back as
+    # one. `multi` is not in this pair: it is read from the config and
+    # re-resolved against whatever objects exist.
+    a.clip(name='ubq', position=(0, 5))
+    a.show_objects(['ubq', 'pep'])
     path = os.path.join(tempfile.gettempdir(), 'py2dmol_state_check.json')
+    a._display_viewer(static_data=a.objects)     # ...which is what writes them
     a.save_state(path)
     st = json.load(open(path))
     b = py2Dmol.view(); b.load_state(path)
@@ -74,15 +84,24 @@ def _check_state_round_trip():
         return json.loads(json.dumps(
             [[o.get('color'), o.get('contacts')] for o in view.objects]))
     same = shape(a) == shape(b)
+    b._display_viewer(static_data=b.objects)
+    viewer_own = (b.config.get('clip'), b.config.get('shown_objects'))
     # ...now the web's extra keys
     st['viewer_state']['shown_objects'] = ['ubq', 'pep']
     st['objects'][0]['viewerState'] = {'style': 'tube', 'styleChosen': True}
     json.dump(st, open(path, 'w'))
     c = py2Dmol.view(); c.load_state(path)
     os.remove(path)
-    return same, [len(o['frames']) for o in c.objects]
+    # ...AND LEAVE NO MARK ON THE MODULE. _LENT_BUNDLE is process state: the
+    # first viewer to reach _display_viewer writes the library and every later
+    # one writes a request to borrow it. A check that builds a viewer here and
+    # nowhere the page can see it would make the page's OWN first viewer a
+    # borrower, with nothing on the page lending - a blank page and a dozen
+    # unrelated failures.
+    py2Dmol.viewer._LENT_BUNDLE = None
+    return same, [len(o['frames']) for o in c.objects], viewer_own
 
-SAME, WEB_FRAMES = _check_state_round_trip()
+SAME, WEB_FRAMES, VIEWER_OWN = _check_state_round_trip()
 
 v = py2Dmol.view()
 v.add_pdb(ROOT + '/1UBQ.cif', name='ubq')
@@ -224,6 +243,11 @@ bad = []
 if not SAME:
     bad.append("a state file saved from Python did not reload with the same"
                " per-object colours and contacts")
+if VIEWER_OWN != ({'object': 'ubq', 'positions': [0, 1, 2, 3, 4]}, ['ubq', 'pep']):
+    bad.append(f"a reloaded state came back with clip/shown_objects"
+               f" {VIEWER_OWN} - _display_viewer writes those keys from the"
+               " private fields and pops them when it does not find one, so"
+               " restoring them into the config alone loses them again")
 if WEB_FRAMES != [1, 1]:
     bad.append(f"a state file saved by the WEB - which carries shown_objects and"
                f" a per-object viewerState - loaded as {WEB_FRAMES}")

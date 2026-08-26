@@ -132,6 +132,34 @@ seamless full turn, or the drawing being made.
 Cmd/Ctrl-drag to pan, as in PyMOL. Panning moves the rotation centre, so
 rotation and zoom keep working about the point you dragged to.
 
+**Aiming the camera from Python.** A viewer turns to face the reader once, by
+itself, when the first frame lands. `orient` asks for it again — after a
+colour, after a clip, after the reader has spun it somewhere unhelpful.
+
+```python
+viewer.orient()                    # best view of what is on screen
+viewer.orient(chain="B")           # ...of chain B
+viewer.orient(position=(40, 60))   # ...of a loop, close up
+viewer.orient(chain="B", animate=False)   # jump instead of flying
+```
+
+It orients on **what you can see**: a hidden residue cannot pull the view
+towards itself. The Orient button in the viewer, on the website and in an
+embed all run the same search.
+
+**Cutting into it.** `clip` keeps a slab as deep as a selection and holds it
+there as the structure turns — so to cut deeper, clip to less.
+
+```python
+viewer.clip(position=(40, 60))   # a slab over residues 40–59
+viewer.clip(chain="B")           # ...as deep as chain B
+viewer.clip()                    # off
+```
+
+The depth is the selection's own depth along the view; there is no thickness to
+set, and the renderer refits it every frame. The Clip button does the same
+thing to whatever is selected.
+
 **Fetching a chain.** The fetch box takes a chain suffix: `1timA`, `1TIM_A`,
 `1tim_AB` (one chain per character) or `1tim:A,B` (commas for multi-character
 chain IDs). Only four-character PDB IDs take a suffix, which keeps a UniProt
@@ -146,6 +174,32 @@ viewer.add_pdb('simulation1.pdb', name="sim1")
 viewer.add_pdb('simulation2.pdb', name="sim2")  # creates a new object
 viewer.show()  # switch via dropdown
 ```
+
+### Several objects at once
+The dropdown shows one object at a time. To put two structures in the same
+picture — the same thing the website's **Multi** button does — ask for it:
+
+```python
+viewer = py2Dmol.view(multi=True)      # every object, including later ones
+viewer.add_pdb('apo.pdb',  name="apo")
+viewer.add_pdb('holo.pdb', name="holo")
+viewer.show()
+```
+
+or name a set after the fact:
+
+```python
+viewer.show_objects()                  # every object loaded
+viewer.show_objects(["apo", "holo"])   # those two
+viewer.show_objects("apo")             # back to one
+```
+
+The camera widens once to take in whatever is newly on screen. `multi=True` is
+a standing instruction — an object added later joins the picture — and naming a
+set replaces it. Note this is a different question from `overlay=True`, which
+shows every **frame** of one object.
+
+The picker is hidden while there is only one object to pick.
 
 ### Grid gallery
 ```python

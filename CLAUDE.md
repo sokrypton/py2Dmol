@@ -151,11 +151,22 @@ public downloads is exercised on every run.
   never the download: the notebook library is **inlined into the .ipynb once
   per `show()` cell**, so every kilobyte was paid again for every viewer.
   Sharing pays it once for the document, and the reason for three narrow
-  builds went with it. **There is no flag for that**: it happens where
-  Python can ask the page whether anything is lending — `_can_ask_the_page`,
-  which today means Colab's `eval_js` — and not where it cannot, because a
-  forced answer is a way to be wrong about what the page has. Tests patch
-  that one function to reach both paths.
+  builds went with it. **There is no flag and it is always on**: in Jupyter one
+  document means the borrower finds the library already loaded and the channel
+  is never used; in Colab the channel carries it. Eight viewers go from
+  3,872 KB to 645.
+- 🔴 **A PROBE'S "NO" IS NOT AN ANSWER.** Python also pings the page at each
+  `show()` to see whether anything is lending, and this read
+  `can_borrow = seen if seen is not None else flag` — so ONE unanswered ping
+  meant "nothing is lending" and every cell wrote its own copy. It shipped that
+  way and a notebook came out at 4 MB with the saving switched on. A False from
+  a probe cannot be told apart from a question that never arrived: `eval_js`
+  runs in whatever context Colab gives it, and that it reaches the OUTPUT
+  frames' channel was assumed, not measured — the transport was proved between
+  two outputs, which is a different link. The probe is a CONFIRMATION now: a
+  True lets a fresh kernel borrow from a page that still has a lender, and
+  anything else falls back to what this kernel wrote, which involves no browser
+  and cannot fail quietly.
 
   The second painter costs **26 KB** (paint2d minifies to 25 against paintgl's
   71; it is 81% comment) and buys back everything that was traded away for it:
@@ -244,6 +255,42 @@ public downloads is exercised on every run.
   embed's own `addFrame` all arrive through. What Python sends is the
   **request** (`align`, `allow_reflection`), not the result. Both were in numpy
   only because the JS side had no SVD before `svd3` replaced numeric.js.
+- **THREE SURFACES, ONE TRANSLATION, and the translation is the part that
+  drifts.** The website, the notebook and the embed all turn a selector into an
+  action, and the action is the renderer's - so the translation must be the
+  renderer's too. `renderer.clipTo(sel)` (`parts/clip.js`) and
+  `py2dmolOrient.orientTo(renderer, request)` (`parts/orient.js`) are the two,
+  and each replaced two or three near-copies: the clip translation was written
+  out in `parts/embed.js` and again in `parts/ui.js`, and only ONE of them
+  re-synced the Clip button, so a notebook's button and its slab could disagree
+  about whether clipping was on. `orientTo` merges selector keys and options in
+  one object (`{type: 'L', animate: false}`) — the embed had that and the
+  notebook's later copy handled `object` alone. Python sends exactly that
+  merged object, so nothing unpacks it on arrival.
+- 🔴 **The one-object picker hide is a rule about what the ROW CONTAINS, and
+  testing the class instead passed everything while being wrong.**
+  `updateUIControls` hides `objectSelect.closest('.toggle-item')` when the row
+  holds nothing but the picker and its label. The first version tested only the
+  class — and `index.html`'s row is `.toggle-item object-row`, so it hid the
+  website's Multi and prev/next buttons too. Every test passed, because a line
+  a few below in the same function forces `#objectRow` back to `flex`: two
+  lines fighting over one element, with the accident winning. The rule now sits
+  AFTER that line so one thing decides, which is also what makes the mutation
+  visible — `tests/multi_object.py` drives index.html's picker down to one
+  option and requires the row to stay. It is re-asked on every update rather
+  than decided at load.
+- **`multi=True` and `view.show_objects()` are the OBJECT question; `overlay`
+  is the FRAME one.** Both reach `setShownObjects`, the renderer's own setter,
+  which is what keeps `_framedObjects` — assigning `shownObjects` and calling
+  `_applyShownObjects` by hand skips it and the camera never widens. Python
+  resolves "all of them" itself, at the moment of the call, so what travels is
+  always an explicit list; `multi=True` is resolved in `_display_viewer`,
+  because the objects it names do not exist until something has been added.
+- **`view.orient()` is an ACTION, not a state.** `clip` and `shown_objects` are
+  diffed against what was last sent and skipped when unchanged; the same
+  `orient()` asked for twice means fly there twice, so it is queued and cleared
+  on send. `tests/config.js` reads the live viewer block's keys off BOTH sides
+  and names any that one packs and the other drops.
 - **A capability in the bundle that no interface reaches is not shipped.**
   `parts/clip.js` is in every build and only `index.html` could get to it: the
   website had a Clip panel, the embed had `v.clip(sel)`, the notebook had

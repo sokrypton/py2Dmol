@@ -174,6 +174,11 @@ def _nest_config(**flat):
     # Overlay
     if "overlay" in flat: config["overlay"]["enabled"] = flat["overlay"]
 
+    # ...AND SEVERAL OBJECTS, which is a different question. Carried as a plain
+    # top-level flag and resolved to a list of names in _display_viewer, where
+    # the objects it would name actually exist.
+    if flat.get("multi"): config["multi"] = True
+
     # Cutoffs
     if "cutoffs" in flat and isinstance(flat["cutoffs"], dict):
         for key in ("protein_bond", "nucleic_bond", "ligand_bond"):
@@ -520,7 +525,7 @@ class view:
         color="auto", colorblind=False, ss_palette=None, style="tube", preset=None, smooth=None, thickness=None, sheet_flat=None, pencil=None, arrows=True, base_plates=None, detail=4, fade=0, highlight=None, outline_tint=None,
         shadow=True, shade=None, shadow_strength=0.5,
         outline=None, width=None, ortho=0.5, gpu=True, bg=None, rotate=False, autoplay=False,
-        pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, detect_cyclic=True,
+        pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, multi=False, detect_cyclic=True,
         persistence=True, id=None, cutoffs=None,
     ):
         """
@@ -593,6 +598,12 @@ class view:
             scatter (bool/dict): Enable scatter plot. Default None.
             scatter_size (int): Scatter plot size in pixels. Default 300.
             overlay (bool): Enable overlay mode (show all frames simultaneously). Default False.
+            multi (bool): Draw every object at once rather than one at a time.
+                Default False. `overlay` is about FRAMES of one object; this is
+                about OBJECTS - two structures added under different names,
+                both on screen, the camera widened to take them both in. The
+                same thing the website's Multi button does. See show_objects()
+                for naming a subset.
             detect_cyclic (bool): Auto-detect cyclic peptides (N-C terminus bonds). Default True.
             persistence (bool): If True (default), each incremental update uses a fresh output
                                 cell (classic behavior). If False, updates reuse a single hidden
@@ -769,6 +780,7 @@ class view:
             scatter=scatter,
             scatter_size=scatter_size,
             overlay=overlay,
+            multi=multi,
             detect_cyclic=detect_cyclic,
             cutoffs=cutoffs,
         )
@@ -793,32 +805,37 @@ class view:
         self._mailbox_handle = None       # DisplayHandle for mailbox (persistence=False)
         self._latest_output_handle = None   # DisplayHandle of last add() for replace() updates (persistence=True)
         self._persistence = bool(persistence)
-        # ON BY DEFAULT WHERE THE PAGE CAN BE ASKED, and off where it cannot.
+        # SHARE THE LIBRARY, ALWAYS. This was a flag, then gated on being able
+        # to ask the page, and both were ways of choosing the wrong answer:
+        # _can_ask_the_page only checked that eval_js EXISTS, and the ping's
+        # answer was then treated as a veto - so in Colab, where it exists and
+        # the ping went unanswered, nothing ever shared.
         #
-        # It was opt-in because a borrower that finds no lender has no viewer,
-        # against a cost of only a bigger file - a bad trade to make for
-        # someone. What changed is that Python no longer has to guess: in Colab
-        # _lender_on_page pings the page at every show(), so a lender that was
-        # cleared or deleted is NOTICED and this viewer inlines its own copy.
-        # The guess only survives where nothing can be asked, and there the
-        # default is off.
+        # Sharing costs nothing where it cannot help. In Jupyter every cell
+        # output lives in ONE document, so the borrower's first line - is
+        # initializePy2DmolViewer already a function - is true and it does
+        # nothing at all. In Colab the outputs are separate frames and the
+        # channel carries it, which was measured there: 440,215 bytes, 1 ms.
         #
-        # NOT A SETTING. Sharing happens where Python can ASK THE PAGE whether
-        # anything is lending, and does not where it cannot - and there is no
-        # third answer worth offering. Forcing it on where nothing can be asked
-        # is asking to be wrong in the direction that costs a viewer; forcing
-        # it off buys a bigger notebook and nothing else. A flag here would be
-        # a way to choose the wrong one.
-        #
-        # tests/colab.py exercises both paths by patching _can_ask_the_page,
-        # which is the one thing the decision reads.
-        self._share_library = _can_ask_the_page()
+        # tests/colab.py patches this to reach the unshared path.
+        self._share_library = True
         # THE SLAB IS THE VIEWER'S, not an object's - it is a property of the
         # camera, and it survives switching between objects. Held as a SELECTOR
         # rather than as two depths: the renderer refits it every frame from the
         # residues it names, so it stays over them as the structure turns.
         self._clip = None
         self._sent_clip = False          # not None: None is a value it can take
+        # WHICH OBJECTS ARE ON SCREEN is the viewer's too, for the same reason,
+        # and it is held as an explicit list: `show_objects()` resolves "all of
+        # them" at the moment of the call, so nothing downstream has to know a
+        # second spelling. None is the default - the current object, alone.
+        self._shown_objects = None
+        self._sent_shown_objects = False
+        # AND THE ORIENTATION IS AN ACTION, NOT A STATE. The other two are
+        # compared against what was last sent and skipped when unchanged; the
+        # same orient() asked for twice means fly there twice, so it is queued
+        # and cleared on send rather than diffed.
+        self._orient_request = None
 
 
     def _emit_to_output(self, html_content: str, payload_json: Optional[str] = None, update_last_add: bool = False) -> None:
@@ -1171,6 +1188,22 @@ class view:
         if self._clip != self._sent_clip:
             viewer_block = {"clip": self._clip}
             self._sent_clip = copy.deepcopy(self._clip)
+        # `multi=True` IS A STANDING INSTRUCTION, not a list. It means every
+        # object including the ones not added yet, so it is re-resolved here as
+        # well as in _display_viewer - otherwise a viewer opened with the flag
+        # showed the objects that existed at show() time and quietly stopped
+        # accepting new ones. show_objects(names) clears the flag; the diff
+        # below is what keeps this from emitting when nothing has changed.
+        if self.config.get("multi"):
+            self._shown_objects = [o["name"] for o in self.objects]
+        if self._shown_objects != self._sent_shown_objects:
+            viewer_block = viewer_block or {}
+            viewer_block["shown_objects"] = self._shown_objects
+            self._sent_shown_objects = copy.deepcopy(self._shown_objects)
+        if self._orient_request is not None:
+            viewer_block = viewer_block or {}
+            viewer_block["orient"] = self._orient_request
+            self._orient_request = None
 
         # Skip update if nothing new to send
         if (not new_frames_by_object and not changed_metadata_by_object
@@ -1319,6 +1352,24 @@ class view:
         else:
             self.config.pop("clip", None)
         self._sent_clip = copy.deepcopy(self._clip)
+
+        # ...AND THE SAME TWO KEYS BESIDE IT. `multi=True` is resolved here
+        # rather than in __init__ because the objects it names do not exist
+        # until something has been added.
+        if self.config.get("multi") and self.objects:
+            self._shown_objects = [o["name"] for o in self.objects]
+        if self._shown_objects is not None:
+            self.config["shown_objects"] = list(self._shown_objects)
+        else:
+            self.config.pop("shown_objects", None)
+        self._sent_shown_objects = copy.deepcopy(self._shown_objects)
+        if self._orient_request is not None:
+            # ...AND A STATIC VIEWER ALWAYS JUMPS. It has only just appeared,
+            # and a cell that opens mid-flight reads as a bug.
+            self.config["orient"] = dict(self._orient_request, animate=False)
+            self._orient_request = None
+        else:
+            self.config.pop("orient", None)
 
         # Setup viewer config - store per viewer to avoid global overwrites
         # Initialize the configs object if it doesn't exist
@@ -1518,21 +1569,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # adding a read in the wrong place.
             #
             # What is in it: the renderer core and its parts, the cartoon
-            # geometry, both painters, and the PAE and scatter panels - which
-            # were conditional until it became clear that two branches here and
-            # two artefacts to build were buying five per cent of one download.
-            #
-            # ...EXCEPT THE CARTOON, WHEN NOTHING CAN ASK FOR IT. cartoon/geom.js
-            # is 101 KB of 470, and these bytes are not a download: they are
-            # written into the .ipynb, uncompressed, once per show() cell. A
-            # notebook with five viewers carries five copies.
-            #
-            # The condition is narrow on purpose. With no Style dropdown there
-            # is no way to change the style after the fact - Python fixes it at
-            # view() time - so a tube viewer with controls off can never reach
-            # the cartoon path, and shipping the geometry to it is dead weight.
-            # Anything else, including the default, gets the full bundle.
-            # ONE BUNDLE, AND `gpu` NO LONGER PICKS A FILE.
+            # geometry, BOTH painters, and the PAE and scatter panels.
             #
             # There were three notebook builds - GPU, 2D, and a tube-only one
             # without the cartoon geometry - because this library is inlined
@@ -1540,12 +1577,13 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # again for every viewer. Sharing pays it once for the document
             # instead, which removes the reason for all three.
             #
-            # The second painter costs 26 KB and gives back what was traded for
-            # it: gpu is a runtime setting the renderer reads (see useGPU in
-            # core/mol.js, which takes config.rendering.gpu when BOTH painters
-            # are present), a machine with no WebGL2 has something to fall back
-            # on, and the cartoon can export a vector - which needs the 2D
-            # painter, because a raster has none to give.
+            # The second painter costs 26 KB and gives back everything that was
+            # traded for it: `gpu` is a runtime setting again rather than a
+            # choice of file (see useGPU in core/mol.js, which takes
+            # config.rendering.gpu when BOTH painters are present), a machine
+            # with no WebGL2 has something to fall back on, and the cartoon can
+            # export a vector - which needs the 2D painter, because a raster
+            # has none to give.
             bundle = "bundles/py2Dmol.notebook.min.js"
             # SHARE IT, IF ASKED, AND IF SOMEONE ELSE ALREADY CARRIES IT.
             #
@@ -1555,13 +1593,16 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # appear before it starts, so a borrower needs nothing more than to
             # make it appear.
             global _LENT_BUNDLE
-            # ASK THE PAGE WHERE THE PAGE CAN BE ASKED, and fall back to what
-            # this kernel remembers writing where it cannot. The difference
-            # matters exactly when the two disagree: the lending cell's output
-            # was cleared, so the kernel thinks a lender exists and the page has
-            # none. Guessing there borrows into nothing; asking inlines again.
+            # THE ASK IS A CONFIRMATION, NEVER A VETO. A True lets a FRESH
+            # KERNEL borrow from a page that still has a lender, which this
+            # process cannot know on its own; anything else falls back to what
+            # this kernel wrote, which involves no browser and cannot fail
+            # quietly. A False is indistinguishable from a question that never
+            # arrived, and believing one is how this shipped writing the
+            # library into every cell - see CLAUDE.md, which tells the story,
+            # and tests/config.js, which fails if the shape comes back.
             seen = _lender_on_page(bundle) if self._share_library else None
-            can_borrow = seen if seen is not None else (_LENT_BUNDLE == bundle)
+            can_borrow = (seen is True) or (_LENT_BUNDLE == bundle)
             if self._share_library and can_borrow:
                 container_html = _borrow_js(bundle) + container_html
             elif self._share_library:
@@ -2309,6 +2350,37 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # persistence=False: Replace all frames (streaming mode, no history)
             target_obj["frames"] = [frame_data]
 
+    @staticmethod
+    def _selector(name=None, chain=None, position=None):
+        """
+        Python's three selector arguments as ONE selector dict, in the JS
+        selector's own words, so nothing has to translate it on arrival.
+        `positions` is the renderer's index into what it draws, which is what
+        Python's `position` has always meant.
+
+        Returns None when nothing was named - which every caller reads as "all
+        of it" or "off", and neither needs a second spelling.
+        """
+        if name is None and chain is None and position is None:
+            return None
+        sel = {}
+        if name is not None:
+            sel["object"] = str(name)
+        if chain is not None:
+            sel["chain"] = str(chain)
+        if position is not None:
+            if isinstance(position, int):
+                sel["positions"] = [int(position)]
+            elif isinstance(position, tuple) and len(position) == 2:
+                sel["positions"] = list(range(int(position[0]), int(position[1])))
+            elif isinstance(position, (list, range)):
+                sel["positions"] = [int(p) for p in position]
+            else:
+                raise ValueError(
+                    "position must be an int, list, range or (start, end)"
+                    " tuple.")
+        return sel
+
     def clip(self, name=None, chain=None, position=None):
         """
         Cut a slab as deep as a selection, and keep it over that selection.
@@ -2335,29 +2407,89 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             which every build already carried and none but the website could
             reach.
         """
-        if name is None and chain is None and position is None:
-            self._clip = None
+        self._clip = self._selector(name=name, chain=chain, position=position)
+        if self._is_live:
+            self._send_incremental_update()
+
+    def show_objects(self, names=None):
+        """
+        Draw several objects at once, or go back to one at a time.
+
+            view.show_objects()                # every object loaded
+            view.show_objects(["apo", "holo"]) # those two
+            view.show_objects("apo")           # just that one
+            view.show_objects([])              # nothing
+
+        `overlay=True` shows every FRAME of one object; this shows every
+        OBJECT. The camera widens once to take in whatever is newly on screen.
+
+        The renderer has drawn several objects at once since the website grew
+        its Multi button, and the embed has exposed it as `v.showObjects()`;
+        Python had no way to ask for it. `py2Dmol.view(multi=True)` is the same
+        thing as a flag, resolved at show() time.
+
+        Args:
+            names (str, list, optional): Object names to draw. None (the
+                default) means every object that has been added.
+
+        Note:
+            "All of them" is resolved here, at the moment of the call, so what
+            travels to the browser is always an explicit list.
+
+            NAMING A SET TURNS `multi=True` OFF. The flag means "every object,
+            including the ones not added yet", which is a standing instruction
+            rather than a list; a caller who names a set has replaced it, and
+            leaving the flag on would put the next add() back on screen behind
+            their back.
+        """
+        if names is None:
+            self._shown_objects = [o["name"] for o in self.objects]
         else:
-            # ...written in the JS selector's own words, so nothing has to
-            # translate it on arrival. `positions` is the renderer's index into
-            # what it draws, which is what Python's `position` has always meant.
-            sel = {}
-            if name is not None:
-                sel["object"] = str(name)
-            if chain is not None:
-                sel["chain"] = str(chain)
-            if position is not None:
-                if isinstance(position, int):
-                    sel["positions"] = [int(position)]
-                elif isinstance(position, tuple) and len(position) == 2:
-                    sel["positions"] = list(range(int(position[0]), int(position[1])))
-                elif isinstance(position, (list, range)):
-                    sel["positions"] = [int(p) for p in position]
-                else:
-                    raise ValueError(
-                        "position must be an int, list, range or (start, end)"
-                        " tuple.")
-            self._clip = sel
+            self.config.pop("multi", None)
+            if isinstance(names, str):
+                self._shown_objects = [names]
+            else:
+                self._shown_objects = [str(n) for n in names]
+        if self._is_live:
+            self._send_incremental_update()
+
+    def orient(self, name=None, chain=None, position=None, animate=True):
+        """
+        Turn the structure to face the reader.
+
+            view.orient()                   # best view of what is on screen
+            view.orient(chain="B")          # ...of chain B
+            view.orient(position=(40, 60))  # ...of a loop, close up
+
+        A viewer already does this once, unprompted, when the first frame
+        lands. This is for afterwards - after show_objects(), after a colour or
+        a clip has made some other part of the structure the point.
+
+        Args:
+            name (str, optional): Object to frame. Defaults to the current one.
+            chain (str, optional): Frame a whole chain.
+            position (int, list, tuple, range, optional): Position index or
+                indices. A 2-tuple is a half-open range, matching set_color.
+            animate (bool): Fly there (default) or jump. A static viewer always
+                jumps - it has only just appeared, and a cell that opens
+                mid-flight reads as a bug rather than a flourish.
+
+        Note:
+            The search is parts/orient.js's, the one the website's Orient
+            button, the notebook's Orient button and the first frame all use.
+            It orients on WHAT YOU CAN SEE: a hidden residue cannot pull the
+            view towards itself.
+        """
+        # ONE OBJECT, SELECTOR AND OPTIONS TOGETHER, because that is the shape
+        # parts/orient.js's orientTo already takes - the same call the embed's
+        # v.orient() makes. Nothing on either side has to unpack it.
+        #
+        # AN ACTION, NOT A STATE. Queued rather than stored: the same request
+        # asked for twice means fly there twice, and a state that is diffed
+        # against what was last sent would drop the second.
+        req = dict(self._selector(name=name, chain=chain, position=position) or {})
+        req["animate"] = bool(animate)
+        self._orient_request = req
         if self._is_live:
             self._send_incremental_update()
 
@@ -3756,6 +3888,16 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         # Restore config (v2.0 nested format only)
         if "config" in state_data:
             self.config = state_data["config"]
+            # ...AND WHAT BELONGS TO THE VIEWER, back into the fields the
+            # config is WRITTEN FROM. _display_viewer rebuilds `clip` and
+            # `shown_objects` out of _clip and _shown_objects on the way out
+            # and pops whatever it does not find there - so a saved slab or a
+            # saved set of objects was restored into the config here and
+            # thrown away again at the next show(). `multi` needs nothing: it
+            # is read from the config and re-resolved against the objects that
+            # exist, which is what a standing instruction should do.
+            self._clip = self.config.get("clip")
+            self._shown_objects = self.config.get("shown_objects")
             # Normalise the style, which used to name three things. A state
             # written when "richardson" was a style would otherwise be read as
             # "tube" (the only non-cartoon value) and render as the wrong thing

@@ -72,17 +72,28 @@ result.
   later ones ask, and keep a copy so they can lend to the next. Two viewers go
   from ~950 KB to ~505; ten from 4.5 MB to ~700 KB.
 
-  There is no flag. It happens where Python can **ask the page** whether
-  anything is lending — Colab, via `eval_js` — and not where it cannot, because
-  either forced answer is a way to be wrong: on where nothing can be asked
-  costs a viewer, off costs only a bigger file. In Colab it re-asks at every
-  `show()`, so a lender whose cell was cleared is noticed and that viewer writes
-  its own copy.
+  There is no flag, and it is always on. In Jupyter every output shares one
+  document, so a borrower finds the library already there and the channel is
+  never used; in Colab the outputs are separate frames and the channel carries
+  it. Eight viewers: **3,872 KB down to 645**.
+
+  Python also pings the page at each `show()`, and a positive answer lets a
+  fresh kernel borrow from a page that still has a lender. A negative one is
+  ignored — it cannot be told apart from a question that never arrived.
 - **`view.clip(name=, chain=, position=)`**, and a Clip button in the notebook
   and embed shells. `parts/clip.js` was in every bundle already — the slab, the
   tracking and the per-frame refit — and only the website could reach any of it.
   The depth is the selection's own depth along the view, so to cut deeper, clip
   to less; `clip()` with nothing turns it off.
+- **`view(multi=True)` and `view.show_objects(...)`** — several objects in one
+  picture, which is a different question from `overlay=True` (every FRAME of
+  one object). The renderer has drawn several at once since the website grew
+  its Multi button and the embed has exposed it as `v.showObjects()`; Python
+  had no way to ask. `show_objects()` with no argument means every object
+  loaded, resolved in Python at the moment of the call.
+- **`view.orient(name=, chain=, position=, animate=)`** — turn the camera onto
+  a selection. A viewer already does this once, unprompted, when the first
+  frame lands; this is for afterwards.
 - **`set_sse(sse, name=, chain=, position=)`** — force a region to helix, strand
   or coil, or pass `None` to return it to the automatic assignment.
 - **Structural alignment** — TM-align, vendored from foldjs, running in a worker.
@@ -146,10 +157,20 @@ result.
 - **The website is compacted and aligned**: the header block is 122px against
   161, the page is 79px shorter, and every block shares its edges — header,
   viewer row, sequence strip, control panel, PAE and scatter.
+- **The object picker is not shown when there is one object** — where the
+  picker is all its row holds, which is the notebook's shell and the embed's.
+  The website keeps its row: there the picker sits beside Multi and the
+  prev/next buttons, which stay useful with one object.
 - **Chain mode in the sequence strip shows the selection.** It showed nothing
   at all, while the same click lit the structure.
 
 ### Internal
+
+One translation per surface, not three. A selector becomes a slab in
+`renderer.clipTo` and a camera move in `py2dmolOrient.orientTo`, and the
+website, the notebook and the embed all call those - each had grown its own
+copy, and the copies had already diverged over whether the Clip button gets
+re-synced.
 
 The JavaScript is 26 source files under `src/`, merged per target by
 `tools/bundle.py` — one manifest, from which every other file list is derived.

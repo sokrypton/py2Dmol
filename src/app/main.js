@@ -1602,17 +1602,20 @@ function updateFrameNameLabel() {
     el.title = el.textContent;
 }
 
-// ORIENT LIVES IN src/parts/orient.js NOW, because a notebook and
-// an embed want it too and it is geometry, not chrome. What stayed here is the
-// app's two answers: which renderer, and which object - the #objectSelect
-// dropdown, which only this page has.
+// ORIENT LIVES IN src/parts/orient.js NOW, because a notebook and an embed
+// want it too and it is geometry, not chrome. What stayed here is the app's
+// one answer: which renderer.
+//
+// It used to pass the #objectSelect value as `name`, on the reasoning that
+// only this page has that dropdown - viewer.html has one too, and either way
+// the value is renderer.currentObjectName, which is what orientToBestView
+// falls back to. Where the two CAN differ it was the wrong one: in Multi the
+// picker is greyed out and clicking in the strip moves the edited object
+// (adoptObjectOfSelection) without touching it, so a stale dropdown value
+// aimed the camera at whatever was picked before Multi was pressed.
 function applyBestViewRotation(animate = true) {
     if (!viewerApi || !viewerApi.renderer || !window.py2dmolOrient) return;
-    const objectSelect = document.getElementById('objectSelect');
-    window.py2dmolOrient.orientToBestView(viewerApi.renderer, {
-        animate,
-        name: (objectSelect && objectSelect.value) || undefined,
-    });
+    window.py2dmolOrient.orientToBestView(viewerApi.renderer, { animate });
 }
 
 // ============================================================================

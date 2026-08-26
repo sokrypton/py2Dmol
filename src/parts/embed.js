@@ -720,14 +720,7 @@ function attach(renderer) {
      * model coordinates and re-projected each frame, so it stays over the same
      * residues as the structure turns rather than cutting a fixed depth.
      */
-    renderer.clip = (sel) => {
-        if (sel === undefined || sel === null) {
-            renderer.setClipSlab(null, null);
-            return renderer;
-        }
-        renderer.autoClip(positionsFor(renderer, sel));
-        return renderer;
-    };
+    renderer.clip = (sel) => renderer.clipTo(sel);
 
     // NO showOnly. It was here, and {not: sel} made it sugar: draw only x is
     // resetVisibility() then hide({not: x}). Two verbs are the two operations
@@ -758,29 +751,8 @@ function attach(renderer) {
         if (!window.py2dmolOrient) {
             throw new Error('py2Dmol.orient: parts/orient.js is not loaded');
         }
-        // ONE OBJECT, TWO NAMESPACES: the selector keys say WHAT to frame and
-        // the rest are options. v.orient({type: 'L', animate: false}) reads as
-        // one thought and there is no key in both lists.
-        //
-        // Without this, orient took options only - so v.orient({type: 'L'})
-        // was an options object with no recognised key, and it framed whatever
-        // was selected at the time. In the ligand example that was the pocket,
-        // which looks close enough to a close-up on the ligand to pass.
-        const o = options || {};
-        const opts = {};
-        const sel = {};
-        for (const k of Object.keys(o)) {
-            if (SELECTOR_KEYS.includes(k)) sel[k] = o[k];
-            else opts[k] = o[k];
-        }
-        if (Object.keys(sel).length) {
-            opts.positions = positionsFor(renderer, sel);
-            // ...and the object it belongs to, which orient reads separately
-            // to find the frame whose coordinates it should be measuring.
-            if (sel.object) opts.name = sel.object;
-        }
-        window.py2dmolOrient.orientToBestView(renderer, opts);
-        return renderer;
+        // The selector/options merge is orientTo's - see parts/orient.js.
+        return window.py2dmolOrient.orientTo(renderer, options);
     };
 }
 

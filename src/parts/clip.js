@@ -214,6 +214,30 @@
         },
 
         /**
+         * A SELECTOR IN, A SLAB OUT - the one route from the project's way of
+         * naming residues to the slab, and the only thing three callers need.
+         *
+         * There were three copies of these four lines: parts/embed.js's
+         * `v.clip(sel)`, parts/ui.js's applyClipSelector for what Python asks
+         * for, and index.html's panel. They differed already - only one of
+         * them re-synced the Clip button, so the notebook's button and the
+         * notebook's slab could disagree about whether clipping was on.
+         *
+         * Nothing is not a selector: `clipTo()` turns the slab off, which is
+         * what every caller's empty case meant separately.
+         */
+        clipTo(sel) {
+            if (!sel) {
+                this.setClipSlab(null, null);
+            } else {
+                this.autoClip(positionsFor(this, sel));
+            }
+            if (this._syncClipButton) this._syncClipButton();
+            this.render('clipTo');
+            return this;
+        },
+
+        /**
          * AUTO: fit the slab to the selection and keep it there.
          *
          * The one entry point, because the tracking has to survive the set:

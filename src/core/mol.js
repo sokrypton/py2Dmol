@@ -5186,6 +5186,29 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 };
                 const row = only('objectRow');
                 if (row) row.style.display = 'flex';
+                // ONE OBJECT IS NOT A CHOICE - WHERE THE PICKER IS ALL THE
+                // ROW HOLDS. In the notebook shell it has a row to itself,
+                // and with a single object that row is a label and a dropdown
+                // that can only say what it already says. index.html's picker
+                // sits in #objectRow beside Multi and the prev/next buttons,
+                // which stay useful with one object.
+                //
+                // The rule is what the row CONTAINS, not which page it is on,
+                // and it is AFTER the line above so that one rule decides. It
+                // tested the class first, which was wrong and looked right:
+                // index.html's row is `.toggle-item object-row`, so it hid
+                // the website's Multi button too - and passed every test,
+                // because the line above happened to put the row back.
+                const pickerRow = this.objectSelect.closest
+                    ? this.objectSelect.closest('.toggle-item') : null;
+                const alone = pickerRow && [...pickerRow.children].every(
+                    (el) => el === this.objectSelect
+                        || (el.tagName === 'LABEL'
+                            && el.htmlFor === this.objectSelect.id));
+                if (alone) {
+                    pickerRow.style.display =
+                        this.objectSelect.options.length > 1 ? '' : 'none';
+                }
                 // ...the LIST still follows the mode, and the mode is the
                 // button's business: hiding it here on a count would close a
                 // list the user had opened.

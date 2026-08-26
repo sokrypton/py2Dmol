@@ -945,16 +945,41 @@ if (orientButton) {
 // is resolved here rather than in Python, because positionsFor is the project's
 // one way of naming residues and translating it twice is two ways.
 const applyClipSelector = (sel) => {
-    if (typeof renderer.autoClip !== 'function') return;
-    if (!sel) {
-        renderer.setClipSlab(null, null);
-    } else {
-        renderer.autoClip(positionsFor(renderer, sel));
-    }
-    if (renderer._syncClipButton) renderer._syncClipButton();
-    renderer.render('clip');
+    // ...THE RENDERER'S OWN, in parts/clip.js. This was four lines written out
+    // here and four more in parts/embed.js, and only this copy re-synced the
+    // Clip button. A build without parts/clip.js has no clipTo and this is a
+    // feature that is simply absent, not an error.
+    if (typeof renderer.clipTo === 'function') renderer.clipTo(sel);
 };
 renderer._applyClipSelector = applyClipSelector;
+
+// WHICH OBJECTS ARE ON SCREEN, asked for from Python - the renderer's own
+// setter and nothing else. setShownObjects is what keeps _framedObjects, the
+// record of which objects the camera has already accommodated; assigning
+// shownObjects and rebuilding by hand skips it and the view never widens onto
+// the second structure. parts/embed.js's showObjects() calls the same setter.
+//
+// Python sends an EXPLICIT LIST - show_objects() resolves "all of them" in
+// Python, at the moment of the call - so there is no second spelling of "all"
+// for the two sides to disagree about.
+const applyShownObjects = (names) => {
+    if (typeof renderer.setShownObjects === 'function') {
+        renderer.setShownObjects(names);
+    }
+};
+
+// AND WHERE THE CAMERA LOOKS FROM. Same shape as the clip request: a selector
+// in the JS selector's own words, or an empty object for "the best view of
+// whatever is on screen". The search is parts/orient.js's, the one the first
+// frame already runs unprompted - this is the caller asking for it again,
+// after a selection or after several objects went up.
+const applyOrientRequest = (request) => {
+    // ...AND THE SAME ONE THE EMBED'S v.orient() CALLS, which is why Python
+    // sends the selector and the options merged into one object: it is the
+    // shape orientTo already took, so nothing here has to unpack it.
+    if (window.py2dmolOrient) window.py2dmolOrient.orientTo(renderer, request);
+};
+renderer._applyOrientRequest = applyOrientRequest;
 
 // CLIP, the same way. parts/clip.js is in every bundle - the slab, the
 // tracking and the refit all ship to the notebook and to both embeds - and
@@ -980,12 +1005,18 @@ if (clipButton) {
             if (renderer.clipSlabOn && renderer.clipSlabOn()) {
                 renderer.setClipSlab(null, null);
             } else {
-                // WHAT IS SELECTED, or everything when nothing is. Clipping to
-                // the whole structure is not a no-op - it is the structure's
-                // own depth, which is the honest answer to "clip to what I can
-                // see" and leaves the picture alone rather than emptying it.
-                const sel = renderer.residueSelection;
-                renderer.autoClip(sel && sel.size ? sel : null);
+                // WHAT IS SELECTED, or everything when nothing is - and that
+                // is autoClip's OWN default, which index.html's Auto button
+                // has always used. This read renderer.residueSelection and
+                // passed it in, which is the same answer by a worse route:
+                // clipSlabForSelection prefers selectionInk() where there is
+                // one, so the copy could clip to a different set of residues
+                // than the button on the website clips to.
+                //
+                // Clipping to the whole structure is not a no-op - it is the
+                // structure's own depth, the honest answer to "clip to what I
+                // can see", and it leaves the picture alone.
+                renderer.autoClip();
             }
             syncClip();
             renderer.render('clipButton');
@@ -1200,10 +1231,21 @@ if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (windo
             //
             // Not animated: the viewer has only just appeared, and a cell that
             // opens mid-flight looks like a bug rather than a flourish.
+            //
+            // ...OF WHAT IS ON SCREEN, so which objects those are is settled
+            // first. Several structures reframe the camera between them, and
+            // orienting before that framed one of them and then widened away
+            // from the answer.
+            if (config.shown_objects) applyShownObjects(config.shown_objects);
             if (window.py2dmolOrient && !renderer.objectsData[
                     renderer.currentObjectName]?.rotation_matrix) {
                 window.py2dmolOrient.orientToBestView(renderer, {animate: false});
             }
+            // AN ASKED-FOR ORIENTATION REPLACES THE AUTOMATIC ONE. It runs
+            // after it rather than instead of it because the automatic pass is
+            // skipped for an object that carries its own rotation, and a
+            // caller who said orient() means it either way.
+            if (config.orient) applyOrientRequest(config.orient);
             // ...AND THE SLAB, AFTER THE ORIENTATION. The depth is measured
             // along the view, so fitting it before the camera has been turned
             // measures it down the wrong axis. It rides in the config because
@@ -1455,8 +1497,18 @@ const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject
     // is fitted to residues and those residues have to be loaded first. The key
     // is read rather than its value's truth: `{clip: null}` is Python turning
     // the slab OFF, and an absent block is Python not mentioning it.
+    if (viewerBlock && 'shown_objects' in viewerBlock) {
+        applyShownObjects(viewerBlock.shown_objects);
+    }
     if (viewerBlock && 'clip' in viewerBlock) {
         applyClipSelector(viewerBlock.clip);
+    }
+    // ...AND THE ORIENTATION LAST, because it frames what is on screen and the
+    // line above may have just changed that. Unlike the other two this is an
+    // ACTION rather than a state: it carries a nonce so the same request asked
+    // for twice arrives twice, where an unchanged clip is not resent at all.
+    if (viewerBlock && viewerBlock.orient) {
+        applyOrientRequest(viewerBlock.orient);
     }
 };
 

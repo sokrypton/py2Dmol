@@ -258,6 +258,57 @@ if (sb.normalizeConfig({ gpu: false }).rendering.gpu !== false) {
         bad('an empty config invents a clip');
     }
 }
+// ...AND SO ARE THE OTHER TWO THINGS THAT BELONG TO THE VIEWER RATHER THAN TO
+// AN OBJECT: which objects are on screen, and where the camera looks from.
+// Same route, same reason, same way of failing - a top-level key that
+// normalizeConfig quietly drops is a Python call that does nothing.
+for (const [key, value] of [['shown_objects', ['a', 'b']],
+                            ['orient', { object: 'a', animate: false }]]) {
+    const out = sb.normalizeConfig({ [key]: value });
+    if (JSON.stringify(out[key]) !== JSON.stringify(value)) {
+        bad(`normalizeConfig dropped ${key}: ${JSON.stringify(out[key])}`);
+    }
+    if (sb.normalizeConfig({})[key] !== undefined) {
+        bad(`an empty config invents ${key}`);
+    }
+}
+
+// --- ONE VIEWER BLOCK, TWO SIDES, AND A TEST THAT THEY AGREE ----------------
+// The live path carries what belongs to the viewer in `viewer`, beside
+// `frames` and `meta`. Python names each key it packs and parts/ui.js names
+// each key it reads, and those are two hand-written lists: a key added to one
+// and not the other is a call that updates Python, emits a payload the browser
+// receives, and is dropped on arrival without a word. That has happened three
+// times in this codebase already - `sse`, `align`, and the per-atom columns.
+{
+    const live = (/viewer_block = None[\s\S]*?payload = \{/.exec(py) || [''])[0];
+    const pyKeys = new Set();
+    for (const m of live.matchAll(/viewer_block(?:\["(\w+)"\]|\s*=\s*\{"(\w+)")/g)) {
+        pyKeys.add(m[1] || m[2]);
+    }
+    const applier = fs.readFileSync('src/parts/ui.js', 'utf8');
+    const jsKeys = new Set();
+    for (const m of applier.matchAll(/viewerBlock (?:&& '(\w+)' in viewerBlock|&& viewerBlock\.(\w+))/g)) {
+        jsKeys.add(m[1] || m[2]);
+    }
+    if (pyKeys.size < 3) {
+        bad(`only found ${[...pyKeys]} in viewer.py's viewer block - the regex`
+            + ' has lost the block it reads, so this check proves nothing');
+    }
+    for (const k of pyKeys) {
+        if (!jsKeys.has(k)) {
+            bad(`viewer.py packs "${k}" into the live viewer block and`
+                + ' parts/ui.js never reads it - it arrives and is dropped');
+        }
+    }
+    for (const k of jsKeys) {
+        if (!pyKeys.has(k)) {
+            bad(`parts/ui.js reads "${k}" off the live viewer block and`
+                + ' viewer.py never sends it');
+        }
+    }
+}
+
 // --- SHARING IS NOT A SETTING -----------------------------------------------
 // It happens where Python can ASK THE PAGE whether anything is lending, and
 // not where it cannot. A flag would be a way to choose the wrong one: forced
@@ -273,12 +324,26 @@ if (/share_library\s*=/.test(viewSig)) {
 if (!/def _can_ask_the_page\(/.test(py)) {
     bad('viewer.py has no _can_ask_the_page - it is the whole of the condition');
 }
-if (!/self\._share_library = _can_ask_the_page\(\)/.test(py)) {
-    bad('the sharing decision no longer comes from _can_ask_the_page');
+// ...AND THE ASK IS A CONFIRMATION, NEVER A VETO. `seen if seen is not None`
+// let one unanswered ping mean "nothing is lending", so every cell inlined and
+// a notebook shipped at 4 MB with the saving on. A False cannot be told apart
+// from a question that never arrived.
+if (!/can_borrow = \(seen is True\) or \(_LENT_BUNDLE == bundle\)/.test(py)) {
+    bad('the lender probe is a veto again - a False from it cannot be'
+        + ' distinguished from a question that never arrived, and treating it'
+        + ' as an answer stops every cell sharing');
 }
 if (!/def clip\(/.test(py)) {
     bad('viewer.py has no clip() - parts/clip.js is in every bundle and the'
         + ' notebook could not reach it');
+}
+if (!/def show_objects\(/.test(py)) {
+    bad('viewer.py has no show_objects() - the renderer has drawn several'
+        + ' objects at once since the website grew its Multi button');
+}
+if (!/def orient\(/.test(py)) {
+    bad('viewer.py has no orient() - parts/orient.js chooses the opening angle'
+        + ' and nothing could ask it for another one');
 }
 
 // --- ONE FLAT LIST OF STYLE NAMES, and what each stands for -----------------

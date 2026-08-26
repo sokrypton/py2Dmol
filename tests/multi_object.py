@@ -72,6 +72,30 @@ window.addEventListener('load', () => {
       const names = Object.keys(r.objectsData);
       R.objects = names;
 
+      // THE WEBSITE'S OBJECT ROW IS EXEMPT FROM THE ONE-OBJECT HIDE, and this
+      // is the page it has to be exempt ON. The notebook and the embed give
+      // the picker a row to itself, and with one object that row can only say
+      // what it already says - but #objectRow here also holds Multi and the
+      // prev/next buttons, which stay useful with one object. The rule is what
+      // the row CONTAINS, and the first version tested the CLASS instead:
+      // index.html's row is `.toggle-item object-row`, so it hid this one too
+      // and was saved only by a later line forcing the row back to flex.
+      {
+        const sel = document.getElementById('objectSelect');
+        const keep = [...sel.options].map((o) => o.value);
+        const opt = (v) => { const x = document.createElement('option');
+          x.value = v; x.textContent = v; return x; };
+        sel.innerHTML = ''; sel.appendChild(opt(keep[0]));
+        r.updateUIControls();
+        R.websiteRowWithOne = getComputedStyle(
+            document.getElementById('objectRow')).display !== 'none';
+        sel.innerHTML = '';
+        for (const k of keep) sel.appendChild(opt(k));
+        sel.value = r.currentObjectName;
+        r.updateUIControls();
+        R.websiteRowRestored = [...sel.options].length;
+      }
+
       // A PLAIN LOAD, BEFORE ANY API CALL. This is how a user gets here -
       // fetch one structure, fetch another - and the resting state is ONE
       // object on screen, the one the picker names, exactly as the viewer has
@@ -1044,6 +1068,15 @@ def main():
           + (f"  DECLINED: {R['gpuError']}" if R.get("gpuError") else ""))
 
     bad = []
+    if R.get("websiteRowWithOne") is not True:
+        bad.append("the object row went away when the picker was down to one"
+                   " option - on THIS page it also holds Multi and prev/next,"
+                   " which stay useful with one object. The one-object hide is"
+                   " for a row that holds nothing but the picker.")
+    if R.get("websiteRowRestored") != len(R.get("objects") or []):
+        bad.append(f"the probe did not put the picker's options back:"
+                   f" {R.get('websiteRowRestored')} of {len(R.get('objects') or [])}"
+                   " - everything measured after that point is suspect")
     if R.get("plainDrawn") != [R["objects"][1]]:
         bad.append(f"a plain load of two files drew {R.get('plainDrawn')} - the"
                    " resting state is the object being edited, on its own")

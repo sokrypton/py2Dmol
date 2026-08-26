@@ -669,5 +669,39 @@ function animateRotation(rotationAnimation) {
     renderer.render();
     requestAnimationFrame(() => animateRotation(rotationAnimation));
 }
-window.py2dmolOrient = { orientToBestView };
+/**
+ * A SELECTOR IN, A CAMERA MOVE OUT - orientToBestView with the project's way
+ * of naming residues in front of it.
+ *
+ * ONE OBJECT, TWO NAMESPACES: the selector keys say WHAT to frame and the rest
+ * are options, so `orientTo(r, {type: 'L', animate: false})` reads as one
+ * thought and there is no key in both lists.
+ *
+ * This lived in parts/embed.js, where the notebook and the website could not
+ * reach it - and the notebook's own copy, written later for what Python asks
+ * for, handled only `object`. Written once here it is worth saying why the
+ * merge matters: without it `orient({type: 'L'})` is an options object with no
+ * recognised key, so it frames whatever happened to be selected at the time.
+ * In the ligand example that is the pocket, which looks close enough to a
+ * close-up on the ligand to pass.
+ */
+function orientTo(renderer, request) {
+    const o = request || {};
+    const opts = {};
+    const sel = {};
+    for (const k of Object.keys(o)) {
+        if (SELECTOR_KEYS.includes(k)) sel[k] = o[k];
+        else opts[k] = o[k];
+    }
+    if (Object.keys(sel).length) {
+        opts.positions = positionsFor(renderer, sel);
+        // ...and the object it belongs to, which orient reads separately to
+        // find the frame whose coordinates it should be measuring.
+        if (sel.object) opts.name = sel.object;
+    }
+    orientToBestView(renderer, opts);
+    return renderer;
+}
+
+window.py2dmolOrient = { orientToBestView, orientTo };
 }());

@@ -94,6 +94,19 @@ import numpy as np                                          # noqa: E402
 import py2Dmol                                              # noqa: E402
 
 
+
+def fresh_kernel():
+    """Forget that any library has been written, as a new kernel would.
+
+    _LENT_BUNDLE is module state and every scenario below builds its own
+    notebook, so without this the second one's FIRST viewer borrows from a
+    lender its own run never created - and comes up with no viewer at all,
+    which reads as every metadata check failing rather than as leaked state.
+    """
+    import py2Dmol.viewer as _vm
+    _vm._LENT_BUNDLE = None
+
+
 def build_cells(persistence=True):
     """A live session: show() with nothing in it, then three add() calls.
 
@@ -101,6 +114,7 @@ def build_cells(persistence=True):
     before it otherwise, and then the z of the first atom no longer says which
     frame this is, which is how the ORDER is checked below.
     """
+    fresh_kernel()
     del CELLS[:]
     v = py2Dmol.view(persistence=persistence)
     v.show()
@@ -349,6 +363,7 @@ if R.get('frames') not in (0, None) or R.get('ink'):
 # than as a frame - which is a second path, with its own applier, and it had
 # already drifted from the first.
 def build_metadata_cells():
+    fresh_kernel()
     del CELLS[:]
     v = py2Dmol.view(persistence=True)
     v.show()
@@ -405,6 +420,7 @@ elif not (R.get('clip') < (R.get('clipWhole') or 0) - 1):
 # Two objects in one run: one has everything set and then everything cleared,
 # the other keeps what it was not asked to lose.
 def build_clearing_cells():
+    fresh_kernel()
     del CELLS[:]
     v = py2Dmol.view(persistence=True)
     v.show()
@@ -472,11 +488,11 @@ def build_two(share):
     import py2Dmol.viewer as _vm
     _vm._LENT_BUNDLE = None                 # a fresh kernel
     was = _vm._can_ask_the_page
-    _vm._can_ask_the_page = lambda: share   # ...and a page that can be asked
     try:
         t = np.linspace(0, 4 * np.pi, 30)
         for k, name in enumerate(('m', 'n')):
             v = py2Dmol.view((300, 300))
+            v._share_library = share      # the unshared path, for comparison
             v.add(np.stack([np.cos(t) * 5, np.sin(t) * 5, t * 1.5 + 100 * k], axis=1),
                   align=False, name=name)
             v.show()
@@ -503,6 +519,9 @@ for share in (False, True):
         bad.append(f'can-ask={share}: {drew} of 2 viewers drew - a borrower'
                    ' that finds no lender has no viewer at all, which is why'
                    ' sharing only happens where the page can be asked')
+    # ...AND THE SIZE IS THE POINT. Eight viewers came to 3,872 KB unshared
+    # against 645 - the whole feature is the second number, and it shipped
+    # producing the first because one unanswered ping was read as an answer.
     if share and kb[1] > kb[0] / 4:
         bad.append(f'the borrowing cell is {kb[1]} KB against the lender\'s'
                    f' {kb[0]} - it is still carrying a library of its own')

@@ -5882,6 +5882,46 @@ t('a style belongs to its object, and a width to its style', () => {
     }
 });
 
+t('one translation per selector verb, not one per surface', () => {
+    // THREE SHELLS AND ONE RENDERER. The website, the notebook and the embed
+    // all turn a selector into an action, and the action is the renderer's -
+    // so the translation belongs to the renderer too, once. Both of these had
+    // grown a second copy and the copies had already drifted:
+    //
+    //   clip    - parts/embed.js resolved the selector and set the slab, and
+    //             parts/ui.js did the same four lines for what Python asks
+    //             for. Only ui.js re-synced the Clip button, so a notebook's
+    //             button and its slab could disagree about whether clipping
+    //             was on. renderer.clipTo(sel) is the one route now.
+    //   orient  - parts/embed.js split selector keys from options so that
+    //             {type: 'L', animate: false} reads as one thought; the
+    //             notebook's later copy handled `object` and nothing else.
+    //             py2dmolOrient.orientTo(renderer, request) is the one route.
+    //
+    // The test is that positionsFor - the project's ONE way of naming
+    // residues - is called from the files that own a translation and nowhere
+    // else. A new caller is a new copy, and the failure is silent: the copy
+    // works, and then one of them gains a step the other does not.
+    const OWNERS = ['src/core/mol.js', 'src/parts/embed.js',
+                    'src/parts/clip.js', 'src/parts/orient.js'];
+    const listed = require('child_process')
+        .execSync('python3 tools/bundle.py show', {encoding: 'utf8'});
+    const files = [...listed.matchAll(/(src\/[\w./-]+\.js)/g)]
+        .map((m) => m[1]);
+    const uniq = [...new Set(files)];
+    if (uniq.length < 20) {
+        throw new Error(`only ${uniq.length} sources came back from`
+            + ' bundle.py show - this check would pass by reading nothing');
+    }
+    const strays = uniq.filter((f) => !OWNERS.includes(f)
+        && /positionsFor\s*\(/.test(fs.readFileSync(f, 'utf8')));
+    if (strays.length) {
+        throw new Error(`${strays.join(', ')} resolves a selector directly.`
+            + ' The renderer owns the translation: clipTo, orientTo, or a new'
+            + ' method beside them - not a fourth copy in a shell.');
+    }
+});
+
 t('a large structure opens as tube, and a chosen style is left alone', () => {
     // NOT the memory rule below it: this is about what is worth looking at.
     // Past a couple of thousand residues the ribbon is a tangle at any zoom
