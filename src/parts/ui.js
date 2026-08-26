@@ -1239,7 +1239,8 @@ if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (windo
             if (config.shown_objects) applyShownObjects(config.shown_objects);
             if (window.py2dmolOrient && !renderer.objectsData[
                     renderer.currentObjectName]?.rotation_matrix) {
-                window.py2dmolOrient.orientToBestView(renderer, {animate: false});
+                window.py2dmolOrient.orientToBestView(
+                    renderer, {animate: false, keepSpin: true});
             }
             // AN ASKED-FOR ORIENTATION REPLACES THE AUTOMATIC ONE. It runs
             // after it rather than instead of it because the automatic pass is

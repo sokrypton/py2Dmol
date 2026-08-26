@@ -205,6 +205,39 @@ window.addEventListener('load', () => {
         }
       }
 
+      // A BUTTON THAT OPENS A PANEL HAS TO LOOK OPEN, and there are two
+      // spellings of that state: Clip latches (aria-pressed) and Style and
+      // Capture open a panel (aria-expanded). The open cue in this shell was
+      // written as `#styleToggle[aria-expanded="true"]` - one button by name -
+      // so Capture put its panel up with its own button unlit, and nothing on
+      // screen said which of the two panels you had. index.html keys the same
+      // rule on the state rather than the id, which is why the website was
+      // right and this shell was not.
+      //
+      // MEASURED AS A COLOUR, not as the attribute: the attribute was already
+      // being set and the button still looked off, so reading it back would
+      // have passed against exactly the bug reported.
+      const skin = (el) => getComputedStyle(el).backgroundColor;
+      const capture = document.querySelector('#saveImageButton');
+      const styleBtn = document.querySelector('#styleToggle');
+      R.cue = {has: !!capture};
+      if (capture) {
+        R.cue.closed = skin(capture);
+        capture.click(); await settle();
+        R.cue.expanded = capture.getAttribute('aria-expanded');
+        R.cue.open = skin(capture);
+        capture.click(); await settle();
+        R.cue.reclosed = skin(capture);
+        // ...and Style, which is the control this was already right for -
+        // if the two do not match, the skin is not shared and one of them
+        // will drift.
+        if (styleBtn) {
+          styleBtn.click(); await settle();
+          R.cue.styleOpen = skin(styleBtn);
+          styleBtn.click(); await settle();
+        }
+      }
+
       R.tube = await look('tube');
       R.cartoon = await look('cartoon');
 
@@ -368,6 +401,27 @@ def main():
         if s.get('warmMs', 99) > 1.0:
             bad.append(f"{style}: asking again costs {s.get('warmMs')}ms - the"
                        " panel asks on every selection change")
+    c = R.get('cue') or {}
+    print(f"  capture cue: {c}")
+    if not c.get('has'):
+        bad.append('no Capture button in the notebook shell')
+    elif c.get('expanded') != 'true':
+        bad.append('opening the Save panel did not set aria-expanded on its'
+                   ' button, so nothing can style it and nothing reading the'
+                   ' page can tell the panel is open')
+    elif c.get('open') == c.get('closed'):
+        bad.append(f"the Capture button looks the same open as closed"
+                   f" ({c.get('open')}) - the open cue was written for"
+                   " #styleToggle by name, so Capture put its panel up unlit")
+    elif c.get('reclosed') != c.get('closed'):
+        bad.append(f"the Capture button stayed lit after its panel closed:"
+                   f" {c.get('reclosed')} against {c.get('closed')}")
+    elif c.get('styleOpen') != c.get('open'):
+        bad.append(f"Style open is {c.get('styleOpen')} and Capture open is"
+                   f" {c.get('open')} - two buttons in the same row wearing"
+                   ' two different skins for the same state is how the'
+                   ' by-name rule got there in the first place')
+
     a = R.get('absent') or {}
     if not a.get('sidechainTable'):
         bad.append('a side-chain table was invented for a structure with no atoms')

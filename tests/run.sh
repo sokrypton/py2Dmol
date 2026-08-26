@@ -59,6 +59,17 @@ if [[ "$LANE" == "all" || "$LANE" == "node" ]]; then
     fail=1; print "NODE packaging:"; python3 tests/packaging.py 2>&1 | grep '^FAIL' | head -3
   fi
 
+  # ...and a grid emits ONE output. Grid.view() said "do not show yourself" by
+  # setting _is_live, which also means "you are on the page" - so every add()
+  # during collection wrote an update for a viewer that did not exist yet, and
+  # a four-viewer grid came to twenty-eight outputs. No browser: the count is
+  # the whole of the fault.
+  if python3 tests/grid.py >/dev/null 2>&1; then
+    print "node grid: ok"
+  else
+    fail=1; print "NODE grid:"; python3 tests/grid.py 2>&1 | grep -E '^FAIL|^  -' | head -3
+  fi
+
   # ...and every path a comment or a doc points a reader at still exists. The
   # rename that split the renderer left 236 wrong pointers behind, and nothing
   # in the suite could tell.

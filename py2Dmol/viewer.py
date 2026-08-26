@@ -796,6 +796,13 @@ class view:
         self.objects = []                 # Store all data
         self._current_object_data = None  # List to hold frames for current object
         self._is_live = False             # True if .show() was called *before* .add()
+        # SOMEONE ELSE IS ARRANGING THE DISPLAY - a grid, collecting viewers to
+        # lay out together. Two things follow, and they used to be spelled by
+        # setting _is_live, which meant both of them wrongly: from_pdb must not
+        # show the viewer on its own, AND add() must not emit a live update,
+        # because there is no viewer on the page yet to receive one. Grid.show()
+        # calls _mark_published() afterwards, which is when live begins.
+        self._managed = False
         self._data_display_id = None      # For updating data cell only (not viewer)
 
         # Track sent frames and metadata to enable true incremental updates
@@ -3510,7 +3517,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             )
 
             # Determine whether to auto-show (mirror add_pdb + show sequence)
-            if show is True or (show is None and not self._is_live):
+            if show is True or (show is None and not self._is_live
+                                and not self._managed):
                 self.show()
         else:
             print(f"Could not load structure for '{pdb_id}'.")
@@ -3581,9 +3589,47 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # show=None (default): show if not in live mode
             if show is True:
                 self.show()
-            elif show is None and not self._is_live:
+            elif show is None and not self._is_live and not self._managed:
                 self.show()
         
+
+    def _mark_published(self):
+        """
+        THE VIEWER IS NOW ON THE PAGE: everything it already holds has been
+        delivered, and anything added from here is an incremental update.
+
+        Two callers, and they are the two ways a viewer reaches a notebook:
+        show()'s static branch, and Grid.show(), which lays several out
+        together and emits their HTML itself. The grid used to say this by
+        setting _is_live BEFORE collecting - which also made every add()
+        during collection emit an update to a page that did not exist yet.
+        Four viewers came to twenty-seven of them, twenty from one NMR
+        ensemble, each an empty output element in the notebook.
+        """
+        self._managed = False
+        self._is_live = True
+        # Mark existing frames/metadata as already sent so later incremental
+        # updates (e.g., add_contacts) don't resend full frames.
+        self._sent_frame_count = {}
+        self._sent_metadata = {}
+        for obj in self.objects:
+            obj_name = obj.get("name", "")
+            if not obj_name:
+                continue
+            self._sent_frame_count[obj_name] = len(obj.get("frames", []))
+            current_metadata = {}
+            if obj.get("color") is not None:
+                current_metadata["color"] = obj["color"]
+            if obj.get("contacts") is not None:
+                current_metadata["contacts"] = obj["contacts"]
+            if obj.get("bonds") is not None:
+                current_metadata["bonds"] = obj["bonds"]
+            if obj.get("rotation_matrix") is not None:
+                current_metadata["rotation_matrix"] = obj["rotation_matrix"]
+            if obj.get("center") is not None:
+                current_metadata["center"] = obj["center"]
+            if current_metadata:
+                self._sent_metadata[obj_name] = copy.deepcopy(current_metadata)
 
     def show(self):
         """
@@ -3617,30 +3663,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # We set pure_static=False to enable hybrid mode (static + live)
             html_to_display = self._display_viewer(static_data=self.objects)
             self._display_html(html_to_display)
-            self._is_live = True
-
-            # Mark existing frames/metadata as already sent so later incremental
-            # updates (e.g., add_contacts) don't resend full frames.
-            self._sent_frame_count = {}
-            self._sent_metadata = {}
-            for obj in self.objects:
-                obj_name = obj.get("name", "")
-                if not obj_name:
-                    continue
-                self._sent_frame_count[obj_name] = len(obj.get("frames", []))
-                current_metadata = {}
-                if obj.get("color") is not None:
-                    current_metadata["color"] = obj["color"]
-                if obj.get("contacts") is not None:
-                    current_metadata["contacts"] = obj["contacts"]
-                if obj.get("bonds") is not None:
-                    current_metadata["bonds"] = obj["bonds"]
-                if obj.get("rotation_matrix") is not None:
-                    current_metadata["rotation_matrix"] = obj["rotation_matrix"]
-                if obj.get("center") is not None:
-                    current_metadata["center"] = obj["center"]
-                if current_metadata:
-                    self._sent_metadata[obj_name] = copy.deepcopy(current_metadata)
+            self._mark_published()
 
         # Reset data display ID for new viewer
         self._data_display_id = None

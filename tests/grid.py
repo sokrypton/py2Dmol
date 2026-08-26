@@ -1,0 +1,159 @@
+"""A grid emits ONE output, and its viewers go live only once they are on it.
+
+    python3 tests/grid.py
+
+`Grid.view()` hands back an ordinary viewer and collects it, so `from_pdb`
+must not display it on the spot. That was said by setting `_is_live` - and
+that flag means two things:
+
+  * don't show yourself, which is what the grid wanted; and
+  * you are on the page, so every add() is an incremental update - which was
+    false, because the grid has not been emitted yet.
+
+So each `add()` during collection wrote an update into the notebook addressed
+to a viewer that did not exist. Four viewers came to twenty-seven of them,
+twenty from a single NMR ensemble; each is an empty output element, and the
+band of white space under the cell is what they look like.
+
+`_managed` says the first thing alone. `Grid.show()` calls `_mark_published()`
+afterwards, which is when live begins - so an add() AFTER the grid still
+reaches the viewer beside it, which is the one thing the old flag got right.
+
+No browser: this counts outputs, and that is the whole of the fault.
+"""
+import json, re, sys, types
+
+CALLS = []
+
+
+def _stub_ipython():
+    ip = types.ModuleType('IPython'); disp = types.ModuleType('IPython.display')
+
+    class HTML:
+        def __init__(self, s): self.data = s
+
+    def display(*a, **k):
+        for x in a:
+            CALLS.append((type(x).__name__, len(getattr(x, 'data', '')),
+                          getattr(x, 'data', '')))
+
+    disp.HTML = HTML
+    disp.Javascript = HTML
+    disp.display = display
+    disp.update_display = lambda *a, **k: CALLS.append(('update', 0, ''))
+    ip.display = disp
+    sys.modules['IPython'] = ip
+    sys.modules['IPython.display'] = disp
+
+
+try:
+    import IPython.display  # noqa: F401
+except ImportError:
+    _stub_ipython()
+else:
+    _stub_ipython()          # ...ours either way: the count is the measurement
+
+sys.path.insert(0, '/Users/mini/Documents/GitHub/py2Dmol')
+import numpy as np  # noqa: E402
+import py2Dmol  # noqa: E402
+
+ROOT = '/Users/mini/Documents/GitHub/py2Dmol'
+bad = []
+
+
+def helix(n=12):
+    return np.array([[2.3 * np.cos(i), 2.3 * np.sin(i), 1.5 * i]
+                     for i in range(n)], dtype=float)
+
+
+# --- FOUR VIEWERS, ONE OUTPUT --------------------------------------------
+# 1YNE is the fixture that made this visible: an NMR ensemble, so add_pdb
+# adds a frame per model and each one used to be its own update.
+CALLS.clear()
+with py2Dmol.grid(2, 2, size=(300, 300), box=True) as g:
+    g.view(color='chain').from_pdb(ROOT + '/6MRR.cif')
+    g.view().from_pdb(ROOT + '/1UBQ.cif', color='red')
+    g.view(rotate=True).from_pdb(ROOT + '/6MRR.cif',
+                                 contacts=[[0, 10, 1.0, 'yellow']])
+    g.view(autoplay=True).from_pdb(ROOT + '/1YNE.cif')
+outs = list(CALLS)
+print(f"  four viewers, one of them an NMR ensemble: {len(outs)} output(s)"
+      f" of {[o[1] for o in outs]} bytes")
+if len(outs) != 1:
+    bad.append(f"a four-viewer grid produced {len(outs)} outputs - one is the"
+               " grid and the rest are updates to viewers that are not on the"
+               " page yet, each an empty element in the notebook")
+
+# ...and all four are IN it, so nothing was dropped by not showing them.
+page = outs[-1][1] if outs else 0
+if page < 200_000:
+    bad.append(f"the grid output is {page} bytes - too small to be carrying"
+               " four viewers and the library, so this count is measuring"
+               " the wrong thing")
+
+
+# --- COLLECTED, NOT LIVE --------------------------------------------------
+g2 = py2Dmol.Grid(cols=2, size=(200, 200))
+v = g2.view()
+if v._is_live:
+    bad.append('a collected viewer is marked live before the grid exists -'
+               ' that is the flag that emitted twenty-seven outputs')
+if not v._managed:
+    bad.append('a collected viewer is not marked managed, so from_pdb will'
+               ' show it on the spot and the grid will show it again')
+
+CALLS.clear()
+v.add(helix())
+if CALLS:
+    bad.append(f'add() during collection emitted {CALLS} - there is no viewer'
+               ' on the page for it to reach')
+
+# --- ...AND LIVE AFTERWARDS ----------------------------------------------
+CALLS.clear()
+g2.show()
+after_show = list(CALLS)
+if len(after_show) != 1:
+    bad.append(f'Grid.show() emitted {len(after_show)} outputs')
+if not v._is_live or v._managed:
+    bad.append(f'after Grid.show() the viewer is live={v._is_live}'
+               f' managed={v._managed} - it IS on the page now')
+
+CALLS.clear()
+v.set_color('red')
+if not CALLS:
+    bad.append('a colour set after the grid was displayed reached nothing -'
+               ' the viewer is on the page and an update is the only way to'
+               ' change it')
+# ...and it carries NO FRAMES. A size threshold would not see this: the
+# fixture is a twelve-position helix, and resending it is still small. What
+# _mark_published records is that those frames have already gone, so a colour
+# change is a colour change.
+def _payload(html):
+    m = re.search(r'const p=(\{.*?\});', html, re.S)
+    return json.loads(m.group(1)) if m else None
+
+pay = _payload(CALLS[0][2]) if CALLS else None
+if pay is None:
+    bad.append('the update after Grid.show() carries no payload to read')
+elif pay.get('frames'):
+    bad.append(f"a colour change after Grid.show() resent"
+               f" {[ (k, len(v)) for k, v in pay['frames'].items() ]} - the"
+               ' frames went out with the grid, and _mark_published is what'
+               ' records that')
+
+# --- THE ESCAPE HATCH STILL WORKS ----------------------------------------
+# from_pdb(show=True) is documented as the way to display a collected viewer
+# anyway; _managed must not override an explicit ask.
+CALLS.clear()
+g3 = py2Dmol.Grid(cols=1)
+g3.view().from_pdb(ROOT + '/1UBQ.cif', show=True)
+if not CALLS:
+    bad.append('from_pdb(show=True) on a collected viewer showed nothing -'
+               ' _managed is a default, not a veto')
+
+if bad:
+    print('FAIL')
+    for b in bad:
+        print('  - ' + b)
+    sys.exit(1)
+print('PASS')

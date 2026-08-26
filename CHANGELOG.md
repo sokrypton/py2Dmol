@@ -131,6 +131,21 @@ result.
 - **The wheel ships what `viewer.py` opens.** `package_data` omitted the GPU
   renderer, which `viewer.py` reads unconditionally — a `FileNotFoundError` on
   the first `show()`, in the wheel only.
+- **A grid emits one output, not twenty-eight.** `Grid.view()` said "do not
+  show yourself" by setting `_is_live` — and that flag also means "you are on
+  the page, so send updates". The grid has not been emitted yet, so every
+  `add()` during collection wrote an update addressed to a viewer that did not
+  exist: four viewers came to twenty-seven of them, twenty from a single NMR
+  ensemble, each an empty output element and together a band of white space
+  under the cell. `_managed` says the first thing alone, and `Grid.show()`
+  marks the viewers published afterwards — so an `add()` *after* the grid still
+  reaches the viewer beside it, which is the one thing the old flag got right.
+- **`rotate=True` turns the structure.** It reached the config, the
+  constructor and the Rotate checkbox, and was then switched off by the
+  viewer's own opening orient — which stopped the spin unconditionally, on the
+  reasoning that a reader pressing Orient wants the view held. Nobody presses
+  the automatic one. It passes `keepSpin` now; a deliberate Orient still stops
+  the turn. Affected the notebook and the embed alike.
 - **`py2dmol_scatter_loaded`** was dispatched on `document` and listened for on
   `window`; a bare `Event` does not bubble.
 - An NMR ensemble kept one model of six when an assembly was built.
@@ -150,6 +165,13 @@ result.
   the cartoon is refused rather than writing an empty file. The tube exports a
   vector on every build, because it is stroked by the core rather than by a
   painter.
+- **Capture lights up while its panel is open**, like Style beside it and Clip
+  above it. The open cue in the notebook and embed shells was written as
+  `#styleToggle[aria-expanded="true"]` — one button by name — so Capture put
+  its panel up with its own button unlit and nothing said which of the two
+  panels you had. Both shells key it on the state now, as `index.html` always
+  did, and a latch (`aria-pressed`) and an open panel (`aria-expanded`) wear
+  one skin.
 - **A more compact viewer menu** in the notebook and the embed: one control
   height for the whole viewer, stated once, and one spacing rhythm. The column
   is 88px closed against 106, and an embed keeps its own spacing in a host page

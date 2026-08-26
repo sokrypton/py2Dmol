@@ -253,6 +253,7 @@ const SHELL = (id) => `
            by #saveStateButton, which writes the session. viewer.html still said
            Save, which is the same two-copies drift the panel had. -->
       <button id="saveImageButton" class="controlButton"
+              aria-expanded="false" aria-controls="savePanel"
               title="Capture an image or a video">Capture</button>
     </div>
     <div id="stylePanelMount"></div>
@@ -316,9 +317,11 @@ const SHELL_CSS = (id) => `
   justify-content: center; white-space: nowrap; font-weight: 500; }
 #${id} .controlButton:hover:not(:disabled) { background: #f3f4f6; }
 #${id} #styleToggle { width: 100%; }
-/* Clip latches, so it has to look latched - see viewer.html. */
-#${id} .controlButton[aria-pressed="true"] { background: #e5e7eb; border-color: #d1d5db; }
-#${id} #styleToggle[aria-expanded="true"] { background: #e5e7eb; border-color: #d1d5db; }
+/* ON IS ON, however the button spells it - Clip latches (aria-pressed), Style
+   and Capture open a panel (aria-expanded). Keyed on the state, not on one
+   button's id, which is what left Capture unlit with its panel open. */
+#${id} .controlButton[aria-pressed="true"],
+#${id} .controlButton[aria-expanded="true"] { background: #e5e7eb; border-color: #d1d5db; }
 #${id} .btn-row { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 3px; }
 #${id} .btn-toggle { padding: 0; border: none; background: transparent; display: block; }
 #${id} .btn-toggle input[type="checkbox"] { position: absolute; opacity: 0; width: 0; height: 0; }
@@ -812,7 +815,8 @@ function loadFrames(renderer, frames, name, orient) {
     // NOT ANIMATED, for ui.js's reason: the viewer has only just appeared, and
     // something that opens mid-flight reads as a bug rather than a flourish.
     if (orient !== false && window.py2dmolOrient) {
-        window.py2dmolOrient.orientToBestView(renderer, { animate: false, name: on });
+        window.py2dmolOrient.orientToBestView(
+            renderer, { animate: false, name: on, keepSpin: true });
         // ...AND THE CAMERA NOW ACCOUNTS FOR THIS OBJECT AND NOTHING ELSE.
         //
         // _framedObjects is the renderer's record of what the current framing

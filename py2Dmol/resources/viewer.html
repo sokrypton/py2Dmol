@@ -149,10 +149,18 @@ input[type="range"] { border: none !important; outline: none !important; box-sha
    clipped viewer from an unclipped one was to look at the structure and guess.
    The same pressed skin the Style button uses when its panel is open, and the
    same one the checkbox toggles beside it wear. */
-.controlButton[aria-pressed="true"] { background: #e5e7eb; border-color: #d1d5db; color: #374151; }
-.controlButton[aria-pressed="true"]:hover { background: #d1d5db; border-color: #9ca3af; }
-#styleToggle[aria-expanded="true"] { background: #e5e7eb; border-color: #d1d5db; color: #374151; }
-#styleToggle[aria-expanded="true"]:hover { background: #d1d5db; border-color: #9ca3af; }
+/* TWO SPELLINGS OF THE SAME STATE, and the open cue was written for ONE
+   BUTTON BY NAME. A latch says aria-pressed (Clip) and a button that opens a
+   panel says aria-expanded (Style, Capture) - to the reader both are "this is
+   on", and they should look the same. Naming #styleToggle meant Capture opened
+   its panel while its button stayed unlit: nothing on screen said which of the
+   two panels you had up. index.html has always keyed this on the state rather
+   than the id, which is why the website was right and both other shells were
+   not - see the three-shells rule in CLAUDE.md. */
+.controlButton[aria-pressed="true"],
+.controlButton[aria-expanded="true"] { background: #e5e7eb; border-color: #d1d5db; color: #374151; }
+.controlButton[aria-pressed="true"]:hover,
+.controlButton[aria-expanded="true"]:hover { background: #d1d5db; border-color: #9ca3af; }
 /* THE MOUNT IS NOT A BOX. It holds the style panel, which is hidden until the
    Style button opens it - and an empty flex child still takes its gap, so the
    closed column carried 3px below the last control that nothing above it had.
@@ -290,7 +298,12 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
             <div class="btn-row auto">
                 <button id="styleToggle" class="controlButton" aria-expanded="false" aria-controls="stylePanel"
                     title="Render style and its settings">Style</button>
-                <button id="saveImageButton" class="controlButton" title="Capture an image or a video">Capture</button>
+                <!-- aria-expanded like the Style button beside it: it is
+                     what says the panel is open, both to a reader of the page
+                     and to the CSS that lights the button. -->
+                <button id="saveImageButton" class="controlButton"
+                    aria-expanded="false" aria-controls="savePanel"
+                    title="Capture an image or a video">Capture</button>
             </div>
             <!-- THE PICKER SITS BETWEEN THE BUTTONS AND THE PANELS, which is
                  the order index.html uses. tests/interaction.js checks BOTH

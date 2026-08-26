@@ -281,8 +281,22 @@ function orientToBestView(renderer, options) {
         }
     }
 
-    // Stop auto-rotation if active
-    if (renderer.autoRotate) {
+    // STOP THE SPIN - BUT NOT WHEN NOBODY ASKED FOR THE ORIENT.
+    //
+    // A reader pressing Orient while the structure turns wants it framed and
+    // held; carrying on spinning past the angle just chosen makes the button
+    // look broken. That is the DELIBERATE orient, and it is what this default
+    // is for.
+    //
+    // The automatic one is the opposite case. Every surface orients itself
+    // when the first frame lands - parts/ui.js on the static payload,
+    // loadFrames in parts/embed.js - and turning the spin off there defeated
+    // `rotate` outright: py2Dmol.view(rotate=True) came up with
+    // config.display.rotate true, the constructor set autoRotate from it, the
+    // checkbox was ticked from that, and then the opening orient unticked it
+    // and dispatched a change. Nothing in the trace looks wrong until this
+    // line. Those callers pass keepSpin.
+    if (renderer.autoRotate && !opts.keepSpin) {
         renderer.autoRotate = false;
         if (renderer.rotationCheckbox) {
             renderer.rotationCheckbox.checked = false;

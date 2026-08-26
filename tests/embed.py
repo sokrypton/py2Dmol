@@ -185,6 +185,32 @@ const drivePage = async () => {
     }
   }
 
+  // ON IS ON, HOWEVER THE BUTTON SPELLS IT. Clip latches (aria-pressed) and
+  // Style and Capture open a panel (aria-expanded); to the reader all three
+  // are "this is on" and they wear one skin. The shell's open cue named
+  // #styleToggle, so Capture put its panel up with its button unlit - measured
+  // as a COLOUR, because the attribute was already being set and the button
+  // still looked off.
+  out.cue = null;
+  {
+    const col = D.querySelector('#rightPanelContainer');
+    const cap = col && col.querySelector('#saveImageButton');
+    const sty = col && col.querySelector('#styleToggle');
+    if (cap && sty) {
+      const skin = (e) => getComputedStyle(e).backgroundColor;
+      const closed = skin(cap);
+      cap.click();
+      const open = skin(cap);
+      const expanded = cap.getAttribute('aria-expanded');
+      cap.click();
+      const reclosed = skin(cap);
+      sty.click();
+      const styleOpen = skin(sty);
+      sty.click();
+      out.cue = {closed, open, expanded, reclosed, styleOpen};
+    }
+  }
+
   // ...AND THE CODE EACH SECTION PRINTS. There are no button rows any more:
   // a section is one complete example, run once at load and displayed
   // verbatim beside itself. So the check is that the box filled and that what
@@ -1344,6 +1370,23 @@ if not gaps:
     bad.append('no button rows measured - this check has stopped finding the'
                f' chrome and would pass forever (cols={PAGE.get("colCount")},'
                f' rows={PAGE.get("btnRowCount")})')
+
+cue = PAGE.get('cue')
+if cue is None:
+    bad.append('the Style and Capture buttons were not found in the shell, so'
+               ' the open cue is unmeasured')
+elif cue.get('expanded') != 'true':
+    bad.append('opening the Save panel set no aria-expanded on its button')
+elif cue.get('open') == cue.get('closed'):
+    bad.append(f"Capture looks the same open as closed ({cue.get('open')}) -"
+               " the shell's open cue named #styleToggle, so only one of the"
+               ' two panel buttons ever lit')
+elif cue.get('reclosed') != cue.get('closed'):
+    bad.append(f"Capture stayed lit after its panel closed:"
+               f" {cue.get('reclosed')} against {cue.get('closed')}")
+elif cue.get('styleOpen') != cue.get('open'):
+    bad.append(f"Style open is {cue.get('styleOpen')} and Capture open is"
+               f" {cue.get('open')} - one state, one skin")
 
 if R.get('threw'):
     bad.append('the embed threw: ' + R['threw'])

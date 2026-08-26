@@ -70,9 +70,8 @@ class Grid:
         """
         Create a new viewer with grid defaults and add it to the grid.
 
-        IMPORTANT: This method sets the viewer's _is_live flag to True to prevent
-        from_pdb() and from_afdb() from auto-showing the viewer before the grid
-        has a chance to collect it.
+        IMPORTANT: This method sets the viewer's _managed flag so from_pdb()
+        and from_afdb() do not auto-show before the grid has collected them.
 
         Grid defaults (size, controls, box) are applied unless explicitly overridden
         in kwargs.
@@ -104,10 +103,19 @@ class Grid:
         # Create viewer instance
         viewer = create_view(**kwargs)
 
-        # Mark viewer as "live" so from_pdb()/from_afdb() won't auto-show.
-        # Setting _is_live=True tells the viewer it's managed externally (by the grid).
+        # SOMEONE ELSE IS ARRANGING THE DISPLAY, which is what _managed says.
+        # This used to set _is_live, and that flag means two things: don't show
+        # yourself, AND you are on the page, so send updates. The second was
+        # false - the grid has not been emitted yet - so every add() during
+        # collection wrote an update into the notebook for a viewer that did
+        # not exist. Four viewers came to twenty-seven of them, twenty from one
+        # NMR ensemble; each is an empty output element, and the band of white
+        # space under the cell is what they look like.
+        #
+        # Grid.show() calls _mark_published() on each viewer afterwards, so a
+        # later v.add() still reaches the viewer it is now beside.
         # Users can still force display with from_pdb(..., show=True) if needed.
-        viewer._is_live = True
+        viewer._managed = True
 
         self.viewers.append(viewer)
         return viewer
@@ -200,6 +208,12 @@ class Grid:
 
         # Display using IPython
         display(HTML(grid_html))
+
+        # ...AND THE VIEWERS ARE ON THE PAGE NOW. Until this line an add()
+        # would have been talking to nothing; from here each one is a real
+        # incremental update to the viewer beside it.
+        for viewer in self.viewers:
+            viewer._mark_published()
 
 
 def grid(cols=2, rows=None, gap=5, size=None, controls=False, box=False):

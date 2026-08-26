@@ -176,6 +176,15 @@ def page():
         f"orient() did not put a selector in the config: {aimed.config.get('orient')}"
     assert one.config.get('shown_objects') is None and 'orient' not in one.config, \
         'a viewer that asked for neither must carry neither'
+
+    #  ...AND ONE THAT WAS ASKED TO TURN. rotate=True reached the config, the
+    #  constructor and the checkbox and was then switched off again by the
+    #  viewer's OWN opening orient, which stopped the spin unconditionally.
+    turn = py2Dmol.view((300, 300), id='turn', rotate=True)
+    turn.add(helix(), name='solo')
+    assert turn.config['display']['rotate'] is True, \
+        'rotate=True did not reach config.display'
+    bodies.append(turn._display_viewer(static_data=turn.objects))
     return ''.join(bodies)
 
 
@@ -213,6 +222,45 @@ window.addEventListener('load', () => {
       R.one = read('one');
       R.both = read('both');
       R.aimed = read('aimed');
+
+      //  ROTATE=TRUE ACTUALLY TURNS. Every surface orients itself when the
+      //  first frame lands, and that orient stopped the spin - so a flag that
+      //  reached the config, the constructor and the checkbox was unticked
+      //  again before anyone saw it, with nothing in the trace looking wrong
+      //  until the last line. The DELIBERATE orient still stops it, which is
+      //  the second half below: a reader who presses Orient while it turns
+      //  wants it framed and held.
+      const rt = vs['turn'].renderer;
+      const before = rot(rt);
+      await new Promise((s) => setTimeout(s, 500));
+      R.turn = {
+        autoRotate: rt.autoRotate,
+        //  THE RENDERER'S OWN ELEMENT, not a document lookup: four viewers
+        //  on one page means four #rotationCheckbox nodes, and the first is
+        //  another viewer's.
+        checkbox: !!(rt.rotationCheckbox && rt.rotationCheckbox.checked),
+        moved: !same(rot(rt), before),
+      };
+      //  ...AND ITS OWN BUTTON, found by walking UP from its canvas to the
+      //  nearest ancestor that contains one. Four viewers on one page share
+      //  every id, so a document lookup answers with the first viewer's.
+      let shell = rt.canvas; let ob = null;
+      while (shell && !(ob = shell.querySelector
+              && shell.querySelector('#orientButton'))) {
+        shell = shell.parentElement;
+      }
+      R.turn.hasButton = !!ob;
+      if (ob) {
+        ob.click();
+        //  ...AFTER THE FLIGHT LANDS. The button animates over a second, so a
+        //  sample taken during it measures the flight and reads as a spin
+        //  that never stopped.
+        await new Promise((s) => setTimeout(s, 1400));
+        R.turn.autoRotateAfterOrient = rt.autoRotate;
+        const held = rot(rt);
+        await new Promise((s) => setTimeout(s, 500));
+        R.turn.movedAfterOrient = !same(rot(rt), held);
+      }
 
       // ...AND THE ROW COMES BACK when a second object does. Driven through
       // the renderer rather than by hand, because the question is whether
@@ -307,7 +355,23 @@ def main():
 
     for e in R.get('errors', []):
         bad.append('page error: ' + e)
-    if R.get('ids') != ['one', 'both', 'aimed']:
+    t = R.get('turn') or {}
+    print(f"  rotate=True: {t}")
+    if not t.get('autoRotate') or not t.get('checkbox'):
+        bad.append(f"rotate=True came up with autoRotate {t.get('autoRotate')}"
+                   f" and the checkbox {t.get('checkbox')} - the opening"
+                   ' orient stops the spin, and it must not when nobody asked'
+                   ' for the orient')
+    if not t.get('moved'):
+        bad.append('rotate=True did not turn the structure in half a second')
+    if not t.get('hasButton'):
+        bad.append('no Orient button on the turning viewer, so the half of the'
+                   ' rule below is untested')
+    elif t.get('autoRotateAfterOrient') or t.get('movedAfterOrient'):
+        bad.append('pressing Orient left it spinning - a reader who asks for'
+                   ' an angle while it turns wants it framed and held, and'
+                   ' keepSpin is for the automatic orient alone')
+    if R.get('ids') != ['one', 'both', 'aimed', 'turn']:
         bad.append(f"the three viewers did not all come up: {R.get('ids')}")
 
     one = R.get('one') or {}

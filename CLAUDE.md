@@ -291,6 +291,28 @@ public downloads is exercised on every run.
   `orient()` asked for twice means fly there twice, so it is queued and cleared
   on send. `tests/config.js` reads the live viewer block's keys off BOTH sides
   and names any that one packs and the other drops.
+- 🔴 **`_is_live` MEANS TWO THINGS AND THE GRID WANTED ONE OF THEM.** "Do not
+  show yourself" and "you are on the page, so every add() is an incremental
+  update" travelled on one flag, and `Grid.view()` set it to get the first —
+  so each `add()` during collection emitted an update for a viewer that did
+  not exist yet. Four viewers came to twenty-eight outputs, twenty of them
+  from one NMR ensemble; they are empty `<script style="display:none">`
+  elements, which is why the symptom is white space rather than anything
+  visible. `_managed` is the first meaning alone; `_mark_published()` — the
+  bookkeeping lifted out of `show()`'s static branch — is where live begins,
+  and `Grid.show()` calls it so a later `add()` still lands. `tests/grid.py`
+  counts outputs, which is the whole of the fault and needs no browser.
+- 🔴 **THE OPENING ORIENT STOPPED THE SPIN, so `rotate=True` never turned.**
+  Every surface orients itself when the first frame lands — `parts/ui.js` on
+  the static payload, `loadFrames` in `parts/embed.js` — and
+  `orientToBestView` switched `autoRotate` off unconditionally. The reasoning
+  is right for the BUTTON: a reader who presses Orient while the structure
+  turns wants it framed and held, not spun past the angle just chosen. Nobody
+  presses the automatic one. `py2Dmol.view(rotate=True)` came up with
+  `config.display.rotate` true, `autoRotate` true from the constructor, the
+  checkbox ticked from that — and then the opening orient unticked it and
+  dispatched a `change`. Nothing in the trace looks wrong until that line.
+  The two automatic callers pass `keepSpin`; the deliberate ones do not.
 - **A capability in the bundle that no interface reaches is not shipped.**
   `parts/clip.js` is in every build and only `index.html` could get to it: the
   website had a Clip panel, the embed had `v.clip(sel)`, the notebook had
@@ -314,6 +336,16 @@ public downloads is exercised on every run.
   own controls now. `tests/embed.py` measures the real page: no stray margins
   inside `#rightPanelContainer`, and the gap between buttons equal to the gap
   between rows.
+- **ON IS ON, HOWEVER THE BUTTON SPELLS IT.** A latch says `aria-pressed`
+  (Clip); a button that opens a panel says `aria-expanded` (Style, Capture).
+  Both mean "this is on" to a reader and both wear the same skin — so the rule
+  is keyed on the STATE, never on a button's id. `viewer.html` and
+  `parts/embed.js` both wrote `#styleToggle[aria-expanded="true"]`, and Capture
+  therefore opened its panel unlit: two panels, one cue, no way to tell which
+  was up. `index.html` had it right (`.btn-toggle[aria-expanded="true"]`),
+  which is the three-shells rule below arriving for the third time. Measured as
+  a COLOUR in `tests/minimal_input.py` and `tests/embed.py` — the attribute was
+  already being set correctly, so reading it back passes against the bug.
 - **THREE SHELLS, THREE STYLESHEETS, AND A MEASUREMENT IS THE ONLY WAY TO TELL
   THEM APART.** `index.html` + `src/app/style.css`, `viewer.html`'s own sheet,
   and `parts/embed.js`'s `SHELL_CSS` all draw the same controls. Every reported
