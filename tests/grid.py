@@ -141,6 +141,22 @@ elif pay.get('frames'):
                ' frames went out with the grid, and _mark_published is what'
                ' records that')
 
+# --- A GRID DEFAULT FOR THE PAPER, LIKE size/controls/box ----------------
+# A gallery is usually one background, and bg was the one display setting the
+# grid could not carry - it had to go on every g.view(). A per-view value still
+# wins, because that is what "default" means for the other three.
+def _bg_of(v):
+    return v.config['display']['background']
+
+_g = py2Dmol.Grid(cols=2, bg='black')
+_a, _b = _g.view(), _g.view(bg='white')
+if _bg_of(_a) != 'black':
+    bad.append(f"grid(bg='black') left a viewer on {_bg_of(_a)!r}")
+if _bg_of(_b) != 'white':
+    bad.append(f"a per-view bg did not override the grid's: {_bg_of(_b)!r}")
+if _bg_of(py2Dmol.Grid(cols=2).view()) != 'white':
+    bad.append('a grid with no bg changed the viewer default')
+
 # --- THE SHARED LIBRARY IS KEYED BY ITS CONTENT --------------------------
 # A notebook is re-run cell by cell, so the cell holding the library can be
 # older than the cell now asking for one - and a payload written by today's

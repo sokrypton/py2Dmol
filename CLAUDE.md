@@ -371,6 +371,20 @@ public downloads is exercised on every run.
   scaling wrong selects the wrong part of the structure while the plot looks
   perfectly right — `tests/minimal_input.py` drags the whole plot and requires
   every residue back, which is what an off-by-one in the block end loses.
+- 🔴 **THE BOX IS THE FRAME AND `bg` IS THE PAPER, and turning the frame off
+  repainted the paper.** `parts/ui.js`'s `box` branch set
+  `canvas.style.background = 'transparent'` AFTER the requested colour had been
+  seeded, and called `setClearColor(true)` so the renderer would not paint one
+  either — so `bg` did nothing whenever `box` was false. `py2Dmol.grid`
+  defaults `box` to FALSE, which is why it read as "bg does not work in a
+  grid". White cannot be told apart from "not asked for", so it keeps the old
+  behaviour; any other colour is a request. The seeding also read
+  `=== '#000000'` from inside the Dark toggle's block, so it was not "show the
+  background" but "show it if it is black" — true of the Python API, which
+  takes only white or black, and not of the renderer it was written against.
+  **Check the ELEMENT'S background as well as the painted pixel**: the renderer
+  clears the buffer and the CSS colours the element, and a test on the pixel
+  alone let two separate mutations through.
 - 🔴 **THE PAGE HAS TO BE THE RIGHT HEIGHT BEFORE ANY SCRIPT RUNS, because
   that is when Colab measures it.** `viewer.html`'s stylesheet gives
   `#canvasContainer` 600x600 and `parts/viewport.js` corrects it — so the

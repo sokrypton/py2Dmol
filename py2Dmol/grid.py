@@ -32,7 +32,8 @@ class Grid:
         grid.show()
     """
 
-    def __init__(self, cols=2, rows=None, gap=5, size=None, controls=False, box=False):
+    def __init__(self, cols=2, rows=None, gap=5, size=None, controls=False, box=False,
+                 bg=None):
         """
         Create a grid layout for multiple viewers.
 
@@ -46,6 +47,9 @@ class Grid:
                            Individual viewers can override. Default: False (clean gallery style)
             box (bool): Default box setting for all viewers in grid.
                        Individual viewers can override. Default: False (minimal borders)
+            bg (str, optional): Default background for all viewers in the grid -
+                       "white" or "black". Individual viewers can override.
+                       None (the default) leaves each viewer's own default.
         """
         self.cols = cols
         self.rows = rows
@@ -53,6 +57,10 @@ class Grid:
         self.default_size = size or (400, 400)
         self.default_controls = controls
         self.default_box = box
+        # ...AND THE PAPER. A gallery is usually one background, and setting it
+        # on every g.view() is the kind of repetition size/controls/box already
+        # avoid. None means "not asked", so view()'s own default stands.
+        self.default_bg = bg
         self.viewers = []
         self._auto_show = False  # Track if we should auto-show on __exit__
 
@@ -99,6 +107,8 @@ class Grid:
             kwargs['controls'] = self.default_controls
         if 'box' not in kwargs:
             kwargs['box'] = self.default_box
+        if 'bg' not in kwargs and self.default_bg is not None:
+            kwargs['bg'] = self.default_bg
 
         # Create viewer instance
         viewer = create_view(**kwargs)
@@ -216,7 +226,7 @@ class Grid:
             viewer._mark_published()
 
 
-def grid(cols=2, rows=None, gap=5, size=None, controls=False, box=False):
+def grid(cols=2, rows=None, gap=5, size=None, controls=False, box=False, bg=None):
     """
     Create a grid context manager for displaying multiple viewers.
 
@@ -251,7 +261,8 @@ def grid(cols=2, rows=None, gap=5, size=None, controls=False, box=False):
             g.view(controls=True).from_pdb('1BJP') # With controls
             g.view().from_pdb('9D2J')              # No controls
     """
-    return Grid(cols=cols, rows=rows, gap=gap, size=size, controls=controls, box=box)
+    return Grid(cols=cols, rows=rows, gap=gap, size=size, controls=controls,
+                box=box, bg=bg)
 
 
 def show_grid(viewers, cols=2, gap=5):

@@ -177,6 +177,21 @@ def page():
     assert one.config.get('shown_objects') is None and 'orient' not in one.config, \
         'a viewer that asked for neither must carry neither'
 
+    #  THE BOX IS THE FRAME AND bg IS THE PAPER, and turning the frame off used
+    #  to repaint the paper: `box=False` set the canvas background to
+    #  transparent AFTER the requested colour had been put on it, and told the
+    #  renderer to clear transparent as well. py2Dmol.grid defaults box to
+    #  FALSE, so `g.view(bg="black")` came out on white - which is how this was
+    #  reported. The plain one beside it is the control: no colour asked for
+    #  means a viewer that floats on whatever the page is, which is what
+    #  box=False is for and must not change.
+    paper = py2Dmol.view((200, 200), id='paper', bg='black', box=False)
+    paper.add(helix(), name='solo')
+    plain = py2Dmol.view((200, 200), id='plain', box=False)
+    plain.add(helix(), name='solo')
+    bodies.append(paper._display_viewer(static_data=paper.objects))
+    bodies.append(plain._display_viewer(static_data=plain.objects))
+
     #  ...AND THE MARKUP ALONE, with no script having run. Colab inserts output
     #  HTML with innerHTML - which never executes a script - and sizes the
     #  output iframe from what it measures in that window. The stylesheet says
@@ -235,6 +250,19 @@ window.addEventListener('load', () => {
       R.one = read('one');
       R.both = read('both');
       R.aimed = read('aimed');
+
+      //  THE PAPER, READ OFF THE CANVAS. The corner pixel, with its ALPHA:
+      //  transparent reads as (0,0,0,0) and black as (0,0,0,255), so a check
+      //  on the colour alone cannot tell "painted black" from "painted
+      //  nothing" - which is exactly the two states here.
+      const paperOf = (id) => {
+        const c = vs[id].renderer.canvas;
+        const d = c.getContext('2d').getImageData(2, 2, 1, 1).data;
+        return {px: [d[0], d[1], d[2], d[3]],
+                css: getComputedStyle(c).backgroundColor};
+      };
+      R.paper = paperOf('paper');
+      R.plain = paperOf('plain');
 
       //  THE LAYOUT BEFORE ANY SCRIPT RUNS. innerHTML does not execute
       //  scripts, so this IS the state Colab measures.
@@ -393,6 +421,31 @@ def main():
 
     for e in R.get('errors', []):
         bad.append('page error: ' + e)
+    pa, pl = R.get('paper') or {}, R.get('plain') or {}
+    print(f"  bg=black box=False: {pa};  no bg, box=False: {pl}")
+    if pa.get('px') != [0, 0, 0, 255]:
+        bad.append(f"bg='black' with box=False painted {pa.get('px')} - the box"
+                   ' is the frame and bg is the paper, and turning the frame'
+                   ' off must not repaint the paper. grid defaults box to'
+                   ' False, which is where this was reported')
+    # ...AND THE ELEMENT'S OWN BACKGROUND, not just the painted pixel. The
+    # renderer clears the drawing buffer and the CSS colours the element, and
+    # either alone leaves the page showing through the other - a canvas that
+    # is only painted flashes the page whenever it is resized or cleared. Both
+    # have to say the same thing, and checking the pixel alone let two
+    # separate mutations through.
+    if pa.get('css') != 'rgb(0, 0, 0)':
+        bad.append(f"the canvas element's background is {pa.get('css')} with"
+                   " bg='black' - the renderer painted it but the element did"
+                   ' not, so the page shows through on every resize')
+    if pl.get('css') != 'rgba(0, 0, 0, 0)':
+        bad.append(f"box=False with no colour left the element at"
+                   f" {pl.get('css')} rather than transparent")
+    if pl.get('px') != [0, 0, 0, 0]:
+        bad.append(f"box=False with no colour asked for painted {pl.get('px')}"
+                   ' - it should still float on the page, and if it does not'
+                   ' the check above cannot tell the two apart')
+
     ps = R.get('prescript') or {}
     print(f"  before any script runs: {ps}")
     if ps.get('box') != [300, 300]:
@@ -419,7 +472,7 @@ def main():
         bad.append('pressing Orient left it spinning - a reader who asks for'
                    ' an angle while it turns wants it framed and held, and'
                    ' keepSpin is for the automatic orient alone')
-    if R.get('ids') != ['one', 'both', 'aimed', 'turn']:
+    if R.get('ids') != ['one', 'both', 'aimed', 'paper', 'plain', 'turn']:
         bad.append(f"the three viewers did not all come up: {R.get('ids')}")
 
     one = R.get('one') or {}

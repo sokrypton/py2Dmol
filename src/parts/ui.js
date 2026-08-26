@@ -732,10 +732,15 @@ if (darkCheckbox) {
         if (renderer.canvas) renderer.canvas.style.background = renderer.backgroundColor;
         renderer.render('darkCheckbox');
     });
-    // seed the canvas css background to match the config
-    if (renderer.canvas && renderer.backgroundColor === '#000000') {
-        renderer.canvas.style.background = renderer.backgroundColor;
-    }
+}
+
+// THE PAPER, WHATEVER COLOUR IT IS. This seeding lived inside the Dark
+// toggle's block and read `=== '#000000'`, so it was not "show the background"
+// but "show it if it is black" - bg='navy' or bg='#f0e6d2' reached the config,
+// reached renderer.backgroundColor, and was never put on the canvas. Out of
+// that block as well: a shell without the Style panel still has a background.
+if (renderer.canvas) {
+    renderer.canvas.style.background = renderer.backgroundColor || '#ffffff';
 }
 
 // Setup the Shade toggle (cartoon directional shading)
@@ -1078,13 +1083,26 @@ if (!config.display?.controls) {
 }
 
 // Handle box
+//
+// 🔴 THE BOX IS THE FRAME; bg IS THE PAPER, and turning the frame off used to
+// repaint the paper. `canvas.style.background = 'transparent'` ran AFTER the
+// seeding above and threw the requested colour away, and setClearColor(true)
+// stopped the renderer painting one either way - so `bg` did nothing whenever
+// `box` was false. py2Dmol.grid defaults box to FALSE, which is why this read
+// as "bg does not work in a grid".
+//
+// White is the default and cannot be told apart from "not asked for", so it
+// keeps the old behaviour: no box and no colour means a viewer that floats on
+// whatever the page is. Any other colour is a request, and is honoured.
+const bgWanted = (renderer.backgroundColor || '#ffffff').toLowerCase();
+const paperAsked = bgWanted !== '#ffffff' && bgWanted !== 'white';
 if (!config.display?.box) {
     const canvasCont = containerElement.querySelector('#canvasContainer');
     if (canvasCont) {
         canvasCont.style.border = 'none';
         canvasCont.style.background = 'transparent';
     }
-    if (canvas) canvas.style.background = 'transparent';
+    if (canvas && !paperAsked) canvas.style.background = 'transparent';
 
     // Also update PAE canvas if it exists
     if (config.pae?.enabled) {
@@ -1095,7 +1113,7 @@ if (!config.display?.box) {
         }
     }
 
-    renderer.setClearColor(true);
+    renderer.setClearColor(!paperAsked);
 }
 
 // Snapshot persistence (sessionStorage)

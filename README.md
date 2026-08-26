@@ -202,8 +202,11 @@ shows every **frame** of one object.
 The picker is hidden while there is only one object to pick.
 
 ### Grid gallery
+The grid carries `size`, `controls`, `box` and `bg` as defaults for every
+viewer in it, and any `g.view(...)` can override them.
+
 ```python
-with py2Dmol.grid(cols=2, size=(300, 300)) as g:
+with py2Dmol.grid(cols=2, size=(300, 300), bg="black") as g:
     g.view().from_pdb('1YNE')
     g.view().from_pdb('1BJP')
     g.view().from_pdb('9D2J')

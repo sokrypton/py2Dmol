@@ -168,6 +168,14 @@ result.
 - **The wheel ships what `viewer.py` opens.** `package_data` omitted the GPU
   renderer, which `viewer.py` reads unconditionally — a `FileNotFoundError` on
   the first `show()`, in the wheel only.
+- 🔴 **`bg` did nothing whenever `box` was off.** The box is the frame and `bg`
+  is the paper: turning the frame off set the canvas background to transparent
+  *after* the requested colour had been put on it, and told the renderer to
+  clear transparent too. `py2Dmol.grid` defaults `box` to False, so
+  `g.view(bg="black")` came out on white. White still means "not asked for" and
+  still floats on the page, which is what `box=False` is for; any other colour
+  is honoured. **`grid(bg=...)`** is a grid-wide default now, beside `size`,
+  `controls` and `box`.
 - **No white space under a viewer in Colab.** The stylesheet gave the canvas
   box 600×600 and a script corrected it, so the markup alone was 648px for a
   300px viewer. Colab inserts output HTML with `innerHTML` — which never runs a
