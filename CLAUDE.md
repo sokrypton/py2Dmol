@@ -196,6 +196,21 @@ public downloads is exercised on every run.
   `py2Dmol.embed.cpu.min.js` (410 KB, 2D, and the only one that can save an SVG).
   That is a second artefact where `embed-tube` was not worth one: it draws the
   same picture from the same geometry, so nothing is given up but speed.
+- 🔴 **LOOK_DEFAULTS IS THE PRESET, AND A CONFIG VALUE BEATS IT.** The
+  constructor takes a style-owned default from `config.rendering` first and
+  from the look only as a fallback — so anything `viewer.py` names for a preset
+  overrides the table, and `viewer.py` had its own copy of the numbers. `width`
+  was **2.0** there against `PRESET_WIDTH`'s **3.0**, under a comment in
+  `geom.js` saying the width is "the same in all three": a viewer BUILT as
+  richardson drew a thinner ribbon than one SWITCHED to it. That is the same
+  pair `core/mol.js` was fixed for once already — the note above `_look` records
+  width being 2.0 in one place and 3.0 in the other — and Python was the copy
+  nobody had looked at. It no longer substitutes a width at all.
+  And `relativeOutlineWidth` was a bare `3.0` in the constructor while
+  richardson's look asks for `1.0`, with Python sending only the outline MODE,
+  so nothing could correct it; it reads `_d.outlineWidth` now like every field
+  beside it. `tests/config.js` loads `LOOK_DEFAULTS` out of `geom.js` and
+  checks every number `viewer.py` substitutes for a preset against it.
 - 🔴 **A preset name reaches the cartoon in two steps, and the order is the
   whole thing.** `setPreset` assigns `style = 'cartoon'` but does none of the
   work of *arriving* there, so calling it from tube leaves every field saying

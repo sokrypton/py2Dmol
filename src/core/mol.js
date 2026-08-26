@@ -1197,7 +1197,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // cartoon/geom.js. Once the control has been touched, it is the
             // user's, 0 included.
             this._thicknessUserSet = false;
-            this.relativeOutlineWidth = 3.0; // Default outline width relative to line width
+            // ...FROM THE LOOK, like every other style-owned default above it.
+            // This was a bare 3.0, so a viewer built as richardson came up with
+            // a 3.0 outline where the preset asks for 1.0 - "the outline states
+            // the edge, it does not weigh it down" - while one SWITCHED to
+            // richardson got the 1.0, because _applyLookDefaults reads the
+            // table and this did not. Python sends the outline MODE and never a
+            // width, so nothing else could have corrected it.
+            this.relativeOutlineWidth = (typeof _d.outlineWidth === 'number')
+                ? _d.outlineWidth : 3.0;
             this.shadowIntensity = 0.95;
 
             // Set defaults from config, with fallback

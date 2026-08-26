@@ -132,6 +132,61 @@ if (sb.normalizeConfig({ gpu: false }).rendering.gpu !== false) {
     bad('gpu:false does not survive as false');
 }
 
+// --- PYTHON MUST NOT HOLD ITS OWN COPY OF THE PRESET NUMBERS ---------------
+//
+// LOOK_DEFAULTS in cartoon/geom.js is the table a preset means. viewer.py
+// substitutes some of the same values when the caller leaves them unset -
+// thickness, outline_tint, highlight and so on - and a CONFIG VALUE WINS over
+// the table in the constructor, so anything Python names beats it.
+//
+// width was 2.0 there against PRESET_WIDTH of 3.0 here, under a comment in
+// geom.js saying the width is "the same in all three". So a viewer BUILT as
+// richardson drew a thinner ribbon than one SWITCHED to richardson, which is
+// exactly the pair core/mol.js had already been fixed for once - the note
+// above _look records width being 2.0 in one place and 3.0 in the other.
+//
+// So: every number viewer.py substitutes for a preset has to equal the table's,
+// or not be substituted at all.
+{
+    // geom.js announces itself on load, and this sandbox has no Event
+    // constructor - it is a config test, not a page.
+    if (typeof sb.Event !== 'function') {
+        sb.Event = function Event(t) { this.type = t; };
+    }
+    const geom = fs.readFileSync('src/cartoon/geom.js', 'utf8');
+    vm.runInContext(geom, sb, { filename: 'geom' });
+    const LOOK = sb.window.py2dmolCartoon && sb.window.py2dmolCartoon.LOOK_DEFAULTS;
+    if (!LOOK || !LOOK.richardson) {
+        bad('cartoon/geom.js no longer publishes LOOK_DEFAULTS - the preset'
+            + ' numbers cannot be compared against viewer.py at all');
+    } else {
+        // viewer.py writes `if x is None: x = A if preset == "richardson" else B`
+        const PY_TO_LOOK = {
+            thickness: 'thickness', outline_tint: 'outlineTint',
+            highlight: 'highlight', width: 'width', sheet_flat: 'sheetFlat',
+            pencil: 'pencil', fade: 'fade', detail: 'detail',
+        };
+        let checked = 0;
+        for (const [pyName, lookName] of Object.entries(PY_TO_LOOK)) {
+            const re = new RegExp('if ' + pyName + ' is None:\\s*\\n\\s*'
+                + pyName + ' = ([0-9.]+) if preset == "richardson"');
+            const m = re.exec(py);
+            if (!m) continue;                 // not substituted: the table wins
+            checked++;
+            const mine = Number(m[1]);
+            const theirs = LOOK.richardson[lookName];
+            if (typeof theirs === 'number' && Math.abs(mine - theirs) > 1e-9) {
+                bad(`viewer.py substitutes ${pyName}=${mine} for richardson and`
+                    + ` LOOK_DEFAULTS says ${theirs} - a config value beats the`
+                    + ' table, so a viewer built as richardson draws differently'
+                    + ' from one switched to it');
+            }
+        }
+        console.log(`preset numbers: ${checked} of viewer.py's substitutions`
+            + ' match LOOK_DEFAULTS');
+    }
+}
+
 // --- THE TWO HALVES OF THE FRAME FIELD LIST HAVE TO NAME THE SAME THINGS ----
 //
 // viewer.py builds each frame of the static payload from FRAME_INHERITED and

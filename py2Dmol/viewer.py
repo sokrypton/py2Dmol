@@ -571,8 +571,14 @@ class view:
             # richardson WAS a style - now that every preset shares
             # style="cartoon", that test put richardson in the flat branch.
             smooth = (style != "cartoon") or preset in ("richardson", "3d")
-        if width is None:
-            width = 2.0 if preset == "richardson" else 3.0
+        # WIDTH IS NOT PYTHON'S TO DECIDE. This substituted 2.0 for richardson
+        # against LOOK_DEFAULTS' PRESET_WIDTH of 3.0, which geom.js states is
+        # "the same in all three" - a fourth copy of the preset numbers, and a
+        # stale one. A config value WINS over the look in the constructor, so
+        # the stale 2.0 beat the table every time, and a viewer BUILT as
+        # richardson drew a thinner ribbon than one SWITCHED to it. Left unset,
+        # so the browser reads its own table - which is the same reason the
+        # duplicate in core/mol.js was removed once already.
         if highlight is None:
             highlight = 3.0 if preset == "richardson" else (2.0 if is3d else 1.8)
         if shade is None:
