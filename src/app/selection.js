@@ -621,7 +621,7 @@ function syncSelectionToggles(picked, none) {
     // colour, and a plate is one flat shape with no elements in it - the
     // toggle sat there in both, doing nothing a user could see. Hidden by
     // its LABEL, which is what carries the text: hiding the checkbox alone
-    // leaves "Elements" on the row with no control.
+    // leaves "Elem" on the row with no control.
     // A LIGAND'S ELEMENTS FOLLOW ITS OWN SHOW, for the same reason a side
     // chain's follow Full: there is nothing to colour while nothing is
     // drawn. Hidden while the ligand is off, and while the selection is

@@ -67,6 +67,7 @@ function initializeApp() {
         return;
     }
 
+
     // Get viewer API reference
     viewerApi = window.py2dmol_viewers[window.viewerConfig.viewer_id];
 

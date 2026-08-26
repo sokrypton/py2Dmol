@@ -109,6 +109,26 @@ result.
 - Element colouring is on by default, and the parser infers an element from the
   atom name when columns 77–78 are blank.
 
+### The interface
+
+- **A Clip control in the notebook and the embed**, and `view.clip()` in Python
+  — `parts/clip.js` was in every bundle and only the website could reach it.
+  It shows whether it is on, which it previously did not.
+- **An Orient control in the notebook.** The website and the embed both had one.
+- **Draw is not offered where no 2D painter can honour it**, and SVG export of
+  the cartoon is refused rather than writing an empty file. The tube exports a
+  vector on every build, because it is stroked by the core rather than by a
+  painter.
+- **A more compact viewer menu** in the notebook and the embed: one control
+  height for the whole viewer, stated once, and one spacing rhythm. The column
+  is 88px closed against 106, and an embed keeps its own spacing in a host page
+  that styles bare elements.
+- **The website is compacted and aligned**: the header block is 122px against
+  161, the page is 79px shorter, and every block shares its edges — header,
+  viewer row, sequence strip, control panel, PAE and scatter.
+- **Chain mode in the sequence strip shows the selection.** It showed nothing
+  at all, while the same click lit the structure.
+
 ### Internal
 
 The JavaScript is 26 source files under `src/`, merged per target by

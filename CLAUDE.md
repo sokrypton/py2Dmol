@@ -106,12 +106,17 @@ public downloads is exercised on every run.
 
   | lines | file | | lines | function |
   |---|---|---|---|---|
-  | 11,441 | `core/mol.js` | | 1,912 | `cartoon/geom.js` `render()` |
-  | 10,317 | `cartoon/geom.js` | | 2,449 | `cartoon/paint2d.js` `paintPrims()` |
-  | 8,413 | `app/ (total)` | | 1,459 | `parts/ui.js` `wireViewerUI()` |
-  | 5,834 | `cartoon/paintgl.js` | | 1,084 | `cartoon/geom.js` `mergeBondRuns()` |
-  | 5,312 | `panels/msa.js` | | 876 | `cartoon/paintgl.js` `makeResident()` |
-  | 3,353 | `io/parse.js` | | 790 | `core/mol.js` `setCoords()` |
+  | 11,459 | `core/mol.js` | | 2,449 | `cartoon/paint2d.js` `paintPrims()` |
+  | 10,418 | `cartoon/geom.js` | | 1,912 | `cartoon/geom.js` `render()` |
+  | 8,429 | `app/ (total)` | | 1,901 | `cartoon/geom.js` `drawRun()` |
+  | 5,848 | `cartoon/paintgl.js` | | 1,623 | `parts/ui.js` `wireViewerUI()` |
+  | 5,312 | `panels/msa.js` | | 1,473 | `cartoon/geom.js` `drawSticks()` |
+  | 3,372 | `io/parse.js` | | 1,084 | `cartoon/geom.js` `mergeBondRuns()` |
+
+  `render()` was 5,238 and is 1,912; `drawRun` and `drawSticks` are what came
+  out of it, and both are still over the rule. `paintPrims` is the largest
+  single function in the tree now. `setCoords` is 828 and no longer in the
+  first six.
 
 - **Two kinds of file, and the difference is load-bearing.**
 
@@ -288,6 +293,20 @@ public downloads is exercised on every run.
   own controls now. `tests/embed.py` measures the real page: no stray margins
   inside `#rightPanelContainer`, and the gap between buttons equal to the gap
   between rows.
+- **THREE SHELLS, THREE STYLESHEETS, AND A MEASUREMENT IS THE ONLY WAY TO TELL
+  THEM APART.** `index.html` + `src/app/style.css`, `viewer.html`'s own sheet,
+  and `parts/embed.js`'s `SHELL_CSS` all draw the same controls. Every reported
+  "uneven spacing" this session was in a shell I was not measuring — the
+  screenshots were of the embed while I measured the notebook. Measure the one
+  that was reported, and measure the CLOSED state as well as the open one.
+  Three things that cost a round each and are not visible in the source:
+  **a `height` on a base rule beats padding** (trimming padding under it does
+  nothing); **an empty flex child still takes its gap** — `#stylePanelMount`
+  holds the hidden style panel and put 3px under the last control that nothing
+  above it had, which `display: contents` removes; and **`box-sizing` set with
+  a descendant selector misses the element itself** — `.py2dmol-viewer-instance
+  *` left the instance, the header and the sequence strip as content-box, so
+  three blocks with the same stated width had three different right edges.
 - **Subsystems are optional and guarded.** `if (window.PAE)`, `if (window.MSA)`,
   `typeof C2S === 'undefined'`. A build without one loses a feature, not a page.
 - **Prove a move changed nothing.** `node tests/paint_trace.js` digests every

@@ -31,8 +31,11 @@
     --radius-xl: 16px;
     --radius-full: 9999px;
     --btn-radius: 6px;
-    --btn-height: 36px;
-    --btn-height-small: 28px;
+    /* COMPACT, so the viewer gets the room. These were 36 and 28 against a
+       14px label; the notebook and the embed settled on 24 for the same
+       controls. Every button, select and input on the page reads these. */
+    --btn-height: 30px;
+    --btn-height-small: 26px;
     --btn-padding-x: 14px;
     --btn-padding-x-small: 10px;
     --btn-font-size: 14px;
@@ -40,13 +43,14 @@
     --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
     --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
     --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
-    --container-padding: 12px;
+    --container-padding: 8px;
     --container-gap: 10px;
 }
 
 /* ============================================================================
    BASE & LAYOUT
    ============================================================================ */
+.py2dmol-viewer-instance,
 .py2dmol-viewer-instance * {
     box-sizing: border-box;
 }
@@ -55,6 +59,14 @@
    STANDARD CONTAINER BOX
    ============================================================================ */
 .container-box {
+    /* BORDER-BOX, so the stated width is the width you see. The page's blocks
+       carry an explicit 948px and were drawn 966 wide - their own padding and
+       border added on top - while the viewer row beside them, which IS
+       border-box (see .py2dmol-viewer-instance *), came out at 948. Three
+       right-hand edges down one page: 1194, 1212 and 1220, all from boxes
+       whose left edges agreed. That rule uses a descendant selector, so it
+       never reached these blocks or the instance element itself. */
+    box-sizing: border-box;
     background: #ffffff;
     border: 1px solid var(--color-gray-200);
     border-radius: var(--radius-lg);
@@ -81,8 +93,12 @@
     background: transparent;
     display: block;
     margin: 0 auto;
-    width: 974px;
-    /* 600 (canvas) + 26 (padding/border) + 8 (gap) + 340 (panel) */
+    /* 600 (canvas) + 8 (gap) + 340 (panel). It was 974, which carried 26px of
+       padding and border that the boxes beside it added on top of their own
+       stated width - and now do not, since .container-box is border-box. The
+       26 was the only reason this row hung 26px past the header above it and
+       the sequence strip below. */
+    width: 948px;
     line-height: 1.5;
 }
 
@@ -212,6 +228,9 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+    /* 340, and it earns it: the selection panel lives here and its rows are
+       two buttons and a caption apiece. Narrowing it to 260 was tried and put
+       back - the panel is the widest thing in the column, not the sliders. */
     width: 340px;
 }
 
@@ -1052,7 +1071,11 @@
 #fetch-input-container input {
     flex: 1 1 auto;
     min-width: 0;
-    height: 42px;
+    /* THE SAME HEIGHT AS THE BUTTONS BESIDE IT. This was 42 against their 36,
+       so the row stood 6px taller than anything in it and the ID box looked
+       like a different kind of control from the Fetch button it feeds. One
+       token, so they cannot drift apart again. */
+    height: var(--btn-height);
 }
 
 /* ...AND THE OPTIONS, IN GROUPS. Eight switches in one flowing row is a list
@@ -1062,8 +1085,12 @@
 .fetch-options {
     display: flex;
     flex-wrap: wrap;
-    gap: 10px 28px;
-    padding: 10px 12px;
+    /* The column gap and the rule's own padding below are ONE measurement:
+       28 + 28 - 14 put 42px between the groups' contents, which is wider than
+       most of the labels in them. Tightened together so the rule stays
+       centred in the gap. */
+    gap: 8px 16px;
+    padding: 8px 10px;
     background: #f9fafb;
     border: 1px solid #e5e7eb;
     border-radius: 8px;
@@ -1072,7 +1099,7 @@
 .fetch-option-group {
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: 4px;
 }
 
 /* A RULE BETWEEN THE GROUPS, not around them: a box each would make three
@@ -1080,8 +1107,11 @@
    disappears with the group and cannot end up dangling. */
 .fetch-option-group + .fetch-option-group {
     border-left: 1px solid #e5e7eb;
-    padding-left: 28px;
-    margin-left: -14px;
+    /* Half the gap either side, so the rule sits in the middle of it - the
+       three numbers here and the column gap above move together or the rule
+       drifts off centre. */
+    padding-left: 16px;
+    margin-left: -8px;
 }
 
 .fetch-option-title {
@@ -1137,12 +1167,15 @@
 /* ============================================================================
    STATUS MESSAGE
    ============================================================================ */
+/* A RECEIPT IS ONE LINE. This sat above the viewer for the whole session at
+   43px plus its margin - 55px of the page permanently spent on "loaded 1
+   object". It says the same thing in half the height. */
 #status-message {
     display: none;
-    margin-top: 20px;
-    padding: 12px 16px;
-    border-radius: 8px;
-    font-size: 14px;
+    margin-top: 8px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 13px;
     font-weight: 500;
     border: 1px solid;
     background: #dbeafe;
@@ -2010,6 +2043,7 @@ table.layout-table td {
 .font-medium   { font-weight: 500; }
 .font-sans     { font-family: ui-sans-serif, system-ui, -apple-system,
                  "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+.p-4           { padding: 1rem; }
 .p-8           { padding: 2rem; }
 .mr-3          { margin-right: 0.75rem; }
 .mx-auto       { margin-left: auto; margin-right: auto; }
