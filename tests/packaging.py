@@ -66,6 +66,12 @@ def opened_by_viewer():
     return out
 
 
+# THE ENTRIES AS WRITTEN, before the globs are expanded. Expanding is what
+# makes a dead entry invisible: it matches nothing, contributes nothing, and
+# every check downstream sees a set that simply does not mention it.
+RAW_PACKAGE_DATA = []
+
+
 def shipped_by_setup():
     """The package_data entries for the py2Dmol package, as bare filenames."""
     tree = ast.parse(open(os.path.join(ROOT, "setup.py")).read())
@@ -81,6 +87,7 @@ def shipped_by_setup():
             # wheel ships nothing.
             out = set()
             for e in val.elts:
+                RAW_PACKAGE_DATA.append(e.value)
                 for hit in glob.glob(os.path.join(ROOT, "py2Dmol", e.value)):
                     out.add(os.path.relpath(hit, os.path.join(ROOT, "py2Dmol",
                                                               "resources")))
@@ -126,6 +133,23 @@ if not opened:
 if not shipped:
     bad.append("no package_data for 'py2Dmol' found in setup.py - this check has"
                " stopped reading it and would pass forever")
+
+# --- AND EVERY FILE IT NAMES HAS TO EXIST -----------------------------------
+# setuptools does not report a package_data entry that matches nothing; it
+# ships nothing for it and says so nowhere. Two entries outlived the bundles
+# they named when the three notebook builds became one, and the omission would
+# only have surfaced in a release environment - here the setuptools-scm plugin
+# sweeps every tracked file in and covers for it.
+for entry in RAW_PACKAGE_DATA:
+    if not glob.glob(os.path.join(ROOT, "py2Dmol", entry)):
+        bad.append(f"setup.py's package_data names '{entry}', which matches no"
+                   " file. setuptools reports nothing for that - it ships"
+                   " nothing and says so nowhere - and here the setuptools-scm"
+                   " plugin sweeps every tracked file in and hides it, so the"
+                   " omission would first appear in a release wheel")
+if not RAW_PACKAGE_DATA:
+    bad.append("no package_data entries were read at all - the parse has"
+               " stopped matching setup.py and this check proves nothing")
 
 # --- ONE VERSION, and setup.py reads it rather than repeating it ------------
 # It used to carry its own literal, which is a second number that has to agree

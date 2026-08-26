@@ -145,50 +145,28 @@ BUNDLES = {
     # are paid again for every viewer in the document.
     'notebook': ['math', 'svg', 'objstate', 'viewport', 'shadow', 'clip',
                  'capture', 'savepanel', 'multi', 'panel', 'orient',
-                 'ui', 'mol', 'geom', 'paintgl', 'pae', 'scatter'],
-    # ...AND THE SAME WITHOUT THE CARTOON GEOMETRY, for a notebook that cannot
-    # reach it. cartoon/geom.js is 101 KB of the 470 - twenty-one per cent - and
-    # it is only ever entered by the cartoon styles.
+                 'ui', 'mol', 'geom', 'paintgl', 'paint2d', 'pae', 'scatter'],
+    # ONE NOTEBOOK BUNDLE, WITH BOTH PAINTERS. There were three - GPU, 2D, and
+    # a tube-only one without the cartoon geometry - and they existed for one
+    # reason: this file is inlined into the .ipynb, uncompressed, ONCE PER
+    # show() CELL, so a notebook with five viewers carried five copies and
+    # every kilobyte was paid five times.
     #
-    # "Cannot reach" is a narrow and checkable condition: no Style dropdown
-    # (controls=False), a tube style, and no preset named. Then nothing in the
-    # page can ask for a cartoon, because Python fixes the style at view() time
-    # and there is no control to change it afterwards. viewer.py picks; see the
-    # note there.
+    # SHARING ends that. The first viewer of a session writes the library
+    # and lends it over a BroadcastChannel; every later one asks. The bytes are
+    # paid once for the document, so the reason to ship three narrow builds
+    # instead of one complete one is gone.
     #
-    # A SECOND ARTEFACT, WHICH embed-tube DID NOT EARN AND THIS DOES. That one
-    # was a quarter smaller and could not draw a ribbon - a capability cut
-    # dressed as a size option. This one draws exactly what the caller already
-    # asked for, and the bytes are paid per .ipynb CELL rather than once over a
-    # gzipped wire.
-    # ...AND THE SAME DRAWN ON THE CPU, for a machine with no WebGL2 and for
-    # anyone who wants an SVG out of a notebook.
+    # WHAT THE SECOND PAINTER COSTS: 26 KB. paint2d.js is 81% comment and
+    # minifies to 25 against paintgl's 71. What it buys is everything that was
+    # given up to save it - `gpu` is a runtime choice again rather than a
+    # choice of FILE, a machine without WebGL2 has a painter to fall back on,
+    # and the cartoon can export an SVG, which needs the 2D painter because a
+    # raster has no vector to hand back.
     #
-    # THE GPU-ONLY RULE WAS RIGHT FOR THE DOWNLOAD AND WRONG FOR THE NOTEBOOK.
-    # One painter per bundle is what keeps the website's two artefacts honest,
-    # and outside it the GPU is the better painter by 26 ms a frame against
-    # 840. But a notebook cannot fall back: no WebGL2 meant no picture at all,
-    # said on the console, to a reader who never chose a painter and has no
-    # checkbox to change one. That is a bad failure to hand someone whose only
-    # mistake was an old browser or a remote kernel.
-    #
-    # It is also SMALLER - paint2d.js is 25 KB minified against paintgl.js's
-    # 118 - and it is the only notebook that can save an SVG, because vector
-    # output is the primitives replayed into an export context and the GPU
-    # holds a raster.
-    'notebook.cpu': ['math', 'svg', 'objstate', 'viewport', 'shadow', 'clip',
-                     'capture', 'savepanel', 'multi', 'panel', 'orient',
-                     'ui', 'mol', 'geom', 'paint2d', 'pae', 'scatter'],
-    'notebook.tube': ['math', 'svg', 'objstate', 'viewport', 'shadow', 'clip',
-                      'capture', 'savepanel', 'multi', 'panel', 'orient',
-                      'ui', 'mol', 'paintgl', 'pae', 'scatter'],
-    # The website. Everything index.html loads EXCEPT align/align.js, which
-    # cannot be concatenated - it starts its Worker by importing its own URL.
-    #
-    # index.html itself still loads the twenty-seven sources one by one, on
-    # purpose: it is the development page, and edit-and-reload with real line
-    # numbers is worth more there than one request. This bundle is what a
-    # deployed copy serves instead, next to a plain tag for align/align.js.
+    # And a notebook that mixes the two stops paying twice: one gpu=True viewer
+    # and one gpu=False used to carry 429 + 384 KB of two different libraries,
+    # neither of which could serve the other.
     'web': ['math', 'parse', 'gif', 'svg', 'objstate', 'viewport', 'shadow', 'clip',
             'capture', 'savepanel', 'mol-align', 'multi', 'panel', 'orient', 'ui', 'mol',
             'geom', 'paint2d', 'paintgl', 'pae', 'scatter', 'seq', 'msa',
@@ -473,11 +451,13 @@ def check():
             continue
         bad.append(f"{m.path} is in no bundle and is not loose - nothing ships it")
 
-    # THE THREE THE NOTEBOOK CAN INLINE, one per cell: the WebGL2 cartoon, the
-    # 2D one for gpu=False, and the cartoon-less tube for a viewer that cannot
-    # reach a cartoon at all.
+    # THE ONE THE NOTEBOOK INLINES. There were three - the WebGL2 cartoon, the
+    # 2D one for gpu=False, and a cartoon-less tube - because this file goes
+    # into the .ipynb once per show() cell. Sharing pays it once for the
+    # document, so one complete bundle costs less than three narrow ones and
+    # `gpu` chooses a painter inside it rather than choosing a file.
     want_inline = sorted(f'bundles/{BUNDLE_PREFIX}{t}.min.js'
-                         for t in ('notebook', 'notebook.cpu', 'notebook.tube'))
+                         for t in ('notebook',))
     have_inline = sorted(set(inlined_by_viewer()))
     print(f"  viewer.py inlines: {len(have_inline)}")
     if have_inline != want_inline:

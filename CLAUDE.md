@@ -146,71 +146,30 @@ public downloads is exercised on every run.
   by having the worker `importScripts` *itself*, found through
   `document.currentScript.src`. Without a URL of its own that lookup returns
   `''` and TM-align runs on the main thread — seconds of frozen page, no error.
-- **One painter per bundle — and the NOTEBOOK now has one bundle for each.**
-  `gpu=True` (the default) inlines the WebGL2 painter; `gpu=False` inlines the
-  2D one. The flag does not switch anything at runtime: a build carries one
-  painter and `core/mol.js` derives `useGPU` from what is loaded, so all this
-  chooses is which file is written into the cell. It exists because a notebook
-  **cannot fall back** — no WebGL2 meant no picture, said on a console the
-  reader may not have open, to someone who never chose a painter and has no
-  checkbox to change one. The CPU notebook is also 46 KB smaller and is the
-  only one that can save an SVG.
-- **One painter per bundle, and outside the website it is the GPU** — but that
-  is a statement about the CARTOON and only the cartoon. The notebook and both
-  embeds ship `cartoon/paintgl.js` and no 2D painter, with nothing behind it:
-  no WebGL2 means no cartoon, said on the console. **The TUBE is not a painter
-  and does not participate**: it is stroked by `_drawFrame` in the core, so it
-  draws on a machine with no WebGL2 (measured: 10,663 px against the GPU's
-  10,412) and it exports SVG on every build, because `_gpuWillTake` refuses an
-  export context — there is no vector to hand back from a raster — and the core
-  stroke catches it. So SVG is offered for the tube everywhere and for the
-  cartoon only where the 2D painter is, and both halves of that are enforced:
-  the Save panel hides it, `saveImage` refuses it, and a panel left open while
-  the style changes is rebuilt. Without those it wrote a 359-byte file with
-  nothing in it. Carrying `paint2d` in the GPU bundles would end the asymmetry
-  for +25 KB; removing the core tube stroke would end it the other way for
-  about 2 KB and cost the tube both its SVG and its no-WebGL2 picture. It buys
-  26 ms a frame on a capsid against 840.
+- **ONE NOTEBOOK BUNDLE, WITH BOTH PAINTERS, AND `gpu` IS A RUNTIME SETTING.**
+  There were three — GPU, 2D, and a cartoon-less tube — and the reason was
+  never the download: the notebook library is **inlined into the .ipynb once
+  per `show()` cell**, so every kilobyte was paid again for every viewer.
+  Sharing pays it once for the document, and the reason for three narrow
+  builds went with it. **There is no flag for that**: it happens where
+  Python can ask the page whether anything is lending — `_can_ask_the_page`,
+  which today means Colab's `eval_js` — and not where it cannot, because a
+  forced answer is a way to be wrong about what the page has. Tests patch
+  that one function to reach both paths.
 
-  Minified, `paint2d.js` is 25 KB and `paintgl.js` 71 KB — nearly three times,
-  not the two the line counts suggest, because `paint2d.js` is 81% comment.
-  It was 118 KB until `tools/bundle.py` learnt to strip the shader literals:
-  **terser does not look inside strings**, so 65 KB of commented, indented GLSL
-  was being copied into every GPU bundle byte for byte. The source keeps every
-  word of it; only the download loses them.
-  So the change goes three ways depending on what each bundle held before, and
-  only the notebook — the one that carried **both** — got smaller:
-  notebook 478→453 and embed 321→415. It also ended `embed-tube`, which was the
-  small one at 195 KB precisely because it carried **no** painter — the tube
-  comes from `_drawFrame` — and needing `paintgl` took it to 313 against 415.
+  The second painter costs **26 KB** (paint2d minifies to 25 against paintgl's
+  71; it is 81% comment) and buys back everything that was traded away for it:
+  `gpu=False` reaches the 2D painter at runtime rather than selecting a different file,
+  a machine with no WebGL2 has something to fall back on, and **the cartoon can
+  export an SVG** — which needs the 2D painter, because a raster has no vector
+  to give. A notebook mixing the two used to carry 429 + 384 KB of two
+  libraries that could not serve each other; now it carries 455 once.
 
-  **There is no `gpu` flag on any public API.** Which painter draws is settled
-  by the download, so `core/mol.js` derives `useGPU` from what is loaded —
-  `py2Dmol.view(gpu=...)` and `py2Dmol.show({gpu})` are gone, and the latter
-  throws if you pass one. The **website** is the only build with both painters,
-  and there `config.rendering.gpu` and the checkbox still choose. **SVG export
-  needs the 2D painter** (the GPU refuses an export context by design), so the
-  Save panel hides it when `window.py2dmolCartoonPaint` is absent.
-
-  The embed ships both ways round — `py2Dmol.embed.min.js` (449 KB, WebGL2) and
-  `py2Dmol.embed.cpu.min.js` (410 KB, 2D, and the only one that can save an SVG).
-  That is a second artefact where `embed-tube` was not worth one: it draws the
-  same picture from the same geometry, so nothing is given up but speed.
-- 🔴 **LOOK_DEFAULTS IS THE PRESET, AND A CONFIG VALUE BEATS IT.** The
-  constructor takes a style-owned default from `config.rendering` first and
-  from the look only as a fallback — so anything `viewer.py` names for a preset
-  overrides the table, and `viewer.py` had its own copy of the numbers. `width`
-  was **2.0** there against `PRESET_WIDTH`'s **3.0**, under a comment in
-  `geom.js` saying the width is "the same in all three": a viewer BUILT as
-  richardson drew a thinner ribbon than one SWITCHED to it. That is the same
-  pair `core/mol.js` was fixed for once already — the note above `_look` records
-  width being 2.0 in one place and 3.0 in the other — and Python was the copy
-  nobody had looked at. It no longer substitutes a width at all.
-  And `relativeOutlineWidth` was a bare `3.0` in the constructor while
-  richardson's look asks for `1.0`, with Python sending only the outline MODE,
-  so nothing could correct it; it reads `_d.outlineWidth` now like every field
-  beside it. `tests/config.js` loads `LOOK_DEFAULTS` out of `geom.js` and
-  checks every number `viewer.py` substitutes for a preset against it.
+  `core/mol.js` derives `useGPU` from what is loaded — with both present it
+  takes `config.rendering.gpu`, which is what the website has always done.
+  **The embeds still ship one painter each** (`py2Dmol.embed.min.js` WebGL2,
+  `py2Dmol.embed.cpu.min.js` 2D and SVG-capable): they are served over HTTP and
+  gzipped, so the trade there is a download and not a document.
 - 🔴 **A preset name reaches the cartoon in two steps, and the order is the
   whole thing.** `setPreset` assigns `style = 'cartoon'` but does none of the
   work of *arriving* there, so calling it from tube leaves every field saying
@@ -612,6 +571,15 @@ public downloads is exercised on every run.
   `rendering` is already in `knownKeys`. The web app hides this class of bug
   by assigning `renderer.useGPU` straight from its checkbox. `tests/config.js`
   reads the keys out of `viewer.py` and checks each one arrives.
+- 🔴 **A package_data ENTRY THAT MATCHES NOTHING IS SILENT.** setuptools ships
+  nothing for it and reports nothing about it, and `tests/packaging.py` could
+  not see it either: `shipped_by_setup()` expands the globs against the disk,
+  so a dead entry contributes nothing and every check downstream sees a set
+  that simply does not mention it. Two entries outlived the bundles they named
+  when the three notebook builds became one. Locally the setuptools-scm plugin
+  sweeps every tracked file into the wheel and covers for it, so the omission
+  would first have appeared in a release. The entries are now checked AS
+  WRITTEN, before expansion, which is the only point at which they exist.
 - **A comment that names a file is a pointer, and pointers rot.** The split
   left 236 mentions of renamed files behind, including one in
   `tools/extract_part.py` that still *wrote* its output to a dead path.

@@ -343,6 +343,118 @@ CRYSTAL_ADDITIVES = {
 
 
 
+
+
+# LENDING, AS TWO SCRIPTS AND A QUESTION.
+#
+# Both carry the BUNDLE NAME as a key. gpu=False and a tube-only viewer are
+# different libraries, and a borrower handed the wrong one would come up
+# missing a painter with nothing to say about why - so a lender answers only
+# for the key it holds.
+def _lend_js(key):
+    """Answer askers, and announce on arrival for anyone who asked too early."""
+    k = json.dumps(key)
+    return (
+        "(function(){var K=" + k + ";window.__py2dmolLibKey=K;"
+        "var c=new BroadcastChannel('py2dmol_lib');"
+        "c.onmessage=function(e){var d=e.data||{};if(d.key!==K)return;"
+        "if(d.op==='need')c.postMessage({op:'lib',key:K,src:window.__py2dmolLib});"
+        "else if(d.op==='ping')c.postMessage({op:'have',key:K});};"
+        "c.postMessage({op:'have',key:K});}());"
+    )
+
+
+def _borrow_js(key):
+    """Ask, take a copy - and then answer for it too.
+
+    A single lender is a single point of failure: clear that one cell's output
+    and every other viewer goes dark. A borrower that keeps what it was given
+    turns one lender into as many as there are live viewers. It cannot help
+    when NO frame has the library; nothing can, which is why this is opt-in.
+    """
+    k = json.dumps(key)
+    return (
+        "<script>(function(){var K=" + k + ";"
+        "if(typeof initializePy2DmolViewer==='function')return;"
+        "var c=new BroadcastChannel('py2dmol_lib');"
+        "var take=function(s){if(typeof initializePy2DmolViewer==='function')return;"
+        "window.__py2dmolLib=s;window.__py2dmolLibKey=K;(0,eval)(s);};"
+        "c.onmessage=function(e){var d=e.data||{};if(d.key!==K)return;"
+        "if(d.op==='lib')take(d.src);"
+        "else if(d.op==='have'&&!window.__py2dmolLib)c.postMessage({op:'need',key:K});"
+        "else if((d.op==='need'||d.op==='ping')&&window.__py2dmolLib)"
+        "c.postMessage({op:d.op==='ping'?'have':'lib',key:K,src:window.__py2dmolLib});};"
+        "c.postMessage({op:'need',key:K});}());</script>\n"
+    )
+
+
+def _can_ask_the_page():
+    """Is there a synchronous way to ask the browser what it has?
+
+    This is the whole of what decides whether the library is shared. Where
+    the answer is yes, a stale assumption is caught at the next show() and
+    costs nothing; where it is no, the only thing available is what this kernel
+    remembers writing, and being wrong about that costs a viewer.
+    """
+    try:
+        from google.colab import output as _colab_output   # noqa: PLC0415
+        return callable(getattr(_colab_output, 'eval_js', None))
+    except Exception:
+        return False
+
+
+def _lender_on_page(key):
+    """Is a live frame able to lend this bundle? None when we cannot ask.
+
+    PYTHON CANNOT KNOW THIS BY ITSELF. _LENT_BUNDLE below records what this
+    KERNEL has written, which is a guess at what the PAGE still has: clear the
+    lending cell's output and the guess is wrong in the direction that breaks
+    every later viewer.
+
+    Colab can ask - eval_js runs in the output frame and returns a value to the
+    kernel - so where it exists the guess becomes a question. Jupyter has no
+    synchronous equivalent (its JS-to-Python channels are comms, and async), so
+    there the flag is still the best available and this returns None.
+
+    Any failure returns None rather than raising: a viewer that cannot ask must
+    still display.
+    """
+    try:
+        from google.colab import output as _colab_output   # noqa: PLC0415
+    except Exception:
+        return None
+    js = (
+        "(async () => { const K = " + json.dumps(key) + ";"
+        " const c = new BroadcastChannel('py2dmol_lib');"
+        " const seen = await new Promise((res) => {"
+        "   const t = setTimeout(() => res(false), 300);"
+        "   c.onmessage = (e) => { const d = e.data || {};"
+        "     if (d.key === K && (d.op === 'have' || d.op === 'lib'))"
+        "       { clearTimeout(t); res(true); } };"
+        "   c.postMessage({op: 'ping', key: K}); });"
+        " c.close(); return seen; })()"
+    )
+    try:
+        return bool(_colab_output.eval_js(js, timeout_sec=5))
+    except Exception:
+        return None
+
+
+# WHICH LIBRARY THIS KERNEL HAS ALREADY WRITTEN INTO A CELL.
+#
+# Colab gives every cell output its own iframe, so a script in one is invisible
+# to the next and each show() writes the whole ~430 KB again - ten viewers is
+# 4.3 MB of .ipynb. The frames are same-origin WITH EACH OTHER, which is what
+# BroadcastChannel needs and why the live path works, and cross-origin with the
+# notebook page: reading a sibling's DOM through `parent` raises SecurityError
+# in Colab, measured. So the library travels over the channel instead, which
+# carries all 440,215 bytes in 1 ms there.
+#
+# Keyed by BUNDLE name, because gpu=False and a tube-only viewer are different
+# libraries and a borrower must not be handed the wrong one.
+_LENT_BUNDLE = None
+
+
 # THE PER-FRAME FIELDS, ONCE. Four places used to enumerate these - this
 # module builds the payload and the light frame, parts/ui.js rebuilds it on
 # arrival, and core/mol.js hands it to setCoords - and every one of them was a
@@ -681,6 +793,26 @@ class view:
         self._mailbox_handle = None       # DisplayHandle for mailbox (persistence=False)
         self._latest_output_handle = None   # DisplayHandle of last add() for replace() updates (persistence=True)
         self._persistence = bool(persistence)
+        # ON BY DEFAULT WHERE THE PAGE CAN BE ASKED, and off where it cannot.
+        #
+        # It was opt-in because a borrower that finds no lender has no viewer,
+        # against a cost of only a bigger file - a bad trade to make for
+        # someone. What changed is that Python no longer has to guess: in Colab
+        # _lender_on_page pings the page at every show(), so a lender that was
+        # cleared or deleted is NOTICED and this viewer inlines its own copy.
+        # The guess only survives where nothing can be asked, and there the
+        # default is off.
+        #
+        # NOT A SETTING. Sharing happens where Python can ASK THE PAGE whether
+        # anything is lending, and does not where it cannot - and there is no
+        # third answer worth offering. Forcing it on where nothing can be asked
+        # is asking to be wrong in the direction that costs a viewer; forcing
+        # it off buys a bigger notebook and nothing else. A flag here would be
+        # a way to choose the wrong one.
+        #
+        # tests/colab.py exercises both paths by patching _can_ask_the_page,
+        # which is the one thing the decision reads.
+        self._share_library = _can_ask_the_page()
         # THE SLAB IS THE VIEWER'S, not an object's - it is a property of the
         # camera, and it survives switching between objects. Held as a SELECTOR
         # rather than as two depths: the renderer refits it every frame from the
@@ -1346,9 +1478,28 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                             clearInterval(t); init();
                         }} else if (++tries > 100) {{
                             clearInterval(t);
-                            console.error("py2dmol: the viewer library never"
-                                + " loaded - the cell's script was not run or"
-                                + " was blocked.");
+                            // SAY IT WHERE IT CAN BE SEEN. An empty box is
+                            // indistinguishable from a structure that failed to
+                            // parse, and the likely cause is specific and
+                            // fixable: the cell that carries the library was
+                            // cleared or removed, so nothing on the page has
+                            // it to lend. Naming a flag here would be worse
+                            // than saying nothing - there is not one.
+                            var msg = "py2Dmol: the viewer library never"
+                                + " loaded. Re-run the first cell in this"
+                                + " notebook that created a viewer - it is the"
+                                + " one carrying the library, and the others"
+                                + " borrow it from there.";
+                            console.error(msg);
+                            if (container) {{
+                                var p = document.createElement('div');
+                                p.style.cssText = 'padding:8px;font:12px/1.5'
+                                    + ' ui-monospace,Menlo,monospace;color:#a11;'
+                                    + 'border:1px solid #e0b4b4;border-radius:6px;'
+                                    + 'background:#fdf4f4';
+                                p.textContent = msg;
+                                container.appendChild(p);
+                            }}
                         }}
                     }}, 20);
                 }}
@@ -1381,37 +1532,58 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # view() time - so a tube viewer with controls off can never reach
             # the cartoon path, and shipping the geometry to it is dead weight.
             # Anything else, including the default, gets the full bundle.
-            look = self.config.get("rendering", {})
-            can_reach_cartoon = (
-                self.config.get("display", {}).get("controls", True)
-                or look.get("style") == "cartoon"
-                or look.get("preset") is not None)
-            # WHICH PAINTER, AND IT IS THE ONE THING THE FLAG DECIDES.
+            # ONE BUNDLE, AND `gpu` NO LONGER PICKS A FILE.
             #
-            # A bundle carries exactly one painter and the renderer works out
-            # which from what is loaded, so `gpu` does not switch a mode at
-            # runtime - it chooses the file that gets written into the cell.
+            # There were three notebook builds - GPU, 2D, and a tube-only one
+            # without the cartoon geometry - because this library is inlined
+            # into the .ipynb once per show() cell, so every kilobyte was paid
+            # again for every viewer. Sharing pays it once for the document
+            # instead, which removes the reason for all three.
             #
-            # The GPU is the default and is worth 26 ms a frame against 840 on
-            # a large structure. It needs WebGL2, and a notebook that does not
-            # have it has no fallback to reach for: the page says so on the
-            # console and draws nothing. gpu=False is the answer to that, and
-            # to wanting an SVG - vector output is the primitives replayed into
-            # an export context, which the GPU cannot give you because it holds
-            # a raster. It is also 46 KB smaller, which is paid per show() cell.
-            # NO TUBE-AND-CPU FOURTH FILE. The tube is drawn by the renderer
-            # itself, so that combination wants neither cartoon painter and
-            # would be the smallest of all - and it would be a fourth artefact
-            # to build, ship and keep in step for a case that is narrow twice
-            # over (controls off, AND gpu off). The CPU bundle serves both; the
-            # tube caller carries the cartoon geometry unused.
-            if look.get("gpu") is False:
-                bundle = "bundles/py2Dmol.notebook.cpu.min.js"
+            # The second painter costs 26 KB and gives back what was traded for
+            # it: gpu is a runtime setting the renderer reads (see useGPU in
+            # core/mol.js, which takes config.rendering.gpu when BOTH painters
+            # are present), a machine with no WebGL2 has something to fall back
+            # on, and the cartoon can export a vector - which needs the 2D
+            # painter, because a raster has none to give.
+            bundle = "bundles/py2Dmol.notebook.min.js"
+            # SHARE IT, IF ASKED, AND IF SOMEONE ELSE ALREADY CARRIES IT.
+            #
+            # The first viewer of a session writes the library and offers it on
+            # a channel; every later one writes a two-line request instead. The
+            # bootstrap below already waits for initializePy2DmolViewer to
+            # appear before it starts, so a borrower needs nothing more than to
+            # make it appear.
+            global _LENT_BUNDLE
+            # ASK THE PAGE WHERE THE PAGE CAN BE ASKED, and fall back to what
+            # this kernel remembers writing where it cannot. The difference
+            # matters exactly when the two disagree: the lending cell's output
+            # was cleared, so the kernel thinks a lender exists and the page has
+            # none. Guessing there borrows into nothing; asking inlines again.
+            seen = _lender_on_page(bundle) if self._share_library else None
+            can_borrow = seen if seen is not None else (_LENT_BUNDLE == bundle)
+            if self._share_library and can_borrow:
+                container_html = _borrow_js(bundle) + container_html
+            elif self._share_library:
+                _LENT_BUNDLE = bundle
+                # AS A JSON STRING, NOT AS SCRIPT TEXT. The lender has to hand
+                # the source on, and reading it back out of its own <script>
+                # element does not work: the bundle contains the text "<script"
+                # once, which puts the HTML parser into script data double
+                # escaped, and the element then reads back as 196 KB of 429 -
+                # an eval that fails with a SyntaxError saying nothing about
+                # why. Escaping that one sequence inside the JSON literal
+                # removes the hazard for a handful of bytes.
+                src = json.dumps(_resource_text(bundle))
+                for bad in ('<script', '</script', '<!--'):
+                    src = src.replace(bad, bad.replace('<', '\\u003c'))
+                container_html = (
+                    '<script>window.__py2dmolLib=' + src + ';'
+                    '(0,eval)(window.__py2dmolLib);' + _lend_js(bundle)
+                    + '</script>\n' + container_html)
             else:
-                bundle = ("bundles/py2Dmol.notebook.min.js" if can_reach_cartoon
-                          else "bundles/py2Dmol.notebook.tube.min.js")
-            container_html = (f'<script>{_resource_text(bundle)}</script>\n'
-                              + container_html)
+                container_html = (f'<script>{_resource_text(bundle)}</script>\n'
+                                  + container_html)
 
         return container_html
 

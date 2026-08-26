@@ -215,8 +215,8 @@ Two bundles, differing only in the painter:
 
 | file | size | |
 | --- | --- | --- |
-| `py2Dmol.embed.min.js` | 449 KB | WebGL2. Fast on large structures. |
-| `py2Dmol.embed.cpu.min.js` | 410 KB | 2D canvas. No WebGL2 needed, and it can export SVG. |
+| `py2Dmol.embed.min.js` | 453 KB | WebGL2. Fast on large structures. |
+| `py2Dmol.embed.cpu.min.js` | 414 KB | 2D canvas. No WebGL2 needed, and it can export SVG. |
 
 Neither carries the control panel, the save UI or the side panels; for those,
 load the full application. Neither falls back to the other — each has one

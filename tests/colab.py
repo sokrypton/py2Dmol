@@ -143,6 +143,26 @@ window.addEventListener('load', async () => {
                withApi: 0, waited: Math.round(performance.now() - t0)};
   try {
     const fr = [...document.querySelectorAll('iframe')];
+    // ...how many frames came up with a viewer that actually drew. One viewer
+    // per cell, so this counts cells that worked.
+    out.drawing = 0;
+    for (const f of fr) {
+      let ww; try { ww = f.contentWindow; } catch (e) { continue; }
+      const vs2 = ww.py2dmol_viewers;
+      if (!vs2 || !Object.keys(vs2).length) continue;
+      const c2 = ww.document.querySelector('canvas');
+      if (!c2) continue;
+      const g2 = c2.getContext('2d');
+      if (!g2 || !g2.getImageData) continue;
+      const d2 = g2.getImageData(0, 0, c2.width, c2.height).data;
+      const b2 = [d2[0], d2[1], d2[2]];
+      let n2 = 0;
+      for (let p = 0; p < d2.length; p += 4) {
+        if (Math.abs(d2[p] - b2[0]) + Math.abs(d2[p + 1] - b2[1])
+            + Math.abs(d2[p + 2] - b2[2]) > 24) n2++;
+      }
+      if (n2 > 200) out.drawing++;
+    }
     for (let i = 0; i < fr.length; i++) {
       const w = fr[i].contentWindow;
       const vs = w.py2dmol_viewers;
@@ -437,7 +457,61 @@ if q.get('color') != want:
 if (q.get('frameColors') or [1]) != [None, None]:
     bad.append(f'clearing a frame colour left {q.get("frameColors")}')
 
-# --- 6. persistence=False is a single slot, and says so -----------------------
+# --- 6. one copy of the library for the notebook, not one per cell ----------
+# Colab gives every output its own iframe, so each show() writes the whole
+# library again. The frames are same-origin with EACH OTHER - which is all
+# BroadcastChannel needs - and cross-origin with the notebook page, so reading
+# a sibling's DOM raises SecurityError there (measured in Colab, not guessed).
+# The channel carries the source instead: 440,215 bytes in 1 ms.
+def build_two(share):
+    # SHARING IS NOT A SETTING, so this patches the one thing the decision
+    # reads. It happens where Python can ask the page whether anything is
+    # lending - Colab - and not where it cannot; there is no flag to pass and
+    # deliberately so, since either forced answer is a way to be wrong.
+    del CELLS[:]
+    import py2Dmol.viewer as _vm
+    _vm._LENT_BUNDLE = None                 # a fresh kernel
+    was = _vm._can_ask_the_page
+    _vm._can_ask_the_page = lambda: share   # ...and a page that can be asked
+    try:
+        t = np.linspace(0, 4 * np.pi, 30)
+        for k, name in enumerate(('m', 'n')):
+            v = py2Dmol.view((300, 300))
+            v.add(np.stack([np.cos(t) * 5, np.sin(t) * 5, t * 1.5 + 100 * k], axis=1),
+                  align=False, name=name)
+            v.show()
+    finally:
+        # PUT IT BACK. Left patched, every case after this one shared too - and
+        # the persistence=False case below then had one mailbox cell borrowing
+        # from a lender that its own run never created, which reported -1
+        # frames and read as a bug in the mailbox.
+        _vm._can_ask_the_page = was
+        _vm._LENT_BUNDLE = None
+    return [c['html'] for c in CELLS]
+
+
+for share in (False, True):
+    cells = build_two(share)
+    kb = [len(c) // 1024 for c in cells]
+    R = run(cells, 'share-' + str(share))
+    drew = R.get('drawing')
+    print(f'can-ask={share!s:5s}: cells {kb} KB, total {sum(kb)},'
+          f' {drew} of 2 drawing')
+    if R.get('err'):
+        bad.append(f'can-ask={share}: page error {R["err"]}')
+    if drew != 2:
+        bad.append(f'can-ask={share}: {drew} of 2 viewers drew - a borrower'
+                   ' that finds no lender has no viewer at all, which is why'
+                   ' sharing only happens where the page can be asked')
+    if share and kb[1] > kb[0] / 4:
+        bad.append(f'the borrowing cell is {kb[1]} KB against the lender\'s'
+                   f' {kb[0]} - it is still carrying a library of its own')
+    if not share and abs(kb[0] - kb[1]) > 8:
+        bad.append(f'unshared cells came out {kb} KB - they should both carry'
+                   ' the whole library, and this is the control that says the'
+                   ' comparison above means anything')
+
+# --- 7. persistence=False is a single slot, and says so -----------------------
 # Not a fault - the mode is documented as ephemeral - but it is the difference
 # between a notebook that reopens with its trajectory and one that reopens with
 # the last frame, and nothing else in the suite states it.

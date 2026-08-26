@@ -6322,42 +6322,27 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.colorsNeedUpdate = true;
             this.plddtColorsNeedUpdate = true;
             this.shadowEnabled = true;
-            this.cartoonShade = 1;
-            this.outlineMode = 'full';
             this.autoRotate = false;
             this.colorblindMode = false;
-            this.lineWidth = 3.0;
             this.animationSpeed = 100;
+            // cartoonShade, lineWidth, relativeOutlineWidth and outlineMode are
+            // NOT set here. They belong to the look, and the look is applied
+            // once at the end of this method - see the note there.
             this.currentFrame = -1;
             this.lastRenderedFrame = -1;
-            if (this.shadeSlider) {
-                this.shadeSlider.value = 1;
-            }
             if (this.shadowSlider) {
                 this.shadowSlider.value = 0.5;
                 this.shadowStrength = 0.5;
                 this.shadowEnabled = true;
             }
-            if (this.outlineWidthSlider && !this.outlineModeButton && !this.outlineModeSelect) {
-                this.outlineWidthSlider.value = 3.0;
-                this.relativeOutlineWidth = 3.0;
-                this.outlineMode = 'full';
-            }
             if (this.outlineModeButton) {
-                this.outlineMode = 'full';
                 this.updateOutlineButtonStyle();
-            } else if (this.outlineModeSelect) {
-                this.outlineMode = 'full';
-                this.outlineModeSelect.value = 'full';
             }
             if (this.rotationCheckbox) {
                 this.rotationCheckbox.checked = false;
             }
             if (this.colorblindCheckbox) {
                 this.colorblindCheckbox.checked = false;
-            }
-            if (this.lineWidthSlider) {
-                this.lineWidthSlider.value = '3.0';
             }
             if (this.orthoSlider) {
                 this.orthoSlider.value = '0.5';
@@ -6381,6 +6366,30 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Clear selection
             this.hideAll();
+
+            // ...AND THE LOOK, FROM THE ONE PLACE THAT KNOWS IT.
+            //
+            // This method used to state cartoonShade, lineWidth,
+            // relativeOutlineWidth and outlineMode as literals - a fourth copy
+            // of numbers that LOOK_DEFAULTS already holds - so Clear All
+            // dropped richardson's shade of 0.7 to 1 and its outline of 1.0 to
+            // 3.0 and left them there, on a viewer still calling itself
+            // richardson. Loading again did not put them back, because nothing
+            // re-enters the style you are already in.
+            //
+            // The latches go first: a reset that kept "the user has dragged
+            // this" would restore the preset and then immediately override it
+            // with the drag it is supposed to be clearing.
+            // _widthByStyle is the per-style memory of a dragged Width; there
+            // is deliberately no single "the user took it over" latch, because
+            // one flag for both styles is how a tube radius arrived in cartoon
+            // as a ribbon width - see tests/interaction.js, which forbids the
+            // name outright and caught it being written back here.
+            this._widthByStyle = {};
+            this._thicknessUserSet = false;
+            this._applyLookDefaults(
+                this.style === 'cartoon' ? (this.stylePreset || 'richardson') : 'tube');
+            if (this._syncStylePanel) this._syncStylePanel();
 
             // Update UI controls
             this.updateUIControls();

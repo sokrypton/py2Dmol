@@ -44,9 +44,12 @@ setup(
             # py2Dmol.embed.min.js, a web artefact in
             # every pip install, which viewer.py never opens. tests/packaging.py
             # fails if it ever opens one that is not listed here.
+            # ONE, since the three narrow notebook builds became one complete
+            # bundle - see tools/bundle.py. Naming files that no longer exist
+            # is not an error setuptools reports; it just ships nothing for
+            # them, and the omission only shows up in a release environment
+            # where the setuptools-scm plugin is not there to cover for it.
             'resources/bundles/py2Dmol.notebook.min.js',
-            'resources/bundles/py2Dmol.notebook.cpu.min.js',
-            'resources/bundles/py2Dmol.notebook.tube.min.js',
         ],
     },
     license='BEER-WARE',

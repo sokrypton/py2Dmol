@@ -58,6 +58,26 @@ result.
   instead, which is 46 KB smaller and the only build that can save an SVG. A
   notebook cannot fall back at runtime, so this chooses which bundle is written
   into the cell.
+- **One notebook bundle, and `gpu` is a runtime setting again.** There were
+  three — WebGL2, 2D, and a cartoon-less tube — because the library is inlined
+  into the `.ipynb` once per `show()` cell. Sharing pays it once per document,
+  so the notebook now ships both painters for 26 KB more: `gpu=False` reaches
+  the 2D painter without a different file, a machine with no WebGL2 has a
+  fallback, and **the cartoon can export an SVG from a notebook**. The embeds
+  still ship one painter each — they are gzipped over HTTP, a different trade.
+- **The notebook library is shared between cells where it can be.** Each
+  `show()` used to write ~450 KB into its own output, because Colab gives every
+  cell output its own iframe — ten viewers was 4.5 MB of `.ipynb`. The first
+  viewer of a session now writes it and offers it on a `BroadcastChannel`;
+  later ones ask, and keep a copy so they can lend to the next. Two viewers go
+  from ~950 KB to ~505; ten from 4.5 MB to ~700 KB.
+
+  There is no flag. It happens where Python can **ask the page** whether
+  anything is lending — Colab, via `eval_js` — and not where it cannot, because
+  either forced answer is a way to be wrong: on where nothing can be asked
+  costs a viewer, off costs only a bigger file. In Colab it re-asks at every
+  `show()`, so a lender whose cell was cleared is noticed and that viewer writes
+  its own copy.
 - **`view.clip(name=, chain=, position=)`**, and a Clip button in the notebook
   and embed shells. `parts/clip.js` was in every bundle already — the slab, the
   tracking and the per-frame refit — and only the website could reach any of it.
@@ -67,8 +87,8 @@ result.
   or coil, or pass `None` to return it to the automatic assignment.
 - **Structural alignment** — TM-align, vendored from foldjs, running in a worker.
 - **Cross-object contacts** — a contact whose two ends are in different objects.
-- **An embeddable build**: `py2Dmol.embed.min.js` (449 KB, WebGL2) and
-  `py2Dmol.embed.cpu.min.js` (410 KB, 2D and SVG-capable), documented by
+- **An embeddable build**: `py2Dmol.embed.min.js` (453 KB, WebGL2) and
+  `py2Dmol.embed.cpu.min.js` (414 KB, 2D and SVG-capable), documented by
   `embed.html`, with one selector grammar shared with the Python API.
 
 ### Fixed

@@ -6045,24 +6045,23 @@ t('the GPU is on by default, on the page and in the Python viewer', () => {
             + 'a capsid then draws its first frame on the 2D path, 1.8 s '
             + 'against 0.3, and every frame after it 840 ms against 26');
     }
-    // ...AND THE PYTHON SIDE CHOOSES THE SAME THING BY PICKING A BUNDLE. It
-    // cannot switch at runtime - a build ships one painter - so `gpu` selects
-    // which file is written into the cell. It defaults to the GPU for the same
-    // reason the checkbox above is ticked, and False exists because a notebook
-    // with no WebGL2 has nothing to fall back to: it draws nothing and says so
-    // on a console the reader may not have open.
+    // ...AND THE PYTHON SIDE CHOOSES THE SAME THING AT RUNTIME. This assertion
+    // has now been written three ways, which is worth recording once.
     //
-    // (This asserted the opposite while the notebook had a single bundle. A
-    // flag with nothing to select could only agree or lie, and it lied - see
-    // tests/config.js.)
+    // First `gpu` was a flag normalizeConfig dropped, so it could only lie.
+    // Then it picked a FILE: one painter per bundle, because the library is
+    // inlined into the .ipynb once per show() cell and a second painter was
+    // 26 KB paid for every viewer. Sharing pays it once for the document
+    // instead, so the notebook ships ONE bundle with both painters and the
+    // renderer decides - which is what the website has always done.
     const py = fs.readFileSync('py2Dmol/viewer.py', 'utf8');
     if (!/\bgpu\s*=\s*True\b/.test(py)) {
         throw new Error('viewer.py lost its gpu setting - it is how a notebook'
             + ' without WebGL2 asks for the painter it can actually use');
     }
-    if (!/notebook\.cpu\.min\.js/.test(py)) {
-        throw new Error('viewer.py never names the CPU notebook bundle, so'
-            + ' gpu=False cannot reach a different painter');
+    if (/notebook\.(cpu|tube)\.min\.js/.test(py)) {
+        throw new Error('viewer.py names a per-painter notebook bundle again -'
+            + ' there is one bundle now and gpu chooses a painter inside it');
     }
     // ...and the flag is not called cartoon anything any more: it drives both
     // styles, and the name said otherwise for as long as it only drove one.

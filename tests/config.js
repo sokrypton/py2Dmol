@@ -258,6 +258,24 @@ if (sb.normalizeConfig({ gpu: false }).rendering.gpu !== false) {
         bad('an empty config invents a clip');
     }
 }
+// --- SHARING IS NOT A SETTING -----------------------------------------------
+// It happens where Python can ASK THE PAGE whether anything is lending, and
+// not where it cannot. A flag would be a way to choose the wrong one: forced
+// on where nothing can be asked costs a viewer, forced off costs a bigger
+// notebook and nothing else. It was a bool, then "auto"|bool, and is now
+// neither - the decision reads _can_ask_the_page and nothing else.
+const viewSig = (/class view:[\s\S]*?\n    \):/.exec(py) || [''])[0];
+if (/share_library\s*=/.test(viewSig)) {
+    bad('view() takes a share_library argument again - the decision belongs to'
+        + ' _can_ask_the_page, because either forced answer is a way to be'
+        + ' wrong about what the page actually has');
+}
+if (!/def _can_ask_the_page\(/.test(py)) {
+    bad('viewer.py has no _can_ask_the_page - it is the whole of the condition');
+}
+if (!/self\._share_library = _can_ask_the_page\(\)/.test(py)) {
+    bad('the sharing decision no longer comes from _can_ask_the_page');
+}
 if (!/def clip\(/.test(py)) {
     bad('viewer.py has no clip() - parts/clip.js is in every bundle and the'
         + ' notebook could not reach it');
@@ -297,30 +315,31 @@ if (sb.normalizeConfig({ style: 'wibble' }).rendering.style !== 'tube') {
     bad('an unknown style name is not falling back to the default');
 }
 
-// --- gpu PICKS THE BUNDLE, IT DOES NOT SWITCH A MODE ------------------------
-// Each build ships ONE painter, so nothing can choose at runtime and a flag
-// claiming to would be lying - which the old one did: normalizeConfig dropped
-// the key, so py2Dmol.view(gpu=True) never reached the renderer.
+// --- gpu IS A RUNTIME SETTING AGAIN ------------------------------------------
 //
-// The notebook has two bundles now rather than one setting, and `gpu` decides
-// which is written into the cell: WebGL2, or the 2D painter for a machine
-// without it and for anyone wanting an SVG out of a notebook. So this asserts
-// the opposite of what it used to, while the invariant underneath - one
-// painter per bundle - is unchanged and checked by tests/bundles.js.
+// It has been both. Originally a flag that normalizeConfig dropped, so
+// py2Dmol.view(gpu=True) never turned anything on. Then a choice of FILE: one
+// painter per bundle, because the library is inlined into the .ipynb once per
+// show() cell and a second painter was 26 KB paid for every viewer.
+//
+// Sharing pays the library once for the document, so the notebook ships
+// ONE bundle with both painters and the renderer decides at runtime - which is
+// what core/mol.js does when both are loaded, taking config.rendering.gpu.
+// The website has always worked this way.
 const sig = /class view:[\s\S]*?\n    \):/.exec(py);
 if (!sig) {
     bad('could not find class view\'s __init__ signature in viewer.py');
 } else if (!/\bgpu\s*=\s*True\b/.test(sig[0])) {
-    bad('viewer.py view() has no gpu argument - it chooses which notebook'
-        + ' bundle is inlined, and defaults to the GPU one');
+    bad('viewer.py has no gpu argument');
 }
 if (!/config\["rendering"\]\["gpu"\]/.test(py)) {
-    bad('viewer.py does not carry gpu into the config, so the bundle choice'
-        + ' cannot read it');
+    bad('viewer.py does not carry gpu into the config, so the renderer cannot'
+        + ' read it - which is now the only way it has any effect');
 }
-if (!/notebook\.cpu\.min\.js/.test(py)) {
-    bad('viewer.py never names the CPU bundle, so gpu=False sets a key and'
-        + ' changes nothing');
+// ...and there is exactly one notebook bundle to name.
+if (/notebook\.(cpu|tube)\.min\.js/.test(py)) {
+    bad('viewer.py still names a per-painter notebook bundle - there is one'
+        + ' bundle now and gpu chooses a painter inside it, not a file');
 }
 
 console.log(fail ? `${fail} problems` : 'ok');

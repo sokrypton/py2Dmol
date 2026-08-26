@@ -1750,6 +1750,32 @@ are not contiguous.
 5a is verified the same way everything else here is: drop the removal detection
 from `_send_incremental_update` and three of its seven lines turn to FAIL.
 
+**Could the cells share one copy?** Section 6 asks that. Every `show()` writes
+~430 KB into its own output because each is a separate iframe — ten viewers is
+4.3 MB of `.ipynb`. Measured in the local harness, all four steps of sharing
+work: a cell can enumerate its siblings through `parent`, read a lender's
+window, evaluate the source it finds there, and even call the neighbour's
+`initializePy2DmolViewer` without copying anything.
+
+**And real Colab said no to the DOM route.** Section 6 came back with a
+`SecurityError` reading `parent.document`: the output frames are same-origin
+*with each other* — which is why `BroadcastChannel` works at all — and
+cross-origin with the notebook page, and `parent` is the only route to a
+sibling's DOM. So `BroadcastChannel` working in Colab really did not imply the
+stronger access, which is why section 6 asks rather than assumes.
+
+**The channel itself carries it.** Locally the full 440,215 bytes arrive in
+25 ms, evaluate, and leave both `initializePy2DmolViewer` and the GPU cartoon
+defined — with `parent` never touched. Section 6b lends and borrows a string of
+exactly that size between two Colab cells, so the transport can be confirmed
+there without shipping anything.
+
+One trap either way: the source must travel as a **JS string**, never by
+reading the `<script>` element back. The bundle contains the text `<script`,
+which puts the HTML parser into script-data-double-escaped, and the element
+read back as 196 KB of 429 — the `eval` then failed with a `SyntaxError` that
+says nothing about why.
+
 **It starts six browsers in series** — each order is a different arrival
 sequence of the same outputs and they cannot share a page — so it carries its
 own cap in `run.sh` rather than raising the ceiling for every probe — **and it

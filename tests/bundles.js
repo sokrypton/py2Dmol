@@ -36,13 +36,17 @@ const bad = (m) => { console.log('FAIL: ' + m); fail++; };
 
 // name -> [must be defined], [must NOT be defined]
 const EXPECT = {
+    // ONE NOTEBOOK BUNDLE, WITH BOTH PAINTERS. There were three - GPU, 2D and
+    // tube-only - because the library is inlined into the .ipynb once per
+    // show() cell. Sharing pays it once for the document instead, so the
+    // reason for three narrow builds is gone and `gpu` is a runtime setting
+    // again rather than a choice of file. Nothing is expected to be ABSENT
+    // here any more, which is the point: the notebook is complete.
     notebook: [
         ['initializePy2DmolViewer', 'OBJECT_STATE', 'normalizeConfig',
          'setupViewport', 'wireViewerUI', 'installMolParts',
-         'py2dmolCartoon', 'py2dmolCartoonGPU', 'C2S'],
-        // GPU-only: the 2D painter is not in this download, and SVG export is
-        // hidden in the Save panel because of it.
-        ['py2dmolCartoonPaint'],
+         'py2dmolCartoon', 'py2dmolCartoonGPU', 'py2dmolCartoonPaint', 'C2S'],
+        [],
     ],
     // ...the same embed on the CPU painter. Same names, opposite painters -
     // which is the whole contract: one bundle each, and nothing behind either.
@@ -54,24 +58,6 @@ const EXPECT = {
          'py2dmolCartoon', 'py2dmolCartoonPaint', 'C2S',
          'py2dmolPanel', 'wireViewerUI'],
         ['py2dmolCartoonGPU', 'Align', 'MSA', 'SEQ'],
-    ],
-    // ...and the same notebook drawn on the CPU, which viewer.py inlines for
-    // gpu=False. Same names, opposite painters - one bundle each, nothing
-    // behind either, exactly as the two embeds are. It is the only notebook
-    // that can save an SVG, so C2S has to be here and be reachable.
-    'notebook.cpu': [
-        ['initializePy2DmolViewer', 'OBJECT_STATE', 'normalizeConfig',
-         'setupViewport', 'wireViewerUI', 'installMolParts',
-         'py2dmolCartoon', 'py2dmolCartoonPaint', 'C2S'],
-        ['py2dmolCartoonGPU'],
-    ],
-    // ...and the notebook without the cartoon geometry, which viewer.py inlines
-    // when nothing on the page can ask for a cartoon.
-    'notebook.tube': [
-        ['initializePy2DmolViewer', 'OBJECT_STATE', 'normalizeConfig',
-         'setupViewport', 'wireViewerUI', 'installMolParts',
-         'py2dmolCartoonGPU', 'C2S'],
-        ['py2dmolCartoon', 'py2dmolCartoonPaint'],
     ],
     embed: [
         ['py2Dmol', 'wireEmbedUI', 'setupViewport', 'initializePy2DmolViewer',

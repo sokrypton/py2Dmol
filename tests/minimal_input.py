@@ -435,13 +435,19 @@ def main():
                    ' the page a notebook cell actually shows')
     if not R.get('orientMoved'):
         bad.append('pressing Orient did not move the camera')
-    if (R.get('painter') or {}).get('has2d'):
-        bad.append('the default notebook bundle carries the 2D painter, so the'
-                   ' Draw check below cannot show anything - see tests/bundles.js')
-    if R.get('draw'):
-        bad.append('Draw is offered on a build with no 2D painter behind it:'
-                   ' _gpuWillTake returns false while drawMode is on, so ticking'
-                   ' it asks for a painter that is not in the download')
+    # THE NOTEBOOK CARRIES BOTH PAINTERS NOW, so Draw is offered rather than
+    # hidden. It used to be the other way round: one painter per bundle, and
+    # the toggle had to go because _gpuWillTake returns false while drawMode is
+    # on and there was nothing behind it. Sharing pays the library once
+    # per document instead of once per cell, so the 26 KB the second painter
+    # costs buys back Draw, cartoon SVG export, and a picture on a machine with
+    # no WebGL2.
+    if not (R.get('painter') or {}).get('has2d'):
+        bad.append('the notebook bundle has no 2D painter - Draw and SVG export'
+                   ' of the cartoon both need it, and it is 26 KB')
+    if not R.get('draw'):
+        bad.append('Draw is not offered even though the 2D painter is in the'
+                   ' download - parts/panel.js drops the item on needs2d')
     if R.get('drawNeighbours') != 4:
         bad.append(f"only {R.get('drawNeighbours')} of Draw's 4 row neighbours"
                    ' survived - needs2d must drop the ITEM, not the row')
