@@ -729,7 +729,7 @@ const DEFAULT_CONFIG = {
         shadow_strength: 0.5,
         outline: "full",
         ortho: 0.5,
-        detect_cyclic: true
+        cyclic: true
     },
     color: {
         mode: "auto",
@@ -838,7 +838,7 @@ function normalizeConfig(rawConfig = {}) {
             shadow_strength: cfg.rendering?.shadow_strength ?? cfg.shadow_strength ?? DEFAULT_CONFIG.rendering.shadow_strength,
             outline: cfg.rendering?.outline ?? cfg.outline ?? DEFAULT_CONFIG.rendering.outline,
             ortho: cfg.rendering?.ortho ?? cfg.ortho ?? DEFAULT_CONFIG.rendering.ortho,
-            detect_cyclic: cfg.rendering?.detect_cyclic ?? cfg.detect_cyclic ?? DEFAULT_CONFIG.rendering.detect_cyclic,
+            cyclic: cfg.rendering?.cyclic ?? cfg.cyclic ?? DEFAULT_CONFIG.rendering.cyclic,
             // THE BACKEND, AND IT WAS MISSING FROM THIS LIST.
             //
             // This block is rebuilt field by field, so a key absent from it is
@@ -907,7 +907,7 @@ function normalizeConfig(rawConfig = {}) {
     }
 
     // Carry over any additional top-level keys not explicitly normalized
-    const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "pae", "scatter", "overlay", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "ortho", "colorblind", "pae_size", "scatter_size", "detect_cyclic", "style", "detail", "base_plates", "ss_palette", "preset", "gpu", "shade", ...PRESET_KEYS]);
+    const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "pae", "scatter", "overlay", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "ortho", "colorblind", "pae_size", "scatter_size", "cyclic", "style", "detail", "base_plates", "ss_palette", "preset", "gpu", "shade", ...PRESET_KEYS]);
     for (const [key, value] of Object.entries(cfg)) {
         if (!knownKeys.has(key)) {
             normalized[key] = value;
@@ -7135,8 +7135,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
 
                 // Check for cyclic peptides (first-to-last bond) per chain
-                const detectCyclic = (typeof this.config.rendering?.detect_cyclic === 'boolean') ? this.config.rendering.detect_cyclic : true;
-                if (detectCyclic) {
+                const cyclic = (typeof this.config.rendering?.cyclic === 'boolean') ? this.config.rendering.cyclic : true;
+                if (cyclic) {
                     for (const [chainId, bounds] of chainPolymerBounds.entries()) {
                         const firstIdx = bounds.first;
                         const lastIdx = bounds.last;

@@ -19,6 +19,14 @@ What this checks, in a browser, on the page `_display_viewer` writes:
   * asking for it repeatedly is CHEAP, because the panel asks on every click;
   * the pieces that need data that is absent are absent themselves, rather
     than throwing or drawing nothing.
+
+It has since become the probe for THE PAYLOAD, FIELD BY FIELD, because it is
+the one that builds through `_display_viewer` with a fixture small enough to
+state an expected answer for. `align`, the per-atom columns and `pae_n` were
+each dropped by a field-by-field frame builder on one side or the other, and
+each is checked here now - along with the PAE's wire format (base64, and
+resampled to what the panel can draw), the SVG export's shading, and the
+open-panel cue on the Capture button.
 """
 import http.server, json, os, re, shutil, socketserver, subprocess, sys, threading, types, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

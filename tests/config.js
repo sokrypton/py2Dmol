@@ -73,7 +73,7 @@ const probeFor = (key) => {
     // survive a check that a boolean would not. gpu in particular is read as
     // `=== true`, so it MUST arrive as a real boolean.
     if (key === 'gpu' || key === 'shadow' || key === 'smooth' || key === 'arrows'
-        || key === 'base_plates' || key === 'detect_cyclic' || key === 'sheet_flat'
+        || key === 'base_plates' || key === 'cyclic' || key === 'sheet_flat'
         || key === 'pencil') return true;
     if (key === 'detail') return 7;
     if (key === 'ortho' || key === 'shadow_strength' || key === 'fade'
@@ -350,6 +350,19 @@ if (!/hashlib\.sha1\(_resource_text\(bundle\)/.test(py)) {
 if (!/def clip\(/.test(py)) {
     bad('viewer.py has no clip() - parts/clip.js is in every bundle and the'
         + ' notebook could not reach it');
+}
+// ...AND THE OLD SPELLING IS GONE. detect_cyclic was the only argument on
+// view() named for an ACTION - everything else there names a state, and the
+// toggle it drives is labelled Cyclic. Renamed with no alias, so the only way
+// it comes back is by accident.
+// As CODE, not as prose: the docstring names the old spelling on purpose, so
+// a reader upgrading from 1.x finds it.
+if (/detect_cyclic\s*[=:]|["']detect_cyclic["']|detectCyclic/.test(py)) {
+    bad('viewer.py still uses detect_cyclic as an argument or a key - it is'
+        + ' `cyclic` now, in the argument, the config key and the checkbox id');
+}
+if (!/\bcyclic=True\b/.test(py)) {
+    bad('view() no longer takes cyclic=');
 }
 if (!/def show_objects\(/.test(py)) {
     bad('viewer.py has no show_objects() - the renderer has drawn several'

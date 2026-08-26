@@ -236,9 +236,9 @@ function saveViewerState() {
         const orthoSlider = document.getElementById('orthoSlider');
         const orthoSliderValue = orthoSlider ? parseFloat(orthoSlider.value) : 0.5;
 
-        // Get detect_cyclic from config
-        const detectCyclic = (window.viewerConfig && typeof window.viewerConfig.rendering?.detect_cyclic === 'boolean')
-            ? window.viewerConfig.rendering.detect_cyclic
+        // Get cyclic from config
+        const cyclic = (window.viewerConfig && typeof window.viewerConfig.rendering?.cyclic === 'boolean')
+            ? window.viewerConfig.rendering.cyclic
             : true;
 
         const viewerState = {
@@ -274,7 +274,7 @@ function saveViewerState() {
             shade: renderer.cartoonShade !== undefined ? renderer.cartoonShade : 1,
             outline_mode: renderer.outlineMode || 'full',
             colorblind_mode: renderer.colorblindMode || false,
-            detect_cyclic: detectCyclic,
+            cyclic: cyclic,
             ortho_slider_value: orthoSliderValue, // Save the normalized slider value (0.0-1.0)
             animation_speed: renderer.animationSpeed || 100,
             // Render style and its controls. These live on the renderer, not in
@@ -855,28 +855,28 @@ async function loadViewerState(stateData) {
                 }
             }
 
-            // Restore detect_cyclic - check both Python config format and web viewer_state format
-            let detectCyclicValue = true; // default
-            if (stateData.config && typeof stateData.config.rendering?.detect_cyclic === 'boolean') {
-                // Python format: config.rendering.detect_cyclic
-                detectCyclicValue = stateData.config.rendering.detect_cyclic;
-            } else if (typeof vs.detect_cyclic === 'boolean') {
-                // Web format: viewer_state.detect_cyclic
-                detectCyclicValue = vs.detect_cyclic;
+            // Restore cyclic - check both Python config format and web viewer_state format
+            let cyclicValue = true; // default
+            if (stateData.config && typeof stateData.config.rendering?.cyclic === 'boolean') {
+                // Python format: config.rendering.cyclic
+                cyclicValue = stateData.config.rendering.cyclic;
+            } else if (typeof vs.cyclic === 'boolean') {
+                // Web format: viewer_state.cyclic
+                cyclicValue = vs.cyclic;
             }
             // Update global config so it's used when rendering
             if (window.viewerConfig) {
                 if (!window.viewerConfig.rendering) {
                     window.viewerConfig.rendering = {};
                 }
-                window.viewerConfig.rendering.detect_cyclic = detectCyclicValue;
+                window.viewerConfig.rendering.cyclic = cyclicValue;
             }
             // ...and the toggle that shows it, or the panel claims one thing
             // while the drawing does another. Set directly rather than by
             // dispatching 'change': the handler reloads the frame, which the
             // restore is in the middle of doing anyway.
-            const detectCyclicEl = document.getElementById('detectCyclicCheckbox');
-            if (detectCyclicEl) detectCyclicEl.checked = detectCyclicValue;
+            const cyclicEl = document.getElementById('cyclicCheckbox');
+            if (cyclicEl) cyclicEl.checked = cyclicValue;
             // Invalidate segment cache to trigger rebuild with new setting
             renderer.cachedSegmentIndices = null;
 

@@ -723,6 +723,30 @@ if (!readout.bound) {
     });
 }
 
+// CYCLIC, THE FOURTH CONTROL THE SHARED PANEL SHOWED AND ONLY THE WEBSITE
+// WIRED. parts/panel.js is one table and every shell mounts it, so the box was
+// there in the notebook and in the embed - unchecked whatever the config said,
+// and inert when clicked. Same shape as Orient and Clip before them: a control
+// that exists, looks like the website's, and does nothing.
+//
+// The ring is closed in setCoords, not in render, so a repaint alone changes
+// nothing: the frame has to be reloaded. reloadDrawn does whatever is on
+// screen, which may be several objects.
+const cyclicCheckbox = containerElement.querySelector('#cyclicCheckbox');
+if (cyclicCheckbox) {
+    const asked = renderer.config.rendering
+        ? renderer.config.rendering.cyclic : undefined;
+    cyclicCheckbox.checked = (typeof asked === 'boolean') ? asked : true;
+    cyclicCheckbox.addEventListener('change', (e) => {
+        if (!renderer.config.rendering) renderer.config.rendering = {};
+        renderer.config.rendering.cyclic = e.target.checked;
+        if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
+        renderer.cachedSegmentIndices = null;
+        if (renderer.reloadDrawn) renderer.reloadDrawn();
+        renderer.render('cyclicCheckbox');
+    });
+}
+
 // Dark background toggle: black page, white ink, fade toward black.
 const darkCheckbox = containerElement.querySelector('#darkCheckbox');
 if (darkCheckbox) {

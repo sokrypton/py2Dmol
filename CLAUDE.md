@@ -106,10 +106,10 @@ public downloads is exercised on every run.
 
   | lines | file | | lines | function |
   |---|---|---|---|---|
-  | 11,459 | `core/mol.js` | | 2,449 | `cartoon/paint2d.js` `paintPrims()` |
+  | 11,514 | `core/mol.js` | | 2,449 | `cartoon/paint2d.js` `paintPrims()` |
   | 10,418 | `cartoon/geom.js` | | 1,912 | `cartoon/geom.js` `render()` |
-  | 8,429 | `app/ (total)` | | 1,901 | `cartoon/geom.js` `drawRun()` |
-  | 5,848 | `cartoon/paintgl.js` | | 1,623 | `parts/ui.js` `wireViewerUI()` |
+  | 8,432 | `app/ (total)` | | 1,901 | `cartoon/geom.js` `drawRun()` |
+  | 5,848 | `cartoon/paintgl.js` | | 1,718 | `parts/ui.js` `wireViewerUI()` |
   | 5,312 | `panels/msa.js` | | 1,473 | `cartoon/geom.js` `drawSticks()` |
   | 3,372 | `io/parse.js` | | 1,084 | `cartoon/geom.js` `mergeBondRuns()` |
 
@@ -209,6 +209,15 @@ public downloads is exercised on every run.
   dropping the ROW would take Smooth, Arrows, Colorblind and Dark with it.
   `_canDraw` refuses by name as the backstop for `setDrawMode()` from code.
   Same question the Save panel asks before offering SVG.
+- **A CONTROL THE SHARED PANEL SHOWS AND ONE SHELL WIRES IS WORSE THAN NO
+  CONTROL.** `parts/panel.js` is one table and every shell mounts it, so a row
+  added for the website appears in the notebook and the embed too — on screen,
+  unseeded and inert. Cyclic was the fourth: it came up UNTICKED while
+  `cyclic` was true and the ring was closed, and clicking it did
+  nothing. Orient, Clip and Draw were the first three. Wiring lives in
+  `parts/ui.js` beside the others now. The ring is closed in `setCoords`, not
+  in `render`, so the handler has to `reloadDrawn()` — a repaint changes
+  nothing, the same trap the side-chain and contact toggles hit.
 - **Three shells carry the same controls, and Orient was in two of them.**
   The website's lives in `index.html` and `app/main.js` wires it; the embed
   grew its own in `parts/embed.js`; `py2Dmol/resources/viewer.html` — the page

@@ -126,7 +126,7 @@ const STYLE_PANEL_ROWS = [
        title: 'Colorblind-safe colors' },
      { kind: 'toggle', id: 'darkCheckbox', label: 'Dark',
        title: 'Black background (white ink, fade toward black)' },
-     { kind: 'toggle', id: 'detectCyclicCheckbox', label: 'Cyclic',
+     { kind: 'toggle', id: 'cyclicCheckbox', label: 'Cyclic',
        title: 'Join a chain end-to-end when its termini are within bonding range' }],
 ];
 

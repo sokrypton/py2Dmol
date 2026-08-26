@@ -4609,7 +4609,7 @@ t('click-selection is off unless something turns it on', () => {
 // renderer, which runs through a config key name shared across three files and
 // nothing but the name.
 t('detect cyclic is off by default in the web app, and on in Python', () => {
-    const cyclic = L.panelItems().detectCyclicCheckbox;
+    const cyclic = L.panelItems().cyclicCheckbox;
     if (!cyclic) throw new Error('no Detect Cyclic toggle in the panel table');
     if (cyclic.checked) {
         throw new Error('the Detect Cyclic toggle ships checked; it is opt-in'
@@ -4618,12 +4618,12 @@ t('detect cyclic is off by default in the web app, and on in Python', () => {
     }
     // ...and the config behind it agrees, or the toggle shows one thing on
     // load while the renderer does another
-    if (!/detect_cyclic:\s*false/.test(appSrc)) {
-        throw new Error('src/app/ does not default detect_cyclic to false,'
+    if (!/cyclic:\s*false/.test(appSrc)) {
+        throw new Error('src/app/ does not default cyclic to false,'
             + ' so the unchecked toggle disagrees with what is drawn');
     }
     const py = fs.readFileSync('py2Dmol/viewer.py', 'utf8');
-    if (!/"detect_cyclic":\s*True/.test(py)) {
+    if (!/"cyclic":\s*True/.test(py)) {
         throw new Error('the Python default is no longer True - it is scripted'
             + ' by someone who knows what they loaded, and the asymmetry with'
             + ' the web app is the point');
@@ -4633,15 +4633,15 @@ t('detect cyclic is off by default in the web app, and on in Python', () => {
     // window.viewerConfig.rendering, which the renderer normalises in place and
     // keeps as its own this.config; nothing else connects the two, so a rename
     // on either side leaves a toggle that changes a field no one reads.
-    if (!/rendering\?\.detect_cyclic/.test(src)) {
+    if (!/rendering\?\.cyclic/.test(src)) {
         throw new Error('core/mol.js no longer reads'
-            + ' config.rendering.detect_cyclic, so the toggle is orphaned');
+            + ' config.rendering.cyclic, so the toggle is orphaned');
     }
 
     // AND IT HAS TO RELOAD THE FRAME. The ring is closed in setCoords, not in
     // render, so a handler that only repaints changes nothing on screen - the
     // exact trap the side-chain and contact toggles both hit.
-    const a = appSrc.indexOf("detectCyclicEl.addEventListener('change'");
+    const a = appSrc.indexOf("cyclicEl.addEventListener('change'");
     if (a < 0) throw new Error('the Detect Cyclic toggle is never wired up');
     const handler = appSrc.slice(a, appSrc.indexOf('\n    }', a));
     // ...through reloadDrawn, which reloads the frame OR rebuilds the merge -
@@ -5629,7 +5629,7 @@ t('the style toggles are one flow, and each style reads as whole lines', () => {
     // Colorblind/Dark/Cyclic on one line. Hand-made rows left tube with Cyclic
     // alone on one line and Colorblind/Dark on the next.
     const ids = ['smoothCheckbox', 'arrowsCheckbox', 'drawCheckbox',
-        'colorblindCheckbox', 'darkCheckbox', 'detectCyclicCheckbox'];
+        'colorblindCheckbox', 'darkCheckbox', 'cyclicCheckbox'];
     const pos = ids.map(at);
     ids.forEach((id, k) => {
         if (pos[k] < 0) throw new Error(id + ' is gone from the panel table');
@@ -6174,7 +6174,7 @@ t('Cyclic survives a switch to tube style', () => {
     const html = fs.readFileSync('index.html', 'utf8');
     const i = html.indexOf('id="smoothCheckbox"');
     const rowStart = html.lastIndexOf('<div class="toggle-item', i);
-    const rowEnd = html.indexOf('</div>', html.indexOf('id="detectCyclicCheckbox"'));
+    const rowEnd = html.indexOf('</div>', html.indexOf('id="cyclicCheckbox"'));
     const row = html.slice(rowStart, rowEnd);
     const openTag = row.slice(0, row.indexOf('>') + 1);
     if (/data-style/.test(openTag)) {
@@ -6182,8 +6182,8 @@ t('Cyclic survives a switch to tube style', () => {
             + ' tube style hides Cyclic too - the tag belongs on the two'
             + ' cartoon-only cells');
     }
-    const cyclicCell = row.slice(row.indexOf('id="detectCyclicCheckbox"') - 400,
-        row.indexOf('id="detectCyclicCheckbox"'));
+    const cyclicCell = row.slice(row.indexOf('id="cyclicCheckbox"') - 400,
+        row.indexOf('id="cyclicCheckbox"'));
     if (/data-style="cartoon"/.test(cyclicCell.slice(cyclicCell.lastIndexOf('<label')))) {
         throw new Error('the Cyclic cell itself is tagged cartoon-only');
     }

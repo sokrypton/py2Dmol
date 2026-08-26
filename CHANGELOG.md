@@ -42,6 +42,16 @@ reads as a solid triangle. `metalc` is excluded.
 Bondi where Bondi reaches, 1.80 for everything else. Eight elements change size,
 calcium most visibly (2.31 → 1.80).
 
+**`detect_cyclic` is now `cyclic`.** It was the only argument on `view()` named
+for an action; everything else there names a state (`box`, `rotate`, `overlay`,
+`multi`, `gpu`, `shadow`, `arrows`), and the toggle it drives is labelled
+Cyclic. The verb-named family — `use_biounit`, `load_ligands`,
+`filter_additives`, `ignore_ligands`, `allow_reflection` — all sit on the
+loaders and describe a one-off instruction; this is a live setting. The config
+key is `rendering.cyclic` and the checkbox is `#cyclicCheckbox`, with no alias:
+a state file written before 2.0.0 loses that one setting on load and the toggle
+comes back at its default.
+
 **Some `view()` defaults moved**: `ortho` 1.0 → 0.5, `outline` `"full"` → `None`,
 `width` 3.0 → `None` (the style decides). And `best_view`, `kabsch` and
 `align_a_to_b` are gone from `py2Dmol.viewer` — the browser chooses the angle
@@ -217,6 +227,10 @@ result.
 - **A Clip control in the notebook and the embed**, and `view.clip()` in Python
   — `parts/clip.js` was in every bundle and only the website could reach it.
   It shows whether it is on, which it previously did not.
+- **The Cyclic toggle works outside the website.** The shared Style panel put
+  it on screen in the notebook and the embed, where nothing wired it: it came
+  up unticked while `cyclic` was true and the ring was closed, and
+  clicking it did nothing.
 - **An Orient control in the notebook.** The website and the embed both had one.
 - **Draw is not offered where no 2D painter can honour it**, and SVG export of
   the cartoon is refused rather than writing an empty file. The tube exports a

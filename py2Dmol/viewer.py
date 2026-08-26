@@ -54,7 +54,7 @@ DEFAULT_CONFIG = {
         "outline": "full",
         "width": 3.0,
         "ortho": 0.5,
-        "detect_cyclic": True,
+        "cyclic": True,
         # WHICH PAINTER, BY PICKING THE BUNDLE. A bundle carries exactly one,
         # and the renderer works out which from what is loaded - so this is not
         # a runtime switch, it chooses the file inlined into the cell. True
@@ -139,7 +139,7 @@ def _nest_config(**flat):
     if "width" in flat: config["rendering"]["width"] = flat["width"]
     if "ortho" in flat: config["rendering"]["ortho"] = flat["ortho"]
     if "gpu" in flat: config["rendering"]["gpu"] = flat["gpu"]
-    if "detect_cyclic" in flat: config["rendering"]["detect_cyclic"] = flat["detect_cyclic"]
+    if "cyclic" in flat: config["rendering"]["cyclic"] = flat["cyclic"]
     # None = leave the key out so the renderer's default (plates on) applies
     if flat.get("base_plates") is not None:
         config["rendering"]["base_plates"] = flat["base_plates"]
@@ -567,7 +567,7 @@ class view:
         color="auto", colorblind=False, ss_palette=None, style="tube", preset=None, smooth=None, thickness=None, sheet_flat=None, pencil=None, arrows=True, base_plates=None, detail=4, fade=0, highlight=None, outline_tint=None,
         shadow=True, shade=None, shadow_strength=0.5,
         outline=None, width=None, ortho=0.5, gpu=True, bg=None, rotate=False, autoplay=False,
-        pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, multi=False, detect_cyclic=True,
+        pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, multi=False, cyclic=True,
         persistence=True, id=None, cutoffs=None,
     ):
         """
@@ -646,7 +646,13 @@ class view:
                 both on screen, the camera widened to take them both in. The
                 same thing the website's Multi button does. See show_objects()
                 for naming a subset.
-            detect_cyclic (bool): Auto-detect cyclic peptides (N-C terminus bonds). Default True.
+            cyclic (bool): Close a chain end to end when its termini are within
+                bonding range - a cyclic peptide drawn as the ring it is rather
+                than as a line with two loose ends. Default True. The Cyclic
+                toggle in the Style panel is the same setting.
+                RENAMED in 2.0.0 from `detect_cyclic`, to match the toggle and
+                the rest of view(), where every argument names a state rather
+                than an action.
             persistence (bool): If True (default), each incremental update uses a fresh output
                                 cell (classic behavior). If False, updates reuse a single hidden
                                 cell (mailbox) to avoid output bloat.
@@ -823,7 +829,7 @@ class view:
             scatter_size=scatter_size,
             overlay=overlay,
             multi=multi,
-            detect_cyclic=detect_cyclic,
+            cyclic=cyclic,
             cutoffs=cutoffs,
         )
         

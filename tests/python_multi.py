@@ -1,20 +1,27 @@
-"""SEVERAL OBJECTS AT ONCE, AND A CAMERA, ASKED FOR FROM PYTHON.
+"""WHAT PYTHON ASKS FOR, AND WHETHER THE PAGE DOES IT.
 
     python3 tests/python_multi.py
 
-Three things the renderer has been able to do for as long as the website has
-had a Multi button, and that Python had no way to reach:
+Everything here is a setting that reached the config correctly and then did
+nothing, which is the failure this file exists to catch - the picture and the
+state disagreeing, with nothing raising:
 
-  * `view(multi=True)` and `view.show_objects([...])` - several structures in
-    one picture, which is a different question from `overlay=True` (every
-    FRAME of one object);
+  * `view(multi=True)` / `view.show_objects([...])` - several structures in one
+    picture, a different question from `overlay=True` (every FRAME of one);
   * `view.orient(...)` - turn the camera onto a selection, which the first
-    frame already does unprompted and nothing could ask for again;
-  * and the picker row, which a shell with ONE object should not be showing at
-    all: a label and a dropdown that can only say what it already says.
+    frame does unprompted and nothing could ask for again;
+  * the picker row, which a shell with ONE object should not show at all;
+  * `view(rotate=True)`, which the viewer's own opening orient switched off;
+  * `bg` with `box=False`, where turning the frame off repainted the paper -
+    and `py2Dmol.grid` defaults `box` to False;
+  * the Cyclic toggle, which the shared Style panel showed in every shell and
+    only the website wired;
+  * and the layout BEFORE ANY SCRIPT RUNS, which is what Colab measures when
+    it sizes an output frame.
 
-Three viewers on one page, because each of those needs a different page state
-and a Chrome start costs more than the measurements do.
+One page, several viewers, because each needs a different page state and a
+Chrome start costs more than the measurements do. `check_live()` covers the
+live path in Python alone, with no browser.
 
 IPython is stubbed when it is absent: the module imports it at load time, and
 nothing here displays anything.
@@ -177,6 +184,19 @@ def page():
     assert one.config.get('shown_objects') is None and 'orient' not in one.config, \
         'a viewer that asked for neither must carry neither'
 
+    #  A RING, FOR THE CYCLIC TOGGLE. parts/panel.js is one table and every
+    #  shell mounts it, so the Cyclic box was on screen in the notebook and the
+    #  embed - unchecked whatever cyclic said, and inert when clicked,
+    #  because only src/app/main.js ever wired it. Twelve CA positions on a
+    #  circle: the termini are within bonding range, so the ring closes into a
+    #  twelfth bond and does not without.
+    ring = np.array([[6.0 * np.cos(2 * np.pi * i / 12),
+                      6.0 * np.sin(2 * np.pi * i / 12), 0.0] for i in range(12)])
+    for name, kw in (('ring', {}), ('ringoff', {'cyclic': False})):
+        rv = py2Dmol.view((240, 240), id=name, **kw)
+        rv.add(ring, name='ring')
+        bodies.append(rv._display_viewer(static_data=rv.objects))
+
     #  THE BOX IS THE FRAME AND bg IS THE PAPER, and turning the frame off used
     #  to repaint the paper: `box=False` set the canvas background to
     #  transparent AFTER the requested colour had been put on it, and told the
@@ -250,6 +270,38 @@ window.addEventListener('load', () => {
       R.one = read('one');
       R.both = read('both');
       R.aimed = read('aimed');
+
+      //  THE CYCLIC TOGGLE, IN A SHELL THAT IS NOT THE WEBSITE. Its own
+      //  checkbox, found by walking up from its canvas: every viewer on this
+      //  page has one with the same id.
+      const cycOf = (id) => {
+        const r = vs[id].renderer;
+        let e = r.canvas, cb = null;
+        while (e && !(cb = e.querySelector
+                && e.querySelector('#cyclicCheckbox'))) e = e.parentElement;
+        return {r, cb,
+                state: {box: !!cb, checked: cb ? cb.checked : null,
+                        cfg: r.config.rendering.cyclic,
+                        rings: r.cyclicChains ? r.cyclicChains.size : -1,
+                        bonds: r.segmentIndices.filter(
+                            (x) => x.type !== 'C').length}};
+      };
+      R.ring = cycOf('ring').state;
+      R.ringOff = cycOf('ringoff').state;
+      //  ...and it DOES something. The ring is closed in setCoords, not in
+      //  render, so a repaint alone would change nothing.
+      {
+        const {r, cb} = cycOf('ring');
+        if (cb) {
+          cb.checked = false;
+          cb.dispatchEvent(new Event('change', {bubbles: true}));
+          await settle(6);
+          R.ringAfter = {cfg: r.config.rendering.cyclic,
+                         rings: r.cyclicChains ? r.cyclicChains.size : -1,
+                         bonds: r.segmentIndices.filter(
+                             (x) => x.type !== 'C').length};
+        }
+      }
 
       //  THE PAPER, READ OFF THE CANVAS. The corner pixel, with its ALPHA:
       //  transparent reads as (0,0,0,0) and black as (0,0,0,255), so a check
@@ -421,6 +473,28 @@ def main():
 
     for e in R.get('errors', []):
         bad.append('page error: ' + e)
+    rg, ro, ra = (R.get('ring') or {}, R.get('ringOff') or {},
+                  R.get('ringAfter') or {})
+    print(f"  cyclic on {rg}; off {ro}; after unticking {ra}")
+    if not rg.get('box'):
+        bad.append('no Cyclic checkbox in this shell - parts/panel.js is one'
+                   ' table and every shell mounts it')
+    elif rg.get('bonds') != 12 or ro.get('bonds') != 11:
+        bad.append(f"the ring fixture gives {rg.get('bonds')} bonds with"
+                   f" cyclic on and {ro.get('bonds')} with it off - it"
+                   ' has to differ by the closing bond or nothing below means'
+                   ' anything')
+    elif rg.get('checked') is not True or ro.get('checked') is not False:
+        bad.append(f"the Cyclic box reads {rg.get('checked')} with"
+                   f" cyclic on and {ro.get('checked')} with it off -"
+                   ' it was never seeded from the config outside the website,'
+                   ' so it came up unticked while the ring was closed')
+    elif ra.get('bonds') != 11 or ra.get('cfg') is not False:
+        bad.append(f"unticking Cyclic left {ra} - the control was on screen"
+                   ' and inert, because only src/app/main.js wired it. The'
+                   ' ring is closed in setCoords, so the frame has to be'
+                   ' reloaded rather than repainted')
+
     pa, pl = R.get('paper') or {}, R.get('plain') or {}
     print(f"  bg=black box=False: {pa};  no bg, box=False: {pl}")
     if pa.get('px') != [0, 0, 0, 255]:
@@ -472,7 +546,8 @@ def main():
         bad.append('pressing Orient left it spinning - a reader who asks for'
                    ' an angle while it turns wants it framed and held, and'
                    ' keepSpin is for the automatic orient alone')
-    if R.get('ids') != ['one', 'both', 'aimed', 'paper', 'plain', 'turn']:
+    if R.get('ids') != ['one', 'both', 'aimed', 'ring', 'ringoff',
+                        'paper', 'plain', 'turn']:
         bad.append(f"the three viewers did not all come up: {R.get('ids')}")
 
     one = R.get('one') or {}

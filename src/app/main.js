@@ -286,7 +286,7 @@ function initializeViewerConfig() {
     // Get DOM elements for config sync
     const biounitEl = document.getElementById('biounitCheckbox');
     const loadLigandsEl = document.getElementById('loadLigandsCheckbox');
-    const detectCyclicEl = document.getElementById('detectCyclicCheckbox');
+    const cyclicEl = document.getElementById('cyclicCheckbox');
 
     // Initialize global viewer config (nested structure matching Python)
     window.viewerConfig = {
@@ -316,7 +316,7 @@ function initializeViewerConfig() {
             // paints its N and C ends the same colour. Python is scripted by
             // someone who knows what they loaded; the web app takes whatever is
             // dropped on it, so here it is asked for.
-            detect_cyclic: false
+            cyclic: false
         },
         color: {
             mode: "auto",
@@ -411,13 +411,13 @@ function initializeViewerConfig() {
     // The ring is closed in setCoords, not in render, so a repaint alone would
     // change nothing at all: the frame has to be reloaded. Same trap the
     // side-chain and contact toggles hit.
-    if (detectCyclicEl) {
-        detectCyclicEl.checked = !!window.viewerConfig.rendering.detect_cyclic;
-        detectCyclicEl.addEventListener('change', () => {
+    if (cyclicEl) {
+        cyclicEl.checked = !!window.viewerConfig.rendering.cyclic;
+        cyclicEl.addEventListener('change', () => {
             // The renderer normalises window.viewerConfig in place and keeps
             // THAT object as its own this.config, so writing here reaches it.
             if (!window.viewerConfig.rendering) window.viewerConfig.rendering = {};
-            window.viewerConfig.rendering.detect_cyclic = detectCyclicEl.checked;
+            window.viewerConfig.rendering.cyclic = cyclicEl.checked;
             if (window.syncViewerConfig) window.syncViewerConfig();
             const renderer = viewerApi?.renderer;
             if (!renderer || !renderer.currentObjectName) return;

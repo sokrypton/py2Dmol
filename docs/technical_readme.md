@@ -162,7 +162,7 @@ def __init__(self,
     scatter=None,             # Scatter plot: False/True/dict with xlabel, ylabel, xlim, ylim
     scatter_size=300,         # Scatter canvas size
     overlay=False,            # Overlay all frames
-    detect_cyclic=True,       # Auto-detect cyclic molecules
+    cyclic=True,              # Close a chain end to end when its termini touch
     id=None                   # Explicit viewer ID (auto-generated if None)
 ):
 ```
@@ -1651,7 +1651,7 @@ DEFAULT_CONFIG = {
         "outline": "full",
         "width": 3.0,
         "ortho": 1.0,
-        "detect_cyclic": True
+        "cyclic": True
     },
     "color": {
         "mode": "auto",
@@ -1690,7 +1690,7 @@ DEFAULT_CONFIG = {
     display: { size, rotate, autoplay, controls, box, background },
     rendering: { style, preset, thickness, sheet_flat, arrows, pencil, detail, fade,
                  smooth, highlight, outline_tint, shade, shadow, shadow_strength,
-                 outline, width, ortho, detect_cyclic },
+                 outline, width, ortho, cyclic },
     color: { mode, colorblind, ss_palette },
     pae: { enabled, size },
     scatter: { enabled, size, xlabel, ylabel, xlim, ylim },  // xlabel, ylabel, xlim, ylim can be global defaults
