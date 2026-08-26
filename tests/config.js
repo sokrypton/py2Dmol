@@ -328,10 +328,24 @@ if (!/def _can_ask_the_page\(/.test(py)) {
 // let one unanswered ping mean "nothing is lending", so every cell inlined and
 // a notebook shipped at 4 MB with the saving on. A False cannot be told apart
 // from a question that never arrived.
-if (!/can_borrow = \(seen is True\) or \(_LENT_BUNDLE == bundle\)/.test(py)) {
+if (!/can_borrow = \(seen is True\) or \(_LENT_BUNDLE == share_key\)/.test(py)) {
     bad('the lender probe is a veto again - a False from it cannot be'
         + ' distinguished from a question that never arrived, and treating it'
         + ' as an answer stops every cell sharing');
+}
+// ...AND THE KEY IS THE BUNDLE'S CONTENT, NOT ITS PATH. A notebook is re-run
+// cell by cell, so the lending cell can hold an OLDER library than the cell
+// now asking - and a payload from today's viewer.py handed to yesterday's
+// renderer draws, silently missing whatever the two disagree about. That is
+// how the PAE went blank when it moved to base64.
+if (!/def _share_key\(/.test(py)) {
+    bad('viewer.py has no _share_key - the shared library is keyed by path'
+        + ' again, so a re-run cell can borrow a version that does not'
+        + ' understand the payload it is writing');
+}
+if (!/hashlib\.sha1\(_resource_text\(bundle\)/.test(py)) {
+    bad('_share_key no longer hashes the bundle CONTENT - a version string'
+        + ' is not enough, because a rebuilt bundle keeps the version');
 }
 if (!/def clip\(/.test(py)) {
     bad('viewer.py has no clip() - parts/clip.js is in every bundle and the'

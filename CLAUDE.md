@@ -371,6 +371,18 @@ public downloads is exercised on every run.
   scaling wrong selects the wrong part of the structure while the plot looks
   perfectly right — `tests/minimal_input.py` drags the whole plot and requires
   every residue back, which is what an off-by-one in the block end loses.
+- 🔴 **THE SHARED LIBRARY WAS KEYED BY PATH, so a re-run cell could borrow a
+  library older than the payload it was writing.** A notebook is re-run cell by
+  cell: the cell holding the library can be from an earlier build than the cell
+  now asking for one, and today's payload handed to yesterday's renderer DRAWS
+  — silently missing whatever the two versions disagree about. The PAE moving
+  to base64 is what made it visible: an empty plot on a page where everything
+  else looked right. `_share_key` is the path plus a hash of the bundle's
+  CONTENT (not `__version__` — a rebuilt bundle keeps the version), so a
+  borrower whose key is not on the page inlines its own copy, which is the
+  behaviour that was always there for "nobody is lending". Checked
+  BEHAVIOURALLY in `tests/grid.py`: a text scan of `viewer.py` passes against
+  a `_share_key` that returns the path anyway.
 - 🔴 **A WIRE FORMAT HAS TWO ENDS AND `isValid` IS ONE OF THEM.** The PAE now
   travels base64 — N² numbers inlined into an `.ipynb` is the biggest thing a
   payload ever carries, and one 837×837 matrix was 72% of the demo notebook

@@ -459,6 +459,32 @@ def _lender_on_page(key):
 # Keyed by BUNDLE name, because gpu=False and a tube-only viewer are different
 # libraries and a borrower must not be handed the wrong one.
 _LENT_BUNDLE = None
+_BUNDLE_KEYS = {}
+
+
+def _share_key(bundle):
+    """The name the lender and the borrower agree on - PATH PLUS CONTENT.
+
+    🔴 IT USED TO BE THE PATH ALONE, and a borrower took whatever the page had
+    under that name. In a notebook that is re-run cell by cell - which is how a
+    notebook is used - the lending cell can be holding an OLDER library than
+    the cell now asking for one, and a payload written by today's viewer.py is
+    then handed to yesterday's renderer. Nothing errors: the viewer draws, and
+    whatever the two versions disagree about is silently missing. The PAE went
+    base64 and an older renderer had no decoder for it, so the plot came up
+    empty on a page where everything else looked right.
+
+    Hashing the bundle costs one read, cached here for the process. A borrower
+    whose key is not on the page simply inlines its own copy, which is the
+    behaviour that was always there for "nobody is lending".
+    """
+    key = _BUNDLE_KEYS.get(bundle)
+    if key is None:
+        import hashlib
+        digest = hashlib.sha1(_resource_text(bundle).encode('utf-8')).hexdigest()
+        key = bundle + '@' + digest[:12]
+        _BUNDLE_KEYS[bundle] = key
+    return key
 
 
 # THE PER-FRAME FIELDS, ONCE. Four places used to enumerate these - this
@@ -1664,12 +1690,17 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # arrived, and believing one is how this shipped writing the
             # library into every cell - see CLAUDE.md, which tells the story,
             # and tests/config.js, which fails if the shape comes back.
-            seen = _lender_on_page(bundle) if self._share_library else None
-            can_borrow = (seen is True) or (_LENT_BUNDLE == bundle)
+            #
+            # ...UNDER A KEY THAT INCLUDES THE BUNDLE'S CONTENT, so a cell can
+            # only borrow a library that matches the payload it is writing -
+            # see _share_key.
+            share_key = _share_key(bundle)
+            seen = _lender_on_page(share_key) if self._share_library else None
+            can_borrow = (seen is True) or (_LENT_BUNDLE == share_key)
             if self._share_library and can_borrow:
-                container_html = _borrow_js(bundle) + container_html
+                container_html = _borrow_js(share_key) + container_html
             elif self._share_library:
-                _LENT_BUNDLE = bundle
+                _LENT_BUNDLE = share_key
                 # AS A JSON STRING, NOT AS SCRIPT TEXT. The lender has to hand
                 # the source on, and reading it back out of its own <script>
                 # element does not work: the bundle contains the text "<script"
@@ -1683,7 +1714,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     src = src.replace(bad, bad.replace('<', '\\u003c'))
                 container_html = (
                     '<script>window.__py2dmolLib=' + src + ';'
-                    '(0,eval)(window.__py2dmolLib);' + _lend_js(bundle)
+                    '(0,eval)(window.__py2dmolLib);' + _lend_js(share_key)
                     + '</script>\n' + container_html)
             else:
                 container_html = (f'<script>{_resource_text(bundle)}</script>\n'

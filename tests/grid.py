@@ -141,6 +141,52 @@ elif pay.get('frames'):
                ' frames went out with the grid, and _mark_published is what'
                ' records that')
 
+# --- THE SHARED LIBRARY IS KEYED BY ITS CONTENT --------------------------
+# A notebook is re-run cell by cell, so the cell holding the library can be
+# older than the cell now asking for one - and a payload written by today's
+# viewer.py handed to yesterday's renderer DRAWS, silently missing whatever the
+# two versions disagree about. That is how the PAE went blank when it moved to
+# base64: the plot was empty on a page where everything else looked right.
+#
+# Behavioural, not a text scan: tests/config.js checks the shape of the source
+# and would pass against a _share_key that returned the path anyway.
+from py2Dmol import viewer as _V  # noqa: E402
+
+_BUNDLE = 'bundles/py2Dmol.notebook.min.js'
+_key = _V._share_key(_BUNDLE)
+if not _key.startswith(_BUNDLE + '@') or len(_key) <= len(_BUNDLE) + 1:
+    bad.append(f'the share key is {_key!r} - it has to name the CONTENT, or a'
+               ' cell can borrow a library that does not understand what it'
+               ' is writing')
+# ...and it follows the content. Same path, different bytes, different key.
+_real = _V._resource_text
+try:
+    _V._BUNDLE_KEYS.clear()
+    _V._resource_text = lambda name: 'pretend this is a different build'
+    _other = _V._share_key(_BUNDLE)
+finally:
+    _V._resource_text = _real
+    _V._BUNDLE_KEYS.clear()
+if _other == _key:
+    bad.append('two different bundles hash to the same share key, so a stale'
+               ' lender is still borrowed from')
+
+CALLS.clear()
+_V._LENT_BUNDLE = None          # ...a fresh kernel: this one has to LEND
+_fresh = py2Dmol.view()
+_fresh.add(helix())
+_first = _fresh._display_viewer(static_data=_fresh.objects)
+_second_v = py2Dmol.view()
+_second_v.add(helix())
+_second = _second_v._display_viewer(static_data=_second_v.objects)
+_V._LENT_BUNDLE = None          # ...and leave no mark, as above
+if _key not in _first or _key not in _second:
+    bad.append('the lender and the borrower do not name the same key, so no'
+               ' cell can ever borrow')
+if len(_second) > len(_first) / 4:
+    bad.append(f'the second viewer wrote {len(_second)} bytes against the'
+               f" first's {len(_first)} - it is not borrowing")
+
 # --- THE ESCAPE HATCH STILL WORKS ----------------------------------------
 # from_pdb(show=True) is documented as the way to display a collected viewer
 # anyway; _managed must not override an explicit ask.

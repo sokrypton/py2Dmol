@@ -110,6 +110,13 @@ result.
   Python also pings the page at each `show()`, and a positive answer lets a
   fresh kernel borrow from a page that still has a lender. A negative one is
   ignored — it cannot be told apart from a question that never arrived.
+
+  The library is offered under a key that includes a **hash of its content**, so
+  a cell can only borrow a library that matches the payload it is writing. A
+  notebook is re-run cell by cell, and the cell holding the library can be from
+  an older build than the cell now asking; today's payload handed to
+  yesterday's renderer draws, silently missing whatever the two disagree about.
+  A borrower that finds no matching lender inlines its own copy.
 - **`view.clip(name=, chain=, position=)`**, and a Clip button in the notebook
   and embed shells. `parts/clip.js` was in every bundle already — the slab, the
   tracking and the per-frame refit — and only the website could reach any of it.
