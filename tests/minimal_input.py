@@ -205,6 +205,47 @@ window.addEventListener('load', () => {
         }
       }
 
+      // ...AND THE PAE ARRIVED AS BYTES. panels/pae.js keeps a Uint8Array at
+      // 1/8 A; viewer.py now sends base64 of exactly those bytes instead of a
+      // JSON list of the same numbers. Checked as VALUES, not as a length: an
+      // undecoded base64 string still has a length, and sqrt of it is still a
+      // number, so the panel would have drawn a square of nonsense and every
+      // "is there a matrix" check would have passed.
+      const pr = r.paeRenderer;
+      R.pae = {has: !!pr};
+      if (pr && pr.paeData) {
+        const at = (i, j) => pr.paeData[i * pr.n + j];
+        R.pae.n = pr.n;
+        R.pae.len = pr.paeData.length;
+        R.pae.type = pr.paeData.constructor.name;
+        R.pae.samples = [at(0, 0), at(0, 1), at(1, 0), at(3, 5), at(20, 20)];
+      }
+
+      // ...AND THE RESAMPLED ONE, which is where the two numbers separate.
+      {
+        const was2 = r.currentObjectName;
+        r._switchToObject('big'); r.setFrame(0);
+        window.PAE.syncToDrawn(r);
+        await settle();
+        const p2 = r.paeRenderer;
+        R.bigPae = {n: p2.n, residues: p2.residues, len: p2.paeData
+            ? p2.paeData.length : -1};
+        if (p2.paeData) {
+          // THE WHOLE STRUCTURE IS REACHABLE. Dragging the full plot must give
+          // back every residue - an off-by-one in the scaling loses the tail,
+          // and the plot still looks right.
+          R.bigPae.full = p2.cellsToResidues(0, p2.n - 1, 0, p2.n - 1);
+          R.bigPae.firstCell = p2.cellsToResidues(0, 0, 0, 0);
+          R.bigPae.cellOfFirst = p2.residueToCell(0);
+          R.bigPae.cellOfLast = p2.residueToCell(359);
+          R.bigPae.corner = [p2.paeData[0],
+                             p2.paeData[p2.n * p2.n - 1]];
+        }
+        r._switchToObject(was2); r.setFrame(0);
+        window.PAE.syncToDrawn(r);
+        await settle();
+      }
+
       // A BUTTON THAT OPENS A PANEL HAS TO LOOK OPEN, and there are two
       // spellings of that state: Clip latches (aria-pressed) and Style and
       // Capture open a panel (aria-expanded). The open cue in this shell was
@@ -288,8 +329,18 @@ def trace():
 
 
 def main():
-    v = py2Dmol.view(style='cartoon')
-    v.add(trace())                      # ...and nothing else
+    v = py2Dmol.view(style='cartoon', pae=True)
+    # A PAE, AS THE BIGGEST THING A PAYLOAD EVER CARRIES. It is N^2, and on the
+    # demo notebook one 837x837 matrix was 72% of the file - so it travels
+    # base64 now rather than as a JSON list of a million numbers. That is a
+    # change of WIRE FORMAT with a decoder on the other side, which is exactly
+    # the kind of thing that fails silently: an undecoded string has a length,
+    # so the panel would take sqrt of it and draw a plausible square of
+    # nonsense. Synthetic and asymmetric on purpose - value = i + 2*j clipped -
+    # so a transpose, an off-by-one row and a reversed array are all visible.
+    _n = len(trace())
+    _pae = np.minimum(np.add.outer(np.arange(_n), 2 * np.arange(_n)), 31.0)
+    v.add(trace(), pae=_pae)
     # ...AND THE SAME TRACE TURNED 90 DEGREES, as a second frame of a second
     # object. align=True is the default and the browser does the fitting now,
     # so what a payload carries is the REQUEST - and this page is the static
@@ -314,6 +365,18 @@ def main():
     # work: a backbone position stands for a whole residue and has neither.
     # Built here rather than loaded, because the .cif files are not in the
     # repo - and this is the public API, which is what the transport is for.
+    # ...AND ONE BIGGER THAN THE PANEL CAN DRAW. Above `pae.size` cells the
+    # browser was throwing the detail away on every frame anyway, so viewer.py
+    # resamples once - and that makes the matrix side and the RESIDUE COUNT two
+    # different numbers, where the panel had been using one for both. A box
+    # dragged on the plot is a range of residues handed to setVisibility, so
+    # getting the scaling wrong selects the wrong part of the structure while
+    # looking perfectly plausible.
+    _big = 360
+    _bigpae = np.minimum(np.add.outer(np.arange(_big), 2 * np.arange(_big)), 31.0)
+    v.add(np.stack([np.arange(_big) * 1.5, np.zeros(_big), np.zeros(_big)], 1),
+          name='big', pae=_bigpae)
+
     _lig = np.array([[0., 0., 0.], [1.5, 0., 0.], [3.0, 0., 0.], [4.5, 0., 0.]])
     v.add(_lig, name='lig',
           position_types=['L'] * 4,
@@ -401,6 +464,50 @@ def main():
         if s.get('warmMs', 99) > 1.0:
             bad.append(f"{style}: asking again costs {s.get('warmMs')}ms - the"
                        " panel asks on every selection change")
+    pae = R.get('pae') or {}
+    print(f"  pae: {pae}")
+    _n = 60
+    # value = min(i + 2j, 31), stored as round(v * 8)
+    want = [min(i + 2 * j, 31) * 8 for i, j in
+            ((0, 0), (0, 1), (1, 0), (3, 5), (20, 20))]
+    if not pae.get('has'):
+        bad.append('no PAE panel on a viewer built with pae=True')
+    elif pae.get('type') != 'Uint8Array':
+        bad.append(f"the PAE arrived as {pae.get('type')} - viewer.py sends"
+                   ' base64 and panels/pae.js decodes it into a Uint8Array')
+    elif pae.get('n') != _n or pae.get('len') != _n * _n:
+        bad.append(f"the PAE came out {pae.get('n')}x{pae.get('n')}"
+                   f" ({pae.get('len')} values) for a {_n}-position trace -"
+                   ' an undecoded base64 string has a length too, and sqrt of'
+                   ' it is still a number')
+    elif pae.get('samples') != want:
+        bad.append(f"the PAE values are {pae.get('samples')}, wanted {want}"
+                   ' - the matrix is asymmetric on purpose, so a transpose or'
+                   ' a shifted row shows up here')
+
+    bp = R.get('bigPae') or {}
+    print(f"  resampled pae: {bp}")
+    if bp.get('n') != 300 or bp.get('len') != 300 * 300:
+        bad.append(f"a 360-row matrix came out {bp.get('n')} cells"
+                   f" ({bp.get('len')} values) - the panel draws into a"
+                   ' 300px canvas, so viewer.py resamples to that')
+    elif bp.get('residues') != 360:
+        bad.append(f"the resampled matrix says {bp.get('residues')} residues -"
+                   ' pae_n travels beside it precisely so the panel can tell'
+                   ' cells from residues')
+    elif bp.get('full') != {'i_start': 0, 'i_end': 359,
+                            'j_start': 0, 'j_end': 359}:
+        bad.append(f"dragging the whole plot selects {bp.get('full')} of 360"
+                   ' residues - a box is handed to setVisibility as positions,'
+                   ' so this is the part that picks the wrong helix')
+    elif bp.get('cellOfFirst') != 0 or bp.get('cellOfLast') != 299:
+        bad.append(f"residue 0 and residue 359 draw in cells"
+                   f" {bp.get('cellOfFirst')} and {bp.get('cellOfLast')} of 300")
+    elif bp.get('corner') != [0, 248]:
+        bad.append(f"the resampled corners are {bp.get('corner')}, wanted"
+                   ' [0, 248] - the matrix is 0 at the origin and saturated at'
+                   ' the far corner whatever the resampling does')
+
     c = R.get('cue') or {}
     print(f"  capture cue: {c}")
     if not c.get('has'):

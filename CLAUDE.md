@@ -360,6 +360,30 @@ public downloads is exercised on every run.
   a descendant selector misses the element itself** — `.py2dmol-viewer-instance
   *` left the instance, the header and the sequence strip as content-box, so
   three blocks with the same stated width had three different right edges.
+- **`n` WAS THE MATRIX SIDE AND THE RESIDUE COUNT, and a resampled PAE makes
+  them different numbers.** `panels/pae.js` used `this.n` for the cell grid,
+  for the hit-test, AND as the residue index handed to `setVisibility` — fine
+  while the matrix was one cell per residue. `viewer.py` now resamples anything
+  wider than `pae.size` (the panel is an n×n image scaled into that many
+  pixels, so the browser was discarding the detail on every frame anyway), and
+  `pae_n` travels beside the matrix. `cellsToResidues` and `residueToCell` are
+  the two crossings, both the identity when nothing was resampled. Getting the
+  scaling wrong selects the wrong part of the structure while the plot looks
+  perfectly right — `tests/minimal_input.py` drags the whole plot and requires
+  every residue back, which is what an off-by-one in the block end loses.
+- 🔴 **A WIRE FORMAT HAS TWO ENDS AND `isValid` IS ONE OF THEM.** The PAE now
+  travels base64 — N² numbers inlined into an `.ipynb` is the biggest thing a
+  payload ever carries, and one 837×837 matrix was 72% of the demo notebook
+  (3,048 KB as a JSON list of scaled ints against 912 as base64 of the same
+  bytes; compact `json.dumps` separators took the file 4.32 MB → 2.03). The
+  decoder went into `setData`, and the panel still came up empty: EVERY read of
+  `frame.pae` in `panels/pae.js` goes through `isValid`, which knew an Array, a
+  typed array and an index-keyed object, and answered false for a string. The
+  payload carried the matrix and nothing said a word. Checked in
+  `tests/minimal_input.py` as VALUES from an ASYMMETRIC matrix, not as a
+  length: an undecoded base64 string has a length, and the square root of it is
+  still a number, so the panel would have drawn a plausible square of nonsense
+  and every "is there a matrix" check would have passed.
 - **Subsystems are optional and guarded.** `if (window.PAE)`, `if (window.MSA)`,
   `typeof C2S === 'undefined'`. A build without one loses a feature, not a page.
 - **Prove a move changed nothing.** `node tests/paint_trace.js` digests every

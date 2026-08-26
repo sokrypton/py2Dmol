@@ -8,6 +8,7 @@ AI Context: MAIN PYTHON INTERFACE
 - Generates HTML/JS for embedding in Jupyter/Colab.
 - Implements the "Live Mode" communication bridge (Python -> JS).
 """
+import base64
 import json
 import copy
 import numpy as np
@@ -480,7 +481,22 @@ FRAME_INHERITED = (
 FRAME_SEND_NONE = frozenset({"plddts"})
 # ALWAYS: a property of the frame itself, sent whenever it is set. `align` is
 # the REQUEST to superpose, which the browser acts on - see addFrame.
-FRAME_ALWAYS = ("pae", "color", "align", "allow_reflection")
+FRAME_ALWAYS = ("pae", "pae_n", "color", "align", "allow_reflection")
+
+
+def _downsample_square(a, k):
+    """An n x n uint8 matrix as k x k, by area average. k < n.
+
+    Block boundaries are `arange(k+1) * n // k`, so the blocks differ in size
+    by at most one and none is empty - which is what lets reduceat do it in
+    two passes instead of a Python loop over a million cells.
+    """
+    n = a.shape[0]
+    bounds = (np.arange(k + 1) * n) // k
+    counts = np.diff(bounds).astype(np.float64)
+    rows = np.add.reduceat(a.astype(np.uint32), bounds[:-1], axis=0) / counts[:, None]
+    cells = np.add.reduceat(rows, bounds[:-1], axis=1) / counts[None, :]
+    return np.clip(np.round(cells), 0, 255).astype(np.uint8)
 
 
 def _strip_advanced_color(holder, advanced_color):
@@ -938,10 +954,45 @@ class view:
             payload["position_types"] = list(self._position_types)
 
         if self._pae is not None:
-            # Flatten and scale to 0-255 (x8) for Uint8Array compatibility in frontend
-            # This reduces JSON size significantly compared to list of lists of floats
+            # SCALED TO 0-255 (x8), then BASE64. The scaling is the panel's own
+            # storage - panels/pae.js keeps a Uint8Array at 1/8 A and its colour
+            # map divides by 8 - and it was chosen against a list of floats,
+            # which it does beat. Against JSON TEXT it is the wrong way round:
+            # multiplying by eight costs a DIGIT PER VALUE, and a PAE is N^2 of
+            # them.
+            #
+            # Measured on AF-Q5VSL9 (837x837, 700,569 values), which is 72% of
+            # the demo notebook on its own:
+            #
+            #   list of ints, ", " separators   3,048 KB   (what shipped)
+            #   ...compact separators           2,364 KB
+            #   ...as 0-31 instead of 0-248     1,732 KB
+            #   base64 of the bytes               912 KB
+            #
+            # A base64 string is also exactly what the panel wants: one atob
+            # and it has its Uint8Array, where a list of a million numbers has
+            # to be walked. The three forms setData already took - a nested
+            # list of floats, a flat list of scaled ints, a Uint8Array - all
+            # still work, so an older payload still draws.
             scaled_pae = np.clip(np.round(self._pae * 8), 0, 255).astype(np.uint8)
-            payload["pae"] = scaled_pae.flatten().tolist()
+            # ...AND NO MORE RESOLUTION THAN THE PANEL CAN SHOW. The matrix is
+            # drawn by scaling an n x n image into a canvas of `pae.size` px
+            # (300 by default) - so for anything bigger the browser is already
+            # throwing the detail away on every frame, and a 837-row matrix in
+            # a 300px panel gives each residue 0.36 of a pixel. Doing the
+            # resample once, in Python, is the same picture for an eighth of
+            # the bytes: 912 KB of base64 becomes 120.
+            #
+            # THE TRUE SIZE TRAVELS WITH IT. `n` was the matrix side AND the
+            # residue count, and the panel used it for both - a box dragged on
+            # the plot is a range of RESIDUES handed to setVisibility. Send
+            # pae_n and the two stop being the same number.
+            payload["pae_n"] = int(scaled_pae.shape[0])
+            cap = max(int((self.config.get("pae") or {}).get("size") or 300), 256)
+            if scaled_pae.shape[0] > cap:
+                scaled_pae = _downsample_square(scaled_pae, cap)
+            payload["pae"] = base64.b64encode(
+                scaled_pae.flatten().tobytes()).decode('ascii')
 
         if self._scatter is not None:
             payload["scatter"] = self._scatter  # Already in [x, y] format
@@ -1226,7 +1277,7 @@ class view:
             "viewer": viewer_block
         }
 
-        payload_json = json.dumps(payload)
+        payload_json = json.dumps(payload, separators=(',', ':'))
 
         update_js = (
             f'(function(){{'
@@ -1305,7 +1356,7 @@ class view:
             "object": object_name
         }
 
-        payload_json = json.dumps(payload)
+        payload_json = json.dumps(payload, separators=(',', ':'))
 
         update_js = (
             f'(function(){{'
@@ -1483,7 +1534,12 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
 
                 serialized_objects.append(obj_to_serialize)
 
-            data_json = json.dumps(serialized_objects)
+            # COMPACT SEPARATORS. json.dumps writes ", " and ": " by default,
+            # and this is a megabyte of numbers written into an .ipynb - one
+            # space per array element, paid again for every viewer in the
+            # document. Nothing reads it, and 17% of the demo notebook was
+            # those spaces.
+            data_json = json.dumps(serialized_objects, separators=(',', ':'))
 
             # Use viewer_id-specific namespace to avoid conflicts
             data_script = f'''<script id="static-data-{viewer_id}">

@@ -65,6 +65,36 @@ result.
   the 2D painter without a different file, a machine with no WebGL2 has a
   fallback, and **the cartoon can export an SVG from a notebook**. The embeds
   still ship one painter each — they are gzipped over HTTP, a different trade.
+- **A PAE travels as base64, and the payload is written without spaces.** A
+  PAE is N² numbers and it is inlined into the `.ipynb`: one 837×837 matrix was
+  **72% of the demo notebook**. It is stored as a `Uint8Array` at 1/8 Å either
+  way — that part is unchanged — but writing it as a JSON list of the scaled
+  integers costs three characters and a comma each, where base64 of the same
+  bytes costs 1.33. With compact JSON separators beside it (a megabyte of
+  numbers was paying one space per element), the demo notebook goes from
+  **4.32 MB to 2.03 MB**. Lossless, and `setData` still takes the three forms
+  it always did, so an older payload still draws.
+
+    | AF-Q5VSL9, 837×837 | |
+    |---|---|
+    | list of ints, `", "` separators | 3,048 KB |
+    | …compact separators | 2,364 KB |
+    | base64 of the bytes | 912 KB |
+    | …resampled to the panel's 300px | **120 KB** |
+
+- **A PAE carries no more resolution than the panel can draw.** The plot is an
+  n×n image scaled into a canvas of `pae_size` pixels — 300 by default — so
+  above that the browser was already throwing the detail away on every frame,
+  and an 837-row matrix gave each residue 0.36 of a pixel. Doing the resample
+  once, in Python, is the same picture. With the two changes above the demo
+  notebook goes **4.32 MB → 1.22 MB**.
+
+    The matrix side and the residue count are two numbers now, and `pae_n`
+    carries the second: a box dragged on the plot is a range of *residues*
+    handed to `setVisibility`, so it is scaled back out on the way. Selection
+    edges on a resampled matrix land on a block of residues rather than one —
+    on a plot where a residue was already a third of a pixel.
+
 - **The notebook library is shared between cells where it can be.** Each
   `show()` used to write ~450 KB into its own output, because Colab gives every
   cell output its own iframe — ten viewers was 4.5 MB of `.ipynb`. The first

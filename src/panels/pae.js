@@ -88,7 +88,9 @@ class PAERenderer {
         this.mainRenderer = mainRenderer; // Reference to Pseudo3DRenderer
 
         this.paeData = null;
-        this.n = 0; // Matrix dimension
+        this.n = 0; // Matrix dimension, in CELLS
+        this.residues = 0; // ...and in RESIDUES, which a resampled matrix
+                           // has more of than it has cells.
 
         // Use canvas internal width for size (canvas may be stretched by CSS)
         // This ensures rendering coordinates match mouse coordinates
@@ -186,6 +188,28 @@ class PAERenderer {
         return { i, j };
     }
 
+    /**
+     * A block of cells out to the residues it covers, inclusive both ends.
+     * The identity when the matrix was not resampled.
+     */
+    cellsToResidues(i_start, i_end, j_start, j_end) {
+        const k = this.n;
+        const N = this.residues || k;
+        if (!k || N === k) return { i_start, i_end, j_start, j_end };
+        const lo = (c) => Math.floor(c * N / k);
+        const hi = (c) => Math.min(N - 1, Math.floor((c + 1) * N / k) - 1);
+        return { i_start: lo(i_start), i_end: hi(i_end),
+                 j_start: lo(j_start), j_end: hi(j_end) };
+    }
+
+    /** ...and a residue back to the cell that drew it. */
+    residueToCell(r) {
+        const k = this.n;
+        const N = this.residues || k;
+        if (!k || N === k) return r;
+        return Math.min(k - 1, Math.floor(r * k / N));
+    }
+
     setupInteraction() {
         this.canvas.addEventListener('mousedown', (e) => {
             if (e.button !== 0 || !this.paeData) return;
@@ -247,6 +271,12 @@ class PAERenderer {
                 this.cachedSequencePositions = null;
                 this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
             } else {
+                // A BOX IS A RANGE OF RESIDUES, not of cells. setVisibility
+                // reads i_start..i_end as position indices, so a resampled
+                // matrix has to be scaled back out here - the whole cell is
+                // covered, so the end is the LAST residue of the last cell.
+                ({ i_start, i_end, j_start, j_end } = this.cellsToResidues(
+                    i_start, i_end, j_start, j_end));
                 const newBox = { i_start, i_end, j_start, j_end };
                 const currentSelection = this.mainRenderer.getVisibility();
                 const existingBoxes = currentSelection.paeBoxes || [];
@@ -359,9 +389,30 @@ class PAERenderer {
         });
     }
 
-    setData(paeData) {
-        if (this.paeData === paeData) return;
+    /**
+     * @param {*} paeData base64 of the scaled bytes, a Uint8Array, a flat
+     *        array of scaled ints, or a nested array of floats in Angstrom.
+     * @param {number} [residues] how many RESIDUES the matrix covers, which is
+     *        not the same as how many CELLS it has: viewer.py resamples a big
+     *        matrix down to what the panel can draw. Defaults to the cell
+     *        count, which is what every non-notebook caller has.
+     */
+    setData(paeData, residues) {
+        if (this.paeData === paeData && this.residues === residues) return;
         try {
+            // A STRING IS BASE64 OF THE SCALED BYTES - the shortest way to put
+            // an N^2 matrix in an .ipynb, and the closest to what this panel
+            // keeps. viewer.py used to write a JSON list of the same numbers,
+            // which costs three characters and a comma each: 3,048 KB for
+            // AF-Q5VSL9 against 912. Decoded here into the Uint8Array branch
+            // below rather than beside it - it IS that case, only smaller on
+            // the wire, and every older form still lands where it did.
+            if (typeof paeData === 'string') {
+                const bin = atob(paeData);
+                const u8 = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+                paeData = u8;
+            }
             if (paeData && typeof paeData === 'object' && !Array.isArray(paeData) && !(paeData instanceof Uint8Array)) {
                 console.warn("PAE data is an object, converting to array (slow!)");
                 if (paeData.predicted_aligned_error) paeData = paeData.predicted_aligned_error;
@@ -399,6 +450,11 @@ class PAERenderer {
                 this.n = 0;
             }
 
+            // THE GRID AND THE RESIDUES ARE TWO NUMBERS NOW. They are equal
+            // for everything except a notebook payload big enough to have been
+            // resampled, and the scaling below is the identity when they are -
+            // so nothing that was exact stops being exact.
+            this.residues = (residues > 0) ? residues : this.n;
             if (this.n > 0 && this.n * this.n !== this.paeData.length) {
                 console.warn(`PAE data length(${this.paeData.length}) is not a perfect square. inferred N = ${this.n}`);
             }
@@ -434,7 +490,7 @@ class PAERenderer {
                     : renderer.chains[i]);
             }
         }
-        const n = this.n;
+        const n = this.residues || this.n;
         // A PAE row is a residue of the object this matrix belongs to; the
         // mask and the chain array are the viewer's, and with several
         // objects merged this object starts partway into them.
@@ -446,7 +502,11 @@ class PAERenderer {
                 ? renderer.chainKeyAt(r + off) : renderer.chains[r + off];
             if (allowedChains.has(chain)
                 && (!hasPositionSelection || visibilityModel.positions.has(r + off))) {
-                selectedPositions.add(r);
+                // ...AS A CELL, because this set is drawn on the plot. The
+                // loop walks residues; the overlay wants the cell each one
+                // landed in, and several residues share a cell once the
+                // matrix has been resampled.
+                selectedPositions.add(this.residueToCell(r));
             }
         }
         return selectedPositions;
@@ -673,6 +733,11 @@ const PAE = {
     // Check if PAE data is valid (Uint8Array or Array or Array-like)
     isValid: function (pae) {
         if (!pae) return false;
+        // A STRING IS BASE64 OF THE SCALED BYTES - see setData. Every check in
+        // this file goes through here, so a form isValid does not know is a
+        // form that is dropped in silence: the payload carried the matrix, the
+        // panel came up empty, and nothing said why.
+        if (typeof pae === 'string') return pae.length > 0;
         if ((Array.isArray(pae) && pae.length > 0) || (pae.buffer && pae.length > 0)) return true;
         if (typeof pae === 'object' && typeof pae.length !== 'number') {
             const keys = Object.keys(pae);
@@ -682,17 +747,23 @@ const PAE = {
     },
 
     // Resolve PAE data for a frame (handles inheritance and backward search)
-    resolveData: function (object, frameIndex) {
+    /**
+     * THE FRAME THAT HOLDS THE MATRIX, not the matrix. `pae_n` - how many
+     * residues it covers - lives on the same frame, and returning the data
+     * alone left the caller pairing it with whatever frame it was asked
+     * about, which is a different frame whenever the search below walks back.
+     */
+    resolveFrame: function (object, frameIndex) {
         if (!object || !object.frames || frameIndex < 0 || frameIndex >= object.frames.length) return null;
         const currentFrame = object.frames[frameIndex];
 
         // Check current frame
-        if (this.isValid(currentFrame.pae)) return currentFrame.pae;
+        if (this.isValid(currentFrame.pae)) return currentFrame;
 
         // Use object-level tracking cache if available
         if (object._lastPaeFrame >= 0 && object._lastPaeFrame < frameIndex) {
             if (this.isValid(object.frames[object._lastPaeFrame].pae)) {
-                return object.frames[object._lastPaeFrame].pae;
+                return object.frames[object._lastPaeFrame];
             }
         }
 
@@ -701,10 +772,15 @@ const PAE = {
             if (this.isValid(object.frames[i].pae)) {
                 // Update cache for next time
                 object._lastPaeFrame = i;
-                return object.frames[i].pae;
+                return object.frames[i];
             }
         }
         return null;
+    },
+
+    resolveData: function (object, frameIndex) {
+        const f = this.resolveFrame(object, frameIndex);
+        return f ? f.pae : null;
     },
 
     // Check if object has any PAE data
@@ -768,8 +844,8 @@ const PAE = {
     },
 
     _show: function (renderer, object, frameIndex) {
-        const paeData = this.resolveData(object, frameIndex);
-        renderer.paeRenderer.setData(paeData);
+        const f = this.resolveFrame(object, frameIndex);
+        renderer.paeRenderer.setData(f ? f.pae : null, f ? f.pae_n : 0);
         this.updateVisibility(renderer);
     },
 

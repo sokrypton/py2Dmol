@@ -35,6 +35,7 @@ const STATIC_FRAME_FIELDS = [
     ['bonds', 'bonds'],
     ['plddts', null],
     ['pae', null],
+    ['pae_n', null],
     ['position_names', null],
     ['residue_numbers', null],
     ['position_atoms', null],
