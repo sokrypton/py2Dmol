@@ -280,6 +280,54 @@ window.addEventListener('load', () => {
       }
 
       R.tube = await look('tube');
+
+      // 🔴 THE SHADOW SURVIVES AN SVG EXPORT WITH THE GPU ON. The CPU
+      // occlusion pass is skipped when the GPU is going to draw, because the
+      // GPU computes its own - and the question was asked of the RENDERER'S
+      // STATE rather than of the context. An SVG context is one the GPU
+      // refuses, so the export took the 2D path with a pass that had been
+      // skipped on its behalf: gpu + tube + svg came out flat.
+      //
+      // Two exports, shadows on and off. They have to DIFFER - identical is
+      // the bug, and it is what a "does it export at all" check cannot see -
+      // and the shaded one has to be DARKER, which an inverted or misapplied
+      // shadow would fail while still differing.
+      if (typeof C2S !== 'undefined') {
+        const svgOf = (on) => {
+          r.shadowEnabled = on;
+          r.render('svgProbe');
+          const c = new C2S(300, 300);
+          r._renderToContext(c, 300, 300);
+          return c.getSerializedSvg();
+        };
+        // HOW MANY DIFFERENT COLOURS, not how dark. Occlusion carries a TINT
+        // as well as a shade - see _shadowPairExcluded - so the mean can move
+        // either way on a given structure, and it does on this one. What the
+        // pass always does is give each segment its OWN value: with it off the
+        // strokes collapse onto the flat palette.
+        const shades = (svg) =>
+            new Set(svg.match(/stroke="#[0-9a-f]{6}"/g) || []).size;
+        // ...AND THE SCREEN PATH IS UNTOUCHED. The guard only fires on a
+        // context the GPU would refuse anyway; a real canvas context still
+        // answers "the GPU will draw", so the occlusion pass is still skipped
+        // on screen. That pass is ~90% of a tube frame on a large structure,
+        // so turning it back on for every frame would be the wrong trade.
+        const onScreen = r._gpuWillDraw(r.canvas.getContext('2d'));
+        const onExport = r._gpuWillDraw(new C2S(50, 50));
+        const withS = svgOf(true), without = svgOf(false);
+        R.svgShadow = {
+          gateScreen: onScreen, gateExport: onExport,
+          gpu: !!r.useGPU,
+          gpuAvailable: !!(window.py2dmolCartoonGPU
+              && window.py2dmolCartoonGPU.available
+              && window.py2dmolCartoonGPU.available()),
+          strokes: (withS.match(/stroke="/g) || []).length,
+          differ: withS !== without,
+          shadesOn: shades(withS), shadesOff: shades(without),
+        };
+        r.shadowEnabled = true;
+        r.render('svgProbe');
+      }
       R.cartoon = await look('cartoon');
 
       // WHAT IS ABSENT STAYS ABSENT rather than being invented
@@ -464,6 +512,34 @@ def main():
         if s.get('warmMs', 99) > 1.0:
             bad.append(f"{style}: asking again costs {s.get('warmMs')}ms - the"
                        " panel asks on every selection change")
+    sv = R.get('svgShadow') or {}
+    print(f"  svg shadow (gpu tube): {sv}")
+    if not sv:
+        bad.append('no SVG was built - core/svg.js is in the notebook bundle'
+                   ' and the tube exports a vector on every build')
+    elif not sv.get('gpuAvailable'):
+        bad.append('no WebGL2 in this browser, so gpu+tube+svg is untested'
+                   ' here and this check proves nothing')
+    elif not sv.get('strokes'):
+        bad.append('the tube exported an SVG with no strokes in it')
+    elif not sv.get('differ'):
+        bad.append('the SVG is byte-identical with shadows on and off - the'
+                   ' CPU occlusion pass is skipped when the GPU is going to'
+                   ' draw, and an export context is one the GPU refuses, so'
+                   ' asking that question of the state rather than of the'
+                   ' context loses the shadow')
+    elif not sv.get('gateScreen') or sv.get('gateExport'):
+        bad.append(f"the GPU gate answers {sv.get('gateScreen')} for the screen"
+                   f" and {sv.get('gateExport')} for an export - it has to be"
+                   ' true then false, or either the shadow is lost on export'
+                   ' or the occlusion pass runs on every screen frame, which'
+                   ' is ~90% of a tube frame')
+    elif not (sv.get('shadesOn', 0) > sv.get('shadesOff', 0)):
+        bad.append(f"the shaded SVG uses {sv.get('shadesOn')} stroke colours"
+                   f" against {sv.get('shadesOff')} unshaded - the pass gives"
+                   ' each segment its own value, so it differs but is not'
+                   ' shading')
+
     pae = R.get('pae') or {}
     print(f"  pae: {pae}")
     _n = 60

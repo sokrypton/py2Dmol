@@ -3583,7 +3583,12 @@ t('Draw takes the 2D path, whatever the GPU setting says', () => {
     // ...and the decision the rest of the frame makes about which path will
     // draw has to agree, or inertia and the segment floor are answered for the
     // wrong renderer
-    const willDraw = src2.slice(src2.indexOf('_gpuWillDraw() {'), src2.indexOf('_gpuWillDraw() {') + 300);
+    // BY SHAPE, NOT BY SIGNATURE. This sliced from indexOf('_gpuWillDraw() {'),
+    // so adding the parameter it needed - the CONTEXT, without which an SVG
+    // export skipped the occlusion pass - made indexOf return -1, the slice
+    // start at 0, and the test fail on a change that fixed a bug. L.method
+    // finds a method whatever its arguments are.
+    const willDraw = L.method('_gpuWillDraw');
     if (!/this\.drawMode/.test(willDraw)) {
         throw new Error('_gpuWillDraw does not know about Draw');
     }
@@ -5919,6 +5924,23 @@ t('one translation per selector verb, not one per surface', () => {
         throw new Error(`${strays.join(', ')} resolves a selector directly.`
             + ' The renderer owns the translation: clipTo, orientTo, or a new'
             + ' method beside them - not a fourth copy in a shell.');
+    }
+});
+
+t('_gpuWillDraw refuses a context the GPU would refuse', () => {
+    // The CPU occlusion pass is skipped when the GPU is going to draw, because
+    // the GPU computes its own. That question was asked of the renderer's
+    // STATE, so an SVG export - which _gpuWillTake refuses on the context -
+    // took the 2D path with a pass that had been skipped on its behalf, and
+    // gpu + tube + svg came out flat. The two have to agree about a context.
+    const willDraw = L.method('_gpuWillDraw');
+    if (!/getSerializedSvg/.test(willDraw)) {
+        throw new Error('_gpuWillDraw does not look at the context, so an SVG'
+            + ' export loses the shadow while _gpuWillTake correctly refuses');
+    }
+    if (!/_gpuWillDraw\(ctx\)/.test(L.src)) {
+        throw new Error('the shadow gate calls _gpuWillDraw() with no context,'
+            + ' so the test above is answered for the screen either way');
     }
 });
 

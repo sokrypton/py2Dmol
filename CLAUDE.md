@@ -371,6 +371,23 @@ public downloads is exercised on every run.
   scaling wrong selects the wrong part of the structure while the plot looks
   perfectly right — `tests/minimal_input.py` drags the whole plot and requires
   every residue back, which is what an off-by-one in the block end loses.
+- 🔴 **`_gpuWillDraw` WAS A GUESS THAT BECAME AN ANSWER.** The CPU occlusion
+  pass is skipped when the GPU is going to draw, because the GPU computes its
+  own — and the question was asked of the renderer's STATE, with a comment
+  saying being wrong costs a repaint and never a wrong picture. True while it
+  only chose WHEN to work; not true once it gated work the fallback needs.
+  `_gpuWillTake(ctx)` correctly refuses an SVG context (`ctx.getSerializedSvg`)
+  so the export takes the 2D path — with a pass that had been skipped on the
+  GPU's behalf. **gpu + tube + svg exported a flat tube.** `_gpuWillDraw(ctx)`
+  applies the same refusal now. Measured in `tests/minimal_input.py` by
+  exporting twice, shadows on and off: identical is the bug. NOT by mean
+  darkness — occlusion carries a TINT as well as a shade, so the mean moves
+  either way by structure; the count of distinct stroke colours does not
+  (46 shaded against 2).
+- **AND A TEST THAT SLICES FROM `indexOf('name() {')` FAILS WHEN THE METHOD
+  GAINS AN ARGUMENT** — which is exactly when it changed. `tests/interaction.js`
+  did that to `_gpuWillDraw` and reported a bug against the commit that fixed
+  one. `L.method(name)` finds it whatever its arguments are.
 - 🔴 **THE BOX IS THE FRAME AND `bg` IS THE PAPER, and turning the frame off
   repainted the paper.** `parts/ui.js`'s `box` branch set
   `canvas.style.background = 'transparent'` AFTER the requested colour had been

@@ -10097,9 +10097,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
         }
 
-        _gpuWillDraw() {
+        _gpuWillDraw(ctx) {
             if (this.useGPU !== true) return false;
             if (this.drawMode) return false;      // see _gpuWillTake
+            // 🔴 AND THE CONTEXT, WHEN THERE IS ONE. This asked from STATE
+            // alone, and the comment beside it said being wrong costs a
+            // repaint and never a wrong picture - which was true while the
+            // answer only chose WHEN to do work. It also gates the CPU
+            // occlusion pass, and that is work the fallback NEEDS: an SVG
+            // export refuses the GPU (see _gpuWillTake) but this said yes, so
+            // the shadows were never computed and the vector came out flat.
+            // gpu + tube + svg, reported as "the shadow is lost".
+            if (ctx && (ctx.getSerializedSvg || !ctx.drawImage || !ctx.canvas)) {
+                return false;
+            }
             const G = window.py2dmolCartoonGPU;
             if (!G || typeof G.available !== 'function' || !G.available()) return false;
             return this.style === 'cartoon'
@@ -11035,7 +11046,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Deliberately a guess, not a promise: renderTube may still decline
             // the frame, and the 2D pass then draws with whatever these hold -
             // possibly a gesture out of date, never wrong.
-            const gpuWillDraw = this._gpuWillDraw();
+            //
+            // ...ASKED OF THIS CONTEXT. An export context is one the GPU will
+            // refuse, and skipping the occlusion for it is not a stale guess
+            // but a missing pass - see _gpuWillDraw.
+            const gpuWillDraw = this._gpuWillDraw(ctx);
             // The GPU computes its own occlusion now - a depth prepass and one
             // screen-space pass, whose cost is a function of pixels rather than
             // of segments - so the CPU pass is not just deferred but skipped.

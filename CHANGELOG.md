@@ -168,6 +168,12 @@ result.
 - **The wheel ships what `viewer.py` opens.** `package_data` omitted the GPU
   renderer, which `viewer.py` reads unconditionally — a `FileNotFoundError` on
   the first `show()`, in the wheel only.
+- 🔴 **An SVG of the tube kept its shading with the GPU on.** The CPU occlusion
+  pass is skipped when the GPU is going to draw — it computes its own — but the
+  question was asked of the renderer's state rather than of the context, and an
+  SVG context is one the GPU refuses. So the export took the 2D path with a
+  pass that had been skipped on its behalf, and `gpu` + `tube` + SVG came out
+  flat.
 - 🔴 **`bg` did nothing whenever `box` was off.** The box is the frame and `bg`
   is the paper: turning the frame off set the canvas background to transparent
   *after* the requested colour had been put on it, and told the renderer to
