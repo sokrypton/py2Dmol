@@ -240,6 +240,49 @@ window.addEventListener('load', () => {
           R.bigPae.cellOfLast = p2.residueToCell(359);
           R.bigPae.corner = [p2.paeData[0],
                              p2.paeData[p2.n * p2.n - 1]];
+          // 🔴 AND THE RECTANGLE LANDS WHERE IT WAS DRAGGED. A stored box is
+          // in RESIDUES; the mask is laid out per CELL. They are the same
+          // numbers only while the matrix is one cell per residue, so on a
+          // resampled one the highlight came out at the wrong place and the
+          // wrong size - a selection that lights a different region from the
+          // one dragged.
+          //
+          // MEASURED ON THE CANVAS, not from the numbers: the bug is that the
+          // drawing uses the wrong space, and every arithmetic check would
+          // agree with it. Two renders, one with no box and one with a box
+          // over residues 0..119 (= cells 0..99 of 300), and the pixels that
+          // did NOT change are the region left bright - the box itself.
+          const cv = r.paeRenderer.canvas;
+          const snap = () => {
+            r.paeRenderer.cachedSequencePositions = null;
+            r.paeRenderer.render();
+            return cv.getContext('2d')
+                .getImageData(0, 0, cv.width, cv.height).data;
+          };
+          r.setVisibility({paeBoxes: [], positions: new Set(),
+                           chains: new Set(), visibilityMode: 'default'}, true);
+          const plainPx = snap();
+          r.setVisibility({paeBoxes: [{i_start: 0, i_end: 119,
+                                       j_start: 0, j_end: 119}],
+                           positions: new Set(), chains: new Set(),
+                           visibilityMode: 'explicit'}, true);
+          const boxedPx = snap();
+          let x1 = 1e9, y1 = 1e9, x2 = -1, y2 = -1;
+          for (let y = 0; y < cv.height; y++) {
+            for (let x = 0; x < cv.width; x++) {
+              const i = (y * cv.width + x) * 4;
+              if (plainPx[i] === boxedPx[i] && plainPx[i + 1] === boxedPx[i + 1]
+                  && plainPx[i + 2] === boxedPx[i + 2]) {
+                if (x < x1) x1 = x; if (x > x2) x2 = x;
+                if (y < y1) y1 = y; if (y > y2) y2 = y;
+              }
+            }
+          }
+          R.bigPae.bright = [x1, y1, x2, y2];
+          R.bigPae.canvas = cv.width;
+          R.bigPae.cells = p2.n;
+          r.setVisibility({paeBoxes: [], positions: new Set(),
+                           chains: new Set(), visibilityMode: 'default'}, true);
         }
         r._switchToObject(was2); r.setFrame(0);
         window.PAE.syncToDrawn(r);
@@ -579,6 +622,21 @@ def main():
     elif bp.get('cellOfFirst') != 0 or bp.get('cellOfLast') != 299:
         bad.append(f"residue 0 and residue 359 draw in cells"
                    f" {bp.get('cellOfFirst')} and {bp.get('cellOfLast')} of 300")
+    elif bp.get('bright') and bp.get('canvas'):
+        # residues 0..119 of 360 are cells 0..99 of 300; the mask covers cells
+        # 0..99 inclusive, so the bright block ends at 100 * canvas / 300.
+        want = round(100 * bp['canvas'] / bp['cells'])
+        got = bp['bright'][2] + 1
+        # ...from the corner, give or take the panel's 1px inset
+        if bp['bright'][0] > 2 or bp['bright'][1] > 2:
+            bad.append(f"the highlight starts at {bp['bright'][:2]}, not the"
+                       ' top-left corner the box was drawn in')
+        elif abs(got - want) > 3:
+            bad.append(f"a box over residues 0-119 lit {got}px of a"
+                       f" {bp['canvas']}px plot, wanted about {want} - a stored"
+                       ' box is in RESIDUES and the mask is laid out per CELL,'
+                       ' so on a resampled matrix the highlight lands in the'
+                       ' wrong place at the wrong size')
     elif bp.get('corner') != [0, 248]:
         bad.append(f"the resampled corners are {bp.get('corner')}, wanted"
                    ' [0, 248] - the matrix is 0 at the origin and saturated at'

@@ -581,11 +581,20 @@ class PAERenderer {
                 const h = Math.ceil((i_end - i_start + 1) * cellSize);
                 maskCtx.fillRect(x, y, w, h);
             };
+            // 🔴 A STORED BOX IS IN RESIDUES; THIS DRAWS IN CELLS. The mask
+            // is laid out at `this.size / this.n` per CELL, and paeBoxes hold
+            // the range of RESIDUES handed to setVisibility - the same numbers
+            // only while the matrix is one cell per residue. On a resampled
+            // one the rectangle came out at the wrong place and the wrong
+            // size, which is a selection that highlights a different region
+            // from the one that was dragged. The preview box below is already
+            // in cells (it is what the pointer drew), and residueToCell is the
+            // identity when nothing was resampled.
             for (const box of activeBoxes) {
-                const i_start = Math.min(box.i_start, box.i_end);
-                const i_end = Math.max(box.i_start, box.i_end);
-                const j_start = Math.min(box.j_start, box.j_end);
-                const j_end = Math.max(box.j_start, box.j_end);
+                const i_start = this.residueToCell(Math.min(box.i_start, box.i_end));
+                const i_end = this.residueToCell(Math.max(box.i_start, box.i_end));
+                const j_start = this.residueToCell(Math.min(box.j_start, box.j_end));
+                const j_end = this.residueToCell(Math.max(box.j_start, box.j_end));
                 drawMaskRegion(i_start, i_end, j_start, j_end);
             }
             if (previewBox && previewBox.x1 !== -1) {

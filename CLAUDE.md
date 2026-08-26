@@ -360,6 +360,17 @@ public downloads is exercised on every run.
   a descendant selector misses the element itself** — `.py2dmol-viewer-instance
   *` left the instance, the header and the sequence strip as content-box, so
   three blocks with the same stated width had three different right edges.
+- 🔴 **A STORED PAE BOX IS IN RESIDUES; THE MASK IS DRAWN IN CELLS.** Three
+  crossings, not two: `cellsToResidues` on the way out of a drag,
+  `residueToCell` for the sequence highlight — and `render()`, which lays the
+  mask out at `this.size / this.n` per CELL while `visibilityModel.paeBoxes`
+  holds RESIDUES. The same numbers only while the matrix is one cell per
+  residue, so on a resampled one the rectangle came out at the wrong place and
+  the wrong size: a selection that lights a different region from the one
+  dragged. Found by a reader, not by the suite, because the two crossings that
+  WERE covered are arithmetic and the third is a drawing. It is measured on the
+  CANVAS now — two renders and the pixels that did not change — because every
+  arithmetic check agrees with the bug.
 - **`n` WAS THE MATRIX SIDE AND THE RESIDUE COUNT, and a resampled PAE makes
   them different numbers.** `panels/pae.js` used `this.n` for the cell grid,
   for the hit-test, AND as the residue index handed to `setVisibility` — fine
