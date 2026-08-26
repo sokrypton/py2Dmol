@@ -177,6 +177,19 @@ def page():
     assert one.config.get('shown_objects') is None and 'orient' not in one.config, \
         'a viewer that asked for neither must carry neither'
 
+    #  ...AND THE MARKUP ALONE, with no script having run. Colab inserts output
+    #  HTML with innerHTML - which never executes a script - and sizes the
+    #  output iframe from what it measures in that window. The stylesheet says
+    #  the canvas box is 600x600 and parts/viewport.js corrects it, so a 2x2
+    #  grid of 300px viewers was 1,220px of markup and the frame kept ~1,000px
+    #  around a 644px page. Handed to the probe as a string and set with
+    #  innerHTML there, which reproduces exactly that state.
+    global PRESCRIPT
+    bare = py2Dmol.view((300, 300), id='bare')
+    bare.add(helix(), name='solo')
+    PRESCRIPT = bare._display_viewer(static_data=bare.objects,
+                                     include_libs=False)
+
     #  ...AND ONE THAT WAS ASKED TO TURN. rotate=True reached the config, the
     #  constructor and the checkbox and was then switched off again by the
     #  viewer's OWN opening orient, which stopped the spin unconditionally.
@@ -222,6 +235,24 @@ window.addEventListener('load', () => {
       R.one = read('one');
       R.both = read('both');
       R.aimed = read('aimed');
+
+      //  THE LAYOUT BEFORE ANY SCRIPT RUNS. innerHTML does not execute
+      //  scripts, so this IS the state Colab measures.
+      {
+        const holder = document.createElement('div');
+        holder.style.cssText = 'position:absolute;left:-4000px;top:0;width:900px';
+        document.body.appendChild(holder);
+        holder.innerHTML = window.__py2dmolPrescript;
+        await settle();
+        const cc = holder.querySelector('#canvasContainer');
+        R.prescript = {
+          height: Math.round(holder.getBoundingClientRect().height),
+          box: cc ? [Math.round(cc.getBoundingClientRect().width),
+                     Math.round(cc.getBoundingClientRect().height)] : null,
+          ran: holder.querySelectorAll('canvas').length,
+        };
+        holder.remove();
+      }
 
       //  ROTATE=TRUE ACTUALLY TURNS. Every surface orients itself when the
       //  first frame lands, and that orient stopped the spin - so a flag that
@@ -312,8 +343,15 @@ def main():
     #  page that has no lender on it. That is a blank page and eleven
     #  unrelated failures.
     body = page()
+    #  ...ESCAPED, because the markup contains </script> and putting it in a
+    #  <script> unescaped ends that script at the first one. viewer.py's lender
+    #  does the same thing for the same reason.
+    _hand = json.dumps(PRESCRIPT)
+    for _bad in ('<script', '</script', '<!--'):
+        _hand = _hand.replace(_bad, _bad.replace('<', '\\u003c'))
+    hand = '<script>window.__py2dmolPrescript = ' + _hand + ';</script>'
     open(PROBE, 'w').write('<!doctype html><html><head><meta charset="utf-8">'
-                           '</head><body>' + body + JS + '</body></html>')
+                           '</head><body>' + body + hand + JS + '</body></html>')
     bad = check_live()
     box = []
 
@@ -355,6 +393,16 @@ def main():
 
     for e in R.get('errors', []):
         bad.append('page error: ' + e)
+    ps = R.get('prescript') or {}
+    print(f"  before any script runs: {ps}")
+    if ps.get('box') != [300, 300]:
+        bad.append(f"the canvas box is {ps.get('box')} in the markup alone -"
+                   ' the stylesheet says 600x600 and only a script corrects'
+                   ' it, so Colab sizes the output frame from the wrong'
+                   ' number and leaves white space under a grid')
+    elif ps.get('height', 0) > 400:
+        bad.append(f"an unsized 300px viewer is {ps.get('height')}px of markup")
+
     t = R.get('turn') or {}
     print(f"  rotate=True: {t}")
     if not t.get('autoRotate') or not t.get('checkbox'):

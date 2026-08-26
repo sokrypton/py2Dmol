@@ -246,7 +246,16 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
 </style>
 <div id="mainContainer">
     <div id="viewerWrapper">
-        <div id="canvasContainer">
+        <!-- THE SIZE IS IN THE MARKUP, not left to setupViewport to correct.
+             The rule below says 600px and JS shrinks the element to whatever
+             was asked for - which means the page is the WRONG HEIGHT until a
+             script runs, and Colab inserts output HTML with innerHTML (so no
+             script runs) and measures the frame to size it. A 2x2 grid of
+             300px viewers is 1,220px of unsized markup, and the output frame
+             kept that height around a 644px page. viewer.py replaces this
+             token; the token missing is a hard error there, because falling
+             back to 600 is the bug. -->
+        <div id="canvasContainer" data-py2dmol-canvas-size>
             <canvas id="canvas"></canvas>
             <div class="resize-handle"></div>
         </div>

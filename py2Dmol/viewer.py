@@ -1585,6 +1585,30 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         # Inject config and data into the raw HTML template
         final_html = html_template.replace("<!-- DATA_INJECTION_POINT -->", injection_scripts)
 
+        # ...AND THE CANVAS BOX, IN THE MARKUP. The stylesheet says 600x600 and
+        # parts/viewport.js corrects it - so the page is the wrong height until
+        # a script runs. Colab inserts output HTML with innerHTML, which never
+        # executes a script, and sizes the output iframe from what it measures
+        # in that window: a 2x2 grid of 300px viewers is 1,220px of unsized
+        # markup, and the frame kept ~1,000px around a 644px page. That is the
+        # white space under a grid, and it is gone on reopen because the
+        # measurement happens again after the scripts have run.
+        #
+        # An INLINE STYLE, not a per-viewer rule: ids repeat when a page holds
+        # several viewers, so a `#canvasContainer {...}` block would apply to
+        # all of them. This is also what viewport.js writes, so the two agree.
+        size = self.config.get("display", {}).get("size") or [400, 400]
+        token = "data-py2dmol-canvas-size"
+        if token not in final_html:
+            raise RuntimeError(
+                "viewer.html has no " + token + " on #canvasContainer - without"
+                " it the canvas box is the stylesheet's 600x600 until a script"
+                " runs, which is what Colab measures when it sizes the output"
+                " frame")
+        final_html = final_html.replace(
+            token, 'style="width:{}px;height:{}px"'.format(
+                int(size[0]), int(size[1])))
+
         # Standard div approach
         container_html = f"""
         <div id="{viewer_id}" style="position: relative; display: inline-block; line-height: 0;">

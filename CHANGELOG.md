@@ -168,6 +168,12 @@ result.
 - **The wheel ships what `viewer.py` opens.** `package_data` omitted the GPU
   renderer, which `viewer.py` reads unconditionally — a `FileNotFoundError` on
   the first `show()`, in the wheel only.
+- **No white space under a viewer in Colab.** The stylesheet gave the canvas
+  box 600×600 and a script corrected it, so the markup alone was 648px for a
+  300px viewer. Colab inserts output HTML with `innerHTML` — which never runs a
+  script — and sizes the output iframe from what it measures in that window: a
+  2×2 grid of 300px viewers is ~1,220px of unsized markup, and the frame kept
+  ~1,000px around a 644px page. The size is in the markup now.
 - **A grid emits one output, not twenty-eight.** `Grid.view()` said "do not
   show yourself" by setting `_is_live` — and that flag also means "you are on
   the page, so send updates". The grid has not been emitted yet, so every

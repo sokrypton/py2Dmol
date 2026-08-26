@@ -371,6 +371,20 @@ public downloads is exercised on every run.
   scaling wrong selects the wrong part of the structure while the plot looks
   perfectly right — `tests/minimal_input.py` drags the whole plot and requires
   every residue back, which is what an off-by-one in the block end loses.
+- 🔴 **THE PAGE HAS TO BE THE RIGHT HEIGHT BEFORE ANY SCRIPT RUNS, because
+  that is when Colab measures it.** `viewer.html`'s stylesheet gives
+  `#canvasContainer` 600x600 and `parts/viewport.js` corrects it — so the
+  markup alone is 648px for a 300px viewer. Colab inserts output HTML with
+  `innerHTML`, which never executes a script, and sizes the output iframe from
+  what it measures in that window: a 2x2 grid of 300px viewers is ~1,220px of
+  unsized markup, and the frame kept ~1,000px around a 644px page. That is the
+  white space under a grid, and it is gone on reopen because the measurement
+  happens again after the scripts have run — which is why every measurement of
+  a settled page said the layout was perfect. `viewer.py` substitutes the size
+  as an INLINE STYLE (ids repeat across viewers on one page, so a
+  `#canvasContainer {…}` rule would apply to all of them) and RAISES if the
+  token is gone, because falling back to 600 is the bug. `tests/python_multi.py`
+  sets the markup with `innerHTML` and measures — the same state, reproduced.
 - 🔴 **THE SHARED LIBRARY WAS KEYED BY PATH, so a re-run cell could borrow a
   library older than the payload it was writing.** A notebook is re-run cell by
   cell: the cell holding the library can be from an earlier build than the cell
