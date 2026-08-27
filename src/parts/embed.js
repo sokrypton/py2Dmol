@@ -236,20 +236,22 @@ const SHELL = (id) => `
            chosen for looks. The grid row lines these two up anyway. -->
       <button id="orientButton" class="controlButton"
               title="Orient to best view">Orient</button>
+      <!-- Focus beside Orient: the two camera moves a CLICK makes, where
+           Rotate runs on its own. -->
+      <button id="focusButton" class="controlButton" aria-pressed="false"
+              title="Click a residue or ligand to draw its neighbours' side chains, move in on it and clip around it. Click the background to come back out.">Focus</button>
       <label class="controlButton btn-toggle" title="Toggle auto-rotation">
         <input type="checkbox" id="rotationCheckbox"><span>Rotate</span>
       </label>
+    </div>
+    <div class="btn-row auto">
+      <button id="styleToggle" class="controlButton" aria-expanded="false"
+              aria-controls="stylePanel" title="Render style and its settings">Style</button>
       <!-- Clip is a toggle here and a panel on the website - see viewer.html.
            parts/clip.js is in every bundle, so this is reachable everywhere
            the shell is; it was only ever unreachable for want of a control. -->
       <button id="clipButton" class="controlButton"
               title="Clip to the selection (press again to clear)">Clip</button>
-    </div>
-    <div class="btn-row auto">
-      <button id="focusButton" class="controlButton" aria-pressed="false"
-              title="Click a residue or ligand to draw its neighbours' side chains, move in on it and clip around it. Click the background to come back out.">Focus</button>
-      <button id="styleToggle" class="controlButton" aria-expanded="false"
-              aria-controls="stylePanel" title="Render style and its settings">Style</button>
       <!-- CAPTURE, not Save. index.html has called it that for a while - it
            writes an image or a video, and the word Save is already taken there
            by #saveStateButton, which writes the session. viewer.html still said

@@ -426,7 +426,8 @@ function facesOf(prims, prm, consume) {
             // cosmetic: the wrong sign makes max(0, n.L) clamp to zero, the
             // knee is never crossed, and the side chain gets no highlight at
             // all - which is exactly how they looked.
-            faces.push({ res: residueOf(p), q: p.q, c: p.c || { r: 200, g: 140, b: 60 }, top: 1, kAvg: 0,
+            faces.push({ res: residueOf(p), sc: p.sc ? 1 : 0,
+                q: p.q, c: p.c || { r: 200, g: 140, b: 60 }, top: 1, kAvg: 0,
                 // A FLAT STICK IS ONE DOUBLE-SIDED QUAD. At zero thickness -
                 // which plain cartoon asks for, because flatness IS its look -
                 // the box collapses to a single face with nothing behind it,
@@ -452,7 +453,8 @@ function facesOf(prims, prm, consume) {
                 tan: [p.q[1][0] - p.q[0][0], p.q[1][1] - p.q[0][1], p.q[1][2] - p.q[0][2]] });
         } else if (p.kind === 'joint' && p.q && p.q.length >= 3) {
             for (let k = 1; k + 1 < p.q.length; k++) {
-                faces.push({ res: residueOf(p), q: [p.q[0], p.q[k], p.q[k + 1], p.q[0]],
+                faces.push({ res: residueOf(p), sc: p.sc ? 1 : 0,
+                    q: [p.q[0], p.q[k], p.q[k + 1], p.q[0]],
                     c: p.c || { r: 200, g: 140, b: 60 }, top: 1, kAvg: 0, stick: 1,
                     // A JUNCTION PLATE IS NEVER INKED, because it is not inked
                     // in the 2D pass either - and there the reason is explicit
@@ -3169,7 +3171,9 @@ function buildMeshPart(faces, scale, prm, lines) {
         const h2 = new Uint32Array(eCap); h2.set(eHi); eHi = h2;
         const n2 = new Int32Array(eCap); n2.set(eNext); eNext = n2;
     };
-    const addEdge = (a2, b2, nrm, isStick, pal, ghost, two, noInk, col, full, seam, outer) => {
+    const eSc = window.__scProbe ? {} : null;
+    const eOther = window.__scProbe ? {} : null;
+    const addEdge = (a2, b2, nrm, isStick, pal, ghost, two, noInk, col, full, seam, outer, sc) => {
         const ha = ptH(a2);
         const hb = ptH(b2);
         if (ha === hb) return;      // the repeated corner of a fan-padded quad
@@ -3209,6 +3213,7 @@ function buildMeshPart(faces, scale, prm, lines) {
         if (two && !ghost) bits |= EB_TWO;
         if (noInk) bits |= EB_NOINK;      // any face may veto the whole edge
         if (isStick) bits |= EB_STICK;   // so show/hide can drop its outline too
+        if (window.__scProbe) { if (sc) eSc[e] = 1; else eOther[e] = 1; }
         if (full && !ghost) bits |= EB_FULL;   // a fully-outlined surface
         // A SEAM CROSS EDGE IS VETOED ON THE EDGE, NOT ON THE FACE, and that is
         // the whole reason this works. The arrow's step is its own two-station
@@ -3571,6 +3576,30 @@ function buildMeshPart(faces, scale, prm, lines) {
             faceSeen.set(k, (faceSeen.get(k) || 0) + 1);
             f._fkey = k;
         }
+        if (window.__scProbe) {
+            // THE SAME QUESTION THE RIBBON/STICK SPLIT HAD TO ANSWER, asked of
+            // the second cut: does the weld ever pair a side-chain face with
+            // one of the others?
+            const kinds = new Map();
+            for (const f of faces) {
+                if (f._fkey === undefined || !f._fkey) continue;
+                let e = kinds.get(f._fkey);
+                if (!e) kinds.set(f._fkey, e = {a: 0, b: 0});
+                if (f.sc) e.a++; else e.b++;
+            }
+            let welds = 0; let mixed = 0;
+            for (const e of kinds.values()) {
+                if (e.a + e.b < 2) continue;
+                welds++;
+                if (e.a && e.b) mixed++;
+            }
+            const P = window.__scProbe;
+            P.welds = (P.welds || 0) + welds;
+            P.mixedWelds = (P.mixedWelds || 0) + mixed;
+            P.scFaces = (P.scFaces || 0) + faces.filter((f) => f.sc).length;
+            P.stickFaces = (P.stickFaces || 0) + faces.filter((f) => f.stick).length;
+            P.faces = (P.faces || 0) + faces.length;
+        }
         const ownKeys = [0, 0, 0, 0, 0, 0, 0, 0];
         let nInterior = 0;
         for (let fi = 0; wantOutline && fi < faces.length; fi++) {
@@ -3671,11 +3700,18 @@ function buildMeshPart(faces, scale, prm, lines) {
                 if (ownN < ownKeys.length) ownKeys[ownN++] = ek;
                 addEdge(m[i2], m[(i2 + 1) % m.length], f._inkN, !!f.stick, f.pal, ghost,
                     !!f.two, !!f.noInk, f.c ? [f.c.r, f.c.g, f.c.b] : null,
-                    !!f.fullOutline, seamCross, !!f.outerOnly);
+                    !!f.fullOutline, seamCross, !!f.outerOnly, !!f.sc);
             }
         }
 
         // ---- the edge instance buffer: p0, p1, n0, n1, always = 13 floats ----
+        if (window.__scProbe) {
+            let both = 0;
+            for (const k of Object.keys(eSc)) if (eOther[k]) both++;
+            const P = window.__scProbe;
+            P.edgesBothKinds = (P.edgesBothKinds || 0) + both;
+            P.edges = (P.edges || 0) + eN;
+        }
         const creaseDeg = P0.creaseDeg;
         const creaseCos = Math.cos(creaseDeg * Math.PI / 180);
         // the fully-outlined surfaces' own threshold
@@ -3906,6 +3942,7 @@ function buildMeshPart(faces, scale, prm, lines) {
  * It costs about a millisecond and it fails safe - a miss rebuilds.
  */
 let ribbonPart = null;           // { hash, part }
+let otherPart = null;            // ...and the ligands, plates and contacts
 /**
  * ...AND IT HAS TO BE CHEAP, or it eats what it saves. The first version
  * mixed every corner of every face through a closure with three multiplies
@@ -3966,81 +4003,147 @@ const FILL_PAL_AT = 44;
 
 function makeResident(faces, scale, prm, lines) {
     const P0 = prm || defaultParams();
-    const ribbon = []; const sticks = [];
-    for (const f of faces) (f.stick ? sticks : ribbon).push(f);
+    // THREE GROUPS, AND EACH ONE CHANGES FOR ITS OWN REASONS.
+    //
+    //   ribbon   the backbone. Unchanged by anything a click does.
+    //   other    ligands, base plates, contacts. A heme is 2,000 faces on
+    //            4HHB and is exactly as unchanged by a side-chain click as
+    //            the ribbon is - it was being rebuilt because it happened to
+    //            be made of sticks.
+    //   side     the side chains, which are what the click changed.
+    //
+    // The cut between the last two is `sc`, and it comes from cartoon/geom.js
+    // rather than being worked out here: the CA-CB bond has one end on the
+    // backbone and one in the side-chain map, and classifying by the position
+    // index reads it as backbone while the CB-CG bond beside it reads as side
+    // chain. Those two share a welded face. Measured with geom's own flag:
+    // 0 mixed welds and 0 shared edges on 4HHB, 3PTB and 1EHZ.
+    const groups = [[], [], []];
+    for (const f of faces) groups[f.stick ? (f.sc ? 2 : 1) : 0].push(f);
     const RB = window.__rebuild || {};
     const t0 = performance.now();
-    const hash = ribbonHashOf(ribbon, scale, P0);
-    RB.ribbonHash = +(performance.now() - t0).toFixed(1);
-    let rp = (ribbonPart && ribbonPart.hash === hash) ? ribbonPart.part : null;
-    RB.nRibbon = ribbon.length; RB.nStick = sticks.length;
-    RB.ribbonReused = !!rp;
-    if (!rp) {
-        rp = buildMeshPart(ribbon, scale, P0, null);
-        // the ribbon half's own phase record, before the stick half overwrites
-        // it - the two halves share `__mrPhase` and the second one wins, which
-        // makes the interesting half the invisible one
-        if (window.__heapProbe) window.__mrRibbon = Object.assign({}, window.__mrPhase);
-        ribbonPart = (rp.bytes <= MESH_KEEP_MAX_BYTES) ? { hash, part: rp } : null;
-    } else {
-        // THE SLOTS, PUT BACK. The fill carries each face's baked colour AND
-        // the palette slot it came from, and only the slot moves when a side
-        // chain is added. Rewriting one float per face is 8,514 writes - too
-        // small to measure - and it is what keeps a later colour change (which
-        // repaints from the palette without rebuilding) exact.
-        //
-        // The OUTLINE's slots are not patched: an edge takes its slot from
-        // whichever face claimed it first and the build does not record which
-        // that was, so patching them would mean carrying an index per edge for
-        // two edges' worth of tint on this fixture. That is the one
-        // approximation in here, and it costs an outline tint on the two
-        // faces above after a palette change, never a fill and never a shape.
-        let patched = 0;
-        for (let i = 0; i < ribbon.length; i++) {
-            const want = ribbon[i].pal === undefined ? -1 : ribbon[i].pal;
-            const at = i * FILL_STRIDE + FILL_PAL_AT;
-            if (rp.fill[at] !== want) { rp.fill[at] = want; patched++; }
+
+    // ...the two that are worth keeping, each against a hash of its own faces
+    const parts = [];
+    for (let g = 0; g < 3; g++) {
+        const face = groups[g];
+        // CONTACTS RIDE WITH `other`: they are strokes rather than faces, and
+        // they change when the contacts change, which is not when a side chain
+        // does.
+        const ln = (g === 1) ? lines : null;
+        if (g === 2) {                      // always rebuilt: it is the change
+            parts.push(buildMeshPart(face, scale, P0, ln));
+            continue;
         }
-        RB.palPatched = patched;
+        const slot = g === 0 ? ribbonPart : otherPart;
+        const hash = ribbonHashOf(face, scale, P0);
+        let part = (slot && slot.hash === hash) ? slot.part : null;
+        // REPORTED FROM WHAT HAPPENED, not from the comparison: a probe that
+        // reads the slot cannot tell a reuse from a rebuild that happened to
+        // leave the same slot behind, and it said "reused" through a mutation
+        // that rebuilt every time.
+        const cameFromCache = !!part;
+        if (g === 0) RB.ribbonReused = cameFromCache;
+        if (g === 1) RB.otherReused = cameFromCache;
+        if (!part) {
+            part = buildMeshPart(face, scale, P0, ln);
+            if (g === 0 && window.__heapProbe) {
+                // the ribbon's own phase record, before the others overwrite
+                // it - they share `__mrPhase` and the last one wins
+                window.__mrRibbon = Object.assign({}, window.__mrPhase);
+            }
+            const keep = (part.bytes <= MESH_KEEP_MAX_BYTES) ? { hash, part } : null;
+            if (g === 0) ribbonPart = keep; else otherPart = keep;
+        } else {
+            patchPalette(part, face, RB);
+        }
+        parts.push(part);
     }
-    RB.ribbonMs = +(performance.now() - t0).toFixed(1);
-    // THE CONTACTS RIDE WITH THE STICKS. They are strokes rather than faces,
-    // but they are annotation on the same geometry and they change with it.
-    const sp = buildMeshPart(sticks, scale, P0, lines);
+    RB.nRibbon = groups[0].length;
+    RB.nOther = groups[1].length;
+    RB.nSide = groups[2].length;
     RB.stickMs = +(performance.now() - t0).toFixed(1);
-    return installParts(rp, sp, scale);
+    return installParts(parts, scale);
 }
 
-/** The two halves, concatenated and uploaded: ribbon instances, then sticks. */
-function installParts(rp, sp, scale) {
-    const fill = new Float32Array(rp.fill.length + sp.fill.length);
-    fill.set(rp.fill, 0);
-    fill.set(sp.fill, rp.fill.length);
+/**
+ * THE SLOTS, PUT BACK. A kept part's fill carries each face's baked colour AND
+ * the palette slot it came from, and only the slot moves when a side chain is
+ * added - `ci` indexes the segment list and a side-chain bond IS a segment.
+ * Rewriting one float per face is too small to measure, and it is what keeps a
+ * later colour change (which repaints from the palette without rebuilding)
+ * exact.
+ *
+ * The OUTLINE's slots are not patched: an edge takes its slot from whichever
+ * face claimed it first and the build does not record which that was. That is
+ * the one approximation here - an outline tint on a couple of faces after a
+ * palette change, never a fill and never a shape.
+ */
+function patchPalette(part, face, RB) {
+    let patched = 0;
+    for (let i = 0; i < face.length; i++) {
+        const want = face[i].pal === undefined ? -1 : face[i].pal;
+        const at = i * FILL_STRIDE + FILL_PAL_AT;
+        if (part.fill[at] !== want) { part.fill[at] = want; patched++; }
+    }
+    if (RB) RB.palPatched = (RB.palPatched || 0) + patched;
+}
+
+/**
+ * THE PARTS, CONCATENATED AND UPLOADED, in the order they are given: ribbon,
+ * then the other sticks, then the side chains.
+ *
+ * That order is not the depth order the prims were sorted into, and where two
+ * surfaces land on exactly the same depth `depthFunc(LESS)` gives the pixel to
+ * whichever was drawn first. It moves 260 pixels of 357,604 on 4HHB with 400
+ * side chains out, every one on a seam, none on open ribbon - and the winner
+ * at a tie was already arbitrary. See docs/SELECTION_MARK.md's neighbour, the
+ * mesh notes in CLAUDE.md.
+ */
+function installParts(parts, scale) {
+    let nFill = 0; let nEdge = 0; let nCen = 0; let count = 0;
+    let rad = 0; let hasContacts = false; let edges = 0;
+    for (const p of parts) {
+        nFill += p.fill.length;
+        nEdge += p.edges ? p.edges.length : 0;
+        nCen += p.centroids.length;
+        count += p.count;
+        edges += p.edgeCount;
+        if (p.rad > rad) rad = p.rad;
+        if (p.hasContacts) hasContacts = true;
+    }
+    const fill = new Float32Array(nFill);
+    const cen = new Float32Array(nCen);
+    let fo = 0; let co = 0;
+    for (const p of parts) {
+        fill.set(p.fill, fo); fo += p.fill.length;
+        cen.set(p.centroids, co); co += p.centroids.length;
+    }
     gl.bindBuffer(gl.ARRAY_BUFFER, buf3);
     gl.bufferData(gl.ARRAY_BUFFER, fill, gl.STATIC_DRAW);
-    lastFill = keepArrays ? fill : null;
-    const lastFillArr = fill;
 
-    let lastEdgeArr = null;
-    const re = rp.edges; const se = sp.edges;
-    if (re || se) {
-        const ed = new Float32Array((re ? re.length : 0) + (se ? se.length : 0));
-        if (re) ed.set(re, 0);
-        if (se) ed.set(se, re ? re.length : 0);
+    let ed = null;
+    if (nEdge) {
+        ed = new Float32Array(nEdge);
+        let eo = 0;
+        for (const p of parts) {
+            if (!p.edges) continue;
+            ed.set(p.edges, eo); eo += p.edges.length;
+        }
         gl.bindBuffer(gl.ARRAY_BUFFER, bufInk);
         gl.bufferData(gl.ARRAY_BUFFER, ed, gl.STATIC_DRAW);
-        lastEdges = keepArrays ? ed : null;
-        lastEdgeArr = ed;
-    } else {
-        lastEdges = null;
     }
-    // AN ORDER-INDEPENDENT DIGEST OF THE MESH, for comparing one build of this
-    // file against another. Pixels cannot do it on this path: two runs of the
-    // SAME code differ in 110,800 of 357,604 pixels on 4HHB - a fine speckle
-    // over every surface - so a cross-run image comparison measures the
-    // machine, not the change. Per-instance hashes SUMMED rather than chained,
-    // because the halves are concatenated in a different order from the one
-    // the single build emitted and that reordering is deliberate.
+    // ASKED OF THE WHOLE MESH, not of each part. They are kept and dropped
+    // together - a mesh restored with its fills and without its outline is not
+    // a mesh - so a fill just under the cap and an outline just over it must
+    // not leave one of them pinned for a restore that can never happen.
+    const hold = keepArrays
+        && (fill.byteLength + (ed ? ed.byteLength : 0)) <= MESH_KEEP_MAX_BYTES;
+    lastFill = hold ? fill : null;
+    lastEdges = hold ? ed : null;
+    edgeCount = edges;
+    residentHasContacts = hasContacts;
+
     if (window.__meshDigest) {
         const rowHash = (arr, stride) => {
             let acc = 0;
@@ -4056,18 +4159,9 @@ function installParts(rp, sp, scale) {
             }
             return acc;
         };
-        window.__meshDigest = { fill: rowHash(lastFillArr, 48),
-            fillN: lastFillArr.length / 48,
-            edges: lastEdgeArr ? rowHash(lastEdgeArr, 19) : 0,
-            edgeN: lastEdgeArr ? lastEdgeArr.length / 19 : 0 };
+        window.__meshDigest = { fill: rowHash(fill, 48), fillN: fill.length / 48,
+            edges: ed ? rowHash(ed, 19) : 0, edgeN: ed ? ed.length / 19 : 0 };
     }
-    edgeCount = rp.edgeCount + sp.edgeCount;
-    residentHasContacts = rp.hasContacts || sp.hasContacts;
-
-    const cen = new Float32Array(rp.centroids.length + sp.centroids.length);
-    cen.set(rp.centroids, 0);
-    cen.set(sp.centroids, rp.centroids.length);
-    const rad = Math.max(rp.rad, sp.rad);
 
     // one texel per residue, sized to the structure
     ensureVisTexture(resMap && resMap.nBase ? resMap.nBase : 1);
@@ -4077,8 +4171,7 @@ function installParts(rp, sp, scale) {
     // which is what makes a colour change a texture upload and not a rebuild.
     if (paletteSource) setPalette(paletteSource());
     srCache = null; srKey = '';
-    resident = { count: rp.count + sp.count, zMin: -rad, zMax: rad, scale,
-        centroids: cen };
+    resident = { count, zMin: -rad, zMax: rad, scale, centroids: cen };
     return resident;
 }
 
@@ -4754,7 +4847,7 @@ function captureFrom(renderer, w, h, colors) {
     const keep = {
         noViewCull: renderer._noViewCull, frameProbe: renderer._frameProbe,
         probeOnly: renderer._probeOnly, primProbe: renderer._primProbe,
-        posProbe: renderer._posProbe,
+        posProbe: renderer._posProbe, traceProbe: renderer._traceProbe,
         pencil: renderer.cartoonPencil, zoom: renderer.viewerState.zoom,
         thick: renderer.cartoonThickness, hxRel: renderer.cartoonHelixThRel,
         clipNear: renderer.clipNear, clipFar: renderer.clipFar,
@@ -4799,6 +4892,21 @@ function captureFrom(renderer, w, h, colors) {
     renderer._probeOnly = true;
     renderer._primProbe = null;
     renderer._posProbe = null;        // ...and the DRAWN position of each residue
+    // ...AND THE CENTRE LINE BETWEEN THEM, which the selection mark traces so
+    // it follows the ribbon's curve rather than chording it.
+    //
+    // 🔴 ASKED FOR ON EVERY BUILD, NOT ONLY WHEN SOMETHING IS SELECTED. This
+    // path captures on a mesh REBUILD and selecting does not rebuild - that is
+    // the whole point of the mesh cache - so a probe gated on the selection is
+    // asked for at exactly the moments the answer is not wanted, and never at
+    // the moment it is. It is recorded whenever the cartoon builds and kept in
+    // the pre-rotation space, which is what makes it outlive the rebuild.
+    //
+    // Capped by size, and the renderer owns the cap: the 2D painter asks the
+    // same question on its own path, and one number in two files is the drift
+    // this codebase keeps paying for.
+    renderer._traceProbe = (renderer._wantRibbonTrace
+        && renderer._wantRibbonTrace()) ? null : undefined;
     // CAPTURED AT THE LIVE ZOOM, not at 1. The unprojection divides the view
     // scale back out, and it divides by whatever scale the renderer used - so
     // any zoom works, and everything zoom-INDEPENDENT comes back identical
@@ -4830,13 +4938,14 @@ function captureFrom(renderer, w, h, colors) {
         // the sequence highlight kept whatever screen coordinates the last 2D
         // render had left, and drifted the moment the model turned.
         return { prims: renderer._primProbe || [], scale: renderer._viewScale,
-            capZoom, pos: renderer._posProbe };
+            capZoom, pos: renderer._posProbe, trace: renderer._traceProbe };
     } finally {
         setCapturing(false);
         renderer._noViewCull = keep.noViewCull;
         renderer._frameProbe = keep.frameProbe;
         renderer._probeOnly = keep.probeOnly;
         renderer._primProbe = keep.primProbe;
+        renderer._traceProbe = keep.traceProbe;
         renderer._posProbe = keep.posProbe;
         renderer.cartoonPencil = keep.pencil;
         renderer.viewerState.zoom = keep.zoom;
@@ -4945,6 +5054,7 @@ function invalidate() {
     // of fills for geometry the page has been told to forget is not what
     // "invalidate" means.
     ribbonPart = null;
+    otherPart = null;
     spareTube = null; tubeLive = null; tubeCount = 0;
     clearResident();
 }
@@ -5200,8 +5310,16 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
                 };
             })() : () => {};
             hm('start');
-            const { prims, scale, capZoom, pos } = captureFrom(renderer,
+            const { prims, scale, capZoom, pos, trace } = captureFrom(renderer,
                 displayWidth, displayHeight, colors);
+            // WHERE THE RIBBON RAN, handed straight to the renderer: the
+            // capture puts `_traceProbe` back the way it found it, so without
+            // this the samples exist for a moment and are dropped. Stored in
+            // the pre-rotation space by _storeRibbonTrace, because THIS is the
+            // path where the mesh outlives the rotation it was captured at.
+            if (trace && renderer._storeRibbonTrace) {
+                renderer._storeRibbonTrace(trace);
+            }
             hm('afterCapture', prims.length);
             RB.capture = +(performance.now() - RB.t0).toFixed(1);
             if (!prims.length) return false;

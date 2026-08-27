@@ -29,7 +29,7 @@
 //
 // `half` wraps the item in a half-cell, which index.html pairs two-across and
 // viewer.html stacks. `style` sets data-style, so syncStylePanel shows the row
-// only for that draw path; `needsSs` sets data-needs-ss.
+// only for that draw path.
 const STYLE_PANEL_ROWS = [
     [{ kind: 'select', id: 'styleSelect', label: 'Style', half: true,
        title: 'Tube is the backbone trace; the other three are cartoons.'
@@ -85,17 +85,36 @@ const STYLE_PANEL_ROWS = [
     // Entropy needs an MSA. index.html had this order and this hidden Object
     // option; viewer.html had neither, which is the third divergence the two
     // copies had grown.
-    [{ kind: 'select', id: 'colorSelect', label: 'Color',
+    // ...AND HOW A SELECTION IS MARKED, BESIDE IT. The two are the same kind of
+    // question - what colour is the structure, what colour is the bit you
+    // picked - and they are the only two dropdowns after Style, so they pair.
+    //
+    // It belongs here rather than under Focus: the mark is on EVERY selection
+    // (a sequence-strip drag, Select all, a click in any mode), and a setting
+    // hidden inside one mode is findable only from inside it. It also leaves
+    // Focus a one-click latch rather than a button that means two things.
+    // docs/SELECTION_MARK.md has the six treatments this was chosen from.
+    [{ kind: 'select', id: 'colorSelect', label: 'Color', half: true,
        options: [['auto', 'Auto'], ['rainbow', 'Rainbow'], ['chain', 'Chain'],
-                 ['object', 'Object', { hidden: true }], ['ss', 'SSE'],
+                 ['object', 'Object', { hidden: true }],
+                 // ...AND ONE PER SSE PALETTE, expanded by parts/ui.js from
+                 // py2dmolCartoon.SS_PALETTES - 'SSE (PyMOL)', 'SSE (Jmol)'.
+                 // This used to be one 'SSE' option plus a whole second
+                 // control below: a custom dropdown that drew the palette as
+                 // five colour chips, because a native <select> cannot colour
+                 // its options. It was ninety lines, it was the only control
+                 // in the panel that was not a select or a toggle, and every
+                 // attempt to make it look like its neighbours found another
+                 // way in which it did not. Two options in the dropdown that
+                 // is already there say the same thing.
+                 ['ss', 'SSE', { id: 'ssColorOption' }],
                  ['plddt', 'pLDDT'], ['deepmind', 'DeepMind'],
-                 ['entropy', 'Entropy', { id: 'entropyColorOption', hidden: true }]] }],
-
-    // ...filled by ui.js from py2dmolCartoon.SS_PALETTES, and shown only while
-    // the colour mode is 'ss'.
-    [{ kind: 'slot', id: 'ssPaletteButtons', label: 'SSE', needsSs: true,
-       title: 'Colour palette for the SSE mode;'
-            + ' C coil, H helix, E strand, N nucleic, L ligand' }],
+                 ['entropy', 'Entropy', { id: 'entropyColorOption', hidden: true }]] },
+     { kind: 'select', id: 'selectionMarkSelect', label: 'Sele', half: true,
+       title: 'How a selected residue is marked: a translucent band over it,'
+            + ' a thin outline around it, or nothing.',
+       options: [['highlight', 'Highlight'], ['outline', 'Outline'],
+                 ['none', 'None']] }],
 
     // THE ORDER IS THE LAYOUT, and it is one wrapping flow rather than tidy
     // rows. A cell belonging to the other style collapses and the rest pack
@@ -210,8 +229,6 @@ function buildStylePanel() {
         const row = el('div', {
             class: 'toggle-item',
             'data-style': styles.size === 1 ? [...styles][0] || null : null,
-            'data-needs-ss': items.some((i) => i.needsSs) ? true : null,
-            hidden: items.some((i) => i.needsSs) ? true : null,
         });
         for (const item of items) row.appendChild(buildItem(item));
         panel.appendChild(row);

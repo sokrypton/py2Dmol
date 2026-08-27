@@ -50,6 +50,16 @@ eval('global.' + L.constExpr('isPerspective'));
 // module-level constants the lifted methods close over, taken from the source
 // so the test scores the shipped values rather than a copy of them
 for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_GAIN',
+    // ...and the outline's, which the same paint reads when `selectionMark`
+    // asks for one. See docs/SELECTION_MARK.md.
+    'SELECTION_MARKS',
+    'SELECTION_OUTLINE_GAIN', 'SELECTION_OUTLINE_LIGHT', 'SELECTION_OUTLINE_DARK',
+    'SELECTION_OUTLINE_ALPHA', 'SELECTION_OUTLINE_PX',
+    // ...and the two the scratch layer reads, which a lifted paint only
+    // reaches when the selection has more than one width group. See
+    // docs/SELECTION_MARK.md: a design that always uses the layer needs the
+    // ring constants here too.
+    'SELECTION_HALO_SOLID_CSS', 'SELECTION_HALO_ALPHA',
     'SELECTION_HALO_MIN_PX', 'SELECTION_HALO_RADIUS_FRAC', 'SIDECHAIN_WIDTH', 'SIDECHAIN_REACH_A',
     'PICK_WIDTH_SCALE', 'CONTACT_WIDTH_A', 'HOVER_TEXT_LIGHT_CSS',
     'HOVER_TEXT_DARK_CSS', 'HOVER_TEXT_MARGIN']) {
@@ -2366,12 +2376,18 @@ t('the selection band holds its proportion at every size', () => {
     // follow, at either end.
     // the shipped rule itself, lifted with the rest of the module (see the top)
     const bandFor = global.selectionBandFor;
-    // ...the proportion it exists to hold. 2.3 = 1 + the 1.3 gain, as a radius.
+    // ...the proportion it exists to hold, which is 1 + the gain as a radius.
+    // TAKEN FROM THE SHIPPED CONSTANT, not written out: the gain is a matter
+    // of taste and has been changed once already (1.3 for a translucent band,
+    // 1.0 once the band became a ring, which reads at its inner edge). What is
+    // not a matter of taste is that the band is a PROPORTION at every size,
+    // and that is what this asks.
+    const want = 1 + SELECTION_HALO_GAIN;
     for (const rad of [2, 3.5, 5.4, 7, 10, 13]) {
         const ratio = bandFor(rad, 1) / 2 / rad;
-        if (Math.abs(ratio - 2.3) > 0.02) {
+        if (Math.abs(ratio - want) > 0.02) {
             throw new Error(`a mark of ${rad} px gets a band ${ratio.toFixed(2)}x its`
-                + ' radius, not the 2.3x the gain asks for');
+                + ` radius, not the ${want}x the gain asks for`);
         }
     }
     // ...at EVERY size, including the big ones. There is no ceiling: a band
@@ -2379,7 +2395,7 @@ t('the selection band holds its proportion at every size', () => {
     // highlight stops following what it marks.
     for (const rad of [20, 27, 50, 200]) {
         const ratio = bandFor(rad, 1) / 2 / rad;
-        if (Math.abs(ratio - 2.3) > 0.02) {
+        if (Math.abs(ratio - want) > 0.02) {
             throw new Error(`a mark of ${rad} px gets ${ratio.toFixed(2)}x its radius`
                 + ' - something is bounding the band again, and that is where it'
                 + ' stops tracking');
@@ -2394,18 +2410,19 @@ t('the selection band holds its proportion at every size', () => {
     // everything, and it follows the zoom because the residue radius does.
     for (const rad of [5, 10, 27]) {
         const margin = bandFor(rad, 1, 1.86) / 2 - rad;
-        if (Math.abs(margin - 1.3 * 1.86) > 0.01) {
+        const wantMargin = SELECTION_HALO_GAIN * 1.86;
+        if (Math.abs(margin - wantMargin) > 0.01) {
             throw new Error(`a mark of ${rad} px sticks out by ${margin.toFixed(2)} px,`
-                + ' not the 2.42 the view asks for - the margin is being taken'
-                + ' from the mark again');
+                + ` not the ${wantMargin.toFixed(2)} the view asks for - the margin`
+                + ' is being taken from the mark again');
         }
     }
     // ...and a SMALL one is not given a band out of proportion either: the
     // floor is on the whole band, not added to the margin, so it binds only
     // where the mark is genuinely sub-pixel. A 1.7 px zinc used to get 4.2 px
-    // (2.5x) and now gets 3.9 (2.3x).
+    // (2.5x) and now gets its proportion, whatever the gain says that is.
     const small = bandFor(1.7, 1) / 2 / 1.7;
-    if (Math.abs(small - 2.3) > 0.02) {
+    if (Math.abs(small - want) > 0.02) {
         throw new Error(`a 1.7 px mark gets ${small.toFixed(2)}x its radius`);
     }
     // ...and the floor still marks a hairline
@@ -3695,8 +3712,12 @@ t('the selection band is a proportion of what it marks, not a fixed width', () =
     // for the atom hanging off it - so a band taken from it at face value is
     // heavier than the thing it marks. At the default view that is 12.5 px
     // around a ribbon whose radius reads as 5.42, where it used to be 24.9.
-    if (Math.abs(normal - 12.5) > 1) {
-        throw new Error('the default view band is ' + normal + ', expected ~12.5');
+    // 12.5 px was this number at a gain of 1.3; it scales with the gain, for
+    // the same reason as the ratio above.
+    const wantPx = 12.5 * (1 + SELECTION_HALO_GAIN) / 2.3;
+    if (Math.abs(normal - wantPx) > 1) {
+        throw new Error('the default view band is ' + normal
+            + ', expected ~' + wantPx.toFixed(1));
     }
     // never much more than the geometry itself, once the floor stops binding.
     // At radius 2 the 2.5 px floor is what sets the width - a hairline still
@@ -8616,9 +8637,10 @@ t('Multi is a mode, and the picker is what it replaces', () => {
 
 // THE TWO PAGES DRAW THE SAME CONTROLS AND HAVE TO AGREE ON THE ORDER.
 //
-// index.html has always read Orient/Rotate, then Style/Capture, then the object
-// picker, then the panels those buttons open. viewer.html shipped Style/Capture
-// first, the picker in the middle, and Orient/Rotate underneath - the same
+// index.html reads Orient/Focus/Rotate, then Style/Clip/Capture, then the
+// object picker, then the panels those buttons open. viewer.html shipped
+// Style/Capture first, the picker in the middle, and Orient/Rotate underneath -
+// the same
 // failure as the style panel that was written out in both files under a note
 // saying to edit both, which had already been missed in both directions by the
 // time anyone looked.
@@ -8628,8 +8650,9 @@ t('Multi is a mode, and the picker is what it replaces', () => {
 // allowed to wander off.
 //
 // Order, not identity. The pages differ in ways that do not matter to a reader
-// moving between them: index.html has a Clip toggle and the viewer does not,
-// index.html wraps its buttons in .toolbar-row where the viewer uses .btn-row,
+// moving between them: Clip is a panel on the website and a press-again toggle
+// in the other two, index.html wraps its buttons in .toolbar-row where the
+// viewer uses .btn-row,
 // and Orient is a <label> there against a <button> here - which is why the id
 // is per page below. Where the controls sit relative to each other is the part
 // that does matter.
@@ -8638,17 +8661,25 @@ t('all three shells order their controls the same way', () => {
     // reader moving between them - index.html draws Orient as a <label> and the
     // other two as a <button>, and the embed has no object picker at all - so
     // each names its own sequence and the shared shape is what is compared.
+    // THE ORDER IS: the camera moves a click makes, then the one that runs by
+    // itself, then the three that open or cut something.
+    //   Orient  Focus  Rotate
+    //   Style   Clip   Capture
+    // Focus is in the list now. It is in all three shells and in the same
+    // place, which is the only thing this test asks of anything.
     const PAGES = {
-        'index.html': ['orientToggle', 'rotationCheckbox', 'clipToggle',
-            'styleToggle', 'saveImageButton', 'objectSelect', 'stylePanelMount'],
-        'py2Dmol/resources/viewer.html': ['orientButton', 'rotationCheckbox',
-            'clipButton', 'styleToggle', 'saveImageButton', 'objectSelect',
+        'index.html': ['orientToggle', 'focusButton', 'rotationCheckbox',
+            'styleToggle', 'clipToggle', 'saveImageButton', 'objectSelect',
             'stylePanelMount'],
+        'py2Dmol/resources/viewer.html': ['orientButton', 'focusButton',
+            'rotationCheckbox', 'styleToggle', 'clipButton', 'saveImageButton',
+            'objectSelect', 'stylePanelMount'],
         // the embed's shell is markup inside a JS file, and had drifted
         // furthest: Style and Capture came FIRST, and Clip sat between Orient
         // and Rotate on both it and viewer.html while index.html put it last.
-        'src/parts/embed.js': ['orientButton', 'rotationCheckbox', 'clipButton',
-            'styleToggle', 'saveImageButton', 'stylePanelMount'],
+        'src/parts/embed.js': ['orientButton', 'focusButton',
+            'rotationCheckbox', 'styleToggle', 'clipButton', 'saveImageButton',
+            'stylePanelMount'],
     };
     for (const [file, seq] of Object.entries(PAGES)) {
         const html = fs.readFileSync(file, 'utf8');

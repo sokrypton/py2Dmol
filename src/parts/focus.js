@@ -28,6 +28,193 @@
         },
 
         /**
+         * EVERYTHING THE MODE IS ABOUT TO BORROW, in one record.
+         *
+         * Focus is a MODE, and a mode that leaves anything of its own behind
+         * is worse than no mode: a reader who turns it off wants the picture
+         * they had, not that picture plus five side chains and a slab. So the
+         * snapshot is taken when the mode is ENTERED rather than on the first
+         * click, and it covers everything the mode itself changes - what was
+         * selected, what side chains each object was showing, the slab, and
+         * the camera's centre and zoom.
+         *
+         * NOT the rotation, which is the one thing in the camera that focus
+         * never touches. If it moved, the reader moved it, and it is theirs to
+         * keep on the way out.
+         */
+        _focusSnapshot() {
+            const sidechains = new Map();
+            for (const name of Object.keys(this.objectsData || {})) {
+                const obj = this.objectsData[name];
+                if (!obj) continue;
+                sidechains.set(name, obj.sidechains instanceof Set
+                    ? new Set(obj.sidechains) : null);
+            }
+            return {
+                sidechains,
+                clip: (typeof this.clipSlabOn === 'function' && this.clipSlabOn())
+                    ? { near: this.clipNear, far: this.clipFar } : null,
+                center: this.viewerState.center
+                    ? Object.assign({}, this.viewerState.center) : null,
+                extent: this.viewerState.extent,
+                extentAspect: this.viewerState.extentAspect,
+                zoom: this.viewerState.zoom,
+                // NOT THE ROTATION. Everything else here is something the mode
+                // BORROWS - it drew those side chains, it cut that slab, it
+                // moved that centre - and giving back what you borrowed is the
+                // whole rule. An angle the reader turned to while inside the
+                // mode is not borrowed, it is theirs: they looked at the
+                // pocket from the other side because that is where they wanted
+                // to be, and snapping back on the way out throws away the one
+                // thing focus never touched on its own.
+                selection: this.residueSelection instanceof Set
+                    ? new Set(this.residueSelection) : null,
+                // ...AND HOW A SELECTION IS MARKED, because the mode changes
+                // it: focus draws the neighbourhood's side chains around the
+                // residue you clicked, and a translucent band laid over the
+                // middle of that is a blot exactly where you are looking. An
+                // outline says which one without covering it.
+                selectionMark: this.selectionMark || 'highlight',
+            };
+        },
+
+        /**
+         * Put a snapshot back. `animate` false snaps rather than flies.
+         *
+         * `withSelection` false leaves the selection EMPTY instead of putting
+         * the snapshot's back - which is what clicking the background inside
+         * the mode wants: it is a step BACK OUT of one focus, not a step out of
+         * the mode, and reviving the selection the reader had before they
+         * pressed the button re-marks residues they have since moved on from.
+         * Leaving the mode restores it, because then it is theirs again.
+         */
+        _focusRestore(snap, animate, withSelection) {
+            if (!snap) return false;
+            for (const [name, set] of snap.sidechains) {
+                const obj = this.objectsData[name];
+                if (obj) obj.sidechains = set;
+            }
+            this._invalidateSegmentCache();
+            this.reloadDrawn(true);
+
+            if (typeof this.setClipSlab === 'function') {
+                if (snap.clip) this.setClipSlab(snap.clip.near, snap.clip.far);
+                else this.setClipSlab(null, null);
+                if (this._syncClipButton) this._syncClipButton();
+            }
+            // THE ANGLE IS LEFT ALONE - see the snapshot. The centre and the
+            // zoom come back because the mode moved them; the rotation does
+            // not, because only the reader did.
+            this.viewerState.zoom = snap.zoom;
+            this.focusMoveTo({
+                center: snap.center,
+                extent: (snap.extent !== null && snap.extent !== undefined)
+                    ? snap.extent : this._currentExtent(),
+                extentAspect: snap.extentAspect,
+            }, animate !== false);
+            // ...and the extent goes back to EXACTLY what was there, null
+            // included: the tween needs a number to move to, and null means
+            // "the object's own", which is not the same thing.
+            if (snap.extent === null || snap.extent === undefined) {
+                const settle = () => {
+                    if (this._focusAnim) { requestAnimationFrame(settle); return; }
+                    this.viewerState.extent = snap.extent;
+                    this.viewerState.center = snap.center;
+                    this._invalidateScreenProjection();
+                    this.render('focusRestore');
+                };
+                settle();
+            }
+            // THE MARK GOES BACK ONLY IF THE MODE IS STILL WEARING ITS OWN.
+            // Same line as the rotation: what focus changed, focus puts back;
+            // what the reader changed while they were in there is theirs. If
+            // they picked Highlight or None from the panel mid-focus, that is
+            // a choice about how they want selections marked, not a thing the
+            // mode borrowed.
+            if (this.selectionMark === 'outline'
+                && snap.selectionMark && snap.selectionMark !== 'outline') {
+                this.selectionMark = snap.selectionMark;
+                if (this._syncSelectionMark) this._syncSelectionMark();
+            }
+            this.setResidueSelection(
+                (withSelection === false) ? new Set() : (snap.selection || new Set()));
+            this.render('focusRestore');
+            return true;
+        },
+
+        /**
+         * ENTER THE MODE: remember everything, then clear the decorations so
+         * the session starts from the structure and nothing else.
+         *
+         * The CAMERA is deliberately left where it is. Resetting the view on
+         * the way in would throw away the angle the reader chose to look from,
+         * and the mode's whole promise is that it does not rotate - the first
+         * click moves in from wherever you were standing.
+         */
+        enterFocusMode() {
+            if (this._focusMode) return false;
+            this._focusEntry = this._focusSnapshot();
+            this._focusPrev = null;
+            this._focusMode = true;
+            // A CLEAN SLATE, or the session is the reader's leftovers plus the
+            // mode's: side chains they turned on by hand look like ones focus
+            // drew, and a slab from before cuts the neighbourhood it moves to.
+            let hadSidechains = false;
+            for (const name of Object.keys(this.objectsData || {})) {
+                const obj = this.objectsData[name];
+                if (obj && obj.sidechains) { obj.sidechains = null; hadSidechains = true; }
+            }
+            if (hadSidechains) {
+                this._invalidateSegmentCache();
+                this.reloadDrawn(true);
+            }
+            if (typeof this.setClipSlab === 'function'
+                && typeof this.clipSlabOn === 'function' && this.clipSlabOn()) {
+                this.setClipSlab(null, null);
+                if (this._syncClipButton) this._syncClipButton();
+            }
+            // A SELECTION ALREADY THERE IS AN INTENT, NOT A LEFTOVER. Side
+            // chains and a slab are decorations the reader turned on at some
+            // point and forgot; a selection is "this is the thing I am looking
+            // at", and pressing Focus with one is asking to look at it closer.
+            // So it is not cleared - it is FOCUSED, and the mode opens on the
+            // neighbourhood of what was already picked instead of waiting for
+            // a click that says the same thing again.
+            // AN OUTLINE, NOT A WASH, for as long as the mode is on. The
+            // whole point of focus is to look closely at one residue with its
+            // neighbours drawn around it, and the default mark is a
+            // translucent band laid OVER that residue - a blot in the middle
+            // of the thing you moved in to see. See docs/SELECTION_MARK.md.
+            if (this.selectionMark !== 'outline') {
+                this.selectionMark = 'outline';
+                if (this._syncSelectionMark) this._syncSelectionMark();
+            }
+            const seed = (this.residueSelection instanceof Set
+                && this.residueSelection.size)
+                ? new Set(this.residueSelection) : null;
+            if (seed) {
+                // ...and the guard, because focusOn sets the selection itself
+                // and parts/ui.js WRAPS that setter to trigger a focus. Without
+                // it, entering the mode focuses, which selects, which focuses.
+                const was = this._focusBusy;
+                this._focusBusy = true;
+                try { this.focusOn(seed); } finally { this._focusBusy = was; }
+            }
+            this.render('enterFocusMode');
+            return true;
+        },
+
+        /** LEAVE IT, and put back everything the mode borrowed. */
+        exitFocusMode(animate) {
+            if (!this._focusMode) return false;
+            this._focusMode = false;
+            const snap = this._focusEntry || this._focusPrev;
+            this._focusEntry = null;
+            this._focusPrev = null;
+            return this._focusRestore(snap, animate);
+        },
+
+        /**
          * Pick a residue or a ligand and look at what it is doing.
          *
          *   r.focusOn({type: 'L'})              // the ligand and its pocket
@@ -86,7 +273,13 @@
             // it back. A second focus must NOT overwrite that record with its
             // own side chains, or leaving focus would leave the last
             // neighbourhood drawn for ever.
-            if (!this._focusPrev) {
+            // INSIDE THE MODE THE BASELINE IS THE MODE'S, taken when it was
+            // entered - so clicking away goes back to what the reader had
+            // before they pressed the button, not to what the first click
+            // happened to find. Outside it (the JS API calling focusOn
+            // directly) the first focus still remembers, which is what
+            // clearFocus has always undone.
+            if (!this._focusPrev && !this._focusEntry) {
                 this._focusPrev = {
                     sidechains: new Map(),
                     clip: (typeof this.clipSlabOn === 'function' && this.clipSlabOn())
@@ -304,45 +497,19 @@
          * once and not on every focus.
          */
         clearFocus(opts) {
-            const prev = this._focusPrev;
-            if (!prev) return false;
-            this._focusPrev = null;
-
-            for (const [name, set] of prev.sidechains) {
-                const obj = this.objectsData[name];
-                if (obj) obj.sidechains = set;
-            }
-            this._invalidateSegmentCache();
-            this.reloadDrawn(true);
-
-            if (typeof this.setClipSlab === 'function') {
-                if (prev.clip) this.setClipSlab(prev.clip.near, prev.clip.far);
-                else this.setClipSlab(null, null);
-                if (this._syncClipButton) this._syncClipButton();
-            }
-            this.viewerState.zoom = prev.zoom;
-            this.focusMoveTo({
-                center: prev.center,
-                extent: (prev.extent !== null && prev.extent !== undefined)
-                    ? prev.extent : this._currentExtent(),
-                extentAspect: prev.extentAspect,
-            }, opts !== false);
-            // ...and the extent goes back to EXACTLY what was there, null
-            // included: the tween needs a number to move to, and null means
-            // "the object's own", which is not the same thing.
-            if (prev.extent === null || prev.extent === undefined) {
-                const settle = () => {
-                    if (this._focusAnim) { requestAnimationFrame(settle); return; }
-                    this.viewerState.extent = prev.extent;
-                    this.viewerState.center = prev.center;
-                    this._invalidateScreenProjection();
-                    this.render('clearFocus');
-                };
-                settle();
-            }
-            this.setResidueSelection(prev.selection || new Set());
-            this.render('clearFocus');
-            return true;
+            // INSIDE THE MODE this is the way BACK OUT of one focus, not the
+            // way out of the mode: a click on the background zooms out and
+            // leaves the reader still in focus, ready for the next click. So
+            // it restores the mode's own baseline and KEEPS it, where the
+            // per-click record is consumed.
+            const snap = this._focusEntry || this._focusPrev;
+            if (!snap) return false;
+            const inMode = !!this._focusEntry;
+            if (!inMode) this._focusPrev = null;
+            // Inside the mode the selection goes EMPTY rather than back to
+            // what the reader had before they entered; outside it, clearFocus
+            // is the undo of one focusOn and puts back what that focus found.
+            return this._focusRestore(snap, opts !== false, !inMode);
         },
     },
 });

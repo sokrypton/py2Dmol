@@ -277,28 +277,14 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     <span><i class="fa-solid fa-crosshairs"></i>Orient</span>
                                 </label>
 
-                                <!-- Rotate: checkbox styled as a button -->
-                                <label class="btn-toggle btn-flex" id="rotateToggle" title="Toggle auto-rotation">
-                                    <input type="checkbox" id="rotationCheckbox">
-                                    <span><i class="fa-solid fa-rotate"></i>Rotate</span>
-                                </label>
-
-                                <!-- Clip: PyMOL's near/far slab, cutting the drawing. -->
-                                <label class="btn-toggle btn-flex" id="clipToggle"
-                                    title="Clip the view to a slab, as in PyMOL: near and far planes that cut the drawing">
-                                    <input type="checkbox" id="clipCheckbox">
-                                    <span><i class="fa-solid fa-cube"></i>Clip</span>
-                                </label>
-
-                            </div>
-
-                            <div class="toolbar-row">
                                 <!-- FOCUS IS A LATCH, so it says aria-pressed
                                      rather than aria-expanded - the shared rule
-                                     in style.css lights either. Left of Style
-                                     because it is what a CLICK does.
-                                     NOT crosshairs: Orient already wears those,
-                                     two rows up. A magnifier is what the mode
+                                     in style.css lights either. Beside Orient
+                                     because the two are the camera moves a
+                                     CLICK makes: Orient frames everything,
+                                     Focus moves in on one thing.
+                                     NOT crosshairs: Orient wears those, right
+                                     beside it. A magnifier is what the mode
                                      does - look closely at one thing - and it
                                      is the only one on the page, so it cannot
                                      be read as search. -->
@@ -308,11 +294,28 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     <span><i class="fa-solid fa-magnifying-glass"></i>Focus</span>
                                 </button>
 
+                                <!-- Rotate: checkbox styled as a button -->
+                                <label class="btn-toggle btn-flex" id="rotateToggle" title="Toggle auto-rotation">
+                                    <input type="checkbox" id="rotationCheckbox">
+                                    <span><i class="fa-solid fa-rotate"></i>Rotate</span>
+                                </label>
+
+
+                            </div>
+
+                            <div class="toolbar-row">
                                 <button id="styleToggle" class="btn-toggle btn-flex"
                                     aria-expanded="false" aria-controls="stylePanel"
                                     title="Render style and its settings">
                                     <span><i class="fa-solid fa-palette"></i>Style</span>
                                 </button>
+
+                                <!-- Clip: PyMOL's near/far slab, cutting the drawing. -->
+                                <label class="btn-toggle btn-flex" id="clipToggle"
+                                    title="Clip the view to a slab, as in PyMOL: near and far planes that cut the drawing">
+                                    <input type="checkbox" id="clipCheckbox">
+                                    <span><i class="fa-solid fa-cube"></i>Clip</span>
+                                </label>
 
                                 <button id="saveImageButton" class="btn-toggle btn-flex"
                                     aria-expanded="false" aria-controls="savePanel"

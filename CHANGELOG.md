@@ -315,9 +315,43 @@ result.
 - **Chain mode in the sequence strip shows the selection.** It showed nothing
   at all, while the same click lit the structure.
 
+**The selection mark follows the ribbon.** It joined consecutive residues with
+a straight line, and a cartoon helix is a ribbon spiralling *through* those
+residues — so the mark chorded the thing it was marking, by more than twice its
+own width. `cartoon/geom.js` hands back the centre line it actually drew and
+the mark traces that: on 4HHB's longest helix the path is 328 px against 295.8
+of chords, which is the arc-over-chord ratio of a helical step. A tube is
+unchanged, because a tube *is* the straight lines between its residues.
+
+**Focus is a mode with a door at each end.** Entering remembers the selection,
+every object's side chains, the slab and the camera's centre and zoom, then
+clears the decorations so the session starts from the structure rather than
+from whatever was left on screen — and focuses a selection that is already
+there, since pressing Focus with something picked is asking to look at it
+closer. Leaving puts it all back. Two things it deliberately does not take
+back: an angle you turned to while inside (focus never rotates, so if it moved,
+you moved it) and a selection mark you chose in there. The mark goes to
+**Outline** while the mode is on, which is what that option was built for, and
+the selection panel stays out of the way.
+
+**How a selection is marked is a setting.** A `Sele` dropdown in the Style
+panel, beside `Color` — **Highlight**, **Outline**, **None** — in the website,
+the notebook and the embed alike. Highlight is the translucent band this has always drawn and
+stays the default. Outline draws the same band and punches its middle out, so a
+thin line traces the residue and the geometry inside is untouched: over a
+yellow chain, where the band is a blot with the answer somewhere inside it,
+that is the difference between marking a residue and covering it. None draws
+nothing.
+
+`docs/SELECTION_MARK.md` has the six treatments this was chosen from, with the
+pictures and the constants, and the measurements that say the choice costs
+nothing — 0.02 ms between the cheapest and the dearest, on an operation that
+runs in a tenth of a millisecond.
+
 ### Faster
 
-**A side-chain click costs half what it did.** Showing side chains appends
+**A side-chain click costs half what it did.** (And half of that again: see
+the three-part mesh below.) Showing side chains appends
 positions, which changed every term of the GPU mesh signature and rebuilt the
 whole cartoon — 8,514 ribbon faces recomputed to draw 182 new stick ones. The
 mesh is built in two halves now, ribbon and sticks, concatenated into one
@@ -326,6 +360,12 @@ its own faces are unchanged. On 4HHB with 40 side chains, toggled eight times:
 **62 ms a click to 32.5**. It applies to every way side chains change — the
 Style panel toggle, `showSidechains` from the embed, `view(sidechains=True)`,
 a contact, and Focus, which is the one that does it most often.
+
+The mesh is three parts now — the ribbon, the ligands and contacts, and the
+side chains — and a click rebuilds only the last: on 4HHB that is 198 faces
+instead of 10,336, taking the stick work from 12 ms to 2.5 and the whole click
+to a **31 ms median**. A heme is 1,822 faces and was being rebuilt on every
+side-chain click purely because it is made of sticks.
 
 What it costs is 260 pixels of 357,604, all of them where a stick surface meets
 the ribbon it grows out of: the halves arrive ribbon-then-stick rather than

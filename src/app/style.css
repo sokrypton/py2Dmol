@@ -748,7 +748,13 @@
    SELECT DROPDOWNS
    ============================================================================ */
 
-.py2dmol-viewer-instance #colorSelect,
+/* #objectSelect ONLY. #colorSelect used to share this - 14px text, 8px/12px
+ * padding, a 170px width and `flex-shrink: 0` - and it lives in the Style panel
+ * now, where every other dropdown is 28px with 8px of side padding and shrinks
+ * with its cell. The panel rule below overrode the height and the font and NOT
+ * the width or the shrink, so Color refused to give ground while Sele beside it
+ * did, and the pair sat unevenly. It takes the panel's own rule now, like the
+ * rest of them. */
 .py2dmol-viewer-instance #objectSelect {
     font-size: 14px;
     padding: 8px 12px;
@@ -787,22 +793,10 @@
     min-width: 100px;
 }
 
-/* ...and the panel's own, keyed on where it is rather than on what its style
- * attribute happens to say. */
-.py2dmol-viewer-instance #stylePanel #colorSelect,
-#stylePanel #colorSelect {
-    height: 28px;
-    font-size: 12px;
-    padding: 0 8px;
-    min-width: 0;
-}
-
-.py2dmol-viewer-instance #colorSelect:hover,
 .py2dmol-viewer-instance #objectSelect:hover {
     border-color: #9ca3af;
 }
 
-.py2dmol-viewer-instance #colorSelect:focus,
 .py2dmol-viewer-instance #objectSelect:focus {
     border-color: #3b82f6;
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
@@ -2081,12 +2075,44 @@ table.layout-table td {
 #stylePanel .toggle-item label:not(.btn-toggle) {
     width: 50px; flex-shrink: 0; font-size: 12px; font-weight: 500; color: #374151;
 }
-#stylePanel select {
-    flex: 1; min-width: 0; height: 28px; font-size: 12px; padding: 0 8px;
-    border: 1px solid #d1d5db; border-radius: 8px;
+/* THE PANEL'S BOXES, IN ONE RULE, AT ONE HEIGHT.
+ *
+ * 24px is the notebook's --ctl-h. The website ran its panel controls at 28 and
+ * nothing else did, so the same panel was a different height in each shell -
+ * and slimmer reads better anyway: these are settings a reader adjusts once,
+ * not buttons competing with the picture.
+ *
+ * `.controlButton` is here because the SSE palette used to be one - a <button>,
+ * since a <select> cannot colour its options - and it stays because the
+ * notebook and the embed style `select, .controlButton` together for the same
+ * reason: anything box-shaped the panel grows should look like the dropdowns
+ * beside it without having to be told again. That palette is two options in
+ * the Color dropdown now, so nothing matches it today. */
+#stylePanel select,
+#stylePanel .controlButton {
+    flex: 1; min-width: 0; height: 24px; font-size: 12px; padding: 0 8px;
+    border: 1px solid #d1d5db; border-radius: 8px; background: #fff;
+    color: #374151; cursor: pointer;
+}
+/* ...and the states, which only #colorSelect used to have. Standardising DOWN
+   would have meant taking its focus ring away; these give it to all of them. */
+#stylePanel select:hover,
+#stylePanel .controlButton:hover { border-color: #9ca3af; }
+#stylePanel select:focus,
+#stylePanel .controlButton:focus {
+    border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    outline: none;
 }
 #stylePanel input[type="range"] { flex: 1; min-width: 0; outline: none; }
 /* Three to a line at 30% basis, which is what the toggles were given inline. */
 #stylePanel .btn-toggle { flex: 1 1 30%; margin: 0; }
-#stylePanel #ssPaletteButtons { align-items: stretch; }
+/* ...AND AS SLIM AS THE DROPDOWNS BESIDE THEM. --btn-height is 30px, which is
+   the page's toolbar height - right for Orient and Style, which are targets you
+   hit, and too tall for a row of settings inside a panel. The pill is the SPAN,
+   so both take the height or the outer box keeps its 30 and the pill floats in
+   it. */
+#stylePanel .btn-toggle,
+#stylePanel .btn-toggle > span {
+    height: 24px; font-size: 12px;
+}
 [hidden] { display: none !important; }

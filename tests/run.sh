@@ -137,7 +137,7 @@ run_probe () {   # name, then its arguments
 }
 
 if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
-  UI=(pick_empty pae_objects pae_visibility hidden_reload cut_ligands
+  UI=(pick_empty selection_mark focus_mode pae_objects pae_visibility hidden_reload cut_ligands
       sidechain_toggle nucleic_multi save_multi selection_panel minimal_input
       object_reload python_page python_multi style_per_object align_objects embed panel)
   pids=(); names=()

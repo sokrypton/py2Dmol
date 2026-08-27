@@ -210,6 +210,9 @@ window.addEventListener('load', () => {
           r.render('sidechains');
           return {ms: Math.round(performance.now() - t), rebuilt: rebuiltAt() !== t0r,
             reused: !!(window.__rebuild && window.__rebuild.ribbonReused),
+            otherReused: !!(window.__rebuild && window.__rebuild.otherReused),
+            nSide: window.__rebuild ? window.__rebuild.nSide : null,
+            nOther: window.__rebuild ? window.__rebuild.nOther : null,
             hashMs: window.__rebuild ? window.__rebuild.ribbonHash : null,
             ribbonMs: window.__rebuild ? window.__rebuild.ribbonMs : null,
             stickMs: window.__rebuild ? window.__rebuild.stickMs : null,
@@ -346,6 +349,18 @@ else:
                    " build of the same state")
     if not sc.get("pickSame"):
         bad.append("picking moved when the side chains were rebuilt fresh")
+    # ...AND WHAT THE CHANGE ACTUALLY REBUILT. The mesh is three parts - the
+    # ribbon, the other sticks (ligands, plates, contacts) and the side chains
+    # - and a side-chain click is only the last of those. A heme is 1,822 faces
+    # on 4HHB and is exactly as unchanged by the click as the backbone is.
+    on = sc.get("on") or {}
+    if not on.get("reused"):
+        bad.append("a side-chain change rebuilt the RIBBON")
+    if not on.get("otherReused"):
+        bad.append("a side-chain change rebuilt the ligands and contacts too -"
+                   " they are sticks, but they are not the sticks that changed."
+                   " Usually this means a face that belongs to a side chain was"
+                   " classified into the other group, which moves its hash")
     if not sc.get("back"):
         bad.append("taking the side chains off again did not return to the"
                    " picture before them - something was kept across the change"

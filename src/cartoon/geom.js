@@ -682,6 +682,36 @@ const ION_VDW_FRAC = 1.0;
  * and core/mol.js sizes the click target and the selection band from it. A
  * second copy of the table there would drift.
  */
+/**
+ * A SIDE CHAIN'S ATOMS ARE APPENDED POSITIONS; THE CA IT GROWS FROM IS NOT ONE
+ * OF THEM - and that asymmetry is what the two predicates below are for. They
+ * ask different questions about the same bond and it is worth being able to
+ * see which is which at the call site:
+ *
+ *   bondTouchesSidechain   is this bond part of a side chain at all? Either
+ *                          end will do, which puts the CA-CB bond with the
+ *                          side chain where it belongs - it changes when the
+ *                          side chain does. The mesh split is keyed on this.
+ *   bondMeetsBackbone      is this the bond where a side chain JOINS the
+ *                          backbone? Exactly one end, which is only ever true
+ *                          of CA-CB. The stick is cut into the ribbon's
+ *                          surface there.
+ *
+ * Putting the CA in the map would collapse the second one to false and the
+ * join would float beside the ribbon again, which is why the set means what it
+ * means.
+ */
+function isSidechainAtom(scMap, i) {
+    return !!(scMap && scMap.has(i));
+}
+function bondTouchesSidechain(scMap, a, b) {
+    return !!(scMap && (scMap.has(a) || scMap.has(b)));
+}
+function bondMeetsBackbone(scMap, a, b) {
+    if (!scMap) return false;
+    return scMap.has(a) !== scMap.has(b);
+}
+
 function loneAtomRadiusA(el) {
     const k = (el || '').toUpperCase();
     return (VDW_A[k] || VDW_DEFAULT) * ION_VDW_FRAC;
@@ -4000,6 +4030,9 @@ function mergeBondRuns(S) {
                 ? (jbd.a === atom ? jbd.halfC.a : jbd.halfC.b) : null;
             prims.push({
                 kind: 'joint', q: poly, z: zs / poly.length,
+                // ...and the junction belongs to whatever the sticks meeting
+                // in it belong to - it is welded against their end caps.
+                sc: isSidechainAtom(renderer.sidechainMap, atom),
                 c: jHalf || jbd.c, gs0: atom,
                 ci: jbd.ci,
                 half: jHalf ? (jbd.a === atom ? 1 : 2) : 0,
@@ -6215,6 +6248,18 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
     // atoms not. Nothing outside a strand moves at all, so loops, helices
     // and coil are unaffected either way.
     if (renderer._posProbe === null) renderer._posProbe = posArr;
+    // WHERE THE RIBBON ACTUALLY RUNS, station by station, for a consumer that
+    // has to follow the drawn curve rather than the residues it was drawn
+    // from. `_posProbe` above is one point per residue; between two of them a
+    // helix is a spiral and a strand is a flattened arc, and anything joining
+    // those points with a straight line chords the drawing - measured at 17 to
+    // 22 px against a 9 px selection band on 4HHB.
+    //
+    // Same terms as _frameProbe: off unless something set it to null before
+    // the render, because it is an array per residue that a normal frame never
+    // reads. ROTATED space, like everything else here; the consumer un-rotates
+    // (parts/paintgl.js already does exactly that for the frame probe).
+    const traceProbe = renderer._traceProbe === null ? [] : null;
     const at = (i) => posArr[i];
     // UNFLATTENED positions. The ribbon's face direction must come from
     // these, never from the flattened ones - see sideOf. Nucleic smoothing
@@ -6347,10 +6392,12 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
         sheetSides, sideOf, ssColor, ssPal, vis,
         widthScale,
         naSlabHalfT,
+        traceProbe,
     };
     for (let runIdx = 0; runIdx < runs.length; runIdx++) drawRun(runIdx, runCtx);
     // ...and the one thing a run leaves behind for the code after the loop.
     naSlabHalfT = runCtx.naSlabHalfT;
+    if (traceProbe) renderer._traceProbe = traceProbe;
 
     // THE STICKS, drawn from one context rather than from render()'s own
     // scope - see drawSticks. 1,463 lines of render() lived here.
@@ -6656,7 +6703,7 @@ function drawRun(runIdx, ctx) {
         protSide, q0, registerJoint, renderer, rich,
         rotated, runClose, runs, sec, selInk,
         sheetSides, sideOf, ssColor, ssPal, vis,
-        widthScale,
+        widthScale, traceProbe,
     } = ctx;
         const [lo, hi] = runs[runIdx];
         if (hi <= lo) return;
@@ -8176,6 +8223,15 @@ function drawRun(runIdx, ctx) {
                             [nx, ny, nz],
                             [tx / tm, ty / tm, tz / tm]);
                     }
+                    // THE CENTRE, IN THE SPACE THE CURVE WAS EVALUATED IN.
+                    // Not derivable from the corners above: those are
+                    // PROJECTED - paintgl unprojects them to build its mesh -
+                    // and averaging four projected corners gives a screen
+                    // point, which is a different thing from the centre line
+                    // in space. A property rather than another slot, so the
+                    // eleven indices this array is read by elsewhere do not
+                    // move.
+                    if (traceProbe) cnr.mid = [q0[0], q0[1], q0[2]];
                     return cnr; // [L+, L-, R+, R-, n.v, b.v, t.v, b.k, ...]
                 };
                 const Lp = [];
@@ -8189,6 +8245,7 @@ function drawRun(runIdx, ctx) {
                 const oLb = [];
                 const oLn = [];
                 const oLt = [];
+                const centres = traceProbe ? [] : null;
                 // model-space frame per station, only when asked for
                 const mUb = [];
                 const mWa = [];
@@ -8227,8 +8284,14 @@ function drawRun(runIdx, ctx) {
                     oLn.push(st[9]);
                     oLt.push(st[10]);
                     if (frameProbe) { mUb.push(st[11]); mWa.push(st[12]); mT.push(st[13]); }
+                    // ...and the centre line of the drawn ribbon at this
+                    // station, which evalSlab hands back on `mid`.
+                    if (traceProbe && st.mid) centres.push(st.mid);
                     zSum += (st[0][2] + st[1][2] + st[2][2] + st[3][2]) / 4;
                 }
+                // keyed by the residue the interval STARTS at, which is how
+                // the consumer walks a run: residue i to i+1 is traceProbe[i]
+                if (traceProbe && centres.length) traceProbe[i] = centres;
                 if (!ok) continue;
                 // Two primitives per interval. One per interval lets a
                 // prim's own fill fold over its boundary at a winding apex
@@ -8892,8 +8955,11 @@ function drawSticks(ctx) {
         // It also closes the gap flattening leaves: the stick now starts on
         // the ribbon you can see rather than beside it.
         if (scMap && scMap.size) {
-            const a1 = scMap.has(seg.idx1); const a2 = scMap.has(seg.idx2);
-            if (a1 !== a2) {                     // exactly one end is an atom
+            const a1 = scMap.has(seg.idx1);
+            // EXACTLY ONE END, which is only ever the CA-CB bond - see
+            // bondMeetsBackbone. The mesh split asks the OTHER question about
+            // this same bond (either end), and the two must not be conflated.
+            if (bondMeetsBackbone(scMap, seg.idx1, seg.idx2)) {
                 const own = a1 ? seg.idx2 : seg.idx1;
                 const tip = a1 ? v1 : v2;
                 const face = ribbonSurfaceToward(own, tip);
@@ -9714,6 +9780,17 @@ function drawSticks(ctx) {
                 kind: 'stickFace',
                 q: fq,
                 z: zf,
+                // 🔴 IS THIS BOND PART OF A SIDE CHAIN? Asked of BOTH ends,
+                // which is the whole subtlety: the CA-CB bond has one end in
+                // the side-chain map and one on the backbone, and a consumer
+                // classifying by `gs0` - which is min(a, b), the CA - reads it
+                // as backbone while the CB-CG bond beside it reads as side
+                // chain. Those two share a welded face, and splitting the mesh
+                // on that classification broke 50 of 702 welds on 4HHB: the
+                // doubled lines the weld exists to remove, at every
+                // attachment. Only the drawing knows which bonds it drew for a
+                // side chain, so it says so here.
+                sc: bondTouchesSidechain(scMap, bd.a, bd.b),
                 // painted as one flat colour - see rgbCss in the fill
                 unlit: !!bd.unlit,
                 c: segC || bd.c,

@@ -293,26 +293,26 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
                      embed's shell gets it from the same place. -->
                 <button id="orientButton" class="controlButton"
                     title="Orient to best view">Orient</button>
+                <!-- FOCUS IS A LATCH, so it says aria-pressed like Clip and
+                     wears the same lit skin. Beside Orient because the two are
+                     the camera moves a CLICK makes: Orient frames everything,
+                     Focus moves in on one thing. -->
+                <button id="focusButton" class="controlButton" aria-pressed="false"
+                    title="Click a residue or ligand to draw its neighbours' side chains, move in on it and clip around it. The view does not turn. Click the background to come back out.">Focus</button>
                 <label class="controlButton btn-toggle" title="Toggle auto-rotation">
                     <input type="checkbox" id="rotationCheckbox">
                     <span>Rotate</span>
                 </label>
+            </div>
+            <div class="btn-row auto">
+                <button id="styleToggle" class="controlButton" aria-expanded="false" aria-controls="stylePanel"
+                    title="Render style and its settings">Style</button>
                 <!-- A TOGGLE, NOT index.html's PANEL. There the slab has a
                      panel whose closing commits, so Clip reads as a mode; here
                      there is nothing to set - the depth comes from what is
                      selected - so it is press to cut, press again to stop. -->
                 <button id="clipButton" class="controlButton"
                     title="Clip to the selection (press again to clear)">Clip</button>
-            </div>
-            <div class="btn-row auto">
-                <!-- FOCUS IS A LATCH, so it says aria-pressed like Clip and
-                     wears the same lit skin. Left of Style because it is what
-                     a CLICK does, and clicking is the first thing a reader
-                     tries. -->
-                <button id="focusButton" class="controlButton" aria-pressed="false"
-                    title="Click a residue or ligand to draw its neighbours' side chains, move in on it and clip around it. The view does not turn. Click the background to come back out.">Focus</button>
-                <button id="styleToggle" class="controlButton" aria-expanded="false" aria-controls="stylePanel"
-                    title="Render style and its settings">Style</button>
                 <!-- aria-expanded like the Style button beside it: it is
                      what says the panel is open, both to a reader of the page
                      and to the CSS that lights the button. -->

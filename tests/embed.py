@@ -1507,9 +1507,14 @@ if 'svg' not in fmts:
 if not R.get('svgHiddenForCartoon'):
     bad.append('SVG is still offered for a cartoon in the WebGL build, which'
                ' cannot produce it')
-if menu.get('selects') != ['tube', 'auto']:
-    bad.append(f"controls:true gave {menu.get('selects')}, expected a style and"
-               ' a colour dropdown reading tube and auto')
+# ...the panel's dropdowns, in the order parts/panel.js lists them: style,
+# colour, and how a selection is marked. The third arrived with the shared
+# panel and so arrived HERE, in the embed, without the embed being touched -
+# which is the point of the shared panel and the reason this reads the whole
+# list rather than the first two.
+if menu.get('selects') != ['tube', 'auto', 'highlight']:
+    bad.append(f"controls:true gave {menu.get('selects')}, expected the style,"
+               ' colour and selection-mark dropdowns reading tube, auto, highlight')
 after = R.get('chromeAfterCode', {})
 if (after.get('selects') or [None])[0] != 'ribbon':
     bad.append(f"after setStyle('ribbon') the dropdown reads"

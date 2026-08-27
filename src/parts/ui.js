@@ -366,6 +366,33 @@ if (config.scatter && config.scatter.enabled) {
 }
 
 // 5. Setup general controls
+// HOW A SELECTION IS MARKED. A shared-panel row, so it appears in all three
+// shells - and wired HERE, once, because a control the panel shows and one
+// shell wires is worse than no control (Cyclic, Orient, Clip and Draw all
+// arrived that way). See docs/SELECTION_MARK.md.
+//
+// A REPAINT IS ENOUGH: the mark is painted over the finished frame by
+// _paintSelectionHalo, so nothing about the geometry changes and there is no
+// reloadDrawn() here - which is what the side-chain and contact toggles need
+// and this does not.
+const selectionMarkSelect = containerElement.querySelector('#selectionMarkSelect');
+if (selectionMarkSelect) {
+    if (!renderer.selectionMark) renderer.selectionMark = 'highlight';
+    selectionMarkSelect.value = renderer.selectionMark;
+    selectionMarkSelect.addEventListener('change', (e) => {
+        renderer.selectionMark = e.target.value;
+        renderer.render('selectionMark');
+    });
+    // ...AND THE OTHER DIRECTION. Focus switches the mark to an outline while
+    // it is on and puts it back on the way out, so the dropdown has to follow
+    // the renderer as well as drive it - a control showing something the
+    // viewer is not doing is worse than no control.
+    renderer._syncSelectionMark = () => {
+        const want = renderer.selectionMark || 'highlight';
+        if (selectionMarkSelect.value !== want) selectionMarkSelect.value = want;
+    };
+}
+
 const colorSelect = containerElement.querySelector('#colorSelect');
 
 // Initialize color mode
@@ -373,16 +400,62 @@ let validModes = getAllValidColorModes();
 if (!renderer.colorMode || !validModes.includes(renderer.colorMode)) {
     renderer.colorMode = (config.color?.mode && validModes.includes(config.color.mode)) ? config.color.mode : 'auto';
 }
-// Sync dropdown to renderer's colorMode
+// ONE OPTION PER SSE PALETTE, from the cartoon's own table rather than a
+// second list here: 'SSE (PyMOL)', 'SSE (Jmol)'. The dropdown's value is
+// `ss:<palette>` for those, which is the only composite value it carries - so
+// everything that reads or writes it goes through the two helpers below.
+//
+// This replaces a whole second control: a custom dropdown under Color that
+// drew each palette as five colour chips, because a native <select> cannot
+// colour its options. Ninety lines, the only thing in the panel that was
+// neither a select nor a toggle, and it never did look like its neighbours.
+const SS_PALETTE_LABELS = { pymol: 'PyMOL', jmol: 'Jmol' };
+if (colorSelect) {
+    const seed = colorSelect.querySelector('#ssColorOption')
+        || [...colorSelect.options].find((o) => o.value === 'ss');
+    const table = window.py2dmolCartoon && window.py2dmolCartoon.SS_PALETTES;
+    if (seed && table) {
+        const keys = Object.keys(table);
+        for (const key of keys) {
+            const opt = document.createElement('option');
+            opt.value = 'ss:' + key;
+            opt.textContent = 'SSE (' + (SS_PALETTE_LABELS[key] || key) + ')';
+            seed.parentNode.insertBefore(opt, seed);
+        }
+        // THE SEED STAYS, HIDDEN. Anything that assigns the bare 'ss' - a
+        // saved session, a config, the renderer's own resync - has to find an
+        // option or the box goes blank, and the mode really is 'ss' whichever
+        // palette is on.
+        seed.hidden = true;
+        if (keys.length) seed.disabled = true;
+    }
+}
+/** What the dropdown should read for the renderer's current colour mode. */
+const colorSelectValue = () => {
+    const mode = renderer.colorMode || 'auto';
+    if (mode !== 'ss') return mode;
+    const pal = renderer.ssPalette || 'pymol';
+    const wanted = 'ss:' + pal;
+    return [...colorSelect.options].some((o) => o.value === wanted) ? wanted : 'ss';
+};
+// ...and the renderer's own resync (core/mol.js) and the session restore go
+// through it too, so the composite lives in one place.
+renderer._colorSelectValue = colorSelectValue;
 if (colorSelect && renderer.colorMode) {
-    colorSelect.value = renderer.colorMode;
+    colorSelect.value = colorSelectValue();
 }
 // Palette for the 'ss' colour mode (config.color.ss_palette / the SSE
 // dropdown). Unset = cartoon/geom.js's default palette.
 if (config.color?.ss_palette) renderer.ssPalette = config.color.ss_palette;
 
 colorSelect.addEventListener('change', (e) => {
-    const selectedMode = e.target.value;
+    // `ss:pymol` is the mode and the palette in one value - the only option in
+    // here that carries two things, and it is split before anything else looks
+    // at it.
+    const raw = e.target.value;
+    const cut = raw.indexOf(':');
+    const selectedMode = cut < 0 ? raw : raw.slice(0, cut);
+    if (cut >= 0 && selectedMode === 'ss') renderer.ssPalette = raw.slice(cut + 1);
     const validModes = getAllValidColorModes();
 
     if (validModes.includes(selectedMode)) {
@@ -407,146 +480,24 @@ colorSelect.addEventListener('change', (e) => {
         if (renderer._syncStylePanel) renderer._syncStylePanel();
     } else {
         // Invalid mode - reset dropdown to current colorMode
-        colorSelect.value = renderer.colorMode || 'auto';
+        colorSelect.value = colorSelectValue();
     }
 });
 
 // Store reference to colorSelect in renderer for syncing
 renderer.colorSelect = colorSelect;
 
-// SSE palette picker (optional container, inside the Style panel): a
-// CUSTOM dropdown, because a native <select> cannot colour its options.
-// The closed button shows the CURRENT palette as C H E N L colour chips
-// (coil, helix, strand, nucleic, ligand - each letter on its own palette
-// colour) plus the name; opening it lists every palette the same way.
-// Built from py2dmolCartoon.SS_PALETTES so the preview cannot drift from
-// what the renderer draws. Row visibility is handled by syncStylePanel
-// via data-needs-ss.
-const ssPaletteBox = containerElement.querySelector('#ssPaletteButtons');
-if (ssPaletteBox) {
-    const PAL_NAMES = { pymol: 'PyMOL', jmol: 'Jmol' };
-    const fillRow = (el, key, pal, caret) => {
-        el.textContent = '';
-        for (const cls of ['C', 'H', 'E', 'N', 'L']) {
-            const c = pal[cls];
-            const lum = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
-            const chip = document.createElement('span');
-            chip.textContent = cls;
-            chip.style.cssText = 'display:inline-block;width:14px;'
-                + 'text-align:center;border-radius:3px;font-size:10px;'
-                + 'font-weight:600;line-height:14px;flex-shrink:0;'
-                + 'border:1px solid rgba(0,0,0,0.12);'
-                + `background:rgb(${c.r},${c.g},${c.b});`
-                + `color:${lum > 160 ? '#1f2937' : '#ffffff'};`;
-            el.appendChild(chip);
-        }
-        const nm = document.createElement('span');
-        nm.textContent = PAL_NAMES[key] || key;
-        nm.style.cssText = 'font-size:11px;color:#6b7280;margin-left:3px;'
-            + 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
-            + 'flex:1 1 0;min-width:0;text-align:left;';
-        el.appendChild(nm);
-        if (caret) {
-            const cv = document.createElement('span');
-            cv.textContent = '\u25be';
-            cv.style.cssText = 'font-size:10px;color:#6b7280;flex-shrink:0;';
-            el.appendChild(cv);
-        }
-    };
-    const buildSsPalette = () => {
-        const table = window.py2dmolCartoon && window.py2dmolCartoon.SS_PALETTES;
-        if (!table) return;
-        ssPaletteBox.textContent = '';
-        ssPaletteBox.style.position = 'relative';
-        const rowCss = 'display:flex;align-items:center;gap:2px;width:100%;'
-            + 'justify-content:flex-start;padding:2px 4px;height:24px;min-width:0;';
-        const closed = document.createElement('button');
-        closed.type = 'button';
-        closed.className = 'controlButton';
-        closed.style.cssText = rowCss;
-        closed.title = 'SSE palette - C coil, H helix, E strand, N nucleic, L ligand';
-        // MATCH THE SIBLING DROPDOWNS: copy the box (border, radius,
-        // height, font) from the page's own Style select, so the closed
-        // state looks like one of them on any page without hardcoding
-        // either page's dimensions here.
-        const refSel = containerElement.querySelector('#styleSelect');
-        let menuRadius = '6px';
-        if (refSel) {
-            const cs = refSel.ownerDocument.defaultView.getComputedStyle(refSel);
-            closed.style.border = cs.border;
-            closed.style.borderRadius = cs.borderRadius;
-            closed.style.height = cs.height;
-            closed.style.fontSize = cs.fontSize;
-            closed.style.background = '#ffffff';
-            menuRadius = cs.borderRadius;
-        }
-        const menu = document.createElement('div');
-        menu.hidden = true;
-        // sized to CONTENT and anchored to the right edge: constrained
-        // to the box width the chip rows overflowed the narrow widget
-        // panel; as an overlay the menu may spread left over the panel.
-        menu.style.cssText = 'position:absolute;top:100%;right:0;left:auto;'
-            + 'width:max-content;'
-            + 'margin-top:2px;background:#ffffff;border:1px solid #d1d5db;'
-            + 'box-shadow:0 4px 12px rgba(0,0,0,0.15);'
-            + 'display:flex;flex-direction:column;gap:2px;padding:3px;'
-            + 'z-index:1000;';
-        menu.style.borderRadius = menuRadius;
-        const syncClosed = () => {
-            const cur = renderer.ssPalette || 'pymol';
-            fillRow(closed, cur, table[cur] || table.pymol, true);
-            menu.querySelectorAll('.ssPalOption').forEach((b) => {
-                const on = b.dataset.palette === cur;
-                b.style.background = on ? '#e5e7eb' : '#ffffff';
-            });
-        };
-        for (const key of Object.keys(table)) {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'controlButton ssPalOption';
-            btn.dataset.palette = key;
-            btn.title = (PAL_NAMES[key] || key)
-                + ' - C coil, H helix, E strand, N nucleic, L ligand';
-            btn.style.cssText = rowCss + 'border:none;';
-            fillRow(btn, key, table[key], false);
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                renderer.ssPalette = key;
-                menu.hidden = true;
-                syncClosed();
-                renderer.colorsNeedUpdate = true;
-                renderer.plddtColorsNeedUpdate = true;
-                renderer.render('ssPalette');
-                // The sequence view and the PAE plot colour their residues
-                // through the same per-residue colour function, so a palette
-                // swap changes them too - but they only find out through
-                // this event, which the colour-MODE dropdown dispatches and
-                // this handler used to skip. Result: the ribbon recoloured
-                // and the sequence stayed on the old palette.
-                document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
-            });
-            menu.appendChild(btn);
-        }
-        closed.addEventListener('click', (e) => {
-            e.stopPropagation();
-            menu.hidden = !menu.hidden;
-        });
-        // close on any click outside this widget
-        containerElement.ownerDocument.addEventListener('click', (e) => {
-            if (!menu.hidden && !ssPaletteBox.contains(e.target)) menu.hidden = true;
-        });
-        ssPaletteBox.appendChild(closed);
-        ssPaletteBox.appendChild(menu);
-        syncClosed();
-        // Expose it so ANY programmatic change to renderer.ssPalette (state
-        // restore, a preset, the Python API) can refresh the closed chip.
-        // Without this the ribbon recoloured while the dropdown kept
-        // showing the previous palette.
-        renderer._syncSsPaletteChip = syncClosed;
-    };
-    if (window.py2dmolCartoon) buildSsPalette();
-    else window.addEventListener('py2dmol_cartoon_loaded', buildSsPalette, { once: true });
-}
+// NO SSE PALETTE WIDGET ANY MORE. It was a custom dropdown in the Style panel
+// that drew each palette as five colour chips - C H E N L, each letter on its
+// own palette colour - because a native <select> cannot colour its options.
+// Ninety lines, the only control in the panel that was neither a select nor a
+// toggle, and it never looked like its neighbours: it needed the sibling
+// select's border, radius, height, font and padding copied onto it at runtime,
+// a `flex: none` so the panel's own flex rule would stop overriding its
+// height, and its own caret. The Color dropdown carries one option per palette
+// instead - see the expansion above. `renderer._syncSsPaletteChip` went with
+// it; core/mol.js calls _colorSelectValue() now, which covers every palette
+// change from any source.
 
 // ONE STYLE DROPDOWN: tube, and the three cartoons by name.
 //
@@ -637,13 +588,10 @@ function syncStylePanel() {
         if (!cells.length || cells.length !== row.children.length) return;
         row.hidden = Array.prototype.every.call(cells, (c) => c.hidden);
     });
-    // The SSE palette row exists only while colouring by secondary
-    // structure.
-    const ssOn = (renderer._getEffectiveColorMode
-        ? renderer._getEffectiveColorMode() : renderer.colorMode) === 'ss';
-    stylePanel.querySelectorAll('[data-needs-ss]').forEach((el) => {
-        if (!ssOn) el.hidden = true;
-    });
+    // NOTHING NEEDS THE SS MODE ANY MORE. There used to be a palette row here
+    // that existed only while colouring by secondary structure; the Color
+    // dropdown carries the palettes itself now, so there is no row to show or
+    // hide and `needsSs` has no users left in parts/panel.js.
     // ...and the one dropdown shows whichever of the four is live
     if (styleSelect) styleSelect.value = uiStyleOf();
 }
@@ -676,7 +624,8 @@ renderer._syncStyleControls = () => {
     set(qs('#shadeSlider'), renderer.cartoonShade);
     const arrowsCb = qs('#arrowsCheckbox');
     if (arrowsCb) arrowsCb.checked = renderer.cartoonArrows !== false;
-    if (renderer._syncSsPaletteChip) renderer._syncSsPaletteChip();
+    // ...and the Color dropdown, which carries the SSE palette in its value
+    if (colorSelect && renderer.colorMode) colorSelect.value = colorSelectValue();
 
 };
 
@@ -847,21 +796,31 @@ if (focusButton) {
             unfocus();
         };
         focusButton.addEventListener('click', () => {
-            renderer._focusMode = !renderer._focusMode;
+            // A MODE WITH A DOOR AT EACH END. Entering remembers everything -
+            // the selection, every object's side chains, the slab, and the
+            // whole camera including its angle - and then clears the
+            // decorations so the session starts from the structure and not
+            // from the reader's leftovers. Leaving puts all of it back.
+            //
+            // The CAMERA is not reset on the way in: the mode's promise is
+            // that it does not rotate, so the first click moves in from
+            // wherever the reader was standing.
+            if (renderer._focusMode) {
+                renderer._focusBusy = true;
+                try { renderer.exitFocusMode(); } finally { renderer._focusBusy = false; }
+                syncFocus();
+                return;
+            }
+            renderer._focusBusy = true;
+            try { renderer.enterFocusMode(); } finally { renderer._focusBusy = false; }
             syncFocus();
-            // LEAVING PUTS BACK WHAT IT BORROWED - the side chains, the slab
-            // and the camera. Entering does nothing until a click: a mode that
-            // rearranged the picture the moment it was pressed is a button.
-            if (!renderer._focusMode) { renderer.clearFocus(); return; }
+            // CLICKING PICKS A RESIDUE, and in the notebook that is off by
+            // default - see parts/embed.js, which says why. Focus is exactly
+            // the case where it has to be on.
             // CLICKING PICKS A RESIDUE, and in the notebook that is off by
             // default - see parts/embed.js, which says why. Focus is exactly
             // the case where it has to be on.
             renderer.selectionEnabled = true;
-            if (renderer.residueSelection && renderer.residueSelection.size) {
-                renderer._focusBusy = true;
-                try { renderer.focusOn(renderer.residueSelection); }
-                finally { renderer._focusBusy = false; }
-            }
         });
         syncFocus();
     }

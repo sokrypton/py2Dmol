@@ -790,7 +790,10 @@ async function loadViewerState(stateData) {
                     renderer.colorMode = vs.color_mode;
                     const colorSelect = document.getElementById('colorSelect');
                     if (colorSelect) {
-                        colorSelect.value = vs.color_mode;
+                        // ...and the SSE modes carry their palette in the
+                        // value, so the helper decides what to show
+                        colorSelect.value = renderer._colorSelectValue
+                            ? renderer._colorSelectValue() : vs.color_mode;
                         renderer.colorsNeedUpdate = true;
                         renderer.plddtColorsNeedUpdate = true;
                         renderer.render();

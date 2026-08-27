@@ -954,7 +954,13 @@ function updateSelectionToolsState() {
     // their own panel beside the structure, and a panel sliding in is a
     // louder cue than five buttons changing opacity in a header.
     const panel = document.getElementById('selectionPanel');
-    if (panel) panel.hidden = none;
+    // ...AND NOT IN FOCUS MODE. There is always a selection in there - the
+    // residue you just clicked - so the panel would slide in and stay in,
+    // beside a mode whose whole point is to look at one thing. Its buttons act
+    // on the selection, and in focus the selection is the mode's own bookmark
+    // rather than something the reader built up to act on.
+    const inFocus = !!(viewerApi?.renderer?._focusMode);
+    if (panel) panel.hidden = none || inFocus;
     // HOW MANY, AND ACROSS HOW MANY OBJECTS - and no more than that. The
     // count changes what pressing a button does, so it earns its place;
     // the residue ranges beside it ("A 11-13, 20-21; B 5, 7") did not. In

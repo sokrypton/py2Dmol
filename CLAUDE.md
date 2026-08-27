@@ -326,6 +326,58 @@ public downloads is exercised on every run.
   checkbox ticked from that — and then the opening orient unticked it and
   dispatched a `change`. Nothing in the trace looks wrong until that line.
   The two automatic callers pass `keepSpin`; the deliberate ones do not.
+- 🔴 **FOCUS IS A MODE WITH A DOOR AT EACH END, and the snapshot is taken at
+  the DOOR.** It used to be taken on the first CLICK, which is a different
+  moment and a different picture: enter the mode, click once, click away, and
+  you were back at what the first click happened to find rather than at what
+  you had before pressing the button. `enterFocusMode` records the lot -
+  selection, every object's side chains, the slab, and the camera's centre and
+  zoom - and then CLEARS the decorations, because a mode that starts from the
+  reader's leftovers cannot be told from one that drew them: side chains turned
+  on by hand look exactly like the mode's, and a slab from before cuts the
+  neighbourhood the mode is about to move to. `exitFocusMode` puts it all back.
+  🔴 **EXCEPT THE ROTATION, WHICH IS NOT THE MODE'S TO GIVE BACK.** Focus never
+  turns the camera, so an angle that moved was moved by the READER - to see the
+  pocket from the other side, which is half the reason to be in there - and
+  snapping it away on the way out throws out the one thing they chose. It is
+  not in the snapshot at all. The camera is not reset on the way IN either: the
+  first click moves in from where the reader was standing.
+  **THE MARK GOES TO `outline` WHILE THE MODE IS ON**, and back after. Focus
+  draws the neighbourhood around the residue you clicked and moves in on it,
+  and the default mark is a translucent band laid OVER that residue - a blot in
+  the middle of the one thing you are looking at. It rides the same rule as the
+  rotation, from the other side: focus BORROWED the mark, so focus gives it
+  back - unless the reader picked one themselves while in there, which is a
+  choice about how they want selections marked and not something the mode
+  borrowed. The test is `selectionMark === 'outline'` on the way out: still
+  wearing the mode's own, so put the reader's back. `parts/ui.js` installs
+  `_syncSelectionMark` so the Sele dropdown follows the renderer as well as
+  driving it - a control showing something the viewer is not doing is worse
+  than no control, which is a rule this file already has three instances of.
+  🔴 **AND A SELECTION ALREADY THERE IS AN INTENT, NOT A LEFTOVER.** Side
+  chains and a slab are decorations somebody turned on and forgot; a selection
+  says "this is what I am looking at", and pressing Focus with one is asking to
+  look at it CLOSER, not to pick it again - so entering focuses it straight
+  away, where entering with nothing selected moves nothing at all. That seed
+  focus has to set `_focusBusy` around itself: `focusOn` sets the selection and
+  `parts/ui.js` WRAPS that setter to trigger a focus, so without the guard
+  entering focuses, which selects, which focuses.
+  Inside the mode `clearFocus` is the way out of one FOCUS, not out of the
+  mode - a click on the background zooms out and leaves you ready for the next
+  click - so it restores the entry snapshot and KEEPS it. Outside the mode
+  (the JS API calling `focusOn` directly) the first focus still records and
+  `clearFocus` still consumes it, which is what that verb has always done.
+  **And the selection panel stays away while the mode is on**: there is always
+  a selection in focus - the residue just clicked - so the panel would slide in
+  and sit there, with buttons acting on what is really the mode's bookmark.
+  `tests/focus_mode.py` builds a deliberately messy state (a selection, side
+  chains on OTHER residues, a slab, a turned camera, a zoom), enters BOTH ways
+  - with that selection and with none - turns the view while inside, and
+  leaves. Mutated eight ways, each caught: not clearing the side chains on
+  entry, restoring nothing on exit, leaving the panel visible, restoring the
+  rotation, not focusing the selection that was already there, not switching
+  the mark to an outline, not syncing the dropdown to it, and restoring the
+  mark over a choice the reader made inside the mode.
 - **FOCUS IS A COMPOSITION, AND THAT IS WHY IT IS ONE FILE.**
   `parts/focus.js`'s `focusOn(sel)` is `residuesWithin` + the object's
   side-chain set + `viewerState.center/extent` + `autoClip`, and `clearFocus`
@@ -398,6 +450,26 @@ public downloads is exercised on every run.
   which is the three-shells rule below arriving for the third time. Measured as
   a COLOUR in `tests/minimal_input.py` and `tests/embed.py` — the attribute was
   already being set correctly, so reading it back passes against the bug.
+- **ONE PANEL, ONE CONTROL HEIGHT, AND THE WEBSITE WAS THE ODD ONE OUT.** The
+  Style panel's dropdowns ran at **28px** on the website and **24** (`--ctl-h`)
+  in the notebook and the embed, and its toggles at **30** - `--btn-height`,
+  which is the toolbar's height and right for Orient and Capture, targets you
+  hit, and too tall for a row of settings. All of it is 24 now, measured rather
+  than eyeballed: three dropdowns at `1 1 0%`, height 24, font 12, padding
+  `0 8px`.
+  Two things were making them differ and neither was visible in the markup.
+  **`#colorSelect` carried a rule it shared with `#objectSelect`** - 14px text,
+  `width: 170px`, `flex-shrink: 0` - and the panel override fixed the height and
+  the font but not the width or the shrink, so Color refused to give ground
+  while Sele beside it did. It takes the panel's own rule now, and the hover and
+  focus states that only IT had were promoted to every control in the panel
+  rather than dropped from it. **And the SSE palette is a `<button>`, not a
+  `<select>`** - it shows five colour chips - which `viewer.html` and
+  `parts/embed.js` both handle by styling `select, .controlButton` together.
+  The website styled only the selects, and `parts/ui.js` then stated the row's
+  height and padding INLINE (24px, `2px 4px` - the notebook's metrics), which no
+  stylesheet can correct. It copies the reference select's padding and height
+  along with its border and font now, so it matches whatever shell it is in.
 - **THREE SHELLS, THREE STYLESHEETS, AND A MEASUREMENT IS THE ONLY WAY TO TELL
   THEM APART.** `index.html` + `src/app/style.css`, `viewer.html`'s own sheet,
   and `parts/embed.js`'s `SHELL_CSS` all draw the same controls. Every reported
@@ -642,7 +714,9 @@ public downloads is exercised on every run.
   fallbacks for one - so presence is a bit and the count keeps its meaning.
 - 🔴 **WHERE A BUILD'S MEMORY GOES - AND WHICH PEAK YOU ARE READING.**
   `window.__heapProbe = 1` fills `__mrPhase` and the stage marks with live
-  bytes (it calls `window.gc`, which needs `--js-flags=--expose-gc` or it is a
+  bytes (and `__mrRibbon`, which is the RIBBON half's copy of `__mrPhase` -
+  the two halves share it and the stick half, being second, wins, so the
+  interesting one is the invisible one) (it calls `window.gc`, which needs `--js-flags=--expose-gc` or it is a
   silent no-op and the reading is mostly garbage). There are TWO numbers and
   they move independently, which cost a round of wrong claims:
 
@@ -673,20 +747,120 @@ public downloads is exercised on every run.
   259**. The boxing that argument rests on is real and costs nothing here. And
   presizing the edge arrays instead of doubling them: the doubling copies are
   not where the time is either.
-- 🔴 **A THREE-WAY STICK SPLIT IS NOT FREE: 50 MIXED WELDS.** The ribbon/stick
-  split works because the weld never pairs a stick face with a ribbon one.
-  Splitting the STICKS again - side chains apart from ligands and contacts, so
-  a side-chain click stops rebuilding the hemes - fails that test: 50 of 702
-  welds on 4HHB pair a side-chain face with a plain stick face, because the
-  ribbon-surface geometry a side chain ATTACHES to is emitted by drawSticks as
-  an ordinary stick face. Dropping those welds draws the doubled lines the weld
-  exists to remove, at every attachment. It needs a tag from `cartoon/geom.js`,
-  which knows which prims it emitted for a side chain; classifying in
-  `paintgl.js` by "is this position an appended atom" cannot see the
-  attachment. Worth ~10 ms of a ~37 ms click if it is ever done.
-  (And the appended-atom test itself is `resMap.sidechainMap.has(...)`, NOT
-  `gs0 >= resMap.nBase`: `nBase` is handed in as the WHOLE coordinate length,
-  side-chain atoms included, so "past the backbone" is never true.)
+- **THE MESH IS THREE PARTS, AND A SIDE-CHAIN CLICK REBUILDS ONE OF THEM.**
+  Ribbon, then the other sticks (ligands, base plates, contacts), then the side
+  chains. A heme is 1,822 faces on 4HHB and is exactly as unchanged by a
+  side-chain click as the backbone is; it was being rebuilt because it happened
+  to be made of sticks. The stick work is **12 ms to 2.5**, and a click on
+  4HHB with 40 side chains is **62 ms to 31** counting everything.
+  🔴 **THE CUT COMES FROM `cartoon/geom.js`, WHICH KNOWS WHAT IT DREW.** The
+  CA-CB bond has one end on the backbone and one in the side-chain map, so
+  `has(a) || has(b)` puts it with the side chains where it belongs; classifying
+  in `paintgl.js` by the position index - `min(a, b)`, which is the CA - reads
+  that bond as an ordinary stick, and then **thirty attachment faces sit in the
+  `other` part whose hash moves on every side-chain change, so the whole 1,852
+  faces rebuild and 2.5 ms goes back to 5.4**. Correctness survives it, because
+  the cache is keyed by a hash of the faces themselves; what it costs is the
+  caching. `tests/gpu_mesh_reuse.py` asserts BOTH kept parts came from cache
+  after a side-chain change, and the index classifier fails it.
+  🔴 **AN EARLIER NOTE HERE SAID THIS SPLIT BROKE 50 OF 702 WELDS. IT DOES
+  NOT.** That measurement came from a classifier that read `p.gs0` on a stick
+  face, which most of them do not carry - so nearly every side-chain face
+  counted as `other` and the mixed welds were the classifier's, not the
+  geometry's. With geom's own flag: **0 mixed welds and 0 shared edges** on
+  4HHB, 3PTB and 1EHZ. The lesson is the one this file keeps relearning - a
+  measurement through a guess measures the guess.
+  **And a reuse flag must report what HAPPENED**, not what a slot says: the
+  first version compared the cache slot to the hash, which reads "reused"
+  through a mutation that rebuilt every time.
+- **THE SELECTION MARK IS A SETTING: `highlight`, `outline`, `none`.** The
+  `Sele` dropdown beside `Color`, wired once in `parts/ui.js` so it reaches all
+  three shells - and
+  it belongs there rather than under Focus because the mark is on EVERY
+  selection (a sequence-strip drag, Select all, a click in any mode), and a
+  setting hidden inside one mode is findable only from inside it. It also keeps
+  Focus a one-click latch instead of a button that means two things.
+  `docs/SELECTION_MARK.md` is the tuning menu: six treatments drawn side by
+  side, the two rejected before the shortlist, and the costs - **0.02 ms
+  between the cheapest and the dearest**, which is 0.1% of a frame, so this is
+  a taste decision and nothing else.
+  🔴 **AN OUTLINE PUNCHES ITS MIDDLE OUT, and three things come with that.**
+  The band is stroked and then stroked again two ring-widths narrower with
+  `destination-out`, so the geometry inside is untouched - which is what lets
+  it be thin without vanishing, where the highlight has to be pale for the
+  opposite reason. (1) The scratch layer becomes unconditional for it:
+  `destination-out` against the finished frame would erase the DRAWING. (2)
+  Two callers cannot punch and fall back to the highlight whatever the setting
+  says - an SVG export, where the operation is meaningless and a raster layer
+  would put a BITMAP in the file, and a context with no document behind it,
+  where `createElement` answers and `getContext` does not. (3) A dark mark must
+  follow the paper, because an ink line on the `3d` preset's black says nothing
+  is selected at all - worse than saying it loudly, which is how this started.
+  **And the gain belongs to the SHAPE**: 1.3 for a band, which reads at its
+  outer edge, 1.0 for a ring, which reads at its inner one. `tests/interaction.js`
+  takes the proportion from `SELECTION_HALO_GAIN` rather than writing `2.3`
+  out, so a change of taste does not read as a broken rule; what it still asks
+  is that the band is a proportion AT EVERY SIZE, which is the thing that was
+  genuinely wrong once.
+- 🔴 **THE SELECTION MARK FOLLOWS THE RIBBON, BECAUSE THE RIBBON HANDS IT THE
+  CURVE.** The band joined consecutive residues with a straight line, and a
+  cartoon helix is a ribbon spiralling THROUGH those residues - so the mark
+  chorded the thing it was marking: measured on 4HHB's longest helix, the
+  traced path is **328 px against 295.8 of chords**, and the sagitta between
+  two steps is 17-22 px against a band 9.2 px wide.
+  `cartoon/geom.js` records where it actually ran - `_traceProbe`, filled in
+  the one loop that walks an interval's stations, about five points a residue -
+  and `_paintSelectionHalo` strokes THAT. Not a second smoothing to keep in
+  step with the first: the curve is a helix-exact Hermite stencil for helices
+  and Catmull-Rom for loops, with one-sided stencils at run ends, and a
+  reimplementation would have been wrong on the first structure that used the
+  other branch.
+  Four things this cost, each of which looked like the answer for a while:
+  **(1)** `_posProbe` is NOT the ribbon - it is one point per residue, equal to
+  the atoms for helices and coil and 2.11 A away for STRANDS on 1TIM, which are
+  flattened. Following it fixes sheets and does nothing for the complaint.
+  **(2)** The four corners `evalSlab` returns are PROJECTED - paintgl
+  unprojects them to build its mesh - so averaging them gives a screen point,
+  not a centre line. The centre is `q0`, the Hermite point itself, handed back
+  on `cnr.mid` so the eleven indices that array is read by do not move.
+  **(3)** The samples are in ROTATED space and the GPU runs geom only on a mesh
+  REBUILD, so a trace kept in that space is the last rebuild's picture. It is
+  stored the way the coordinates are - before the user rotation and the
+  centring - and re-rotated at use. Feeding it to `_projectForPicking` instead
+  put the PICKER on stale geometry: `tests/multi_object.py` went to "nothing
+  was pickable even while drawn".
+  **(4)** The halo cannot borrow the projection parameters from either
+  projection routine, because on a cached GPU cartoon frame NEITHER runs - the
+  positions are last frame's, still stamped valid because nothing moved. It
+  builds them from the viewer state, where every term already lives.
+  🔴 **AND THE TRACE MUST NOT BE DROPPED ON INVALIDATION.** It was, on the
+  reasoning that a curve through the segments goes stale with them - and
+  toggling Cyclic invalidates AFTER the rebuild that would have refilled it, so
+  the trace went to null and nothing ever asked for another: every helix went
+  back to chords and stayed there. A cartoon BUILD refills it and a build
+  happens exactly when the ribbon changes, so between two builds it is the same
+  ribbon. What the trace DOES need is a gate on the style, because it outlives
+  a build on purpose: a tube IS the straight lines between its residues.
+  `tests/selection_mark.py` measures the stroked path against the chords -
+  1.11x on a helix, exactly 1.00 on a tube, and again after a Cyclic toggle.
+- **THE LIGANDS ARE NOT WORTH CACHING, MEASURED.** The mesh stopped rebuilding
+  them (three parts, above) and the obvious next step is to stop the CAPTURE
+  rebuilding their prims too. It buys **about 3 ms of a 27 ms click**: same
+  click on 4HHB with 40 side chains, hemes shown 27.2 and 29.1 ms, hemes hidden
+  25.7 and 24.3 - and hiding them really does remove the work, 174 atoms and
+  1,822 stick faces down to zero. Nor could a prim cache collect even that
+  where it matters: prims are in PROJECTED space and a focus click moves the
+  camera on every frame of its flight, so the cache would miss throughout and
+  hit only once the camera settles, which is when nothing rebuilds anyway. What
+  is left of the click is the ribbon's own geometry - the run loop, the setup
+  and the sort - and that needs a model-space prim pipeline, not a cache.
+  🔴 **AND THE FIRST VERSION OF THAT MEASUREMENT WAS WORTHLESS**, in the same
+  way as the reuse flag one commit earlier: it called `renderer.hide()`, which
+  is the EMBED's API and does not exist on the app path, and then reported
+  "ligands hidden" from its own argument rather than from what happened. The
+  face counts were identical either way and the answer looked like 0.9 ms. A
+  flag that says what was ASKED FOR is not evidence; the control here is the
+  face count, and it is what turned a null result into a real one.
 - **Subsystems are optional and guarded.** `if (window.PAE)`, `if (window.MSA)`,
   `typeof C2S === 'undefined'`. A build without one loses a feature, not a page.
 - **Prove a move changed nothing.** `node tests/paint_trace.js` digests every

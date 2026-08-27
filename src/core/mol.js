@@ -341,6 +341,18 @@ const SIDECHAIN_REACH_A = 8;
 // checked against each other in tests/interaction.js, since a contact that
 // changes width when you switch style is exactly what this exists to stop.
 const CONTACT_WIDTH_A = 1.175;
+// TWO MARKS AND A THIRD OPTION, chosen by `selectionMark` - see
+// docs/SELECTION_MARK.md for the six that were drawn and the two rejected.
+//
+//   'highlight'  the band below, laid over the residue. The default, and what
+//                this has always been.
+//   'outline'    the same band with its middle punched out, so what reaches
+//                the canvas is the rim and the geometry inside is untouched.
+//                Thin enough to be quiet BECAUSE it covers nothing - the
+//                highlight has to be pale for the opposite reason.
+//   'none'       no mark. Legible only where something else says where you
+//                are; in focus mode the zoom does, up to a point.
+const SELECTION_MARKS = ['highlight', 'outline', 'none'];
 const SELECTION_HALO_CSS = 'rgba(255, 255, 0, 0.45)';
 // ...and the same colour split in two, for the scratch layer: opaque while
 // the widths are drawn, composited once at the alpha they share.
@@ -390,17 +402,30 @@ const SELECTION_HALO_RADIUS_FRAC = 0.5;
  * Module scope so it can be tested: the proportion it holds is the whole
  * point of it, and it is not visible in a screenshot of one zoom.
  */
-function selectionBandFor(rad, pxScale, ref) {
+function selectionBandFor(rad, pxScale, ref, gain) {
     const r = rad || 2;
     // THE RING IS A PEN, THE INNER EDGE IS THE THING. Its thickness comes
     // from `ref` - the ordinary residue radius at this view - and not from
     // r, so a mark sticks out by the same amount whatever it is drawn
     // around. Defaults to r, which is the same number for everything that
     // is drawn at the residue radius, so this changes nothing there.
-    const m = SELECTION_HALO_GAIN * (ref === undefined ? r : ref);
+    const g = (typeof gain === 'number') ? gain : SELECTION_HALO_GAIN;
+    const m = g * (ref === undefined ? r : ref);
     return 2 * Math.max(r + m, SELECTION_HALO_MIN_PX * pxScale);
 }
 const SELECTION_HALO_GAIN = 1.3;
+// ...AND THE OUTLINE'S OWN, because the gain belongs to the SHAPE: a band
+// reads at its outer edge and a ring at its inner one, so the number that puts
+// a wash's edge in the right place leaves an outline standing off the thing it
+// traces. 1.0 hugs it.
+const SELECTION_OUTLINE_GAIN = 1.0;
+// A pencil line, and it follows the paper: an ink line on the 3d preset's
+// black says nothing is selected at all, which is worse than saying it loudly.
+// The same rule the hover readout follows.
+const SELECTION_OUTLINE_LIGHT = 'rgb(40, 42, 55)';    // on white paper
+const SELECTION_OUTLINE_DARK = 'rgb(238, 238, 244)';  // on black
+const SELECTION_OUTLINE_ALPHA = 0.45;
+const SELECTION_OUTLINE_PX = 1.4;
 const SELECTION_HALO_MIN_PX = 2.5;
 
 const namedColorsMap = {
@@ -2559,6 +2584,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         // Helper method to invalidate segment cache
         _invalidateSegmentCache() {
+            // 🔴 THE RIBBON TRACE IS NOT DROPPED HERE, and it used to be.
+            //
+            // The reasoning looked sound - the trace is a curve through these
+            // segments, so it goes stale with them - and it broke the thing it
+            // was protecting: toggling Cyclic invalidates AFTER the rebuild
+            // that would have refilled it, so the trace went to null and
+            // nothing ever asked for another. The selection went back to
+            // chording every helix and stayed that way.
+            //
+            // It does not need dropping. A cartoon BUILD refills it, and a
+            // build happens exactly when the ribbon changes - that is what the
+            // mesh signature is for, and it is deliberately generous. Between
+            // two builds the ribbon is the same ribbon.
             this.cachedSegmentIndices = null;
             this.cachedSegmentIndicesCoords = null;
             this.cachedSegmentIndicesFrame = -1;
@@ -6888,10 +6926,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
-            // Sync dropdown to renderer's colorMode (if dropdown exists)
+            // Sync dropdown to renderer's colorMode (if dropdown exists).
+            // THROUGH THE SHELL'S HELPER, because the SSE modes carry their
+            // palette in the value - `ss:pymol` - and assigning the bare mode
+            // would leave the box blank on a select that has no plain 'ss'
+            // option showing. parts/ui.js installs it; without it (a harness
+            // building a renderer by hand) the mode alone is what it always
+            // was.
             if (this.colorSelect && this.colorMode) {
-                if (this.colorSelect.value !== this.colorMode) {
-                    this.colorSelect.value = this.colorMode;
+                const want = this._colorSelectValue
+                    ? this._colorSelectValue() : this.colorMode;
+                if (this.colorSelect.value !== want) {
+                    this.colorSelect.value = want;
                 }
             }
 
@@ -8775,6 +8821,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         _paintSelectionHalo(ctx, pxScale = 1, set = null) {
+            // WHICH MARK, AND THE EARLIEST POSSIBLE EXIT FOR 'none'. Before the
+            // projection below, which is a per-frame debt this method settles
+            // on the GPU tube path - a reader who has turned the mark off
+            // should not pay for one.
+            const mark = SELECTION_MARKS.indexOf(this.selectionMark) >= 0
+                ? this.selectionMark : 'highlight';
+            if (mark === 'none') return;
+            // A RING NEEDS SOMEWHERE OF ITS OWN TO PUNCH, and two callers
+            // cannot give it one: an SVG export, where `destination-out` means
+            // nothing and compositing a raster layer would put a BITMAP in the
+            // file, and a context with no document behind it (the node
+            // harnesses hand in a recording mock, where createElement answers
+            // and getContext does not). Both fall back to the highlight,
+            // which is the mark this had always been.
+            const wantRing = mark === 'outline' && !ctx.getSerializedSvg;
             // a live drag preview wins: it is what the user is pointing at
             const sel = set || this._selectionPreview
                 || (this.selectionInk ? this.selectionInk() : this.residueSelection);
@@ -8877,7 +8938,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             ctx.save();
-            ctx.strokeStyle = SELECTION_HALO_CSS;
+            const onDark = this.backgroundColor === '#000000';
+            ctx.strokeStyle = wantRing
+                ? (onDark ? SELECTION_OUTLINE_DARK : SELECTION_OUTLINE_LIGHT)
+                : SELECTION_HALO_CSS;
+            if (wantRing) ctx.globalAlpha = SELECTION_OUTLINE_ALPHA;
             ctx.lineJoin = 'round';
             ctx.lineCap = 'round';
             // ONE path, stroked ONCE. A translucent colour composites per draw
@@ -8923,7 +8988,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // next to it - the same 1.3, meaning something different because
             // the radius under it meant something different.
             const refAt = (i) => (sr[i] || 2) * SELECTION_HALO_RADIUS_FRAC;
-            const bandFor = (r, ref) => selectionBandFor(r, pxScale, ref);
+            const bandFor = (r, ref) => selectionBandFor(r, pxScale, ref,
+                wantRing ? SELECTION_OUTLINE_GAIN : SELECTION_HALO_GAIN);
             // ...QUANTISED, so a hundred residues do not become a hundred
             // strokes: half a pixel is finer than the eye reads on a band.
             const bucketOf = (r, ref) => Math.round(bandFor(r, ref) * 2) / 2;
@@ -8935,10 +9001,99 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             };
             // an edge takes the THINNER of its two ends: the band has to sit
             // inside the thicker one rather than swallow the thinner
+            // 🔴 ALONG THE RIBBON, NOT ACROSS IT. A straight line between two
+            // residues chords the drawn curve, and on a helix - which is a
+            // ribbon spiralling THROUGH those residues - the chord falls 17 to
+            // 22 px from the curve at a working zoom, against a band 9 px
+            // wide. The mark zig-zagged over the thing it was marking.
+            //
+            // cartoon/geom.js records where it actually ran (`_traceProbe`,
+            // about five points per residue) and the renderer keeps it in the
+            // pre-rotation space, so this is the DRAWING's own curve rather
+            // than a second smoothing to keep in step with it. Absent - the
+            // tube, a structure over the size cap, a frame the cartoon has not
+            // drawn - it is the straight line it always was, which is what the
+            // tube draws anyway.
+            // ...AND ONLY WHILE A CARTOON IS WHAT DREW IT. The trace outlives
+            // a build on purpose, so after switching to the tube it is still
+            // there, describing a ribbon that is no longer on the screen - and
+            // a tube IS the straight lines between its residues.
+            const trace = (this.style === 'cartoon') ? this._ribbonTrace : null;
+            // THE PROJECTION, BUILT HERE RATHER THAN BORROWED. There are two
+            // routines that fill screenX/screenY - the deferred one for the
+            // GPU tube and the drawing pass everything else goes through - and
+            // on a cached GPU cartoon frame NEITHER runs: the positions are
+            // last frame's, still stamped valid because nothing moved. So a
+            // parameter block left behind by one of them is a thing that is
+            // usually there, which is the worst kind of dependency. Every term
+            // is on the viewer state anyway.
+            const pv = (this._viewScale && this.canvas) ? {
+                cx: (this.canvas.clientWidth || this.canvas.width) / 2,
+                cy: (this.canvas.clientHeight || this.canvas.height) / 2,
+                scale: this._viewScale,
+                persp: isPerspective(this.viewerState),
+                fl: this.viewerState.focalLength,
+                rot: this.viewerState.rotation,
+                centre: this._computeViewCentre(
+                    this.objectsData[this.currentObjectName]),
+            } : null;
+            const traceBetween = (a, b) => {
+                if (!trace || !pv) return null;
+                const lo = a < b ? a : b;
+                return (b === lo + 1 || a === lo + 1) ? trace[lo] : null;
+            };
+            let lastX = 0; let lastY = 0;      // the path log's own scratch
+            const strokeTrace = (c, flat, forward, log) => {
+                const m = pv.rot;
+                const ce = pv.centre || { x: 0, y: 0, z: 0 };
+                const n = flat.length / 3;
+                for (let k = 0; k < n; k++) {
+                    const j = (forward ? k : n - 1 - k) * 3;
+                    const dx = flat[j] - ce.x;
+                    const dy = flat[j + 1] - ce.y;
+                    const dz = flat[j + 2] - ce.z;
+                    const rx = m[0][0] * dx + m[0][1] * dy + m[0][2] * dz;
+                    const ry = m[1][0] * dx + m[1][1] * dy + m[1][2] * dz;
+                    const rz = m[2][0] * dx + m[2][1] * dy + m[2][2] * dz;
+                    let pe = 1;
+                    if (pv.persp) {
+                        const dzz = pv.fl - rz;
+                        if (dzz <= 0.1) return false;      // behind the eye
+                        pe = pv.fl / dzz;
+                    }
+                    const px = pv.cx + rx * pv.scale * pe;
+                    const py = pv.cy - ry * pv.scale * pe;
+                    if (k === 0) c.moveTo(px, py); else c.lineTo(px, py);
+                    if (log) {
+                        if (k > 0) log.drawn += Math.hypot(px - lastX, py - lastY);
+                        lastX = px; lastY = py; log.pts++;
+                    }
+                }
+                return true;
+            };
+            // WHAT THE MARK ACTUALLY STROKED, for a probe that has to tell a
+            // curve from a chord without reading pixels. Off unless asked.
+            const pathLog = (typeof window !== 'undefined' && window.__haloPath)
+                ? (window.__haloPath = { chord: 0, drawn: 0, pts: 0, curved: 0 })
+                : null;
             for (let k = 0; k + 1 < edges.length; k += 2) {
                 const a = edges[k]; const b = edges[k + 1];
                 const r = Math.min(radiusAt(a), radiusAt(b));
+                const flat = traceBetween(a, b);
+                if (pathLog) {
+                    pathLog.chord += Math.hypot(sx[b] - sx[a], sy[b] - sy[a]);
+                    if (flat) pathLog.curved++;
+                }
                 addTo(bucketOf(r, Math.min(refAt(a), refAt(b))), (c) => {
+                    // ...and the straight line is the fallback INSIDE the
+                    // closure, because whether a sample projects at all is a
+                    // per-frame question: a point behind the eye has no screen
+                    // position, and half a curve is worse than a chord.
+                    if (flat && strokeTrace(c, flat, a < b, pathLog)) return;
+                    if (pathLog) {
+                        pathLog.drawn += Math.hypot(sx[b] - sx[a], sy[b] - sy[a]);
+                        pathLog.pts += 2;
+                    }
                     c.moveTo(sx[a], sy[a]); c.lineTo(sx[b], sy[b]);
                 });
             }
@@ -8956,7 +9111,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // drawn OPAQUE into a scratch layer and that layer is composited
             // once. Same flat wash as the single stroke this replaces, without
             // being held to a single width.
-            const one = groups.size <= 1;
+            // THE HIGHLIGHT SKIPS THE LAYER when it has a single width - one
+            // translucent stroke composites correctly on its own. A RING
+            // cannot: the punch below is `destination-out`, and against the
+            // finished frame that would erase the DRAWING.
+            const one = wantRing ? false : groups.size <= 1;
             let lctx = ctx;
             let layer = null;
             if (!one && typeof document !== 'undefined' && ctx.canvas) {
@@ -8966,15 +9125,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     layer.width = ctx.canvas.width; layer.height = ctx.canvas.height;
                 }
                 lctx = layer.getContext('2d');
+                // ...and with no real 2d context behind it, the highlight it is.
+                if (!lctx || typeof lctx.beginPath !== 'function') {
+                    lctx = ctx; layer = null;
+                } else {
                 lctx.setTransform(1, 0, 0, 1, 0, 0);
                 lctx.clearRect(0, 0, layer.width, layer.height);
                 if (ctx.getTransform) {
                     const m = ctx.getTransform();
                     lctx.setTransform(m.a, m.b, m.c, m.d, m.e, m.f);
                 }
-                lctx.strokeStyle = SELECTION_HALO_SOLID_CSS;
+                lctx.strokeStyle = wantRing
+                    ? (onDark ? SELECTION_OUTLINE_DARK : SELECTION_OUTLINE_LIGHT)
+                    : SELECTION_HALO_SOLID_CSS;
                 lctx.lineJoin = 'round';
                 lctx.lineCap = 'round';
+                }
             }
             for (const [width, fns] of groups) {
                 lctx.lineWidth = width;
@@ -8982,9 +9148,30 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 for (const fn of fns) fn(lctx);
                 lctx.stroke();
             }
+            // ...AND THE MIDDLE COMES BACK OUT, for a ring. Each width group
+            // is stroked again, thinner by two ring widths, with the layer as
+            // the destination - so what is left of every band is its rim. One
+            // group's punch may cut into another's rim where a side chain
+            // crosses its backbone, and that is right: the mark is the outline
+            // of the UNION, and a rim buried inside the union is not part of
+            // it.
+            if (layer && wantRing) {
+                lctx.save();
+                lctx.globalCompositeOperation = 'destination-out';
+                for (const [width, fns] of groups) {
+                    const inner = width - 2 * SELECTION_OUTLINE_PX * pxScale;
+                    if (inner <= 0) continue;      // thinner than its own rim
+                    lctx.lineWidth = inner;
+                    lctx.beginPath();
+                    for (const fn of fns) fn(lctx);
+                    lctx.stroke();
+                }
+                lctx.restore();
+            }
             if (layer) {
                 ctx.setTransform(1, 0, 0, 1, 0, 0);
-                ctx.globalAlpha = SELECTION_HALO_ALPHA;
+                ctx.globalAlpha = wantRing
+                    ? SELECTION_OUTLINE_ALPHA : SELECTION_HALO_ALPHA;
                 ctx.drawImage(layer, 0, 0);
             }
             ctx.restore();
@@ -9687,6 +9874,59 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * (best_view) first, then the user's. Lifted out of _renderToContext
          * unchanged so that the GPU tube path can decide not to call it.
          */
+        /**
+         * IS THE RIBBON TRACE WORTH RECORDING? Asked by both painters, so the
+         * cap is one number in one place rather than the same 20,000 written
+         * into geom's caller and into paintgl's.
+         *
+         * It is about five points per residue: nothing on a protein, two
+         * million numbers on a capsid - where the ribbons are a pixel wide and
+         * the difference between a chord and a curve does not exist.
+         */
+        _wantRibbonTrace() {
+            return (this.coords || []).length <= 20000;
+        }
+
+        /**
+         * THE DRAWN RIBBON'S CENTRE LINE, KEPT IN A SPACE THAT SURVIVES A
+         * TURN.
+         *
+         * cartoon/geom.js records it in ROTATED space - `M * (v - c)` for the
+         * rotation and view centre of the frame that drew it - which is fine
+         * for the 2D painter, that runs geom every frame, and useless on the
+         * GPU path, where geom runs only on a mesh REBUILD and the reader
+         * turns the view between rebuilds. A trace kept in that space is the
+         * last rebuild's picture: feeding it to the projection put the PICKER
+         * on stale geometry and `tests/multi_object.py` reported "nothing was
+         * pickable even while drawn".
+         *
+         * So it is stored the way the coordinates themselves are - before the
+         * user rotation and the centring - and re-rotated at use. Both
+         * painters call this while their own frame's rotation is still
+         * current, which is what makes the inverse below the right one.
+         */
+        _storeRibbonTrace(samples) {
+            if (!samples || !samples.length) { this._ribbonTrace = null; return; }
+            const m = this.viewerState.rotation;
+            const object = this.objectsData[this.currentObjectName];
+            const c = this._computeViewCentre(object) || { x: 0, y: 0, z: 0 };
+            const out = [];
+            for (let i = 0; i < samples.length; i++) {
+                const pts = samples[i];
+                if (!pts || !pts.length) continue;
+                const flat = new Float64Array(pts.length * 3);
+                for (let k = 0; k < pts.length; k++) {
+                    const p = pts[k];
+                    // M is orthonormal, so its inverse is its transpose
+                    flat[k * 3] = m[0][0] * p[0] + m[1][0] * p[1] + m[2][0] * p[2] + c.x;
+                    flat[k * 3 + 1] = m[0][1] * p[0] + m[1][1] * p[1] + m[2][1] * p[2] + c.y;
+                    flat[k * 3 + 2] = m[0][2] * p[0] + m[1][2] * p[1] + m[2][2] * p[2] + c.z;
+                }
+                out[i] = flat;
+            }
+            this._ribbonTrace = out;
+        }
+
         _rotateCoords(object, c) {
             this._rotPending = false;
             while (this.rotatedCoords.length < this.coords.length) {
@@ -10839,7 +11079,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (!gpuOk) {
                     // it declined: the 2D renderer below is built on rotatedCoords
                     this._ensureRotated();
+                    // ...and tell us where the ribbon ran, if anything is
+                    // selected. Nothing else reads it, so nothing else pays.
+                    const wantTrace = this._wantRibbonTrace();
+                    if (wantTrace) this._traceProbe = null;
                     window.py2dmolCartoon.render(this, ctx, displayWidth, displayHeight, colors);
+                    if (wantTrace) {
+                        this._storeRibbonTrace(this._traceProbe);
+                        this._traceProbe = undefined;
+                    }
                 }
                 // A real frame supersedes any snapshot taken from an older one.
                 this._invalidateSelectionPreview();
