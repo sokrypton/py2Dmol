@@ -185,6 +185,26 @@ window.addEventListener('load', () => {
         has: r.hasElementsFor ? r.hasElementsFor(ligAll) : null,
         elementAt0: r.elementAt ? r.elementAt(0) : null,
       };
+      // 🔴 AND THE SELECTION MARK FOLLOWS ITS BONDS, which on this path is
+      // the whole question: viewer.py only ever sends bonds a caller supplied
+      // by hand, so an ordinary ligand arrives with NONE and the renderer
+      // derives them by distance for the sticks. The mark used to read the
+      // file's list instead of the drawn segments, found nothing, and drew
+      // each atom as an isolated position - which is a zero-length segment
+      // with a round cap, a ring around every atom. Four atoms in a line
+      // 1.5 A apart: three bonds, six path points. The bug gives eight (a hair
+      // per atom) and a chord length of nothing.
+      r.setResidueSelection(ligAll);
+      window.__haloPath = 1;
+      r.render('ligmark');
+      await settle();
+      const LP = window.__haloPath || {};
+      window.__haloPath = 0;
+      R.ligMark = {pts: LP.pts || 0, chord: +(LP.chord || 0).toFixed(2),
+                   bonds: r.bonds ? r.bonds.length : null,
+                   segs: (r.segmentIndices || []).length};
+      r.clearResidueSelection();
+
       // ...and BACK, or every check below measures a four-atom ligand
       r._switchToObject(wasOn);
       r.setFrame(0);
@@ -728,6 +748,20 @@ def main():
         bad.append(f"the ligand's atom names arrived as {e.get('atoms')}")
     if not e.get('has'):
         bad.append('hasElementsFor says no on a ligand that carries elements')
+    lm = R.get('ligMark') or {}
+    print(f"  ligand mark: {lm.get('pts')} path points, chord {lm.get('chord')} px"
+          f" (file bonds: {lm.get('bonds')}, segments: {lm.get('segs')})")
+    if lm.get('bonds'):
+        bad.append(f"the fixture supplied {lm['bonds']} bonds, so this leg is not"
+                   " testing the path it exists for - a ligand with NO bond list")
+    if lm.get('pts') != 6:
+        bad.append(f"the mark on a four-atom ligand has {lm.get('pts')} path"
+                   " points, not the 6 of three bonds - 8 means every atom was"
+                   " drawn as an isolated position, which is a ring around each"
+                   " one instead of a band along the bonds")
+    if (lm.get('chord') or 0) < 1:
+        bad.append(f"the mark spans {lm.get('chord')} px across a ligand 4.5 A"
+                   " long - it is not following anything")
     if e.get('elementAt0') != 'CA':
         bad.append(f"elementAt(0) is {e.get('elementAt0')!r}, not the calcium the"
                    ' file names - which is why the element cannot simply be read'

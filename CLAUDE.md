@@ -370,6 +370,21 @@ public downloads is exercised on every run.
   **And the selection panel stays away while the mode is on**: there is always
   a selection in focus - the residue just clicked - so the panel would slide in
   and sit there, with buttons acting on what is really the mode's bookmark.
+  🔴 **AND CLEAR ALL DROPS THE MODE, from inside `clearAllObjects`.** The
+  entry snapshot names objects that are about to stop existing, and a latch
+  that outlives the clear puts the NEXT structure straight into a mode nobody
+  asked for, wearing the last session's mark - reported as "leftovers from
+  focus after Clear All". `_resetFocusState()` forgets the mode without
+  restoring anything, because there is nothing left to restore it onto; the one
+  thing it does give back is the MARK, which focus borrowed from the reader
+  rather than from the structure. It lives in `clearAllObjects` rather than in
+  `resetAll` or in `app/main.js` so all three shells get it, and the Focus
+  button follows through `_syncFocusButton`, the same hook `_syncClipButton`
+  and `_syncSelectionMark` use.
+  *That leg's first assertion was wrong and the code was right*: it expected
+  the mark back at `highlight`, and got `none` - which is what the reader had
+  chosen before entering. Clear All resets the STRUCTURE; a mark is a
+  preference, and the only thing owed is what focus took.
   `tests/focus_mode.py` builds a deliberately messy state (a selection, side
   chains on OTHER residues, a slab, a turned camera, a zoom), enters BOTH ways
   - with that selection and with none - turns the view while inside, and
@@ -861,6 +876,28 @@ public downloads is exercised on every run.
   face counts were identical either way and the answer looked like 0.9 ms. A
   flag that says what was ASKED FOR is not evidence; the control here is the
   face count, and it is what turned a null result into a real one.
+- 🔴 **`bonds` IS WHAT A FILE SAID; `segmentIndices` IS WHAT IS DRAWN. ANYTHING
+  ASKING WHAT IS CONNECTED READS THE SEGMENTS.**
+  The selection mark joined a ligand's atoms along `this.bonds`, under a
+  comment claiming it used "the same connectivity the sticks themselves are
+  drawn from" - which was true on the website and false in a notebook.
+  `src/io/parse.js` derives ligand bonds; `viewer.py` only ever passes bonds a
+  caller supplied BY HAND, so an ordinary ligand arrives with none and the
+  renderer falls back to distance for the STICKS ("No bonds - will use distance
+  calculation", `setCoords`). The mark had no fallback: every atom came out as
+  an isolated position, and an isolated position is drawn as a zero-length
+  segment with a round cap - **a ring around each atom instead of a band along
+  the bonds**. Reported from a notebook; 3PTB's benzamidine has ten bonds in
+  the segment list and none in `this.bonds`.
+  Reading the segments fixed the website too, quietly: it marked **9 of the 10**
+  bonds there, because the file's list and the drawn segments are not the same
+  answer even when both exist.
+  The segment builder is the ONE place that should read `bonds` - it is an
+  input there, combined with distance and with what is drawn. Everything
+  downstream asks the builder's output. `tests/minimal_input.py` is the home
+  for this because it is the notebook path: four atoms in a line 1.5 A apart,
+  three bonds, six path points - eight would be a hair per atom, which is the
+  bug's own signature.
 - **Subsystems are optional and guarded.** `if (window.PAE)`, `if (window.MSA)`,
   `typeof C2S === 'undefined'`. A build without one loses a feature, not a page.
 - **Prove a move changed nothing.** `node tests/paint_trace.js` digests every

@@ -764,6 +764,11 @@ if (focusButton) {
     } else {
         const syncFocus = () => focusButton.setAttribute(
             'aria-pressed', renderer._focusMode ? 'true' : 'false');
+        // ...and the renderer can ask for it, the way it can for the Clip
+        // button and the Sele dropdown: Clear All drops the mode from inside
+        // the renderer, and a latch left lit is a mode the reader cannot see
+        // they are in.
+        renderer._syncFocusButton = syncFocus;
         // 🔴 BOTH WAYS OUT. A click on the background calls
         // clearResidueSelection, NOT setResidueSelection with an empty set -
         // see the mouseup handler in core/mol.js, "empty background: deselect,

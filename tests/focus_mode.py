@@ -189,6 +189,30 @@ window.addEventListener('load', () => {
       btn.click();                       // leave
       await settle(); await landed(); await settle();
       R.afterChose = state();
+
+      // LEG FIVE: CLEAR ALL while the mode is on. Nothing of it may survive -
+      // the snapshot names objects that are about to stop existing, and a
+      // latch that outlives the clear puts the NEXT structure straight into a
+      // mode nobody asked for, wearing this session's mark.
+      r.setResidueSelection(new Set([5, 6, 7]));
+      await settle();
+      // ...WHAT THE READER'S MARK WAS BEFORE THE MODE TOOK IT. Not
+      // necessarily the default: the leg above left them on their own choice,
+      // and Clear All resets the STRUCTURE, not a preference.
+      R.markBeforeClearLeg = r.selectionMark;
+      btn.click();
+      await settle(); await landed(); await settle();
+      R.beforeClear = state();
+      const clearBtn = document.getElementById('clearAllButton');
+      R.hasClear = !!clearBtn;
+      if (clearBtn) clearBtn.click();
+      await settle(); await settle();
+      R.afterClear = {
+        mode: !!r._focusMode, entry: !!r._focusEntry, prev: !!r._focusPrev,
+        busy: !!r._focusBusy, anim: !!r._focusAnim,
+        mark: r.selectionMark, markSel: state().markSel,
+        pressed: state().pressed, objects: Object.keys(r.objectsData).length,
+      };
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});
   };
@@ -376,6 +400,38 @@ else:
         bad.append(f"a mark the reader picked INSIDE focus was undone on the way"
                    f" out ({afterChose['mark']!r}) - focus puts back what it"
                    " borrowed, and it did not borrow that")
+
+bc, ac = (R.get(k) or {} for k in ("beforeClear", "afterClear"))
+if not R.get("hasClear"):
+    bad.append("the page has no Clear All button, so that leg tested nothing")
+elif not bc or not ac:
+    bad.append("the Clear All leg did not run")
+else:
+    print(f"  cleared all: mode={ac['mode']} entry={ac['entry']} pressed={ac['pressed']!r}"
+          f" mark={ac['mark']} objects={ac['objects']}")
+    if bc['pressed'] != 'true':
+        bad.append("the mode was not on when Clear All was pressed, so the leg"
+                   " proves nothing")
+    if ac['objects']:
+        bad.append(f"Clear All left {ac['objects']} object(s)")
+    for key, what in (('mode', 'the mode is still on'),
+                      ('entry', 'the entry snapshot survived'),
+                      ('prev', 'the per-click record survived'),
+                      ('busy', 'the busy guard is stuck on'),
+                      ('anim', 'a camera flight is still running')):
+        if ac[key]:
+            bad.append(f"after Clear All, {what} - a fresh structure arrives in"
+                       " a mode nobody asked for")
+    if ac['pressed'] != 'false':
+        bad.append(f"the Focus button still reads aria-pressed={ac['pressed']!r}"
+                   " after Clear All")
+    want = R.get('markBeforeClearLeg')
+    if ac['mark'] != want or ac['markSel'] != want:
+        bad.append(f"the mark is {ac['mark']!r} (dropdown {ac['markSel']!r})"
+                   f" after Clear All, not the {want!r} the reader had before"
+                   " the mode borrowed it. Clear All resets the structure; a"
+                   " mark is a preference, and the only thing owed here is what"
+                   " focus took")
 
 for m in bad:
     print("FAIL:", m)

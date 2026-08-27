@@ -6320,6 +6320,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // no longer exist - inherited by whatever was loaded next, drawn or
             // silently dropped depending on whether the ends still resolved.
             this.crossContacts = [];
+            // ...AND THE FOCUS MODE, for the same reason one line up: it holds
+            // a snapshot naming objects that are about to stop existing, and a
+            // latch that survives the clear puts the next structure straight
+            // into a mode the reader did not ask for, wearing the previous
+            // session's selection mark. Nothing is restored - there is nothing
+            // left to restore it onto - except that mark, which the mode
+            // borrowed from the reader and not from the structure.
+            if (this._resetFocusState) this._resetFocusState();
             this.stopAnimation();
 
             // Reset data
@@ -8909,7 +8917,38 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (chains && this.chainKeyAt(a) !== this.chainKeyAt(b)) continue;
                 addEdge(a, b);
             }
-            if (this.bonds) {
+            // 🔴 FROM THE SEGMENTS, WHICH IS WHAT THE STICKS ARE DRAWN FROM.
+            //
+            // This used to read `this.bonds` - the bond list a FILE carried -
+            // and the comment above already claimed it was using the sticks'
+            // own connectivity. On the website the two agree, because
+            // src/io/parse.js derives ligand bonds and hands them over. On the
+            // NOTEBOOK path they do not: viewer.py only ever passes bonds a
+            // caller supplied by hand, so `this.bonds` is null for an ordinary
+            // ligand - and the renderer falls back to distance for the STICKS
+            // ("No bonds - will use distance calculation" in setCoords) while
+            // the mark had no fallback at all. Every atom came out as an
+            // isolated position, and an isolated position is drawn as a
+            // zero-length segment with a round cap: a ring around each atom
+            // instead of a band along the bonds. Reported from a notebook,
+            // where 3PTB's benzamidine has ten bonds in the segment list and
+            // none in `this.bonds`.
+            //
+            // The segment list is the one answer both are built from, so there
+            // is nothing to keep in step.
+            const segsAll = this.segmentIndices;
+            if (segsAll && segsAll.length) {
+                for (const sg of segsAll) {
+                    if (!sg || sg.type === 'C') continue;   // contacts, below
+                    const a = sg.idx1; const b = sg.idx2;
+                    if (a === undefined || b === undefined) continue;
+                    if (!drawn(a) || !drawn(b)) continue;
+                    if (!isAtom(a) && !isAtom(b)) continue;
+                    addEdge(a, b);
+                }
+            } else if (this.bonds) {
+                // ...and the file's own list where there are no segments yet,
+                // which is a frame that has not been drawn.
                 for (const [a, b] of this.bonds) {
                     if (!drawn(a) || !drawn(b)) continue;
                     if (!isAtom(a) && !isAtom(b)) continue;

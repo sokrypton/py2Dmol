@@ -204,6 +204,34 @@
             return true;
         },
 
+        /**
+         * FORGET THE MODE ENTIRELY, without restoring anything.
+         *
+         * For Clear All and the like: there is nothing to put the snapshot
+         * back ONTO - the objects it names are going away - and leaving the
+         * mode latched is how a fresh structure arrives already in focus, with
+         * the previous session's mark on the Sele dropdown and an entry
+         * snapshot describing objects that no longer exist. Reported as
+         * "leftovers from focus after Clear All".
+         *
+         * The MARK is the one thing that does go back, because the mode
+         * borrowed it from the reader rather than from the structure.
+         */
+        _resetFocusState() {
+            const snap = this._focusEntry;
+            this._focusMode = false;
+            this._focusEntry = null;
+            this._focusPrev = null;
+            this._focusBusy = false;
+            this._focusAnim = null;          // cancels whatever was flying
+            if (this.selectionMark === 'outline') {
+                this.selectionMark = (snap && snap.selectionMark) || 'highlight';
+                if (this._syncSelectionMark) this._syncSelectionMark();
+            }
+            if (this._syncFocusButton) this._syncFocusButton();
+            return true;
+        },
+
         /** LEAVE IT, and put back everything the mode borrowed. */
         exitFocusMode(animate) {
             if (!this._focusMode) return false;
