@@ -1041,6 +1041,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 focalLength: 200.0,
                 center: null,
                 extent: null,
+                extentAspect: null,
                 currentFrame: -1
             };
 
@@ -3252,6 +3253,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 focalLength: 200.0,
                 center: null,
                 extent: null,
+                extentAspect: null,
                 currentFrame: -1,
                 clipNear: null,
                 clipFar: null,
@@ -3475,6 +3477,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         focalLength: 200.0,
                         center: null,
                         extent: null,
+                extentAspect: null,
                         currentFrame: -1
                     },
                     // Initialize scatterConfig with neutral defaults; labels/limits can be set per object
@@ -6335,6 +6338,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 focalLength: 200.0,
                 center: null,
                 extent: null,
+                extentAspect: null,
                 currentFrame: -1
             };
             this.isDragging = false;
@@ -9952,13 +9956,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // THE VIEW SCALE, the one number from the block below that is still
             // needed up here: the GPU draws with it and a pan drag converts
             // screen pixels to Angstroms with it. Arithmetic, not a pass.
-            const framed = this.drawnStats() || object;
-            const maxExtent = (framed && framed.maxExtent > 0) ? framed.maxExtent : 30.0;
-            const extent = this.viewerState.extent || maxExtent;
-            const padding = 0.9;
-            const baseScale = Math.min((displayWidth * padding) / (extent * 2),
-                (displayHeight * padding) / (extent * 2));
-            const scale = baseScale * this.viewerState.zoom;
+            const scale = this._viewportScale(displayWidth, displayHeight, object);
             this._viewScale = scale;
             const pxScale = this._exportPxScale || 1;
 
@@ -10095,6 +10093,42 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (sdr) sdr[i] = rr.drawn;
                 sv[i] = fid;
             }
+        }
+
+        /**
+         * HOW MANY PIXELS PER ANGSTROM, and the only place that decides it.
+         *
+         * 🔴 THERE WERE TWO. The GPU tube path computes the scale for itself
+         * (it does not run the 2D block at all) and the 2D block computed it
+         * again a thousand lines later - the same padding, the same extent,
+         * the same min(). Giving the two screen axes their true shares was
+         * written into one of them and measured as no change at all, because
+         * the default build draws the tube on the GPU and never reached it.
+         *
+         * The extent is a RADIUS - how big - and extentAspect is how it is
+         * SHAPED, normalised so the longer screen axis is 1. Both axes used to
+         * get the radius unchanged, which fits the structure into a SQUARE of
+         * side min(w, h) whatever the window is: a 598x298 viewer drew a rod
+         * across 280 of its 598 pixels, laid out correctly by the best-view
+         * search - which does read the aspect - and then framed as if the
+         * canvas were square.
+         *
+         * The aspect is measured once, by parts/orient.js, under the rotation
+         * it chose. Absent it is 1:1 and this is exactly what it always was.
+         * It belongs to that rotation: turning a long structure end-on
+         * afterwards can push it past the edge, and Orient reframes it.
+         */
+        _viewportScale(displayWidth, displayHeight, object) {
+            const framed = this.drawnStats() || object;
+            const maxExtent = (framed && framed.maxExtent > 0) ? framed.maxExtent : 30.0;
+            const extent = this.viewerState.extent || maxExtent;
+            const aspect = this.viewerState.extentAspect;
+            const xE = extent * ((aspect && aspect.x > 0) ? aspect.x : 1);
+            const yE = extent * ((aspect && aspect.y > 0) ? aspect.y : 1);
+            const padding = 0.9;   // 90% of the viewport, leaving a margin
+            const baseScale = Math.min((displayWidth * padding) / (xE * 2),
+                                       (displayHeight * padding) / (yE * 2));
+            return baseScale * this.viewerState.zoom;
         }
 
         _gpuWillDraw(ctx) {
@@ -11213,44 +11247,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const effectiveExtent = this.viewerState.extent || maxExtent;
             const dataRange = (effectiveExtent * 2) || 1.0; // fallback to 1.0 to avoid div by zero
 
-            // Calculate scale based on window dimensions and aspect ratio
-            // Project the structure extent to screen space considering the rotation
-            // The rotation matrix rows represent screen axes: R[0] = x-axis, R[1] = y-axis
-
-            // Calculate projected extent in screen space (x and y directions)
-            // The extent vector in 3D space, when rotated, projects to screen space
-            // We approximate by using the rotation matrix rows to project the extent
-            // For a roughly spherical extent, we can use the diagonal of the bounding box
-            // But for better accuracy with oriented structures, we calculate projected extents
-
-            // Project extent to x-axis (screen width direction)
-            // The x screen axis direction is R[0], which is a unit vector
-            // For a spherical extent, the projection is just the extent itself
-            // But we need to consider how the actual 3D extent distribution
-            // Since rotation matrix rows are orthonormal, we can use the extent directly
-            // but we need to consider how the 3D bounding box projects to 2D
-            // Approximate by using the extent scaled by the axis alignment
-            const xProjectedExtent = effectiveExtent;
-            const yProjectedExtent = effectiveExtent;
-
-            // Calculate scale needed for each dimension
-            // We want the structure to fit within the viewport with some padding
-            const padding = 0.9; // Use 90% of viewport to leave some margin
-            let scaleX = (displayWidth * padding) / (xProjectedExtent * 2);
-            let scaleY = (displayHeight * padding) / (yProjectedExtent * 2);
-
-            // Note: Do NOT compensate for perspective at the viewport scale level.
-            // Individual atoms already get scaled correctly by their own perspective factor
-            // (perspectiveScale = focalLength / z at line 5003).
-            // The previous compensation code (using avgZ=0) was mathematically incorrect and
-            // caused width jumps when switching between perspective modes near ortho=1.0
-
-            // Use the minimum scale to ensure structure fits in both dimensions
-            // This accounts for window aspect ratio
-            const baseScale = Math.min(scaleX, scaleY);
-
-            // Apply zoom multiplier
-            const scale = baseScale * this.viewerState.zoom;
+            // ...AND THE SCALE, from the one place that decides it. This
+            // was a second copy of _viewportScale's arithmetic - same padding,
+            // same extent, same min() - and the GPU tube path never reaches
+            // this block at all, so a fix written here was measured as no
+            // change on the default build.
+            const scale = this._viewportScale(displayWidth, displayHeight, object);
             // the scale this style drew at, for converting a pan drag from
             // screen pixels to Angstroms
             this._viewScale = scale;

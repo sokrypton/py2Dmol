@@ -41,6 +41,21 @@ def _stub_ipython():
     disp.Javascript = HTML
     disp.display = display
     disp.update_display = lambda *a, **k: CALLS.append(('update', 0, ''))
+    # ...AND A SHELL, so the cell-identity read has something to read. The
+    # library-bearing OUTPUT is replaced when its cell is re-run, and that is
+    # the one thing Python can see without asking the browser: same cell, later
+    # execution.
+    class _Shell:
+        def __init__(self):
+            self.parent_header = {'metadata': {}}
+            self.execution_count = 0
+
+        def at(self, cell):
+            self.execution_count += 1
+            self.parent_header = {'metadata': {'cellId': cell}}
+
+    ip.SHELL = _Shell()
+    ip.get_ipython = lambda: ip.SHELL
     ip.display = disp
     sys.modules['IPython'] = ip
     sys.modules['IPython.display'] = disp
@@ -140,6 +155,54 @@ elif pay.get('frames'):
                f" {[ (k, len(v)) for k, v in pay['frames'].items() ]} - the"
                ' frames went out with the grid, and _mark_published is what'
                ' records that')
+
+# --- RE-RUNNING THE CELL THAT CARRIES THE LIBRARY -------------------------
+# 🔴 Re-running a cell REPLACES ITS OUTPUT. If that output was the lender, the
+# page no longer has the library - while _LENT_BUNDLE still says this kernel
+# lent it, so the new viewer writes a request to borrow from something that is
+# gone: a two-second poll and an error box telling the reader to re-run the
+# cell that carries the library. It IS that cell, so the advice cannot work and
+# nothing short of a kernel restart recovers.
+#
+# Python cannot see an output being cleared. It can see that it is running in
+# the SAME CELL as the lend and in a LATER EXECUTION, which is exactly when the
+# lend is about to be overwritten.
+_S = sys.modules['IPython'].SHELL
+
+
+def _size_of_new_viewer():
+    v = py2Dmol.view()
+    v.add(helix())
+    return len(v._display_viewer(static_data=v.objects))
+
+
+_V2 = sys.modules['py2Dmol.viewer'] if 'py2Dmol.viewer' in sys.modules else _V
+_V2._LENT_BUNDLE = None
+_V2._LENT_WHERE = None
+_S.at('A'); _first = _size_of_new_viewer()
+_S.at('A'); _again = _size_of_new_viewer()
+_S.at('B'); _other = _size_of_new_viewer()
+if _first < 300_000:
+    bad.append(f'the first viewer of a kernel wrote {_first} bytes - it has to'
+               ' carry the library, there is nothing to borrow from')
+if _again < 300_000:
+    bad.append(f're-running the lending cell wrote {_again} bytes: it borrowed'
+               ' from the output it was replacing, so the page is left with no'
+               ' library and the viewer polls for two seconds and gives up')
+if _other > 60_000:
+    bad.append(f'a DIFFERENT cell wrote {_other} bytes rather than borrowing -'
+               ' the re-run rule has swallowed the sharing')
+
+# ...and several viewers in ONE execution still share: a grid is one cell.
+_V2._LENT_BUNDLE = None
+_V2._LENT_WHERE = None
+_S.at('C')
+_same_cell = [_size_of_new_viewer() for _ in range(3)]
+if _same_cell[0] < 300_000 or max(_same_cell[1:]) > 60_000:
+    bad.append(f'three viewers in one execution wrote {_same_cell} - one cell'
+               ' is one output, so only the first can carry the library')
+_V2._LENT_BUNDLE = None
+_V2._LENT_WHERE = None
 
 # --- A GRID DEFAULT FOR THE PAPER, LIKE size/controls/box ----------------
 # A gallery is usually one background, and bg was the one display setting the

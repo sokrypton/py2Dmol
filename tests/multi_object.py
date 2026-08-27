@@ -72,6 +72,26 @@ window.addEventListener('load', () => {
       const names = Object.keys(r.objectsData);
       R.objects = names;
 
+      // NO TWO CONTROLS WEAR THE SAME ICON. Focus went in with crosshairs,
+      // which Orient already had two rows up - and a toolbar where two buttons
+      // look identical is worse than one with no icons at all. Read off the
+      // page rather than from a list here, so a new button is covered by
+      // existing.
+      {
+        const seen = {};
+        for (const i of document.querySelectorAll(".toolbar-row i, .btn-toggle i")) {
+          const cls = [...i.classList].find((c) => c.startsWith('fa-')
+              && c !== 'fa-solid');
+          if (!cls) continue;
+          (seen[cls] = seen[cls] || []).push(
+              (i.parentElement.textContent || '').trim());
+        }
+        R.iconClashes = Object.entries(seen)
+            .filter(([, who]) => who.length > 1)
+            .map(([cls, who]) => cls + ': ' + who.join(' + '));
+        R.iconCount = Object.keys(seen).length;
+      }
+
       // THE WEBSITE'S OBJECT ROW IS EXEMPT FROM THE ONE-OBJECT HIDE, and this
       // is the page it has to be exempt ON. The notebook and the embed give
       // the picker a row to itself, and with one object that row can only say
@@ -1068,6 +1088,14 @@ def main():
           + (f"  DECLINED: {R['gpuError']}" if R.get("gpuError") else ""))
 
     bad = []
+    if not R.get("iconCount"):
+        bad.append("no toolbar icons were found, so the clash check below"
+                   " passes on an empty set")
+    elif R.get("iconClashes"):
+        bad.append("two controls wear the same icon: "
+                   + "; ".join(R["iconClashes"])
+                   + " - a toolbar where two buttons look identical is worse"
+                   " than one with no icons at all")
     if R.get("websiteRowWithOne") is not True:
         bad.append("the object row went away when the picker was down to one"
                    " option - on THIS page it also holds Multi and prev/next,"

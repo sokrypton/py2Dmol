@@ -77,6 +77,10 @@ MODULES = [
     # time, so being early costs nothing and keeps one order for both pages.
     Mod('align',      'src/align/align.js',     ['web'], standalone=True),
     Mod('math',       'src/io/math.js',                          ['web']),
+    # ...the chemistry of a side chain, cut out of parse.js so the NOTEBOOK can
+    # have it without the other 36 KB of parser. Must precede parse.js, which
+    # calls buildSidechainTable.
+    Mod('sidechains', 'src/io/sidechains.js',                    ['web']),
     Mod('parse',      'src/io/parse.js',                         ['web']),
     Mod('gif',        'src/io/gif.js',                           ['web']),
     Mod('svg',        'src/core/svg.js',        ['web']),
@@ -84,6 +88,9 @@ MODULES = [
     Mod('viewport',   'src/parts/viewport.js',  ['web']),
     Mod('shadow',     'src/parts/shadow.js',    ['web']),
     Mod('clip',       'src/parts/clip.js',      ['web']),
+    # ...one click, one neighbourhood. Composes clip, the side-chain set and
+    # residuesWithin, so it loads after clip and before ui.js, which wires it.
+    Mod('focus',      'src/parts/focus.js',     ['web']),
     Mod('capture',    'src/parts/capture.js',   ['web']),
     Mod('savepanel',  'src/parts/savepanel.js', ['web']),
     Mod('mol-align',  'src/parts/align.js',     ['web']),
@@ -143,7 +150,7 @@ BUNDLES = {
     # Worth removing even though it is small, because the notebook bundle is
     # INLINED INTO THE .ipynb, uncompressed, once per show() cell. Bytes here
     # are paid again for every viewer in the document.
-    'notebook': ['math', 'svg', 'objstate', 'viewport', 'shadow', 'clip',
+    'notebook': ['math', 'sidechains', 'svg', 'objstate', 'viewport', 'shadow', 'clip', 'focus',
                  'capture', 'savepanel', 'multi', 'panel', 'orient',
                  'ui', 'mol', 'geom', 'paintgl', 'paint2d', 'pae', 'scatter'],
     # ONE NOTEBOOK BUNDLE, WITH BOTH PAINTERS. There were three - GPU, 2D, and
@@ -167,7 +174,7 @@ BUNDLES = {
     # And a notebook that mixes the two stops paying twice: one gpu=True viewer
     # and one gpu=False used to carry 429 + 384 KB of two different libraries,
     # neither of which could serve the other.
-    'web': ['math', 'parse', 'gif', 'svg', 'objstate', 'viewport', 'shadow', 'clip',
+    'web': ['math', 'sidechains', 'parse', 'gif', 'svg', 'objstate', 'viewport', 'shadow', 'clip', 'focus',
             'capture', 'savepanel', 'mol-align', 'multi', 'panel', 'orient', 'ui', 'mol',
             'geom', 'paint2d', 'paintgl', 'pae', 'scatter', 'seq', 'msa',
             'app', 'app-select', 'app-objects', 'app-fetch', 'app-scatter',
@@ -209,7 +216,7 @@ BUNDLES = {
     # panel + ui are what `controls: true` and `play` need: the embed mounts
     # the notebook's own Style panel and is wired by wireViewerUI, rather than
     # growing a third set of controls to keep in step. 25 KB for exact parity.
-    'embed': ['math', 'parse', 'objstate', 'viewport', 'shadow', 'clip',
+    'embed': ['math', 'sidechains', 'parse', 'objstate', 'viewport', 'shadow', 'clip', 'focus',
               'capture', 'savepanel', 'multi', 'panel', 'orient', 'ui', 'embed',
               'mol', 'geom', 'paintgl'],
     # ...and the same embed drawn on the CPU. THE SECOND ARTEFACT THAT EARNS ITS
@@ -222,8 +229,8 @@ BUNDLES = {
     #
     # NOT A FALLBACK. Neither bundle has anything behind it; parts/embed.js asks
     # which painter is present and refuses a request for the other one.
-    'embed.cpu': ['math', 'parse', 'objstate', 'svg', 'viewport', 'shadow',
-                  'clip', 'capture', 'savepanel', 'multi', 'panel', 'orient',
+    'embed.cpu': ['math', 'sidechains', 'parse', 'objstate', 'svg', 'viewport', 'shadow',
+                  'clip', 'focus', 'capture', 'savepanel', 'multi', 'panel', 'orient',
                   'ui', 'embed', 'mol', 'geom', 'paint2d'],
 }
 

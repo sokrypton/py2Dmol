@@ -77,7 +77,11 @@ const src = files.map((f) => f.text).join('\n');
 // THE PARSER AND ITS NEIGHBOURS, likewise. web/utils.js became three files -
 // maths, parsing and the GIF encoder - and a dozen scans in the tests read it
 // by name. They read this instead, so the next split there costs one line here.
-const UTILS = ['src/io/math.js', 'src/io/parse.js', 'src/io/gif.js'];
+// ...and sidechains.js, which was cut OUT of parse.js so the notebook could
+// have the chemistry without the parser. Anything lifting a side-chain table
+// or a backbone set looks here now.
+const UTILS = ['src/io/math.js', 'src/io/sidechains.js', 'src/io/parse.js',
+               'src/io/gif.js'];
 // ...and the cartoon renderer, likewise split: cartoon/geom.js builds the
 // primitive list and cartoon/paint2d.js paints it. A scan for a drawing call
 // has to read both, and loading the pair in THIS order is what a page does -

@@ -76,6 +76,39 @@ window.addEventListener('load', () => {
                       pal: window.__palComplete});
       }
 
+      // A REPAINT AFTER A SIDE CHAIN, which is the one case where the two
+      // mechanisms meet. The ribbon half of the mesh is REUSED across a
+      // side-chain change, and a face carries both its baked colour and the
+      // palette slot to repaint it from - and the slot is the one thing a side
+      // chain moves, because it indexes the segment list and a side-chain bond
+      // is a segment. Two faces of 8,514 on 4HHB. Reusing the half without
+      // putting those back leaves them repainting from a neighbouring
+      // residue's colour, or off the end of a shorter palette - which is
+      // invisible until something changes the palette without rebuilding,
+      // exactly what these four modes do.
+      await setMode('auto');
+      {
+        const want = [4, 5, 6, 7, 8];
+        for (const g of r.writeGroups(want)) {
+          if (!g.object) continue;
+          const cur = g.object.sidechains instanceof Set
+            ? new Set(g.object.sidechains) : new Set();
+          for (const i of g.positions) cur.add(i);
+          g.object.sidechains = cur;
+        }
+        r._invalidateSegmentCache();
+        r.reloadDrawn(); await settle();
+        await setMode('rainbow');           // repaint, no rebuild
+        const cheap = shot();
+        window.py2dmolCartoonGPU.invalidate();
+        r.render('forced rebuild'); await settle();
+        R.afterSidechains = {same: cheap === shot(), table: !!r.sidechains};
+        await setMode('auto');
+        for (const g of r.writeGroups(want)) if (g.object) g.object.sidechains = null;
+        r._invalidateSegmentCache();
+        r.reloadDrawn(); await settle();
+      }
+
       // ...AND THE TWO THAT MUST REBUILD, because the colour is geometry there:
       // ss mode cuts an interval at the midpoint between two colours, and a
       // per-residue override does the same.
@@ -155,6 +188,18 @@ for m in R["modes"]:
     if not m['same']:
         bad.append(f"{m['mode']}: the repainted picture differs from the one a"
                    " rebuild draws - a face is reading the wrong palette slot")
+asc = R.get("afterSidechains") or {}
+print(f"  repaint after a side chain: matches a rebuild={asc.get('same')}"
+      f" (side-chain table: {asc.get('table')})")
+if not asc:
+    bad.append("the side-chain leg did not run")
+elif not asc.get("table"):
+    bad.append("this structure carries no side-chain table, so the repaint"
+               " after a side chain measured nothing")
+elif not asc.get("same"):
+    bad.append("after showing side chains, a repaint differs from what a"
+               " rebuild draws - the reused ribbon half is repainting from"
+               " palette slots that the side chain moved")
 print(f"  ss mode rebuilt: {R.get('ssRebuilt')};"
       f" an override rebuilt: {R.get('overrideRebuilt')}"
       f" (and matches a rebuild: {R.get('overrideSame')})")

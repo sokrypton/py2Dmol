@@ -184,6 +184,42 @@ def page():
     assert one.config.get('shown_objects') is None and 'orient' not in one.config, \
         'a viewer that asked for neither must carry neither'
 
+    #  SIDE CHAINS, WHICH A PYTHON PAYLOAD DID NOT CARRY AT ALL. The table is
+    #  coefficients in each residue's own backbone frame, built by
+    #  buildSidechainTable - so Python sends raw ATOMS and the browser makes
+    #  the table with the same code the website uses. Porting the geometry
+    #  would be a second copy of it, which is how a SAM cofactor came to draw
+    #  as one sphere.
+    #
+    #  A real structure, because the builder needs a backbone frame it can
+    #  measure - three consecutive positions at peptide spacing - and a
+    #  synthetic rod has no residues to hang atoms off.
+    for name, want in (('sc', True), ('nosc', False)):
+        sv = py2Dmol.view((300, 300), id=name, sidechains=want)
+        sv.add_pdb(ROOT + '/1UBQ.cif', name='ubq')
+        bodies.append(sv._display_viewer(static_data=sv.objects))
+
+    #  A ROD IN A LANDSCAPE VIEWER. The best-view search reads the canvas
+    #  aspect and lays the long axis along the long side - and the FRAMING then
+    #  fitted the result into a square of side min(w, h), so a 600x300 viewer
+    #  drew it across 47% of its width. The extent says how BIG and
+    #  extentAspect says how it is SHAPED; both were the isotropic radius.
+    rod = np.array([[2.3 * np.cos(i * 1.745), 2.3 * np.sin(i * 1.745), 1.5 * i]
+                    for i in range(60)])
+    #  ...AND A GLOBULAR ONE, OFF THE ORIGIN. A PDB sits wherever its file
+    #  put it, and the first version of the span measurement took max|x| of the
+    #  rotated coordinates as written - so both spans came out dominated by
+    #  that offset and their ratio meant nothing. The rod hid it by being
+    #  centred on its own long axis. This one is a ball at (30, 29, 15), which
+    #  is roughly where 1UBQ lives.
+    rng = np.random.RandomState(7)
+    ball = rng.normal(0, 6.0, (80, 3)) + np.array([30.0, 29.0, 15.0])
+    for name, size, obj in (('wide', (600, 300), rod), ('boxy', (400, 400), rod),
+                            ('blob', (600, 300), ball)):
+        wv = py2Dmol.view(size, id=name)
+        wv.add(obj, name='rod')
+        bodies.append(wv._display_viewer(static_data=wv.objects))
+
     #  A RING, FOR THE CYCLIC TOGGLE. parts/panel.js is one table and every
     #  shell mounts it, so the Cyclic box was on screen in the notebook and the
     #  embed - unchecked whatever cyclic said, and inert when clicked,
@@ -270,6 +306,92 @@ window.addEventListener('load', () => {
       R.one = read('one');
       R.both = read('both');
       R.aimed = read('aimed');
+
+      //  THE TABLE, BUILT IN THE BROWSER FROM WHAT PYTHON SENT.
+      const scOf = (id) => {
+        const r = vs[id].renderer;
+        const t = r.sidechains;
+        // `pos` is ONE ENTRY PER ATOM - the position each belongs to - and
+        // `coef` is the three coefficients. Dividing pos by three counted a
+        // third of the atoms and read as a table that had lost most of itself.
+        return {table: !!t, atoms: t && t.pos ? t.pos.length : 0,
+                coefs: t && t.coef ? t.coef.length : 0,
+                // ...and it is USABLE: focus measures side chain to side
+                // chain, which is nothing at all without one.
+                picked: (() => {
+                  const got = r.focusOn({positions: [20]});
+                  const n = got ? got.size : -1;
+                  r.clearFocus();
+                  return n;
+                })()};
+      };
+      R.sc = scOf('sc');
+      R.nosc = scOf('nosc');
+
+      //  HOW MUCH OF THE CANVAS THE ORIENTED STRUCTURE USES. Measured as
+      //  INK, not from the numbers: the arithmetic lives in _viewportScale and
+      //  a check on it would agree with a second copy of that arithmetic
+      //  somewhere else - which is exactly what the GPU tube path had, so the
+      //  first version of this fix changed nothing at all on the default
+      //  build and every unit-level check still passed.
+      const fillOf = (id) => {
+        const r = vs[id].renderer;
+        window.py2dmolOrient.orientToBestView(r, {animate: false});
+        const cv = r.canvas, w = cv.width, h = cv.height;
+        const d = cv.getContext('2d').getImageData(0, 0, w, h).data;
+        let x1 = 1e9, y1 = 1e9, x2 = -1, y2 = -1;
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const i = (y * w + x) * 4;
+            if (d[i] < 240 || d[i + 1] < 240 || d[i + 2] < 240) {
+              if (x < x1) x1 = x; if (x > x2) x2 = x;
+              if (y < y1) y1 = y; if (y > y2) y2 = y;
+            }
+          }
+        }
+        return {w: Math.round((x2 - x1 + 1) / w * 100),
+                h: Math.round((y2 - y1 + 1) / h * 100),
+                // ...AND WHETHER IT TOUCHES THE EDGE. Giving the shorter axis
+                // its true share is what buys the space, and it spends the
+                // margin the isotropic fit used to leave: the ink is wider
+                // than the positions it is drawn around, so a fit that is
+                // exact on the points clips the drawing. Two pixels of slack
+                // on 1UBQ was the measured answer, and that is thin enough to
+                // want a guard on it.
+                clipped: (x1 <= 0 || y1 <= 0 || x2 >= w - 1 || y2 >= h - 1),
+                aspect: r.viewerState.extentAspect};
+      };
+      R.wide = fillOf('wide');
+      R.boxy = fillOf('boxy');
+      R.blob = fillOf('blob');
+
+      //  ...AND THE ANIMATED ORIENT, which is what the BUTTON does. The
+      //  jump takes targetAspect straight off the local; the flight carries
+      //  it on the animation record and applies it when it lands, and that
+      //  is a second path that can drop it - nulling it there passed every
+      //  check until this existed.
+      {
+        const r = vs['wide'].renderer;
+        r.viewerState.extentAspect = null;
+        r.viewerState.rotation = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+        r.render('probe');
+        window.py2dmolOrient.orientToBestView(r, {animate: true});
+        await until(() => !!r.viewerState.extentAspect, 4000);
+        await new Promise((s) => setTimeout(s, 300));
+        const cv = r.canvas, w = cv.width, h = cv.height;
+        const d = cv.getContext('2d').getImageData(0, 0, w, h).data;
+        let x1 = 1e9, x2 = -1;
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const i = (y * w + x) * 4;
+            if (d[i] < 240 || d[i + 1] < 240 || d[i + 2] < 240) {
+              if (x < x1) x1 = x; if (x > x2) x2 = x;
+            }
+          }
+        }
+        R.wideFlown = {w: Math.round((x2 - x1 + 1) / w * 100),
+                       aspect: !!r.viewerState.extentAspect};
+      }
 
       //  THE CYCLIC TOGGLE, IN A SHELL THAT IS NOT THE WEBSITE. Its own
       //  checkbox, found by walking up from its canvas: every viewer on this
@@ -473,6 +595,55 @@ def main():
 
     for e in R.get('errors', []):
         bad.append('page error: ' + e)
+    sc, nosc = R.get('sc') or {}, R.get('nosc') or {}
+    print(f"  sidechains=True {sc};  sidechains=False {nosc}")
+    if not sc.get('table'):
+        bad.append('view(sidechains=True) built no side-chain table - Python'
+                   ' sends raw atoms and parts/ui.js turns them into one with'
+                   ' buildSidechainTable, the same builder the website uses')
+    elif sc.get('atoms', 0) < 200:
+        bad.append(f"the table holds {sc.get('atoms')} atoms for 1UBQ, which"
+                   ' has about 300 side-chain heavy atoms')
+    elif nosc.get('table'):
+        bad.append('view() carried a side-chain table without being asked -'
+                   ' the payload is 4x the coordinates per frame, which is the'
+                   ' whole reason it is a flag')
+    elif not (sc.get('picked', 0) >= 1):
+        bad.append(f"focus picked {sc.get('picked')} with a table present")
+
+    wd, bx = R.get('wide') or {}, R.get('boxy') or {}
+    print(f"  landscape fill {wd}; square {bx}")
+    if not wd.get('aspect'):
+        bad.append('orient stored no extentAspect, so the framing is the'
+                   ' isotropic radius on both axes and a wide viewer is'
+                   ' fitted to a square of side min(w, h)')
+    elif wd.get('w', 0) < 85:
+        bad.append(f"a rod oriented in a 600x300 viewer fills {wd.get('w')}%"
+                   ' of the width - the best-view search lays it along the'
+                   ' long side and the framing then squares it off')
+    elif (R.get('blob') or {}).get('clipped') or wd.get('clipped') \
+            or bx.get('clipped'):
+        bad.append(f"the drawing touches the canvas edge - wide"
+                   f" {wd.get('clipped')}, square {bx.get('clipped')}, globular"
+                   f" {(R.get('blob') or {}).get('clipped')}. The shorter axis"
+                   ' now takes its true share, which spends the margin the'
+                   ' isotropic fit used to leave, and the ink is wider than'
+                   ' the positions it is drawn around')
+    elif (R.get('blob') or {}).get('h', 0) < 85:
+        bad.append(f"a globular structure in a 600x300 viewer fills"
+                   f" {(R.get('blob') or {}).get('h')}% of its height")
+    elif not (R.get('wideFlown') or {}).get('aspect'):
+        bad.append('the ANIMATED orient - what the button does - landed with'
+                   ' no extentAspect: the jump takes it off the local and the'
+                   ' flight carries it on the animation record, and that is a'
+                   ' second path that can drop it')
+    elif (R.get('wideFlown') or {}).get('w', 0) < 85:
+        bad.append(f"after flying there the rod fills"
+                   f" {(R.get('wideFlown') or {}).get('w')}% of the width")
+    elif bx.get('h', 0) < 85:
+        bad.append(f"a square viewer fills {bx.get('h')}% of its height, so"
+                   ' the change has cost the case that already worked')
+
     rg, ro, ra = (R.get('ring') or {}, R.get('ringOff') or {},
                   R.get('ringAfter') or {})
     print(f"  cyclic on {rg}; off {ro}; after unticking {ra}")
@@ -546,8 +717,9 @@ def main():
         bad.append('pressing Orient left it spinning - a reader who asks for'
                    ' an angle while it turns wants it framed and held, and'
                    ' keepSpin is for the automatic orient alone')
-    if R.get('ids') != ['one', 'both', 'aimed', 'ring', 'ringoff',
-                        'paper', 'plain', 'turn']:
+    if R.get('ids') != ['one', 'both', 'aimed', 'sc', 'nosc', 'wide',
+                        'boxy', 'blob', 'ring', 'ringoff', 'paper', 'plain',
+                        'turn']:
         bad.append(f"the three viewers did not all come up: {R.get('ids')}")
 
     one = R.get('one') or {}

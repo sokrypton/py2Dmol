@@ -1787,12 +1787,16 @@ function setupCanvasSequenceEvents() {
         // Record the selection and stop. Deliberately does NOT call
         // setVisibility - that is what recomputes visiblePositions, and a
         // selection must not change what is on screen.
-        // Empty clears rather than storing an empty set, so every consumer
-        // can test the selection with a simple truthiness check.
-        renderer.residueSelection = (positions && positions.size)
-            ? new Set(positions) : null;
+        //
+        // 🔴 THROUGH THE RENDERER'S SETTER, not by writing the field. It does
+        // exactly what these three lines did - store a Set or null, and
+        // dispatch - and being the one funnel is what lets anything else hang
+        // off a selection. Focus does: parts/ui.js wraps setResidueSelection,
+        // so a click in the strip transports you there the same as a click on
+        // the canvas. Writing the field went past that and the strip alone
+        // stayed dead.
+        renderer.setResidueSelection(positions);
         scheduleRender();
-        document.dispatchEvent(new CustomEvent('py2dmol-residue-selection-change'));
         return;
 
     };
@@ -2121,12 +2125,12 @@ function setupCanvasSequenceEvents() {
             // explicit selection means "show nothing" - clicking a gap would
             // blank the structure.
             if (renderer?.residueSelection) {
-                renderer.residueSelection = null;
+                // ...and the same funnel on the way out - see above.
+                renderer.clearResidueSelection();
                 anchorItem = null;
                 anchorBase = new Set();
                 lastSequenceUpdateHash = null;
                 scheduleRender();
-                document.dispatchEvent(new CustomEvent('py2dmol-residue-selection-change'));
             }
             return null;
         }

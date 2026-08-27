@@ -237,6 +237,60 @@ function orientToBestView(renderer, options) {
     // Use filtered coordinates (selected positions only) for best view rotation
     const Rtarget = bestViewTargetRotation_relaxed_AUTO(coordsForBestView, Rcur, canvasWidth, canvasHeight);
 
+    // HOW WIDE AND HOW TALL, UNDER THE ROTATION JUST CHOSEN.
+    //
+    // The renderer fits the structure to a SQUARE of side min(w, h): it sets
+    // xProjectedExtent and yProjectedExtent to the same isotropic radius, so a
+    // 598x298 viewer drew a rod across 280px of its 598 - laid out correctly,
+    // and using 47% of the space. This is the missing half: the extent says
+    // HOW BIG and this says HOW IT IS SHAPED, normalised so the longer axis is
+    // 1 and today's answer is what an isotropic structure still gets.
+    //
+    // Measured HERE, once, and stored beside the extent rather than recomputed
+    // per frame. Per frame would mean the picture growing and shrinking as the
+    // reader drags, and a tumbling trajectory breathing. The cost of settling
+    // it once is that the framing belongs to THIS rotation: turn a long
+    // structure end-on afterwards and it can overrun the edges, which is what
+    // PyMOL's orient does too. Press Orient again to reframe.
+    const targetAspect = (() => {
+        // 🔴 ABOUT THE CENTRE, NOT THE ORIGIN. The first version took
+        // max|x| of the rotated coordinates as written, and a PDB sits
+        // wherever its file put it - 1UBQ is centred near (30, 29, 15), so
+        // both spans came out dominated by that offset and their ratio meant
+        // nothing. It read as ~1:1 for a rod and pushed a globular structure
+        // to the edge of the canvas. The synthetic fixture hid it by being
+        // centred on its own long axis.
+        if (!visibleCenter) return null;
+        let hx = 0; let hy = 0;
+        for (const c of coordsForBestView) {
+            const dx = c[0] - visibleCenter[0];
+            const dy = c[1] - visibleCenter[1];
+            const dz = c[2] - visibleCenter[2];
+            const x = Rtarget[0][0] * dx + Rtarget[0][1] * dy + Rtarget[0][2] * dz;
+            const y = Rtarget[1][0] * dx + Rtarget[1][1] * dy + Rtarget[1][2] * dz;
+            if (Math.abs(x) > hx) hx = Math.abs(x);
+            if (Math.abs(y) > hy) hy = Math.abs(y);
+        }
+        // NORMALISED TO THE LONGER AXIS, so the longer one keeps exactly the
+        // fit it has always had and only the shorter one is given back the
+        // room it was not using. That is what makes this safe: the binding
+        // axis is untouched, so nothing that fitted before can stop fitting.
+        //
+        // It is deliberately not `hx / visibleExtent`, which would be the
+        // EXACT 2D fit. Two things are left on the table by that choice - the
+        // extent is a 3D radius, so a globular structure reserves room for the
+        // atom pointing at the camera; and at ortho < 1 the far side of the
+        // structure is foreshortened, so the drawn span is smaller than the
+        // measured one. Both are worth perhaps 20% more magnification and both
+        // need the margin to be worked out in PIXELS against the style's own
+        // line width, because fitting the points exactly clips the drawing
+        // around them. Measured, not guessed: 1UBQ came out touching the
+        // canvas edge on the first attempt at it.
+        const m = Math.max(hx, hy);
+        if (!(m > 0)) return null;
+        return { x: hx / m, y: hy / m };
+    })();
+
     const angle = rotationAngleBetweenMatrices(Rcur, Rtarget);
     const deg = angle * 180 / Math.PI;
     // Calculate duration based on rotation angle, with a minimum to ensure completion
@@ -307,6 +361,8 @@ function orientToBestView(renderer, options) {
     renderer.spinVelocityX = 0;
     renderer.spinVelocityY = 0;
 
+    rotationAnimation.targetAspect = targetAspect;
+
     // If animate is false, set values directly and render once
     if (!animate) {
         // Set rotation matrix directly
@@ -320,12 +376,15 @@ function orientToBestView(renderer, options) {
                 z: targetCenter[2]
             };
             renderer.viewerState.extent = targetExtent;
+            renderer.viewerState.extentAspect = targetAspect;
         } else {
             renderer.viewerState.center = null;
             if (targetExtent !== null && targetExtent !== undefined) {
                 renderer.viewerState.extent = targetExtent;
+                renderer.viewerState.extentAspect = targetAspect;
             } else {
                 renderer.viewerState.extent = null;
+                renderer.viewerState.extentAspect = null;
             }
         }
 
@@ -500,6 +559,7 @@ function animateRotation(rotationAnimation) {
             const target = rotationAnimation.targetCenter;
             renderer.viewerState.center = { x: target.x, y: target.y, z: target.z };
             renderer.viewerState.extent = rotationAnimation.targetExtent;
+            renderer.viewerState.extentAspect = rotationAnimation.targetAspect;
         } else {
             // Clear temporary center if orienting to all positions
             renderer.viewerState.center = null;
@@ -507,8 +567,10 @@ function animateRotation(rotationAnimation) {
             // Only clear if we don't            renderer.viewerState.center = null;
             if (rotationAnimation.targetExtent !== null && rotationAnimation.targetExtent !== undefined) {
                 renderer.viewerState.extent = rotationAnimation.targetExtent;
+                renderer.viewerState.extentAspect = rotationAnimation.targetAspect;
             } else {
                 renderer.viewerState.extent = null;
+                renderer.viewerState.extentAspect = null;
             }
         }
 
@@ -675,6 +737,7 @@ function animateRotation(rotationAnimation) {
             // Only clear if we don't have a frame-specific extent
             if (rotationAnimation.targetExtent === null || rotationAnimation.targetExtent === undefined) {
                 renderer.viewerState.extent = null;
+                renderer.viewerState.extentAspect = null;
             }
             // Otherwise, keep extent set to the frame-specific extent
         }

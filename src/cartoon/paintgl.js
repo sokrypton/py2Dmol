@@ -100,7 +100,16 @@ function residueOf(p) {
     return sc ? sc.owner : Math.round(g);
 }
 
-function facesOf(prims, prm) {
+/**
+ * @param consume  drop each prim as it is read. The prim list is the largest
+ *   thing the capture allocates - 37,637 prims and 89 MB on 4UG0, 288,611 and
+ *   541 MB on a capsid - and it is alive through the whole of this function on
+ *   top of the faces it is being turned into. Emptying the array afterwards,
+ *   which is what the caller used to do, frees it one pass too late to matter.
+ *   OPT-IN, because emptying a caller's array is a surprising thing for a
+ *   function to do and the lab harnesses read their prims back.
+ */
+function facesOf(prims, prm, consume) {
     const P0 = prm || defaultParams();
     const skipKinds = {};
     const lines = [];
@@ -108,7 +117,9 @@ function facesOf(prims, prm) {
     const faces = [];
     let skipped = 0;
     let pieces = 0;
-    for (const p of prims) {
+    for (let pi = 0; pi < prims.length; pi++) {
+        const p = prims[pi];
+        if (consume) prims[pi] = null;
         if (p.kind === 'rib' && p.Lp) {
             const ns = p.Lp.length;
             // oK is ub·k - the inner-ness of the +b face, and the one shading
@@ -2010,6 +2021,20 @@ function setKeepMeshArrays(on) {
     if (!on) { lastFill = null; lastEdges = null; spareMesh = null; }
 }
 const MESH_CACHE_MAX_BYTES = 128 * 1024 * 1024;
+/**
+ * ...AND THE SMALLER CAP, for anything held ACROSS builds rather than between
+ * two pictures. The spare slot is one mesh, exchanged, and it goes the moment
+ * a structure is edited; the ribbon half of a mesh is held while the page
+ * lives and is re-examined on every rebuild. 16 MB is a 748-residue protein
+ * five times over and a capsid not at all, which is the intent: 1OHF is
+ * 1,199,700 faces whose fills alone are 230 MB of floats, its build already
+ * peaks at 4,160 MB against a ~4.3 GB limit - 140 MB of headroom - and nobody
+ * clicks side chains onto a capsid, they wait twenty seconds for it to draw.
+ * The structure that can least afford a held array is the one that benefits
+ * from it least. Past the cap the ribbon is rebuilt exactly as it was before
+ * the split, which at that size is a rounding error against the capture.
+ */
+const MESH_KEEP_MAX_BYTES = 16 * 1024 * 1024;
 let spareMesh = null;            // { sig, fill, edges, edgeCount, resident, pal }
 let progInk, bufInk, edgeCount = 0;
 // whether the resident edge buffer holds any contacts - see below
@@ -2828,12 +2853,24 @@ function zoomBy(f) { setZoom(viewZoom * f); }
 // Build the resident buffer once: model-space corners, a model-space face
 // normal, and the face's base colour. Shading happens in the shader from then on.
 
-function makeResident(faces, scale, prm, lines) {
+/**
+ * ONE HALF OF A MESH: faces in, the arrays a draw needs out. No GL, no
+ * globals - which is what lets it be called twice and one of the two answers
+ * kept. See makeResident below for why there are two halves at all.
+ */
+function buildMeshPart(faces, scale, prm, lines) {
     const P0 = prm || defaultParams();
     if (P0.ortho !== undefined) setOrtho(P0.ortho);
     // Stage timings, for finding what a build actually spends its time on.
     const MP = (window.__mrPhase = { t0: performance.now(), faces: faces.length });
-    const mark = (k) => { MP[k] = +(performance.now() - MP.t0).toFixed(1); };
+    const mark = (k) => { MP[k] = +(performance.now() - MP.t0).toFixed(1);
+        if (window.__heapProbe) {
+            // LIVE bytes, not the garbage a build leaves behind it: window.gc
+            // is a silent no-op without --js-flags=--expose-gc, and the heap
+            // after a pass is mostly uncollected without one.
+            if (window.gc) { window.gc(); window.gc(); }
+            MP[k + 'MB'] = Math.round(((performance.memory || {}).usedJSHeapSize || 0) / 1e6);
+        } };
     const VR = currentRot();
     const inv = matT(VR);                                 // rotations are orthonormal
     // THE FLAT STROKES, lifted the same way the surfaces are. Each consecutive
@@ -2850,6 +2887,7 @@ function makeResident(faces, scale, prm, lines) {
     // in the picture, and it dragged in the 0.8 fudge that exists for the
     // ribbon's silhouette. uScale already carries the zoom and the device
     // ratio, and pe is per vertex, so the shader needs neither.
+    let hasContacts = false;
     const contactEdges = [];
     for (const ln of (lines || [])) {
         // TAKE THE DEPTH BIAS BACK OFF FIRST. A contact's projected points have
@@ -2879,6 +2917,43 @@ function makeResident(faces, scale, prm, lines) {
     // and the bind offsets below: a mismatch does not error, it silently
     // reads the wrong attribute, and an unbound one reads (0,0,0).
     const data = new Float32Array(faces.length * 48);
+    /**
+     * EVERY FACE'S FOUR MODEL-SPACE CORNERS, IN ONE ARRAY.
+     *
+     * They used to be five objects a face - an array of four [x,y,z] arrays -
+     * held from the normals pass until the centroids at the very end, which is
+     * across the two most expensive passes in the build. On 4UG0's 188,738
+     * ribbon faces that is the difference between +145 MB (rails and normals
+     * together) and 18. Every face is a quad: checked on protein, RNA and a
+     * nucleosome, 26,700 / 15,250 / 47,000 faces, all of them four-cornered.
+     *
+     * Float64, not Float32. The edge table matches two faces by hashing their
+     * corners quantised to 1e-3, and the same point computed by two faces
+     * agrees to the last bit in double - rounding it to float32 first would
+     * make that agreement depend on which side of a boundary the rounding
+     * fell, and a missed match is a missed weld: a line drawn across a solid.
+     */
+    const M = new Float64Array(faces.length * 12);
+    const hasM = new Uint8Array(faces.length);
+    // ...and four scratch corners, so the passes that consumed `f._m` keep the
+    // shape they were written for.
+    const CS = [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    const loadM = (fi) => {
+        const b = fi * 12;
+        for (let k = 0; k < 4; k++) {
+            const c = CS[k]; const o = b + k * 3;
+            c[0] = M[o]; c[1] = M[o + 1]; c[2] = M[o + 2];
+        }
+        return CS;
+    };
+    const storeM = (fi, m) => {
+        const b = fi * 12;
+        for (let k = 0; k < 4; k++) {
+            const c = m[k]; const o = b + k * 3;
+            M[o] = c[0]; M[o + 1] = c[1]; M[o + 2] = c[2];
+        }
+        hasM[fi] = 1;
+    };
     let o = 0;
     let zMin = Infinity, zMax = -Infinity;
 
@@ -2899,14 +2974,15 @@ function makeResident(faces, scale, prm, lines) {
     mark('unprojectFrames');
     const pieceFrame = new Map();
     const pieceRails = new Map();
-    for (const f of faces) {
+    for (let fi = 0; fi < faces.length; fi++) {
+        const f = faces[fi];
         if (f.pieceId === undefined || f.surf !== 0) continue;
         // KEPT FOR THE NORMALS PASS BELOW, which wants the same four corners in
-        // the same space and used to unproject them a second time. Nothing
-        // between here and there writes into a corner, and the emit pass
-        // already shares this array through f._emit, so one computation serves
-        // all three.
-        const m = f._mv = f.q.map((q2) => apply(inv, unproject(q2, scale)));
+        // the same space and used to unproject them a second time. It goes into
+        // the flat store rather than onto the face: the rails read it here and
+        // now, and holding it per face is what cost 76 MB on a ribosome.
+        const m = f.q.map((q2) => apply(inv, unproject(q2, scale)));
+        storeM(fi, m);
         let e = pieceRails.get(f.pieceId);
         if (!e) { e = { L: [], R: [], oB: f.oB, kAvg: f.kAvg }; pieceRails.set(f.pieceId, e); }
         e.L[f.st] = m[0]; e.R[f.st] = m[1];          // station k
@@ -3018,15 +3094,31 @@ function makeResident(faces, scale, prm, lines) {
             ^ Math.round(q2[2] * 1000) * 83492791;
         return h >>> 0;
     };
-    const ptH = (q) => (q.__h !== undefined ? q.__h : (q.__h = hashPt(q)));
-    // Two-level Map instead of a composed key: an edge is identified by its two
-    // endpoint hashes, and nesting them avoids building a key object at all.
-    // A single packed number would need 64 bits and silently collide past 2^53.
-    const edgeAt = (h1, h2) => {
-        const lo = h1 < h2 ? h1 : h2;
-        let inner = edgeMap.get(lo);
-        if (!inner) { inner = new Map(); edgeMap.set(lo, inner); }
-        return inner;
+    // NO CACHE ON THE ARRAY ANY MORE. The four corners handed around here are
+    // a REUSED scratch now - the model corners live in one flat array - so a
+    // hash stashed on the array would be the previous face's. The hash is
+    // three multiplies and two xors; caching it saved one repeat per corner.
+    const ptH = (q) => hashPt(q);
+    // ONE MAP AND A LINKED LIST, not a Map of Maps. An edge is identified by
+    // its two endpoint hashes; a single packed number would need 64 bits and
+    // collide past 2^53, so the first hash picks a GROUP and the second is
+    // searched within it. The groups used to be Maps - about one per edge on a
+    // large structure, each a hundred-odd bytes of object to hold two or three
+    // numbers. They are chains through an Int32Array now, and a chain is two
+    // or three long, so walking it beats hashing again.
+    //
+    // The ORDER is why it is a chain and not a table: the outline is emitted
+    // group by group in first-seen order and, within a group, in insertion
+    // order - which is exactly what a Map of Maps yields and what the ink pass
+    // (depth mask off, later strokes over earlier) is drawn from.
+    let gCap = 1024;
+    let gN = 0;
+    let gHead = new Int32Array(gCap);
+    let gTail = new Int32Array(gCap);
+    const gGrow = () => {
+        gCap *= 2;
+        const h2 = new Int32Array(gCap); h2.set(gHead); gHead = h2;
+        const t2 = new Int32Array(gCap); t2.set(gTail); gTail = t2;
     };
     // GHOST EDGES. A face may need to be COUNTED along an edge without being
     // allowed to ink it. The cross-strip edges of a rib quad are the case: the
@@ -3040,27 +3132,84 @@ function makeResident(faces, scale, prm, lines) {
     // with no REAL face is never emitted. So a mid-strip cross edge still has
     // two ghosts and stays invisible, while a cap rim has one real face and one
     // ghost - two normals, and the ordinary silhouette test decides it.
+/**
+ * AN EDGE IS SEVENTEEN NUMBERS, NOT AN OBJECT.
+ *
+ * The edge table is the largest allocation in a build - measured on 4UG0,
+ * 188,738 ribbon faces: rails +76 MB, normals +69 MB, and the edge pass
+ * +120 MB, against a fill of 36. It was one object per edge, nineteen fields
+ * apiece, in a Map of Maps; a capsid multiplies that by ten and the build
+ * already peaks at 4,160 MB against a ~4.3 GB limit.
+ *
+ * So the fields live in two flat arrays and the map holds an INDEX. The map
+ * itself stays, and so does the ITERATION ORDER - the outline instances are
+ * emitted in the order the map yields them, and the ink pass draws with the
+ * depth mask off, so a later stroke paints over an earlier one. Reordering
+ * them would be a picture change wearing a memory change's clothes.
+ */
+    const E_F = 15;        // p0(3) p1(3) n0(3) n1(3) col(3)
+    const E_I = 5;         // real, count, nCount, pal, bits
+    const EB_TWO = 1; const EB_NOINK = 2; const EB_STICK = 4;
+    const EB_FULL = 8; const EB_SEAM = 16; const EB_OUTER = 32;
+    const EB_COL = 64; const EB_N0 = 128; const EB_N1 = 256;
+    let eCap = 1024;
+    let eF = new Float32Array(eCap * E_F);
+    let eIn = new Int32Array(eCap * E_I);
+    // UNSIGNED: the endpoint hashes are `h >>> 0` and half of them are past
+    // 2^31. In an Int32Array those come back negative and never compare equal
+    // to the number being looked up, so every edge is created fresh - which
+    // looks like a working build with twice the outline instances.
+    let eHi = new Uint32Array(eCap);       // the second endpoint's hash
+    let eNext = new Int32Array(eCap);      // ...and the next edge in its group
+    let eN = 0;
+    const eGrow = () => {
+        eCap *= 2;
+        const f2 = new Float32Array(eCap * E_F); f2.set(eF); eF = f2;
+        const i2 = new Int32Array(eCap * E_I); i2.set(eIn); eIn = i2;
+        const h2 = new Uint32Array(eCap); h2.set(eHi); eHi = h2;
+        const n2 = new Int32Array(eCap); n2.set(eNext); eNext = n2;
+    };
     const addEdge = (a2, b2, nrm, isStick, pal, ghost, two, noInk, col, full, seam, outer) => {
         const ha = ptH(a2);
         const hb = ptH(b2);
         if (ha === hb) return;      // the repeated corner of a fan-padded quad
-        const inner = edgeAt(ha, hb);
+        const lo = ha < hb ? ha : hb;
         const other = ha < hb ? hb : ha;
-        let e = inner.get(other);
-        if (!e) {
+        let g = edgeMap.get(lo);
+        if (g === undefined) {
+            g = gN++;
+            if (gN > gCap) gGrow();
+            gHead[g] = -1; gTail[g] = -1;
+            edgeMap.set(lo, g);
+        }
+        let e;
+        for (let x = gHead[g]; x >= 0; x = eNext[x]) {
+            if (eHi[x] === other) { e = x; break; }
+        }
+        if (e === undefined) {
             // TWO SLOTS, NOT AN ARRAY. Only the first two normals are ever
             // kept, and an array per edge is an allocation per edge - about
             // seven million of them on a capsid - to hold at most two things.
-            e = { p0: a2, p1: b2, n0: null, n1: null, nCount: 0,
-                count: 0, real: 0, stick: 0, two: 0,
-                noInk: 0, pal: -1, full: 0, seam: 0, outer: 0 };
-            inner.set(other, e);
+            e = eN++;
+            if (eN > eCap) eGrow();
+            const f0 = e * E_F;
+            eF[f0] = a2[0]; eF[f0 + 1] = a2[1]; eF[f0 + 2] = a2[2];
+            eF[f0 + 3] = b2[0]; eF[f0 + 4] = b2[1]; eF[f0 + 5] = b2[2];
+            const i0 = e * E_I;
+            eIn[i0] = 0; eIn[i0 + 1] = 0; eIn[i0 + 2] = 0;
+            eIn[i0 + 3] = -1; eIn[i0 + 4] = 0;
+            eHi[e] = other; eNext[e] = -1;
+            if (gTail[g] < 0) gHead[g] = e; else eNext[gTail[g]] = e;
+            gTail[g] = e;
         }
-        if (!ghost) e.real++;
-        if (two && !ghost) e.two = 1;
-        if (noInk) e.noInk = 1;      // any face may veto the whole edge
-        if (isStick) e.stick = 1;   // so show/hide can drop its outline too
-        if (full && !ghost) e.full = 1;   // a fully-outlined surface (see below)
+        const eb = e * E_I;
+        const ef = e * E_F;
+        let bits = eIn[eb + 4];
+        if (!ghost) eIn[eb]++;
+        if (two && !ghost) bits |= EB_TWO;
+        if (noInk) bits |= EB_NOINK;      // any face may veto the whole edge
+        if (isStick) bits |= EB_STICK;   // so show/hide can drop its outline too
+        if (full && !ghost) bits |= EB_FULL;   // a fully-outlined surface
         // A SEAM CROSS EDGE IS VETOED ON THE EDGE, NOT ON THE FACE, and that is
         // the whole reason this works. The arrow's step is its own two-station
         // piece, so its far cross edge is shared with the NEXT PRIM - which
@@ -3068,29 +3217,56 @@ function makeResident(faces, scale, prm, lines) {
         // per-face ghost could never remove it. The edge object is looked up by
         // the hash of its two endpoints and is therefore the SAME object for
         // both prims, so a flag set here survives whoever else claims it.
-        if (seam) e.seam = 1;
-        if (outer && !ghost) e.outer = 1;
+        if (seam) bits |= EB_SEAM;
+        if (outer && !ghost) bits |= EB_OUTER;
 
         // AND ITS COLOUR. The Ink control tints an outline toward its own
         // element's colour, so an edge has to know which palette slot it
         // belongs to. The first face to claim the edge lends it one.
-        if (e.pal < 0 && pal !== undefined && pal >= 0) e.pal = pal;
+        if (eIn[eb + 3] < 0 && pal !== undefined && pal >= 0) eIn[eb + 3] = pal;
         // ...and its colour, for when there is no slot to look up
-        if (!e.col && col && !ghost) e.col = col;
+        if (!(bits & EB_COL) && col && !ghost) {
+            bits |= EB_COL;
+            eF[ef + 12] = col[0]; eF[ef + 13] = col[1]; eF[ef + 14] = col[2];
+        }
         // and WHICH faces they are, for the ID test
         // COUNT EVERY incident face, keep the first two normals. The count is
         // what decides whether the silhouette rule even applies - see below.
-        e.count++;
-        if (e.nCount === 0) { e.n0 = nrm; e.nCount = 1; }
-        else if (e.nCount === 1) { e.n1 = nrm; e.nCount = 2; }
+        eIn[eb + 1]++;
+        // THE SLOT IS TAKEN WHETHER OR NOT THERE IS A NORMAL TO PUT IN IT.
+        // `nCount` is what decides whether an edge is a boundary - fewer than
+        // two incident faces - and the object version counted a null normal as
+        // an occupant. A typed array cannot hold null, so the PRESENCE is a
+        // bit and the count keeps its old meaning; the emit below falls back to
+        // (0,0,1) and to a2 exactly as `e.n0 || ...` did.
+        const nc = eIn[eb + 2];
+        if (nc === 0) {
+            if (nrm) {
+                eF[ef + 6] = nrm[0]; eF[ef + 7] = nrm[1]; eF[ef + 8] = nrm[2];
+                bits |= EB_N0;
+            }
+            eIn[eb + 2] = 1;
+        } else if (nc === 1) {
+            if (nrm) {
+                eF[ef + 9] = nrm[0]; eF[ef + 10] = nrm[1]; eF[ef + 11] = nrm[2];
+                bits |= EB_N1;
+            }
+            eIn[eb + 2] = 2;
+        }
+        eIn[eb + 4] = bits;
     };
 
 
     pieceRails.clear();
     mark('pieceFrames');
-    for (const f of faces) {
+    for (let fi = 0; fi < faces.length; fi++) {
+        const f = faces[fi];
         // the rails pass above already did this for every surf-0 rib face
-        const m = f._mv || (f.q.map((p) => apply(inv, unproject(p, scale))));
+        let m;
+        if (hasM[fi]) { m = loadM(fi); } else {
+            m = f.q.map((p) => apply(inv, unproject(p, scale)));
+            storeM(fi, m);
+        }
         // NEWELL, not a single cross product. A mitred junction is emitted as
         // a triangle fan padded to a quad - [q0, qk, qk+1, q0] - so its fourth
         // corner repeats the first and cross(m1-m0, m3-m0) is exactly zero.
@@ -3172,7 +3348,6 @@ function makeResident(faces, scale, prm, lines) {
         // Edges are built in a SECOND pass (below), because two of the rules
         // need to see every face first: dropping interior face pairs, and
         // knowing a rib face's strip direction.
-        f._m = m;
         f._outN = (broadFace && topF < 0.5) ? [-nn[0], -nn[1], -nn[2]] : nn;
         // SIDE-FACE NORMALS ARE ALREADY OUTWARD - measured, not assumed.
         //
@@ -3227,7 +3402,10 @@ function makeResident(faces, scale, prm, lines) {
         const tA = (frA && (isRibFace || isRibSide)) ? frA.t : tt;
         const tB = (frB && (isRibFace || isRibSide)) ? frB.t : tA;
         f._nA = nA; f._nB = nB; f._nFlat = nFlat; f._tA = tA; f._tB = tB;
-        f._emit = m;
+        // THE FLAG, NOT THE ARRAY. `m` may be the shared scratch by now, so
+        // holding it on the face would give every face the last face's
+        // corners. The corners are in the flat store; this says they are.
+        f._emitOK = 1;
     }
 
     // THE VERTEX WELD IS GONE. It averaged the normals of every face meeting
@@ -3247,9 +3425,10 @@ function makeResident(faces, scale, prm, lines) {
     // which also holds faces that were skipped - is what the outline compares
     // against.
     mark('normals');
-    for (const f of faces) {
-        if (!f._emit) continue;
-        const m = f._emit;
+    for (let fi = 0; fi < faces.length; fi++) {
+        const f = faces[fi];
+        if (!f._emitOK) continue;
+        const m = loadM(fi);
         const c = f.c;
         const nA = f._nA; const nB = f._nB;
         const tA = f._tA; const tB = f._tB;
@@ -3295,25 +3474,16 @@ function makeResident(faces, scale, prm, lines) {
             if (z < zMin) zMin = z;
             if (z > zMax) zMax = z;
         }
+        // THE LAST READ OF THE VIEW-SPACE CORNERS, so let them go. They are
+        // the PRIM's own arrays - four three-element arrays a face, which the
+        // face list keeps alive long after `prims.length = 0` has been called
+        // on the assumption that dropping the list drops the geometry. On a
+        // ribosome that is 188,738 faces still holding their prim's corners
+        // through the two most expensive passes in the build.
+        f.q = null;
     }
-    gl.bindBuffer(gl.ARRAY_BUFFER, buf3);
-    if (window.__gpuDiag) {
-        // THE MESH ITSELF, hashed. Face and edge COUNTS can match while the
-        // contents differ, and the pixels cannot be read back reliably from a
-        // WebGL canvas, so this is the only check that actually pins the
-        // geometry that reaches the card.
-        let h = 2166136261 >>> 0;
-        for (let i = 0; i < data.length; i++) {
-            const q = Math.round(data[i] * 1000);
-            h ^= q & 255; h = Math.imul(h, 16777619) >>> 0;
-            h ^= (q >>> 8) & 255; h = Math.imul(h, 16777619) >>> 0;
-            h ^= (q >>> 16) & 255; h = Math.imul(h, 16777619) >>> 0;
-        }
-        window.__fillHash = { hash: h >>> 0, floats: data.length };
-    }
-    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
-    lastFill = keepArrays ? data : null;
-
+    // NO UPLOAD HERE. This function builds ONE HALF of a mesh and the halves
+    // are concatenated before anything reaches the card - see makeResident.
     mark('facesAndEmit');
     // ---- EDGES, only when something is going to draw them -----------------
     // This is 91% of a build: on 9FOG the edge table costs 519 ms and turning
@@ -3328,8 +3498,8 @@ function makeResident(faces, scale, prm, lines) {
     // it. With neither, the whole 91% is skipped exactly as before.
     const wantEdges = !!P0.ink || contactEdges.length > 0;
     const wantOutline = !!P0.ink;
-    edgeCount = 0;
-    lastEdges = null;
+    let partEdges = 0;               // this half's outline instances
+    let edUp = null;                 // ...and the floats behind them
     window.__edgeStats = { edges: 0, faces: faces.length, skipped: !wantEdges };
     if (wantEdges) {
         // ---- EDGES, second pass ------------------------------------------------
@@ -3391,24 +3561,27 @@ function makeResident(faces, scale, prm, lines) {
             if (d) f._inkN = d;
         }
         const faceSeen = new Map();
-        for (const f of (wantOutline ? faces : [])) {
-            if (!f._m || flatPair(f)) continue;
+        for (let fi = 0; wantOutline && fi < faces.length; fi++) {
+            const f = faces[fi];
+            if (!hasM[fi] || flatPair(f)) continue;
             // Four string keys, an array sort and a join, per face. The key only
             // has to be order-independent, so add the corner keys' hashes instead:
             // addition commutes, which is the whole requirement.
-            const k = faceKey(f._m);
+            const k = faceKey(loadM(fi));
             faceSeen.set(k, (faceSeen.get(k) || 0) + 1);
             f._fkey = k;
         }
         const ownKeys = [0, 0, 0, 0, 0, 0, 0, 0];
         let nInterior = 0;
-        for (const f of (wantOutline ? faces : [])) {
-            if (!f._m || flatPair(f) || faceSeen.get(f._fkey) < 2) continue;
+        for (let fi = 0; wantOutline && fi < faces.length; fi++) {
+            const f = faces[fi];
+            if (!hasM[fi] || flatPair(f) || faceSeen.get(f._fkey) < 2) continue;
             f._interior = 1;
             nInterior++;
         }
-        for (const f of (wantOutline ? faces : [])) {
-            if (!f._m || f._interior) continue;
+        for (let fi = 0; wantOutline && fi < faces.length; fi++) {
+            const f = faces[fi];
+            if (!hasM[fi] || f._interior) continue;
             // THE ARROW'S STEP QUAD BOUNDS NOTHING. Its two stations sit at the
             // SAME point along the chain - the renderer samples the seam twice,
             // once at shaft width and once at barb width - so all four corners
@@ -3435,7 +3608,7 @@ function makeResident(faces, scale, prm, lines) {
             // decide. Forcing them drew the underside pair too, which is the
             // stray line beneath the arrowhead.
             const stepQuad = !!(f.gA && f.gB);
-            const m = f._m;
+            const m = loadM(fi);
             // A DEGENERATE FACE BOUNDS NOTHING. At zero thickness the two width
             // faces collapse to a line: their quad is [P, P, Q, Q], so the two
             // surviving sides are BOTH the rail P-Q and one face registers the same
@@ -3508,8 +3681,7 @@ function makeResident(faces, scale, prm, lines) {
         // the fully-outlined surfaces' own threshold
         const richDeg = RICH_CREASE_DEG;
         const richCos = RICH_CREASE_COS;
-        let edgeTotal = 0;
-        for (const inner of edgeMap.values()) edgeTotal += inner.size;
+        const edgeTotal = eN;
         const ED_FLOATS = 19;      // p0, p1, n0, n1, always, stick, pal, col, w
         const ed = new Float32Array((edgeTotal + contactEdges.length * 2) * ED_FLOATS);
         let eo = 0;
@@ -3517,12 +3689,27 @@ function makeResident(faces, scale, prm, lines) {
         let nCrease = 0;
         let nNonManifold = 0;
         let nGhostOnly = 0;
-        for (const inner of edgeMap.values()) for (const e of inner.values()) {
+        // THE MAP'S OWN ORDER, still: it yields edges grouped by their first
+        // endpoint, the ink pass draws with the depth mask off so a later
+        // stroke paints over an earlier one, and emitting them in index order
+        // instead would be a picture change hiding inside a memory change.
+        const eA = [0, 0, 0]; const eB = [0, 0, 0];
+        for (let g = 0; g < gN; g++) for (let e = gHead[g]; e >= 0; e = eNext[e]) {
+            const eb = e * E_I;
+            const ef = e * E_F;
+            const bits = eIn[eb + 4];
             // no face is allowed to ink here - a mid-strip cross edge, or the
             // ring around a side chain's base, which is vetoed outright
-            if (!e.real || e.noInk || e.seam) { nGhostOnly++; continue; }
-            const a2 = e.n0 || [0, 0, 1];
-            const b2 = e.n1 || a2;
+            if (!eIn[eb] || (bits & EB_NOINK) || (bits & EB_SEAM)) {
+                nGhostOnly++; continue;
+            }
+            if (bits & EB_N0) {
+                eA[0] = eF[ef + 6]; eA[1] = eF[ef + 7]; eA[2] = eF[ef + 8];
+            } else { eA[0] = 0; eA[1] = 0; eA[2] = 1; }
+            if (bits & EB_N1) {
+                eB[0] = eF[ef + 9]; eB[1] = eF[ef + 10]; eB[2] = eF[ef + 11];
+            } else { eB[0] = eA[0]; eB[1] = eA[1]; eB[2] = eA[2]; }
+            const a2 = eA; const b2 = eB;
             // NON-MANIFOLD EDGES ARE JUNCTION INTERIOR, and the silhouette rule is
             // not merely wrong there, it is undefined: "exactly one of the TWO
             // faces meeting along it faces the eye" needs there to be two. Where
@@ -3537,7 +3724,7 @@ function makeResident(faces, scale, prm, lines) {
             // inside the join. The reference reaches the same place from the other
             // side, by testing each edge against the hull of its own box's
             // projected corners and rejecting any that lands inside.
-            if (e.count > 2) { nNonManifold++; continue; }
+            if (eIn[eb + 1] > 2) { nNonManifold++; continue; }
             // A FLAT STICK'S SHARED EDGE IS A STATION, NOT AN OUTLINE.
             //
             // Ribbon mode asks for zero thickness, so a side-chain bond is a
@@ -3559,7 +3746,7 @@ function makeResident(faces, scale, prm, lines) {
             // the eye per frame, so the captured normals' signs are arbitrary
             // and `f0 != f1` is a coin toss. There is nothing to test, because
             // the edge is interior - two pieces of one solid meeting flush.
-            if (e.stick && e.two && e.real > 1) { continue; }
+            if ((bits & EB_STICK) && (bits & EB_TWO) && eIn[eb] > 1) { continue; }
             let always = 0;
             // A BOUNDARY EDGE OF A DOUBLE-SIDED FACE IS ALWAYS DRAWN, and that
             // is not a special case but the same eye-orient rule followed one
@@ -3568,7 +3755,7 @@ function makeResident(faces, scale, prm, lines) {
             // Left as an ordinary boundary it tested the normal the CAPTURE
             // baked, and every flat side chain kept its fill but lost its
             // outline the moment the model turned past that view.
-            if (e.nCount < 2) { always = e.two ? 5 : 2; nBoundary++; }   // open edge
+            if (eIn[eb + 2] < 2) { always = (bits & EB_TWO) ? 5 : 2; nBoundary++; }
             else {
                 // |dot| because the two winding normals of a closed pair point
                 // opposite ways by construction; the ANGLE between the surfaces is
@@ -3588,19 +3775,22 @@ function makeResident(faces, scale, prm, lines) {
                 // colours met with no line. 60 degrees catches that corner and
                 // still ignores the few degrees a ribbon bends between
                 // stations.
-                const cDeg = e.full ? richDeg : creaseDeg;
-                const cCos = e.full ? richCos : creaseCos;
+                const cDeg = (bits & EB_FULL) ? richDeg : creaseDeg;
+                const cCos = (bits & EB_FULL) ? richCos : creaseCos;
                 if (cDeg < 180 && d2 < cCos) { always = 2; nCrease++; }
             }
-            ed[eo++] = e.p0[0]; ed[eo++] = e.p0[1]; ed[eo++] = e.p0[2];
-            ed[eo++] = e.p1[0]; ed[eo++] = e.p1[1]; ed[eo++] = e.p1[2];
+            ed[eo++] = eF[ef]; ed[eo++] = eF[ef + 1]; ed[eo++] = eF[ef + 2];
+            ed[eo++] = eF[ef + 3]; ed[eo++] = eF[ef + 4]; ed[eo++] = eF[ef + 5];
             ed[eo++] = a2[0]; ed[eo++] = a2[1]; ed[eo++] = a2[2];
             ed[eo++] = b2[0]; ed[eo++] = b2[1]; ed[eo++] = b2[2];
             ed[eo++] = always;
             // bit 1 = stick, bit 2 = use the extreme-corner rule
-            ed[eo++] = (e.stick ? 1 : 0) + (e.outer ? 2 : 0); ed[eo++] = e.pal;
-            const ec = e.col || [0, 0, 0];
-            ed[eo++] = ec[0]; ed[eo++] = ec[1]; ed[eo++] = ec[2];
+            ed[eo++] = ((bits & EB_STICK) ? 1 : 0) + ((bits & EB_OUTER) ? 2 : 0);
+            ed[eo++] = eIn[eb + 3];
+            const hasCol = (bits & EB_COL) !== 0;
+            ed[eo++] = hasCol ? eF[ef + 12] : 0;
+            ed[eo++] = hasCol ? eF[ef + 13] : 0;
+            ed[eo++] = hasCol ? eF[ef + 14] : 0;
             ed[eo++] = 0;              // 0 = take uWidth, the outline's own weight
         }
         // ---- CONTACTS ride through the same pass ---------------------------
@@ -3627,30 +3817,16 @@ function makeResident(faces, scale, prm, lines) {
         for (const c of contactEdges) putContact(c, 3, c.c, c.wA);
         // `continue` above leaves the tail of `ed` unwritten, so the instance count
         // is what was actually filled, not the map size
-        edgeCount = eo / ED_FLOATS;
+        partEdges = eo / ED_FLOATS;
         // A CONTACT IS NOT AN OUTLINE. It rides through the ink pass because it
         // is a stroke with a depth test, but it is annotation - it has to be
         // drawn whether or not the drawing has outlines. The build already knew
         // that (wantEdges above); the DRAW was gated on the outline alone, so
         // the 3d preset, whose outline width is 0, showed no contacts at all
         // on this path while the 2D pass drew them.
-        residentHasContacts = contactEdges.length > 0;
-        if (window.__gpuDiag) {
-            // the outline instances, hashed for the same reason as the fills
-            let h = 2166136261 >>> 0;
-            for (let i = 0; i < eo; i++) {
-                const q = Math.round(ed[i] * 1000);
-                h ^= q & 255; h = Math.imul(h, 16777619) >>> 0;
-                h ^= (q >>> 8) & 255; h = Math.imul(h, 16777619) >>> 0;
-                h ^= (q >>> 16) & 255; h = Math.imul(h, 16777619) >>> 0;
-            }
-            window.__edgeHash = { hash: h >>> 0, floats: eo, instances: edgeCount };
-        }
-        gl.bindBuffer(gl.ARRAY_BUFFER, bufInk);
-        const edUp = ed.subarray(0, eo);
-        lastEdges = keepArrays ? edUp : null;
-        gl.bufferData(gl.ARRAY_BUFFER, edUp, gl.STATIC_DRAW);
-        window.__edgeStats = { edges: edgeCount, boundary: nBoundary, crease: nCrease,
+        hasContacts = contactEdges.length > 0;
+        edUp = ed.subarray(0, eo);
+        window.__edgeStats = { edges: partEdges, boundary: nBoundary, crease: nCrease,
             faces: faces.length, interiorDropped: nInterior, nonManifoldDropped: nNonManifold,
             ghostOnly: nGhostOnly };
     }
@@ -3664,11 +3840,12 @@ function makeResident(faces, scale, prm, lines) {
     // REUSE THE CORNERS ALREADY UNPROJECTED, rather than unprojecting every one
     // a second time just to find the model radius.
     let rad = 0;
-    for (const f of faces) {
-        const m = f._m;
-        if (!m) continue;
-        for (const q2 of m) {
-            const d = q2[0] * q2[0] + q2[1] * q2[1] + q2[2] * q2[2];
+    for (let fi = 0; fi < faces.length; fi++) {
+        if (!hasM[fi]) continue;
+        const b = fi * 12;
+        for (let k = 0; k < 4; k++) {
+            const o = b + k * 3;
+            const d = M[o] * M[o] + M[o + 1] * M[o + 1] + M[o + 2] * M[o + 2];
             if (d > rad) rad = d;          // compare squared, root once
         }
     }
@@ -3680,6 +3857,218 @@ function makeResident(faces, scale, prm, lines) {
     // Nothing read it. Set window.__gpuDiag before a rebuild to get it back.
     if (window.__gpuDiag) window.__faces = faces;
     mark('buffers');
+    // MODEL-SPACE FACE CENTROIDS, for the shading range above. Kept as a flat
+    // Float32Array rather than an array of triples: the per-frame loop over it
+    // is the only thing in the draw path that is O(faces).
+    const cen = new Float32Array(faces.length * 3);
+    let ci2 = 0;
+    for (let fi = 0; fi < faces.length; fi++) {
+        if (!hasM[fi]) { ci2 += 3; continue; }
+        const b = fi * 12;
+        let ax = 0; let ay = 0; let az = 0;
+        for (let k = 0; k < 4; k++) {
+            const o = b + k * 3;
+            ax += M[o]; ay += M[o + 1]; az += M[o + 2];
+        }
+        cen[ci2++] = ax * 0.25; cen[ci2++] = ay * 0.25; cen[ci2++] = az * 0.25;
+    }
+    return { count: faces.length, rad, scale, centroids: cen,
+        fill: data, edges: edUp, edgeCount: partEdges, hasContacts,
+        bytes: data.byteLength + (edUp ? edUp.byteLength : 0) };
+}
+
+/**
+ * TWO HALVES, AND ONLY ONE OF THEM IS EVER REBUILT FOR A SIDE CHAIN.
+ *
+ * Showing a few side chains APPENDS positions, so every term of the mesh
+ * signature moves and the whole cartoon was rebuilt - 8,514 ribbon faces
+ * recomputed to draw 182 new stick ones. What made that avoidable is three
+ * measurements, all on 4HHB with 400 side chains out:
+ *
+ *   * the ribbon half does not change. Hashed over its faces' corners and
+ *     colours it is byte-identical with the side chains on, off, and on again;
+ *   * the weld that removes doubled lines never pairs a stick face with a
+ *     ribbon one - 1,295 welds, none mixed;
+ *   * and neither does the edge map - 30,119 edges, none claimed by both.
+ *
+ * So the two halves can be built separately and concatenated. What that COSTS
+ * is the draw order: the halves arrive ribbon-then-stick rather than
+ * interleaved by depth, and where a stick surface and the ribbon it grows out
+ * of land on exactly the same depth, `depthFunc(LESS)` gives the pixel to
+ * whichever was drawn first. That moves 260 pixels of 357,604, all of them on
+ * seams, none on open ribbon - and the winner at a tie was already arbitrary,
+ * being whichever face the depth sort happened to put first.
+ *
+ * The ribbon half is cached against a HASH OF ITS OWN FACES rather than
+ * against the signature. A key assembled from renderer state is a list of
+ * terms someone has to keep complete, and this file's history is largely the
+ * story of a term going missing; a hash of the thing itself cannot forget one.
+ * It costs about a millisecond and it fails safe - a miss rebuilds.
+ */
+let ribbonPart = null;           // { hash, part }
+/**
+ * ...AND IT HAS TO BE CHEAP, or it eats what it saves. The first version
+ * mixed every corner of every face through a closure with three multiplies
+ * per number and cost 10 ms - as much as the build it was there to skip.
+ *
+ * This one samples: two of a quad's four corners, its colour's red channel
+ * and its residue. Every face is still looked at, so a change anywhere in the
+ * ribbon is still seen - what is given up is the ability to tell apart two
+ * ribbons that agree on 8,514 faces' sampled fields and differ elsewhere,
+ * which is not a thing geometry does. 0.6 ms against 10.
+ */
+function ribbonHashOf(faces, scale, prm) {
+    let h = 2166136261 >>> 0;
+    const mix = (v) => {
+        const q = Math.round(v * 1000) | 0;
+        h ^= q & 255; h = Math.imul(h, 16777619) >>> 0;
+        h ^= (q >>> 8) & 255; h = Math.imul(h, 16777619) >>> 0;
+        h ^= (q >>> 16) & 255; h = Math.imul(h, 16777619) >>> 0;
+    };
+    mix(scale);
+    mix(faces.length);
+    // ...AND THE PARAMETERS, because thickness, the outline and the crease
+    // angle all change what a ribbon face becomes without moving one corner.
+    try { for (const k of Object.keys(prm || {})) {
+        const v = prm[k];
+        if (typeof v === 'number') mix(v);
+        else if (typeof v === 'boolean') mix(v ? 1 : 2);
+    } } catch (e) { mix(-1); }
+    // ...the inner loop, written out: no closure call, one multiply a number.
+    for (let i = 0; i < faces.length; i++) {
+        const f = faces[i];
+        const q = f.q;
+        const a = q[0]; const b = q[2] || a;
+        h = (Math.imul(h, 31) + ((a[0] * 512) | 0)) | 0;
+        h = (Math.imul(h, 31) + ((a[1] * 512) | 0)) | 0;
+        h = (Math.imul(h, 31) + ((a[2] * 512) | 0)) | 0;
+        h = (Math.imul(h, 31) + ((b[0] * 512) | 0)) | 0;
+        h = (Math.imul(h, 31) + ((b[1] * 512) | 0)) | 0;
+        h = (Math.imul(h, 31) + (f.c ? (f.c.r | 0) : 0)) | 0;
+        h = (Math.imul(h, 31) + ((f.res || 0) | 0)) | 0;
+        h = (Math.imul(h, 31) + (f.two ? 1 : 0)) | 0;
+        // NOT THE PALETTE SLOT. It is the one thing about a ribbon face that a
+        // side chain DOES move: `ci` is an index into the segment list, side
+        // chain bonds are segments, and two of 8,514 ribbon faces on 4HHB come
+        // out one block further along. Hashing it would miss the cache for
+        // every side-chain change on the strength of two numbers - so it is
+        // left out here and PATCHED on reuse instead, which is exact for the
+        // fills. See makeResident.
+    }
+    return h >>> 0;
+}
+
+// WHERE THE SLOT SITS IN AN INSTANCE ROW. 48 floats: four corners, six frame
+// vectors, the three occlusion dots, the colour, and three flag words - the
+// slot is the first float of the third. Keep in step with the emit pass.
+const FILL_STRIDE = 48;
+const FILL_PAL_AT = 44;
+
+function makeResident(faces, scale, prm, lines) {
+    const P0 = prm || defaultParams();
+    const ribbon = []; const sticks = [];
+    for (const f of faces) (f.stick ? sticks : ribbon).push(f);
+    const RB = window.__rebuild || {};
+    const t0 = performance.now();
+    const hash = ribbonHashOf(ribbon, scale, P0);
+    RB.ribbonHash = +(performance.now() - t0).toFixed(1);
+    let rp = (ribbonPart && ribbonPart.hash === hash) ? ribbonPart.part : null;
+    RB.nRibbon = ribbon.length; RB.nStick = sticks.length;
+    RB.ribbonReused = !!rp;
+    if (!rp) {
+        rp = buildMeshPart(ribbon, scale, P0, null);
+        // the ribbon half's own phase record, before the stick half overwrites
+        // it - the two halves share `__mrPhase` and the second one wins, which
+        // makes the interesting half the invisible one
+        if (window.__heapProbe) window.__mrRibbon = Object.assign({}, window.__mrPhase);
+        ribbonPart = (rp.bytes <= MESH_KEEP_MAX_BYTES) ? { hash, part: rp } : null;
+    } else {
+        // THE SLOTS, PUT BACK. The fill carries each face's baked colour AND
+        // the palette slot it came from, and only the slot moves when a side
+        // chain is added. Rewriting one float per face is 8,514 writes - too
+        // small to measure - and it is what keeps a later colour change (which
+        // repaints from the palette without rebuilding) exact.
+        //
+        // The OUTLINE's slots are not patched: an edge takes its slot from
+        // whichever face claimed it first and the build does not record which
+        // that was, so patching them would mean carrying an index per edge for
+        // two edges' worth of tint on this fixture. That is the one
+        // approximation in here, and it costs an outline tint on the two
+        // faces above after a palette change, never a fill and never a shape.
+        let patched = 0;
+        for (let i = 0; i < ribbon.length; i++) {
+            const want = ribbon[i].pal === undefined ? -1 : ribbon[i].pal;
+            const at = i * FILL_STRIDE + FILL_PAL_AT;
+            if (rp.fill[at] !== want) { rp.fill[at] = want; patched++; }
+        }
+        RB.palPatched = patched;
+    }
+    RB.ribbonMs = +(performance.now() - t0).toFixed(1);
+    // THE CONTACTS RIDE WITH THE STICKS. They are strokes rather than faces,
+    // but they are annotation on the same geometry and they change with it.
+    const sp = buildMeshPart(sticks, scale, P0, lines);
+    RB.stickMs = +(performance.now() - t0).toFixed(1);
+    return installParts(rp, sp, scale);
+}
+
+/** The two halves, concatenated and uploaded: ribbon instances, then sticks. */
+function installParts(rp, sp, scale) {
+    const fill = new Float32Array(rp.fill.length + sp.fill.length);
+    fill.set(rp.fill, 0);
+    fill.set(sp.fill, rp.fill.length);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf3);
+    gl.bufferData(gl.ARRAY_BUFFER, fill, gl.STATIC_DRAW);
+    lastFill = keepArrays ? fill : null;
+    const lastFillArr = fill;
+
+    let lastEdgeArr = null;
+    const re = rp.edges; const se = sp.edges;
+    if (re || se) {
+        const ed = new Float32Array((re ? re.length : 0) + (se ? se.length : 0));
+        if (re) ed.set(re, 0);
+        if (se) ed.set(se, re ? re.length : 0);
+        gl.bindBuffer(gl.ARRAY_BUFFER, bufInk);
+        gl.bufferData(gl.ARRAY_BUFFER, ed, gl.STATIC_DRAW);
+        lastEdges = keepArrays ? ed : null;
+        lastEdgeArr = ed;
+    } else {
+        lastEdges = null;
+    }
+    // AN ORDER-INDEPENDENT DIGEST OF THE MESH, for comparing one build of this
+    // file against another. Pixels cannot do it on this path: two runs of the
+    // SAME code differ in 110,800 of 357,604 pixels on 4HHB - a fine speckle
+    // over every surface - so a cross-run image comparison measures the
+    // machine, not the change. Per-instance hashes SUMMED rather than chained,
+    // because the halves are concatenated in a different order from the one
+    // the single build emitted and that reordering is deliberate.
+    if (window.__meshDigest) {
+        const rowHash = (arr, stride) => {
+            let acc = 0;
+            for (let i = 0; i + stride <= arr.length; i += stride) {
+                let h = 2166136261 >>> 0;
+                for (let k = 0; k < stride; k++) {
+                    const q = Math.round(arr[i + k] * 100) | 0;
+                    h ^= q & 255; h = Math.imul(h, 16777619) >>> 0;
+                    h ^= (q >>> 8) & 255; h = Math.imul(h, 16777619) >>> 0;
+                    h ^= (q >>> 16) & 255; h = Math.imul(h, 16777619) >>> 0;
+                }
+                acc = (acc + h) >>> 0;
+            }
+            return acc;
+        };
+        window.__meshDigest = { fill: rowHash(lastFillArr, 48),
+            fillN: lastFillArr.length / 48,
+            edges: lastEdgeArr ? rowHash(lastEdgeArr, 19) : 0,
+            edgeN: lastEdgeArr ? lastEdgeArr.length / 19 : 0 };
+    }
+    edgeCount = rp.edgeCount + sp.edgeCount;
+    residentHasContacts = rp.hasContacts || sp.hasContacts;
+
+    const cen = new Float32Array(rp.centroids.length + sp.centroids.length);
+    cen.set(rp.centroids, 0);
+    cen.set(sp.centroids, rp.centroids.length);
+    const rad = Math.max(rp.rad, sp.rad);
+
     // one texel per residue, sized to the structure
     ensureVisTexture(resMap && resMap.nBase ? resMap.nBase : 1);
     // WHERE THE COLOURS COME FROM is the consumer's business: the harness has a
@@ -3687,21 +4076,9 @@ function makeResident(faces, scale, prm, lines) {
     // resolved. Both hand over a function, and recolour() calls the same one -
     // which is what makes a colour change a texture upload and not a rebuild.
     if (paletteSource) setPalette(paletteSource());
-    // MODEL-SPACE FACE CENTROIDS, for the shading range above. Kept as a flat
-    // Float32Array rather than an array of triples: the per-frame loop over it
-    // is the only thing in the draw path that is O(faces).
-    const cen = new Float32Array(faces.length * 3);
-    let ci2 = 0;
-    for (const f of faces) {
-        const m = f._m;
-        if (!m) { ci2 += 3; continue; }
-        let ax = 0; let ay = 0; let az = 0;
-        for (const q2 of m) { ax += q2[0]; ay += q2[1]; az += q2[2]; }
-        const k2 = 1 / m.length;
-        cen[ci2++] = ax * k2; cen[ci2++] = ay * k2; cen[ci2++] = az * k2;
-    }
     srCache = null; srKey = '';
-    resident = { count: faces.length, zMin: -rad, zMax: rad, scale, centroids: cen };
+    resident = { count: rp.count + sp.count, zMin: -rad, zMax: rad, scale,
+        centroids: cen };
     return resident;
 }
 
@@ -4562,6 +4939,12 @@ function invalidate() {
     // a mesh kept under a signature that happens to come round again would be
     // the old shape.
     spareMesh = null; lastFill = null; lastEdges = null;
+    // THE RIBBON HALF TOO. Its cache is keyed by a hash of its own faces, so
+    // reusing it after this would in fact be correct - but invalidate() is
+    // also what a probe calls to force a real rebuild, and holding a megabyte
+    // of fills for geometry the page has been told to forget is not what
+    // "invalidate" means.
+    ribbonPart = null;
     spareTube = null; tubeLive = null; tubeCount = 0;
     clearResident();
 }
@@ -4802,11 +5185,28 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
             // the structure drawn half again too big and off to one side. The
             // ratio is applied ONCE, at the draw, and nowhere else.
             const RB = (window.__rebuild = { t0: performance.now() });
+            // LIVE BYTES AT EACH STAGE, and nothing at all when nobody is
+            // asking: this is the hot path, and a closure and an object per
+            // build to hold numbers no one reads is exactly the kind of cost
+            // a diagnostic must not have. `window.gc` needs
+            // --js-flags=--expose-gc or the reading is garbage, not retention.
+            const hm = window.__heapProbe ? (() => {
+                const HS = (window.__heapStages = {});
+                return (k, extra) => {
+                    if (window.gc) { window.gc(); window.gc(); }
+                    HS[k] = Math.round(
+                        ((performance.memory || {}).usedJSHeapSize || 0) / 1e6);
+                    if (extra !== undefined) HS[k + 'N'] = extra;
+                };
+            })() : () => {};
+            hm('start');
             const { prims, scale, capZoom, pos } = captureFrom(renderer,
                 displayWidth, displayHeight, colors);
+            hm('afterCapture', prims.length);
             RB.capture = +(performance.now() - RB.t0).toFixed(1);
             if (!prims.length) return false;
-            const { faces, lines, paletteComplete } = facesOf(prims, prm);
+            const { faces, lines, paletteComplete } = facesOf(prims, prm, true);
+            hm('afterFaces', faces.length);
             // DROPPED AS SOON AS THE FACES EXIST. The capture's primitive list
             // is the single largest thing this build allocates - 288,611 prims
             // and 541 MB on a 135,780-position assembly - and nothing reads it
@@ -4815,8 +5215,10 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
             // part of the peak rather than part of a stage. Emptying the array
             // releases every prim the faces did not keep a reference to.
             prims.length = 0;
+            hm('primsDropped');
             RB.facesOf = +(performance.now() - RB.t0).toFixed(1);
             makeResident(faces, scale, prm, lines);
+            hm('afterMesh');
             RB.total = +(performance.now() - RB.t0).toFixed(1);
             // the mesh's scale already carries the zoom it was captured at, so
             // the draw multiplies by the RATIO rather than by the zoom itself

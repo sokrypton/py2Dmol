@@ -208,9 +208,15 @@ if (sb.normalizeConfig({ gpu: false }).rendering.gpu !== false) {
             + ' is the shape that lost three of them');
     } else {
         const js = new Set([...block[1].matchAll(/\['(\w+)'/g)].map((m) => m[1]));
+        // ...WITH THE COMMENTS OUT OF THE WAY FIRST. The list ends at the
+        // first `)` or `}`, and a comment inside it saying
+        // `view(sidechains=True)` ends it early - so the field after that
+        // comment vanished and this reported a disagreement that was not
+        // there. A text scan matches prose; strip the prose.
+        const pyCode = py.replace(/^[ \t]*#.*$/gm, '');
         const pyList = (name) => {
             const m = new RegExp(name
-                + '\\s*=\\s*(?:frozenset\\()?[({]([\\s\\S]*?)[)}]').exec(py);
+                + '\\s*=\\s*(?:frozenset\\()?[({]([\\s\\S]*?)[)}]').exec(pyCode);
             return m ? [...m[1].matchAll(/"(\w+)"/g)].map((x) => x[1]) : null;
         };
         const inherited = pyList('FRAME_INHERITED');
@@ -263,7 +269,8 @@ if (sb.normalizeConfig({ gpu: false }).rendering.gpu !== false) {
 // Same route, same reason, same way of failing - a top-level key that
 // normalizeConfig quietly drops is a Python call that does nothing.
 for (const [key, value] of [['shown_objects', ['a', 'b']],
-                            ['orient', { object: 'a', animate: false }]]) {
+                            ['orient', { object: 'a', animate: false }],
+                            ['focus', { chain: 'A', cutoff: 6 }]]) {
     const out = sb.normalizeConfig({ [key]: value });
     if (JSON.stringify(out[key]) !== JSON.stringify(value)) {
         bad(`normalizeConfig dropped ${key}: ${JSON.stringify(out[key])}`);
@@ -291,7 +298,7 @@ for (const [key, value] of [['shown_objects', ['a', 'b']],
     for (const m of applier.matchAll(/viewerBlock (?:&& '(\w+)' in viewerBlock|&& viewerBlock\.(\w+))/g)) {
         jsKeys.add(m[1] || m[2]);
     }
-    if (pyKeys.size < 3) {
+    if (pyKeys.size < 4) {
         bad(`only found ${[...pyKeys]} in viewer.py's viewer block - the regex`
             + ' has lost the block it reads, so this check proves nothing');
     }
@@ -328,7 +335,7 @@ if (!/def _can_ask_the_page\(/.test(py)) {
 // let one unanswered ping mean "nothing is lending", so every cell inlined and
 // a notebook shipped at 4 MB with the saving on. A False cannot be told apart
 // from a question that never arrived.
-if (!/can_borrow = \(seen is True\) or \(_LENT_BUNDLE == share_key\)/.test(py)) {
+if (!/\(seen is True\) or \(_LENT_BUNDLE == share_key\)/.test(py)) {
     bad('the lender probe is a veto again - a False from it cannot be'
         + ' distinguished from a question that never arrived, and treating it'
         + ' as an answer stops every cell sharing');
@@ -347,6 +354,16 @@ if (!/hashlib\.sha1\(_resource_text\(bundle\)/.test(py)) {
     bad('_share_key no longer hashes the bundle CONTENT - a version string'
         + ' is not enough, because a rebuilt bundle keeps the version');
 }
+// ...AND THE LEND IS DROPPED WHEN THE CELL THAT CARRIES IT IS RE-RUN.
+// Re-running a cell replaces its output; if that output was the lender the
+// page has no library, while this kernel still thinks it lent one. Python
+// cannot see the clear, but it can see that it is in the same cell and a later
+// execution - which is exactly when the lend is about to be overwritten.
+if (!/def _cell_identity\(/.test(py) || !/overwriting/.test(py)) {
+    bad('viewer.py no longer notices that the lending cell is being re-run -'
+        + ' the second run borrows from the output it is replacing, and the'
+        + ' viewer polls for two seconds and gives up');
+}
 if (!/def clip\(/.test(py)) {
     bad('viewer.py has no clip() - parts/clip.js is in every bundle and the'
         + ' notebook could not reach it');
@@ -363,6 +380,10 @@ if (/detect_cyclic\s*[=:]|["']detect_cyclic["']|detectCyclic/.test(py)) {
 }
 if (!/\bcyclic=True\b/.test(py)) {
     bad('view() no longer takes cyclic=');
+}
+if (!/def focus\(/.test(py)) {
+    bad('viewer.py has no focus() - one click, one neighbourhood, and'
+        + ' parts/focus.js is in every bundle');
 }
 if (!/def show_objects\(/.test(py)) {
     bad('viewer.py has no show_objects() - the renderer has drawn several'

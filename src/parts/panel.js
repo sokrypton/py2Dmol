@@ -128,6 +128,9 @@ const STYLE_PANEL_ROWS = [
        title: 'Black background (white ink, fade toward black)' },
      { kind: 'toggle', id: 'cyclicCheckbox', label: 'Cyclic',
        title: 'Join a chain end-to-end when its termini are within bonding range' }],
+     // NO FOCUS ROW. It was one here and it is a top-level BUTTON now, beside
+     // Orient and Clip: it is a mode that changes what a click does, and a
+     // reader looking for that does not open a style panel to find it.
 ];
 
 function el(tag, props) {

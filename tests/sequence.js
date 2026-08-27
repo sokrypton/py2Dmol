@@ -158,6 +158,28 @@ function mkRenderer() {
         drawnObjects: () => ['obj'],
         coords: new Array(n),
         residueSelection: null,
+        // THE FUNNEL THE STRIP GOES THROUGH. seq.js used to write
+        // renderer.residueSelection and dispatch for itself; it calls these
+        // now, so that anything hanging off a selection - Focus does - sees a
+        // click in the strip as well as one on the canvas. A fake renderer has
+        // to offer what the real one does, or the strip has nothing to call.
+        setResidueSelection(positions) {
+            const many = positions && (positions.size
+                || (Array.isArray(positions) && positions.length));
+            this.residueSelection = many ? new Set(positions) : null;
+            if (typeof document !== 'undefined' && document.dispatchEvent) {
+                document.dispatchEvent(
+                    new CustomEvent('py2dmol-residue-selection-change'));
+            }
+        },
+        clearResidueSelection() {
+            if (!this.residueSelection) return;
+            this.residueSelection = null;
+            if (typeof document !== 'undefined' && document.dispatchEvent) {
+                document.dispatchEvent(
+                    new CustomEvent('py2dmol-residue-selection-change'));
+            }
+        },
         visiblePositions: null,
         visibilityModel: null,
         canvas: null,

@@ -106,13 +106,17 @@ public downloads is exercised on every run.
 
   | lines | file | | lines | function |
   |---|---|---|---|---|
-  | 11,514 | `core/mol.js` | | 2,449 | `cartoon/paint2d.js` `paintPrims()` |
+  | 11,516 | `core/mol.js` | | 2,449 | `cartoon/paint2d.js` `paintPrims()` |
   | 10,418 | `cartoon/geom.js` | | 1,912 | `cartoon/geom.js` `render()` |
-  | 8,432 | `app/ (total)` | | 1,901 | `cartoon/geom.js` `drawRun()` |
-  | 5,848 | `cartoon/paintgl.js` | | 1,718 | `parts/ui.js` `wireViewerUI()` |
-  | 5,312 | `panels/msa.js` | | 1,473 | `cartoon/geom.js` `drawSticks()` |
-  | 3,372 | `io/parse.js` | | 1,084 | `cartoon/geom.js` `mergeBondRuns()` |
+  | 8,434 | `app/ (total)` | | 1,901 | `cartoon/geom.js` `drawRun()` |
+  | 6,250 | `cartoon/paintgl.js` | | 1,473 | `cartoon/geom.js` `drawSticks()` |
+  | 5,312 | `panels/msa.js` | | 1,084 | `cartoon/geom.js` `mergeBondRuns()` |
+  | 2,878 | `io/parse.js` | | 1,018 | `cartoon/paintgl.js` `buildMeshPart()` |
 
+  `buildMeshPart` is the old `makeResident` under its new name and it was
+  always this size - the split gave it a name that says it builds ONE HALF, and
+  a caller small enough to read, but the 1,018 lines are unchanged and still
+  over the rule. `parts/ui.js`'s `wireViewerUI()` has dropped off this list.
   `render()` was 5,238 and is 1,912; `drawRun` and `drawSticks` are what came
   out of it, and both are still over the rule. `paintPrims` is the largest
   single function in the tree now. `setCoords` is 828 and no longer in the
@@ -322,6 +326,45 @@ public downloads is exercised on every run.
   checkbox ticked from that — and then the opening orient unticked it and
   dispatched a `change`. Nothing in the trace looks wrong until that line.
   The two automatic callers pass `keepSpin`; the deliberate ones do not.
+- **FOCUS IS A COMPOSITION, AND THAT IS WHY IT IS ONE FILE.**
+  `parts/focus.js`'s `focusOn(sel)` is `residuesWithin` + the object's
+  side-chain set + `viewerState.center/extent` + `autoClip`, and `clearFocus`
+  puts all four back from a record written on the FIRST focus only — writing it
+  on every focus would make "leave the mode" restore the last neighbourhood
+  instead of what was there before it. **It does not rotate**: only the centre
+  and the zoom move, so clicking from residue to residue walks through a
+  structure rather than spinning it, which is the whole difference between it
+  and Orient.
+  🔴 **THE SELECTION IS ANNOUNCED BEFORE THE STRUCTURE CHANGES, and that is
+  worth 22 ms a click.** `setResidueSelection` dispatches on DOCUMENT and the
+  listeners — the sequence strip, the selection panel — rebuild against
+  whatever is there when they hear it. Materialising side chains APPENDS
+  positions, so announcing afterwards made them all rebuild against a
+  structure that had just changed under them: the same call is 0.2 ms on a
+  stable structure and 47.8 right after that change, and a cold focus click
+  went from 69.8 ms to 48.3 when the order was swapped. Safe in this order
+  because the new positions are APPENDED, so every index the selection names
+  still means the same residue. What is LEFT is one redraw of geometry that
+  genuinely changed — 7.5 ms on 1UBQ, 33.5 on 4HHB — the same cost as showing
+  side chains by any other route. `residuesWithin`, the interaction search
+  everyone suspects first, is 0.2 ms at BOTH sizes: it is gridded, and it is
+  not the lag.
+  The mode is a toggle in `parts/panel.js` wired once in
+  `parts/ui.js`, which WRAPS `setResidueSelection` rather than listening for
+  `py2dmol-residue-selection-change` — that bus is document-scoped and would
+  fire once per viewer on the page — and guards against `focusOn`'s own call to
+  it. 🔴 **ONE FUNNEL, OR THE STRIP STAYS DEAD.** `panels/seq.js` wrote
+  `renderer.residueSelection` directly and dispatched the change event itself —
+  the same two lines as `setResidueSelection`, in a second place — so a click
+  in the sequence strip went straight past the wrap and only the canvas
+  transported you. `app/main.js`'s Select all did it too. Both call the setter
+  now, and `tests/interaction.js` fails on a direct write to that field.
+  BOTH ways out, because a click on the background calls
+  `clearResidueSelection`, NOT `setResidueSelection` with an empty set. Wrapping
+  only the setter left the way back working for a test that called the setter
+  and dead for the gesture a reader makes.
+  **The side chains need a table**, which a notebook has only with
+  `view(sidechains=True)` — see the rule below.
 - **A capability in the bundle that no interface reaches is not shipped.**
   `parts/clip.js` is in every build and only `index.html` could get to it: the
   website had a Clip panel, the embed had `v.clip(sel)`, the notebook had
@@ -391,6 +434,32 @@ public downloads is exercised on every run.
   scaling wrong selects the wrong part of the structure while the plot looks
   perfectly right — `tests/minimal_input.py` drags the whole plot and requires
   every residue back, which is what an off-by-one in the block end loses.
+- 🔴 **THE BEST-VIEW SEARCH READS THE CANVAS ASPECT AND THE FRAMING DID NOT.**
+  `xProjectedExtent` and `yProjectedExtent` were both the isotropic radius, so
+  the structure was fitted into a SQUARE of side `min(w, h)` whatever the
+  window was: a 598x298 viewer laid a rod along its long side, correctly, and
+  then drew it across 280 of its 598 pixels. `extentAspect` is the other half —
+  the shape, measured ONCE by `parts/orient.js` under the rotation it chose,
+  normalised so the longer axis is 1, and stored beside the extent. Absent, it
+  is 1:1 and the arithmetic is what it always was.
+  - **Measured about the CENTRE, not the origin.** The first version took
+    `max|x|` of the rotated coordinates as written, and a PDB sits wherever
+    its file put it — both spans came out dominated by that offset. The
+    synthetic rod hid it by being centred on its own long axis; an off-origin
+    globular fixture is in the probe for that reason.
+  - **Once, not per frame.** Per frame means the picture growing and shrinking
+    under a drag and a tumbling trajectory breathing. The cost is that the
+    framing belongs to that rotation: turn a long structure end-on afterwards
+    and it can overrun the edge. Orient reframes it, which is what PyMOL does.
+  - **It spends the margin the isotropic fit used to leave.** The ink is wider
+    than the positions it is drawn around, so a fit that is exact on the points
+    clips the drawing — 1UBQ came out touching the canvas edge on the first
+    attempt at the exact 2D fit. The probe asserts nothing touches an edge.
+- 🔴 **THERE WERE TWO PLACES COMPUTING THE VIEW SCALE, and the GPU tube path
+  is the one that runs.** It computes its own (it never reaches the 2D block),
+  and the 2D block computed the same padding, extent and `min()` a thousand
+  lines later. The aspect fix was written into the second and measured as NO
+  CHANGE AT ALL on the default build. `_viewportScale` is the one now.
 - 🔴 **`_gpuWillDraw` WAS A GUESS THAT BECAME AN ANSWER.** The CPU occlusion
   pass is skipped when the GPU is going to draw, because the GPU computes its
   own — and the question was asked of the renderer's STATE, with a comment
@@ -436,6 +505,21 @@ public downloads is exercised on every run.
   `#canvasContainer {…}` rule would apply to all of them) and RAISES if the
   token is gone, because falling back to 600 is the bug. `tests/python_multi.py`
   sets the markup with `innerHTML` and measures — the same state, reproduced.
+- 🔴 **RE-RUNNING A CELL REPLACES ITS OUTPUT, and the lender lives in one.**
+  Run a cell that makes a viewer, then run it again: the first output carried
+  the library, the second replaces it — and `_LENT_BUNDLE` still says this
+  kernel lent one, so the new viewer writes a request to borrow from something
+  that is gone. Two seconds of polling and an error box telling the reader to
+  re-run the cell that carries the library. It IS that cell, so the advice
+  cannot work and nothing short of a kernel restart recovers.
+  Python cannot see an output being cleared, but it CAN see that it is running
+  in the same cell as the lend and in a LATER EXECUTION — `_cell_identity()`
+  reads `cellId` (JupyterLab) or `colab.cell_id` from the kernel's parent
+  header, and `_LENT_WHERE` records it. A cell that makes several viewers is
+  ONE execution, so a grid still lends once and borrows the rest. Where the id
+  cannot be read the behaviour is exactly what it was.
+  **Not by believing the page's `False`** — that is the veto rule below, and it
+  is still unmeasured in Colab. This needs no browser at all.
 - 🔴 **THE SHARED LIBRARY WAS KEYED BY PATH, so a re-run cell could borrow a
   library older than the payload it was writing.** A notebook is re-run cell by
   cell: the cell holding the library can be from an earlier build than the cell
@@ -461,6 +545,148 @@ public downloads is exercised on every run.
   length: an undecoded base64 string has a length, and the square root of it is
   still a number, so the panel would have drawn a plausible square of nonsense
   and every "is there a matrix" check would have passed.
+- **THE SIDE-CHAIN TABLE IS COEFFICIENTS, AND IT IS BUILT IN ONE PLACE.**
+  `buildSidechainTable` stores each atom in its residue's OWN BACKBONE FRAME
+  (using the cartoon's `localFrame`), which is what makes a side chain follow
+  the backbone through a trajectory, an alignment and a re-centring. It lived
+  in `src/io/parse.js`, which the notebook does not ship — the notebook parses
+  in Python — so `view(sidechains=True)` sends RAW ATOMS and `parts/ui.js`
+  builds the table on arrival. Porting the geometry to Python was the
+  alternative and is the same mistake that had a SAM cofactor drawing as one
+  sphere: two parsers, one question.
+  It moved into `src/io/sidechains.js` rather than dragging the whole parser
+  in — 8.7 KB against 36 — and the cut was clean: `free_vars.js` reported the
+  range closing over NOTHING, so it moved verbatim. `tests/lift.js`'s `UTILS`
+  is the list that has to learn about a split like that, and it says so.
+  **The atoms are per frame** — they are coordinates — so the flag is a
+  viewer-wide one and off by default: 9.0 KB a frame becomes 37.2 on a
+  251-residue design.
+- **THE MESH IS TWO HALVES NOW, AND ONLY THE STICKS ARE REBUILT FOR A SIDE
+  CHAIN.** Showing side chains APPENDS positions, so every term of
+  `sharedGeometryKey` moves and the whole cartoon was rebuilt — 8,514 ribbon
+  faces recomputed to draw 182 new stick ones. `buildMeshPart` builds one half,
+  `makeResident` calls it twice and `installParts` concatenates them into one
+  buffer, so the draw path is untouched. Measured on 4HHB, 40 side chains
+  toggled eight times: **median 71.7 ms → 37.3**.
+
+  Three measurements made the split legal, all on 4HHB with 400 side chains:
+  the ribbon half does not change (hashed over its faces' corners and colours:
+  identical with the side chains on, off, and on again); the weld that removes
+  doubled lines never pairs a stick face with a ribbon one (1,295 welds, none
+  mixed); and neither does the edge map (30,119 edges, none claimed by both).
+  Without the last two the halves could not be built separately at all.
+
+  🔴 **WHAT IT COSTS IS 260 PIXELS, AND THEY ARE ALL ON SEAMS.** The halves
+  arrive ribbon-then-stick rather than interleaved by depth, and the draw is
+  `drawElementsInstanced` under `depthFunc(LESS)` — so where a stick surface
+  and the ribbon it grows out of land on exactly the same depth, the pixel goes
+  to whichever was drawn first. 260 of 357,604 with 400 side chains out (77
+  with 9), max channel delta 57, none on open ribbon, indistinguishable at 6x.
+  The tie-winner was already arbitrary: whichever face the depth sort put
+  first. It scales with the number of SEAMS and nothing else.
+
+  🔴 **THE CACHE IS A HASH OF THE FACES, NOT A KEY BUILT FROM STATE.** A key
+  assembled from renderer terms is a list someone has to keep complete, and
+  most of the entries in this file are a term that went missing. A hash of the
+  thing itself cannot forget one, and it fails safe — a miss rebuilds. It has
+  to be CHEAP: the first version mixed every corner through a closure with
+  three multiplies a number and cost **10 ms**, as much as the build it was
+  skipping. Sampling two corners, the red channel and the residue, with the
+  loop written out, is **0.9 ms**.
+
+  🔴 **AND THE PALETTE SLOT IS THE ONE THING A SIDE CHAIN MOVES.** `ci` indexes
+  the segment list and a side-chain bond IS a segment, so two ribbon faces of
+  8,514 come out one block along. Hashing it would miss the cache on every
+  side-chain change on the strength of two numbers; it is left OUT of the hash
+  and PATCHED into the reused fill instead — one float per face, 8,514 writes,
+  too small to measure. Invisible until something repaints from the palette
+  WITHOUT rebuilding, which is exactly what a colour-scheme change does, so it
+  is measured there: `tests/gpu_recolour.py` shows side chains, repaints, and
+  requires the result to equal a forced rebuild. The OUTLINE's slots are not
+  patched — an edge takes its slot from whichever face claimed it first and the
+  build does not record which — and that is the one approximation in here: an
+  outline tint on those two faces after a palette change, never a fill.
+
+  What is left is the other half of the bill, and no mesh-side design reaches
+  it: **the capture is ~25 of the ~37 ms**. `captureFrom` sets `_probeOnly` and
+  runs `cartoon/geom.js` for its prims, so a side-chain click still rebuilds
+  every ribbon PRIM to throw all but the sticks away. That is the same
+  two-halves idea one level upstream, against a run loop whose state is carried
+  residue to residue.
+
+  *When measuring any of this, force `py2dmolCartoonGPU.invalidate()`: without
+  it the GPU reuses its resident mesh, `geom.js` never runs, and two cache hits
+  compare identical and prove nothing.*
+- 🔴 **PIXELS CANNOT BE COMPARED ACROSS PAGE LOADS ON THE GPU PATH.** Two runs
+  of the SAME code differ in **110,800 of 357,604 pixels** on 4HHB - a fine
+  speckle over every surface, max delta 40 - so a before/after image comparison
+  between two browser launches measures the machine and not the change. It read
+  exactly like a real regression: a broad subtle shift, the right shape, the
+  wrong conclusion. Within ONE page load an A/B is sound (that is how the seam
+  pixels were measured, with a control pair that agreed exactly). Across loads,
+  compare a DIGEST: `window.__meshDigest = 1` before a build fills it with
+  per-instance hashes of the fill and the outline, SUMMED rather than chained so
+  it is order-independent - the two halves are concatenated in a different order
+  from the one a single build emitted, and that reordering is deliberate.
+- **THE EDGE TABLE IS THE BIGGEST ALLOCATION IN A BUILD, and it was one object
+  per edge.** Measured on 4UG0, 188,738 ribbon faces: rails +76 MB, normals
+  +69 MB, edges **+120 MB**, against a fill of 36. The fields live in two flat
+  arrays now and the Map holds an INDEX; peak on that structure went **488 to
+  390 MB**, with the mesh digest identical. What did NOT change is the Map and
+  its ITERATION ORDER: the outline instances are emitted in the order the map
+  yields them and the ink pass draws with the depth mask off, so a later stroke
+  paints over an earlier one - reordering them would be a picture change
+  wearing a memory change's clothes. Two details a typed array cannot express
+  and both are load-bearing: `nCount` counted a NULL normal as an occupant (it
+  decides what is a boundary edge), and `e.n0 || [0,0,1]` / `e.n1 || a2` are
+  fallbacks for one - so presence is a bit and the count keeps its meaning.
+- 🔴 **WHERE A BUILD'S MEMORY GOES - AND WHICH PEAK YOU ARE READING.**
+  `window.__heapProbe = 1` fills `__mrPhase` and the stage marks with live
+  bytes (it calls `window.gc`, which needs `--js-flags=--expose-gc` or it is a
+  silent no-op and the reading is mostly garbage). There are TWO numbers and
+  they move independently, which cost a round of wrong claims:
+
+  | | 4UG0, 188,738 faces |
+  |---|---|
+  | LIVE peak, collected at every mark | **288 MB -> 259** |
+  | the heap as V8 actually lets it grow | ~450 MB -> 214-436, run to run |
+  | live after the build returns | 26 MB either way - nothing is retained |
+
+  The live peak is the one that decides whether a capsid fits, and it sits in
+  the MESH BUILD - so the changes that cut allocation VOLUME (dropping each
+  prim as it is read, which halves the garbage) barely move it, while the ones
+  that cut what is alive at the edge pass do. Read the wrong one and a 10%
+  change reports as 50%. What is left at the peak is the edge arrays, the
+  outline's instance buffer, the fill, and the face OBJECTS - the last of those
+  means facesOf emitting into typed arrays, which is a different size of job.
+- **AND GIVING A FACE ITS FINAL SHAPE AT CREATION measured as WORSE.** A face
+  gains about ten properties after it is built - the normals, the tangents, the
+  ink normal, the weld key - which is the classic argument for pre-declaring
+  them so V8 stops transitioning the hidden class. Measured: **no memory change
+  at all** (154/161 MB against 154/148, and 259 at the peak either way) and
+  **950-1,000 ms against 748-818**. Writing ten extra fields on 188,738 faces
+  costs more than the transitions did.
+- **TWO THINGS THAT MEASURED AS NOTHING in the edge pass, so nobody retries
+  them.** Replacing the group lookup - a Map keyed by a 32-bit hash, where half
+  the keys are past 2^31 and so are not SMIs - with an open-addressed table
+  over typed arrays: **733/777/733 ms against 721/738/752, and 259 MB against
+  259**. The boxing that argument rests on is real and costs nothing here. And
+  presizing the edge arrays instead of doubling them: the doubling copies are
+  not where the time is either.
+- 🔴 **A THREE-WAY STICK SPLIT IS NOT FREE: 50 MIXED WELDS.** The ribbon/stick
+  split works because the weld never pairs a stick face with a ribbon one.
+  Splitting the STICKS again - side chains apart from ligands and contacts, so
+  a side-chain click stops rebuilding the hemes - fails that test: 50 of 702
+  welds on 4HHB pair a side-chain face with a plain stick face, because the
+  ribbon-surface geometry a side chain ATTACHES to is emitted by drawSticks as
+  an ordinary stick face. Dropping those welds draws the doubled lines the weld
+  exists to remove, at every attachment. It needs a tag from `cartoon/geom.js`,
+  which knows which prims it emitted for a side chain; classifying in
+  `paintgl.js` by "is this position an appended atom" cannot see the
+  attachment. Worth ~10 ms of a ~37 ms click if it is ever done.
+  (And the appended-atom test itself is `resMap.sidechainMap.has(...)`, NOT
+  `gs0 >= resMap.nBase`: `nBase` is handed in as the WHOLE coordinate length,
+  side-chain atoms included, so "past the backbone" is never true.)
 - **Subsystems are optional and guarded.** `if (window.PAE)`, `if (window.MSA)`,
   `typeof C2S === 'undefined'`. A build without one loses a feature, not a page.
 - **Prove a move changed nothing.** `node tests/paint_trace.js` digests every
@@ -683,6 +909,21 @@ public downloads is exercised on every run.
   `clearAllObjects` — it is not an object's, so neither the save nor the clear
   reached it for free, and both had to be told. Its ends are addresses rather
   than indices, which is what lets it survive the round trip unchanged.
+- 🔴 **A RIBOSE IS NOT A NUCLEOTIDE ON ITS OWN, and `viewer.py` promoted one.**
+  `_parse_model` reads a residue gemmi does not flag as nucleic as a nucleotide
+  when it carries `C4'` + `O4'` + `C1'` — written for 1EHZ's modified bases,
+  which are tabulated without the flag and were dropping out of the chain. SAM,
+  SAH, ATP, NAD and FAD carry a ribose too, so a cofactor was promoted and
+  collapsed onto a SINGLE position at its `C4'`: twenty-seven atoms drawn as
+  one sphere, and a trajectory that looked like it could not recognise its own
+  ligand because every frame was that same sphere. What separates the two is
+  the company the residue keeps, so the test is gated on the chain holding
+  nucleic acid at all.
+  **`src/io/parse.js` had it right all along** — it wants a KNOWN nucleic
+  residue plus connectivity — so the same file loaded correctly on the website
+  and as a sphere in a notebook. Two parsers, one question, and only one of
+  them asked it properly; `tests/parse_ligand.py` now asks both fixtures of the
+  Python one.
 - 🔴 **`_struct_conn` is not all connectivity.** It carries `covale`, `disulf`,
   `hydrog` and `metalc`, and a metal COORDINATION record is not a bond: drawing
   it as a stick invents rings. 7P1E declares Ca 506 chelated by both

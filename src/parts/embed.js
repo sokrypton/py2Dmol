@@ -246,6 +246,8 @@ const SHELL = (id) => `
               title="Clip to the selection (press again to clear)">Clip</button>
     </div>
     <div class="btn-row auto">
+      <button id="focusButton" class="controlButton" aria-pressed="false"
+              title="Click a residue or ligand to draw its neighbours' side chains, move in on it and clip around it. Click the background to come back out.">Focus</button>
       <button id="styleToggle" class="controlButton" aria-expanded="false"
               aria-controls="stylePanel" title="Render style and its settings">Style</button>
       <!-- CAPTURE, not Save. index.html has called it that for a while - it
@@ -747,6 +749,29 @@ function attach(renderer) {
      * This is for afterwards - after select(), after showObjects(), after the
      * reader has spun it somewhere unhelpful.
      */
+    /**
+     * Look at one residue or ligand and what it is doing.
+     *
+     *     v.focus({type: 'L'});                 // the ligand and its pocket
+     *     v.focus({chain: 'A', residues: [42]});
+     *     v.focus();                            // back out again
+     *
+     * Selects it, draws the side chains of everything within 5 A (taking the
+     * last focus's away), moves in on the neighbourhood and cuts a slab round
+     * it. IT DOES NOT TURN THE STRUCTURE - only the centre and the zoom move,
+     * so focusing from one residue to the next walks through a structure
+     * rather than spinning it. That is the difference between this and
+     * orient().
+     */
+    renderer.focus = (sel, opts) => {
+        if (typeof renderer.focusOn !== 'function') {
+            throw new Error('py2Dmol.focus: parts/focus.js is not loaded');
+        }
+        if (sel === undefined || sel === null) renderer.clearFocus();
+        else renderer.focusOn(sel, opts);
+        return renderer;
+    };
+
     renderer.orient = (options) => {
         // ...NOT SILENTLY NOTHING. The module is in both embed bundles, so the
         // only way here is a hand-assembled script list, and a button that does

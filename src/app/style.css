@@ -580,11 +580,13 @@
    green as a checked toggle. Style and Save Image are <button>, not
    <label><input>, so the state lives on aria-expanded rather than :checked -
    but it is the same state to the eye and should look the same. */
+.py2dmol-viewer-instance .btn-toggle[aria-pressed="true"]>span,
 .py2dmol-viewer-instance .btn-toggle[aria-expanded="true"]>span {
     background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-hover) 100%);
     color: #fff;
 }
 
+.py2dmol-viewer-instance .btn-toggle[aria-pressed="true"]>span:hover,
 .py2dmol-viewer-instance .btn-toggle[aria-expanded="true"]>span:hover {
     background: linear-gradient(135deg, var(--color-success-hover) 0%, var(--color-success-dark) 100%);
     box-shadow: var(--shadow-md);

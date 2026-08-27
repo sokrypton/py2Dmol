@@ -147,6 +147,33 @@ It orients on **what you can see**: a hidden residue cannot pull the view
 towards itself. The Orient button in the viewer, on the website and in an
 embed all run the same search.
 
+**Side chains.** A notebook payload carries one position per residue, which is
+all the tube and the cartoon need. `py2Dmol.view(sidechains=True)` carries the
+side-chain atoms as well, so they can be drawn and so `focus` can measure side
+chain to side chain. It costs about four times the coordinates **per frame**
+(a 251-residue design: 9.0 KB a frame becomes 37.2), so it is off by default
+and worth thinking about before loading a long trajectory.
+
+**Focusing on one thing.** `focus` is the click-and-look-at-it move: it selects
+the residue or ligand, draws the side chains of everything within 5 Å of it,
+moves the camera in, and cuts a slab around it. The next `focus` replaces all
+four, so you can walk from one residue to the next without side chains piling
+up behind you.
+
+```python
+viewer.focus(chain="C", position=0)   # a ligand and its pocket
+viewer.focus(position=(40, 41))       # one residue, close up
+viewer.focus()                        # back out again
+```
+
+**It does not turn the structure** — only the centre and the zoom move, so you
+keep your bearings. That is the difference between `focus` and `orient`. The
+camera glides rather than jumping.
+
+The **Focus** button beside Style does the same thing on every click: press it,
+click a residue or a ligand, click the next one, and click the background to
+come back out.
+
 **Cutting into it.** `clip` keeps a slab as deep as a selection and holds it
 there as the structure turns — so to cut deeper, clip to less.
 

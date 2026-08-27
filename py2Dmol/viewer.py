@@ -459,7 +459,41 @@ def _lender_on_page(key):
 # Keyed by BUNDLE name, because gpu=False and a tube-only viewer are different
 # libraries and a borrower must not be handed the wrong one.
 _LENT_BUNDLE = None
+# ...AND WHICH CELL EXECUTION WROTE IT. 🔴 RE-RUNNING A CELL REPLACES ITS
+# OUTPUT, and if that output was the one carrying the library then the page no
+# longer has it - while _LENT_BUNDLE still says this kernel lent it, so the new
+# viewer writes a request to borrow from something that is gone. One viewer
+# cell, run twice, and the second run is a two-second poll and an error box
+# telling the reader to re-run the cell that carries the library. It IS that
+# cell, so the advice does not work and nothing but a kernel restart recovers.
+#
+# Python cannot see an output being cleared, but it can see that it is running
+# in the SAME CELL as the lend and in a LATER EXECUTION - which is exactly the
+# case where the lend is about to be overwritten. A cell that creates several
+# viewers is one execution, so the first still lends and the rest still borrow.
+_LENT_WHERE = None
 _BUNDLE_KEYS = {}
+
+
+def _cell_identity():
+    """(cell id, execution count) of the cell running now, or None.
+
+    Read defensively from the kernel's parent header - JupyterLab puts a
+    `cellId` in the message metadata and Colab a `colab.cell_id`. Anything
+    unexpected returns None, which leaves the sharing exactly as it was.
+    """
+    try:
+        from IPython import get_ipython                    # noqa: PLC0415
+        shell = get_ipython()
+        if shell is None:
+            return None
+        meta = (getattr(shell, 'parent_header', None) or {}).get('metadata') or {}
+        cell = meta.get('cellId') or (meta.get('colab') or {}).get('cell_id')
+        if not cell:
+            return None
+        return (cell, getattr(shell, 'execution_count', None))
+    except Exception:
+        return None
 
 
 def _share_key(bundle):
@@ -500,6 +534,13 @@ def _share_key(bundle):
 FRAME_INHERITED = (
     "plddts", "position_names", "residue_numbers", "position_atoms",
     "position_elements", "position_types", "chains", "bonds", "scatter",
+    # ...and the raw side-chain atoms, when view(sidechains=True) asked for
+    # them. INHERITED like the rest: a trajectory of one structure repeats its
+    # own residues, and the payload is ~3x the coordinates, so sending it once
+    # is the difference between a flag worth having and one nobody can afford.
+    # The COEFFICIENTS are per frame - the browser rebuilds them against each
+    # frame's backbone, which is what makes a side chain follow it.
+    "sidechain_atoms",
 )
 # ...except this one, which is sent even when it is None, because "this frame
 # has no confidence values" and "this frame says nothing, so keep the last
@@ -508,6 +549,37 @@ FRAME_SEND_NONE = frozenset({"plddts"})
 # ALWAYS: a property of the frame itself, sent whenever it is set. `align` is
 # the REQUEST to superpose, which the browser acts on - see addFrame.
 FRAME_ALWAYS = ("pae", "pae_n", "color", "align", "allow_reflection")
+
+
+_SIDECHAIN_BACKBONE = frozenset(('N', 'CA', 'C', 'O', 'OXT'))
+
+
+def _sidechain_atoms(residue):
+    """One residue's side chain, as the browser's table builder wants it.
+
+    RAW ATOMS, not a table. buildSidechainTable (src/io/sidechains.js) stores
+    each atom in the residue's OWN BACKBONE FRAME, using localFrame from the
+    cartoon - so the coefficients follow the backbone through a trajectory, an
+    alignment and a re-centring. Porting that to Python would be a second copy
+    of the geometry, which is how the SAM cofactor came to draw as one sphere.
+
+    The backbone is dropped here rather than there: it is three quarters of the
+    atoms of a small residue, and the table has no use for it. PRO and HYP keep
+    their N, which the builder needs to close the ring - it asks for it by name
+    through SIDECHAIN_KEEP_BACKBONE, so this cannot drop it.
+    """
+    keep = 'N' if residue.name in ('PRO', 'HYP') else None
+    out = []
+    for a in residue:
+        nm = a.name
+        if nm in _SIDECHAIN_BACKBONE and nm != keep:
+            continue
+        if a.element.name.upper() in ('H', 'D'):
+            continue
+        p = a.pos
+        out.append([nm, round(p.x, 2), round(p.y, 2), round(p.z, 2),
+                    a.element.name.upper()])
+    return out
 
 
 def _downsample_square(a, k):
@@ -568,6 +640,7 @@ class view:
         shadow=True, shade=None, shadow_strength=0.5,
         outline=None, width=None, ortho=0.5, gpu=True, bg=None, rotate=False, autoplay=False,
         pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, multi=False, cyclic=True,
+        sidechains=False,
         persistence=True, id=None, cutoffs=None,
     ):
         """
@@ -646,6 +719,20 @@ class view:
                 both on screen, the camera widened to take them both in. The
                 same thing the website's Multi button does. See show_objects()
                 for naming a subset.
+            sidechains (bool): Carry each residue's side-chain atoms, so they
+                can be drawn and so Focus can measure side chain to side chain
+                rather than trace to trace. Default False.
+
+                THE COST IS PER FRAME, because side-chain atoms are
+                coordinates and every frame's differ: a 251-residue design goes
+                from 9.0 KB a frame to 37.2, so six frames is 54 KB against 223
+                and a hundred would be 2.8 MB. A notebook inlines the payload,
+                so that is paid in the .ipynb.
+
+                A VIEWER-WIDE setting rather than a per-load one: the table is
+                per FRAME with no inheritance, so a viewer holding some frames
+                with side chains and some without would make them appear and
+                vanish as the reader steps through.
             cyclic (bool): Close a chain end to end when its termini are within
                 bonding range - a cyclic peptide drawn as the ring it is rather
                 than as a line with two loose ends. Default True. The Cyclic
@@ -886,6 +973,17 @@ class view:
         # second spelling. None is the default - the current object, alone.
         self._shown_objects = None
         self._sent_shown_objects = False
+        # ...AND WHAT IS BEING LOOKED AT. The viewer's too, for the same reason
+        # the slab is: it is the camera and the drawing, not any one object.
+        self._focus = None
+        self._sent_focus = False
+        # ...AND WHETHER THE PAYLOAD CARRIES SIDE-CHAIN ATOMS. Read by
+        # _parse_model, the only thing that can collect them, and a VIEWER-wide
+        # setting rather than a per-load one: the table is per FRAME with no
+        # inheritance (see _resolvedFrame), so a viewer holding some frames
+        # with side chains and some without would make them appear and vanish
+        # as the reader steps through.
+        self._capture_sidechains = bool(sidechains)
         # AND THE ORIENTATION IS AN ACTION, NOT A STATE. The other two are
         # compared against what was last sent and skipped when unchanged; the
         # same orient() asked for twice means fly there twice, so it is queued
@@ -1043,9 +1141,12 @@ class view:
         if self._position_elements is not None:
             payload["position_elements"] = list(self._position_elements)
 
+        if self._sidechain_atoms:
+            payload["sidechain_atoms"] = self._sidechain_atoms
+
         return payload
 
-    def _update(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None, align=True, position_names=None, residue_numbers=None, atom_types=None, allow_reflection=False, position_atoms=None, position_elements=None):
+    def _update(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None, align=True, position_names=None, residue_numbers=None, atom_types=None, allow_reflection=False, position_atoms=None, position_elements=None, sidechain_atoms=None):
       """
       Updates the internal state with new data. Coordinates are kept in original space.
       The viewing angle is chosen in the browser, not here.
@@ -1104,6 +1205,7 @@ class view:
       self._position_residue_numbers = residue_numbers
       self._position_atoms = position_atoms
       self._position_elements = position_elements
+      self._sidechain_atoms = sidechain_atoms
 
       # --- Final Safety Check (ensure arrays match coord length if provided) ---
       n_positions = self._coords.shape[0]
@@ -1290,6 +1392,10 @@ class view:
             viewer_block = viewer_block or {}
             viewer_block["shown_objects"] = self._shown_objects
             self._sent_shown_objects = copy.deepcopy(self._shown_objects)
+        if self._focus != self._sent_focus:
+            viewer_block = viewer_block or {}
+            viewer_block["focus"] = self._focus
+            self._sent_focus = copy.deepcopy(self._focus)
         if self._orient_request is not None:
             viewer_block = viewer_block or {}
             viewer_block["orient"] = self._orient_request
@@ -1453,6 +1559,11 @@ class view:
         else:
             self.config.pop("shown_objects", None)
         self._sent_shown_objects = copy.deepcopy(self._shown_objects)
+        if self._focus is not None:
+            self.config["focus"] = self._focus
+        else:
+            self.config.pop("focus", None)
+        self._sent_focus = copy.deepcopy(self._focus)
         if self._orient_request is not None:
             # ...AND A STATIC VIEWER ALWAYS JUMPS. It has only just appeared,
             # and a cell that opens mid-flight reads as a bug.
@@ -1725,12 +1836,22 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # only borrow a library that matches the payload it is writing -
             # see _share_key.
             share_key = _share_key(bundle)
+            global _LENT_WHERE
             seen = _lender_on_page(share_key) if self._share_library else None
-            can_borrow = (seen is True) or (_LENT_BUNDLE == share_key)
+            # ...AND NOT FROM AN OUTPUT THIS EXECUTION IS ABOUT TO REPLACE.
+            # See _LENT_WHERE: same cell, later run, so the lend is on its way
+            # out and borrowing from it leaves the page with no library at all.
+            here = _cell_identity()
+            overwriting = (_LENT_WHERE is not None and here is not None
+                           and here[0] == _LENT_WHERE[0]
+                           and here[1] != _LENT_WHERE[1])
+            can_borrow = ((seen is True) or (_LENT_BUNDLE == share_key)) \
+                and not overwriting
             if self._share_library and can_borrow:
                 container_html = _borrow_js(share_key) + container_html
             elif self._share_library:
                 _LENT_BUNDLE = share_key
+                _LENT_WHERE = here
                 # AS A JSON STRING, NOT AS SCRIPT TEXT. The lender has to hand
                 # the source on, and reading it back out of its own <script>
                 # element does not work: the bundle contains the text "<script"
@@ -1782,6 +1903,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._position_residue_numbers = None
         self._position_atoms = None
         self._position_elements = None
+        self._sidechain_atoms = None
         self._is_live = False
 
         # Reset incremental update tracking
@@ -2139,6 +2261,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._position_residue_numbers = None
         self._position_atoms = None
         self._position_elements = None
+        self._sidechain_atoms = None
 
         if name is None:
             name = f"{len(self.objects)}"
@@ -2161,7 +2284,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             self._send_incremental_update()
     
     def add(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None,
-            name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False, position_atoms=None, position_elements=None):
+            name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False, position_atoms=None, position_elements=None, sidechain_atoms=None):
         """
         Adds a new *frame* of data to the viewer.
 
@@ -2301,7 +2424,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._update(coords, plddts, chains, position_types, pae, scatter,
             align=align, position_names=position_names, residue_numbers=residue_numbers, atom_types=atom_types,
             allow_reflection=allow_reflection, position_atoms=position_atoms,
-            position_elements=position_elements)
+            position_elements=position_elements, sidechain_atoms=sidechain_atoms)
         data_dict = self._get_data_dict() # This reads the full, correct data
 
         data_dict["name"] = None  # Don't set frame-level name; use object name instead
@@ -2399,7 +2522,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             self._send_incremental_update()
 
     def replace(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None,
-                name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False, position_atoms=None, position_elements=None):
+                name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False, position_atoms=None, position_elements=None, sidechain_atoms=None):
         """
         Replace frame(s) for an object (streaming mode).
 
@@ -2431,7 +2554,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                      scatter=scatter, align=align, position_names=position_names,
                      residue_numbers=residue_numbers, atom_types=atom_types,
                      allow_reflection=allow_reflection, position_atoms=position_atoms,
-                     position_elements=position_elements)
+                     position_elements=position_elements,
+                     sidechain_atoms=sidechain_atoms)
 
         frame_data = self._get_data_dict()
         if color is not None:
@@ -2532,6 +2656,46 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             reach.
         """
         self._clip = self._selector(name=name, chain=chain, position=position)
+        if self._is_live:
+            self._send_incremental_update()
+
+    def focus(self, name=None, chain=None, position=None, cutoff=None):
+        """
+        Look at one residue or ligand and what it is doing.
+
+            view.focus(chain="C", position=0)   # the ligand and its pocket
+            view.focus(position=(40, 41))       # one residue, close up
+            view.focus()                        # back out again
+
+        Four things at once, and the next call replaces them rather than
+        piling up: the residue is selected, the side chains of everything
+        within 5 A of it are drawn (and the last focus's are taken away), the
+        camera moves in on the neighbourhood, and a slab is cut around it.
+
+        IT DOES NOT TURN THE STRUCTURE. Only the centre and the zoom move, so
+        focusing from one residue to the next walks THROUGH a structure rather
+        than spinning it - which is the difference between this and orient().
+
+        Args:
+            name (str, optional): Object to focus in. Defaults to the current.
+            chain (str, optional): Focus on a whole chain.
+            position (int, list, tuple, range, optional): Position index or
+                indices. A 2-tuple is a half-open range, matching set_color.
+            cutoff (float, optional): How near counts as the neighbourhood, in
+                Angstrom. Default 5 - a hydrogen bond is under 3.5 and a salt
+                bridge under 4, and past about 6 it is the whole
+                neighbourhood.
+
+        Note:
+            With nothing named this CLEARS the focus, putting back the side
+            chains, the slab and the camera it found. That is why it is one
+            verb rather than a focus() and an unfocus().
+        """
+        sel = self._selector(name=name, chain=chain, position=position)
+        if sel is not None and cutoff is not None:
+            sel = dict(sel)
+            sel["cutoff"] = float(cutoff)
+        self._focus = sel
         if self._is_live:
             self._send_incremental_update()
 
@@ -3140,9 +3304,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
              
         for i, model in enumerate(models_to_process):
             (coords, plddts, position_chains, position_types, position_names,
-             residue_numbers, position_atoms,
-             position_elements) = self._parse_model(model, chains, load_ligands=load_ligands,
-                                                    filter_additives=filter_additives)
+             residue_numbers, position_atoms, position_elements,
+             sidechain_atoms) = self._parse_model(model, chains, load_ligands=load_ligands,
+                                                  filter_additives=filter_additives)
 
             if coords:
                 coords_np = np.array(coords)
@@ -3172,6 +3336,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     # of arrays is a per-frame cost for nothing
                     position_atoms=position_atoms if any(position_atoms) else None,
                     position_elements=position_elements if any(position_atoms) else None,
+                    sidechain_atoms=sidechain_atoms or None,
                     color=color if i == 0 else None) # Only add color to first frame/model call
 
 
@@ -3218,8 +3383,17 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         # there is a fact about the model rather than about the file.
         position_atoms = []
         position_elements = []
+        # [position, residue name, [[atom, x, y, z, element], ...]] per residue
+        # that has a side chain. Empty unless view(sidechains=True).
+        sidechain_atoms = []
         for chain in model:
             if chains_filter is None or chain.name in chains_filter:
+                # Does this chain hold nucleic acid at all? Asked once per
+                # chain, and it is what gates the structural ribose test below.
+                chain_is_nucleic = any(
+                    gemmi.find_tabulated_residue(r.name).is_nucleic_acid()
+                    for r in chain
+                    if gemmi.find_tabulated_residue(r.name) is not None)
                 for residue in chain:
                     if residue.name == 'HOH':
                         continue
@@ -3234,7 +3408,20 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     # than as the missing residue it was). Detect the ribose
                     # structurally instead: C4' plus O4' plus C1' is a nucleotide
                     # whatever the residue is called.
-                    if not is_nucleic and not is_protein:
+                    # 🔴 ...AND ONLY INSIDE A CHAIN THAT IS ACTUALLY NUCLEIC.
+                    # A ribose is not a nucleotide on its own: SAM, SAH, ATP,
+                    # NAD and FAD all carry one, and a cofactor promoted this
+                    # way collapses to a SINGLE position at its C4' - twenty-
+                    # seven atoms drawn as one sphere, which is what
+                    # "the ligand does not show up" looked like. The test was
+                    # written for modified bases INSIDE an RNA chain (1EHZ's
+                    # YYG, 5MC, OMG, which gemmi tabulates without flagging
+                    # nucleic), and what tells those apart from a cofactor is
+                    # the company they keep. src/io/parse.js has always asked a
+                    # version of this - it wants a known nucleic residue AND
+                    # connectivity - which is why the same file loads correctly
+                    # on the website and as a sphere in a notebook.
+                    if not is_nucleic and not is_protein and chain_is_nucleic:
                         has = lambda *names: any(nm in residue for nm in names)
                         if has("C4'", "C4*") and has("O4'", "O4*") and has("C1'", "C1*"):
                             is_nucleic = True
@@ -3250,6 +3437,13 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                             residue_numbers.append(residue.seqid.num)
                             position_atoms.append('')
                             position_elements.append('')
+                            # ...AND THE SIDE CHAIN, when the viewer asked for
+                            # it. One entry per protein position, so the
+                            # browser can pair them off by index.
+                            if self._capture_sidechains:
+                                sidechain_atoms.append(
+                                    [len(coords) - 1, residue.name,
+                                     _sidechain_atoms(residue)])
 
                     elif is_nucleic:
                         c4_atom = None
@@ -3307,7 +3501,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                                     position_elements.append(atom.element.name.upper())
                 
         return (coords, plddts, position_chains, position_types,
-                position_names, residue_numbers, position_atoms, position_elements)
+                position_names, residue_numbers, position_atoms,
+                position_elements, sidechain_atoms)
 
     def add_contacts(self, contacts, name=None):
         """

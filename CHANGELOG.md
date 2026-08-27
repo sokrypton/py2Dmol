@@ -121,12 +121,53 @@ result.
   fresh kernel borrow from a page that still has a lender. A negative one is
   ignored — it cannot be told apart from a question that never arrived.
 
+  Re-running the cell that carries the library makes it carry the library
+  again. Re-running a cell replaces its output, so the copy went with it while
+  the kernel still believed it had lent one — the next viewer asked a lender
+  that no longer existed and came up as an error box. A cell that creates
+  several viewers is one execution, so a grid still writes the library once.
+
   The library is offered under a key that includes a **hash of its content**, so
   a cell can only borrow a library that matches the payload it is writing. A
   notebook is re-run cell by cell, and the cell holding the library can be from
   an older build than the cell now asking; today's payload handed to
   yesterday's renderer draws, silently missing whatever the two disagree about.
   A borrower that finds no matching lender inlines its own copy.
+- **`view.focus(name=, chain=, position=, cutoff=)`**, a **Focus** button
+  beside Style and `v.focus(sel)` on the embed — click a residue or a
+  ligand and see what it is doing. Four things at once, each replaced by the
+  next call: the residue is selected, the side chains of everything within 5 Å
+  are drawn and the last focus's are taken away, the camera moves in, and a
+  slab is cut around it. **It does not turn the structure** — only the centre
+  and the zoom move, so focusing from one residue to the next walks through a
+  structure rather than spinning it, which is the difference between this and
+  `orient()`. Every step is an existing verb (`residuesWithin`, the object's
+  side-chain set, `autoClip`); `parts/focus.js` is the composition, so all
+  three shells get it from one place.
+
+  A click in the **sequence strip** focuses too — it wrote the selection field
+  directly and so went past everything hanging off a selection; it uses the
+  renderer's setter now, as does Select all.
+
+  The camera **moves over about a third of a second** rather than jumping, and
+  clicking the background comes back out — an empty selection is the same
+  signal the mode already reads, so the way back needs no second control.
+
+  Side chains in a notebook need `view(sidechains=True)` — see below.
+- **`view(sidechains=True)`** — a notebook can draw side chains. The payload
+  carried one position per residue and nothing else, so `showSidechains`, the
+  side-chain half of Focus, and any side-chain-to-side-chain measurement were
+  web-only. Python now sends the raw atoms and the browser builds the table
+  with the same code the website uses — `buildSidechainTable`, cut out of
+  `src/io/parse.js` into `src/io/sidechains.js` so the notebook can have the
+  chemistry (8.7 KB) without the parser (36 KB).
+
+  **Off by default, and the reason is the payload.** Side-chain atoms are
+  coordinates, so every frame carries its own: a 251-residue design goes from
+  9.0 KB a frame to 37.2 — six frames is 54 KB against 223, and a hundred would
+  be 2.8 MB inlined into the `.ipynb`. It is a viewer-wide setting rather than
+  a per-load one because the table is per frame with no inheritance; mixing
+  would make side chains appear and vanish as you step through frames.
 - **`view.clip(name=, chain=, position=)`**, and a Clip button in the notebook
   and embed shells. `parts/clip.js` was in every bundle already — the slab, the
   tracking and the per-frame refit — and only the website could reach any of it.
@@ -178,6 +219,16 @@ result.
 - **The wheel ships what `viewer.py` opens.** `package_data` omitted the GPU
   renderer, which `viewer.py` reads unconditionally — a `FileNotFoundError` on
   the first `show()`, in the wheel only.
+- 🔴 **Orient uses the whole canvas.** The best-view search already reads the
+  window's aspect and lays the long axis along the long side; the framing then
+  fitted the result into a square of side `min(width, height)`, so a 600×300
+  viewer drew an elongated structure across 47% of its width. It now measures
+  the shape under the rotation it chose. The same rod fills **94%**; a globular
+  structure in the same window goes from ~50% to 99% of its height.
+
+  The framing belongs to that rotation — turning a long structure end-on
+  afterwards can push it past the edge, as in PyMOL. Press Orient again to
+  reframe.
 - 🔴 **An SVG of the tube kept its shading with the GPU on.** The CPU occlusion
   pass is skipped when the GPU is going to draw — it computes its own — but the
   question was asked of the renderer's state rather than of the context, and an
@@ -219,6 +270,13 @@ result.
 - A contact drifted when the view rotated: the GPU repack dropped `zBias` and
   `wA` from a line primitive, so the near-surface bias was applied in model
   space along whichever way the view happened to be pointing.
+- 🔴 **A ribose-bearing cofactor is a ligand, not a nucleotide.** `add_pdb`
+  promoted any residue carrying `C4'` + `O4'` + `C1'` to a nucleotide — a rule
+  written for modified bases inside an RNA chain, which also caught SAM, SAH,
+  ATP, NAD and FAD. Such a ligand collapsed onto a single position at its `C4'`
+  and drew as one sphere, in every frame of a trajectory. The rule now applies
+  only inside a chain that holds nucleic acid. The website was never affected:
+  its parser asks a stricter question.
 - Element colouring is on by default, and the parser infers an element from the
   atom name when columns 77–78 are blank.
 
@@ -256,6 +314,33 @@ result.
   prev/next buttons, which stay useful with one object.
 - **Chain mode in the sequence strip shows the selection.** It showed nothing
   at all, while the same click lit the structure.
+
+### Faster
+
+**A side-chain click costs half what it did.** Showing side chains appends
+positions, which changed every term of the GPU mesh signature and rebuilt the
+whole cartoon — 8,514 ribbon faces recomputed to draw 182 new stick ones. The
+mesh is built in two halves now, ribbon and sticks, concatenated into one
+buffer so the draw path is untouched, and the ribbon half is reused whenever
+its own faces are unchanged. On 4HHB with 40 side chains, toggled eight times:
+**62 ms a click to 32.5**. It applies to every way side chains change — the
+Style panel toggle, `showSidechains` from the embed, `view(sidechains=True)`,
+a contact, and Focus, which is the one that does it most often.
+
+What it costs is 260 pixels of 357,604, all of them where a stick surface meets
+the ribbon it grows out of: the halves arrive ribbon-then-stick rather than
+interleaved by depth, and a tie under `depthFunc(LESS)` goes to whoever drew
+first. The winner there was already arbitrary. Indistinguishable at 6x.
+
+**A large structure allocates about half the garbage it used to.** The prim
+list is dropped as it is read rather than one pass later, the per-edge objects
+and per-face corner arrays are flat typed arrays, and the edge table's Map of
+Maps is one map and a chain. On a ribosome the live peak in a build is 288 MB
+against 259, and the heap as V8 actually lets it grow went from ~450 MB to
+214-436. Nothing about the mesh changed: verified by an order-independent
+digest of the fill and the outline, identical across five structures, because
+two runs of the same code differ in a third of their pixels on this path and
+images cannot settle the question.
 
 ### Internal
 

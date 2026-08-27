@@ -293,6 +293,21 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                             </div>
 
                             <div class="toolbar-row">
+                                <!-- FOCUS IS A LATCH, so it says aria-pressed
+                                     rather than aria-expanded - the shared rule
+                                     in style.css lights either. Left of Style
+                                     because it is what a CLICK does.
+                                     NOT crosshairs: Orient already wears those,
+                                     two rows up. A magnifier is what the mode
+                                     does - look closely at one thing - and it
+                                     is the only one on the page, so it cannot
+                                     be read as search. -->
+                                <button id="focusButton" class="btn-toggle btn-flex"
+                                    aria-pressed="false"
+                                    title="Click a residue or ligand to draw its neighbours' side chains, move in on it and clip around it. The view does not turn. Click the background to come back out.">
+                                    <span><i class="fa-solid fa-magnifying-glass"></i>Focus</span>
+                                </button>
+
                                 <button id="styleToggle" class="btn-toggle btn-flex"
                                     aria-expanded="false" aria-controls="stylePanel"
                                     title="Render style and its settings">

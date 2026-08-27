@@ -1111,14 +1111,16 @@ function setupEventListeners() {
     const setWholeSelection = (all) => {
         const renderer = viewerApi?.renderer;
         if (!renderer || !renderer.coords) return;
+        // THROUGH THE SETTER - see the note in panels/seq.js. It stores and
+        // dispatches exactly as these lines did, and being the one funnel is
+        // what lets Focus hang off a selection however it was made.
         if (all) {
             const s = new Set();
             for (let i = 0; i < renderer.coords.length; i++) s.add(i);
-            renderer.residueSelection = s;
+            renderer.setResidueSelection(s);
         } else {
-            renderer.residueSelection = null;
+            renderer.clearResidueSelection();
         }
-        document.dispatchEvent(new CustomEvent('py2dmol-residue-selection-change'));
         if (window.SEQ?.updateColors) window.SEQ.updateColors();
         renderer.render(all ? 'select all' : 'unselect');
     };

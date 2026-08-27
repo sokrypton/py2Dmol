@@ -297,6 +297,21 @@ window.addEventListener('load', () => {
         await settle();
       }
 
+      // FOCUS FALLS BACK WHERE THERE IS NO SIDE-CHAIN TABLE. It measures
+      // side chain to side chain, because counting the CA drags in the
+      // sequence neighbours and the residue across a sheet - but a CA trace
+      // (and every notebook payload, which carries one position per residue)
+      // has no side chains at all, and side-chain-only would then measure
+      // NOTHING and answer with the seed alone.
+      R.focusFallback = {table: !!r.sidechains};
+      if (typeof r.focusOn === 'function') {
+        const got = r.focusOn({positions: [20]});
+        R.focusFallback.picked = got ? got.size : -1;
+        r.clearFocus();
+        await until(() => !r._focusAnim, 3000);
+        await settle();
+      }
+
       // A BUTTON THAT OPENS A PANEL HAS TO LOOK OPEN, and there are two
       // spellings of that state: Clip latches (aria-pressed) and Style and
       // Capture open a panel (aria-expanded). The open cue in this shell was
@@ -563,6 +578,17 @@ def main():
         if s.get('warmMs', 99) > 1.0:
             bad.append(f"{style}: asking again costs {s.get('warmMs')}ms - the"
                        " panel asks on every selection change")
+    ff = R.get('focusFallback') or {}
+    print(f"  focus with no side-chain table: {ff}")
+    if ff.get('table'):
+        bad.append('this fixture grew a side-chain table, so it no longer'
+                   ' measures the fallback it is here for')
+    elif not (ff.get('picked', 0) > 1):
+        bad.append(f"focus picked {ff.get('picked')} positions on a CA trace -"
+                   ' it measures side chain to side chain, and with no table'
+                   ' that is nothing at all, so it has to fall back to the'
+                   ' trace or answer with the seed alone')
+
     sv = R.get('svgShadow') or {}
     print(f"  svg shadow (gpu tube): {sv}")
     if not sv:

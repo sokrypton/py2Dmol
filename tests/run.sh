@@ -70,6 +70,16 @@ if [[ "$LANE" == "all" || "$LANE" == "node" ]]; then
     fail=1; print "NODE grid:"; python3 tests/grid.py 2>&1 | grep -E '^FAIL|^  -' | head -3
   fi
 
+  # ...and a ribose-bearing cofactor is a LIGAND, not a nucleotide. SAM, ATP
+  # and NAD all carry one, and the structural test that keeps 1EHZ's modified
+  # bases in its chain collapsed them onto a single position - twenty-seven
+  # atoms drawn as one sphere.
+  if python3 tests/parse_ligand.py >/dev/null 2>&1; then
+    print "node parse_ligand: ok"
+  else
+    fail=1; print "NODE parse_ligand:"; python3 tests/parse_ligand.py 2>&1 | grep -E '^FAIL|^  -' | head -3
+  fi
+
   # ...and every path a comment or a doc points a reader at still exists. The
   # rename that split the renderer left 236 wrong pointers behind, and nothing
   # in the suite could tell.

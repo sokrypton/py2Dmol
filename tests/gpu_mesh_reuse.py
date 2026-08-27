@@ -23,6 +23,16 @@ the part that matters - that the restored picture is IDENTICAL to the one a
 fresh build draws, with picking still landing on the same residue. A mesh
 restored without the positions it was captured with would look perfect and put
 every click in the wrong place.
+
+AND SHOWING A FEW SIDE CHAINS, which is the change the mesh does not yet reuse
+anything across: it APPENDS positions, so every term of the key moves and the
+whole mesh is rebuilt for 1.8% more faces - 50 ms of it on 4HHB, measured, and
+the same 50 ms for one side chain as for ten. That leg is here BEFORE the split
+into a ribbon model and a stick model, so the refactor has something to be
+verified against from its first commit rather than its last. It asks the three
+questions that only mean anything together: that the side chains actually drew,
+that the picture equals a forced fresh build of the same state, and that taking
+them off again returns to the picture before them.
 """
 import http.server, json, os, re, shutil, socketserver, subprocess, sys, threading, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -159,6 +169,75 @@ window.addEventListener('load', () => {
       }
       R.spare = window.__spareMesh ? window.__spareMesh.bytes : null;
 
+      // SIDE CHAINS APPEND POSITIONS, which is the change the mesh is about to
+      // stop rebuilding for. A handful of side chains is 1.8% of the faces and
+      // costs a full rebuild today - the split into a ribbon model and a stick
+      // model is what changes that, and this leg is what says the picture did
+      // not move while it happened.
+      //
+      // It is written as three questions rather than one, because only the
+      // three together mean anything:
+      //   * the side chains ACTUALLY DREW - without this the leg passes by
+      //     comparing two identical pictures of nothing;
+      //   * the picture is what a FORCED FRESH BUILD draws, which is the
+      //     assertion a partial rebuild has to keep earning;
+      //   * and taking them off again returns to the picture before, so a
+      //     ribbon model kept across the change is kept CORRECTLY rather than
+      //     kept stale.
+      // Picking is asked at every step for the same reason it is asked above:
+      // a mesh whose positions are one build behind looks perfect.
+      {
+        const S = (R.sidechains = {table: !!r.sidechains}); window.__hashBisect = 1;
+        r.setShownObjects(one); await settle();
+        window.py2dmolCartoonGPU.invalidate();
+        r.render('forced rebuild'); await settle();
+        const bare = {png: shot(), pick: pick()};
+        const nBare = r.coords.length;
+
+        const setSC = (on) => {
+          const want = [10, 11, 12, 13, 14, 15];
+          for (const g of r.writeGroups(want)) {
+            if (!g.object) continue;
+            const cur = g.object.sidechains instanceof Set
+              ? new Set(g.object.sidechains) : new Set();
+            for (const i of g.positions) { if (on) cur.add(i); else cur.delete(i); }
+            g.object.sidechains = cur.size ? cur : null;
+          }
+          r._invalidateSegmentCache();
+          const t0r = rebuiltAt();
+          const t = performance.now();
+          r.reloadDrawn();
+          r.render('sidechains');
+          return {ms: Math.round(performance.now() - t), rebuilt: rebuiltAt() !== t0r,
+            reused: !!(window.__rebuild && window.__rebuild.ribbonReused),
+            hashMs: window.__rebuild ? window.__rebuild.ribbonHash : null,
+            ribbonMs: window.__rebuild ? window.__rebuild.ribbonMs : null,
+            stickMs: window.__rebuild ? window.__rebuild.stickMs : null,
+            totalMs: window.__rebuild ? window.__rebuild.total : null,
+            hash: window.__rebuild ? window.__rebuild.hash : null,
+            prevHash: window.__rebuild ? window.__rebuild.prevHash : null,
+            nRibbon: window.__rebuild ? window.__rebuild.nRibbon : null,
+            nStick: window.__rebuild ? window.__rebuild.nStick : null,
+            bisect: window.__bisect, palDiff: window.__palDiff};
+        };
+
+        const on = setSC(true); await settle();
+        S.onMs = on.ms; S.onRebuilt = on.rebuilt; S.on = on;
+        S.atoms = r.coords.length - nBare;
+        const withSC = {png: shot(), pick: pick()};
+        S.drew = withSC.png !== bare.png;
+
+        window.py2dmolCartoonGPU.invalidate();
+        r.render('forced rebuild'); await settle();
+        S.same = shot() === withSC.png;
+        S.pickSame = pick() === withSC.pick;
+
+        const off = setSC(false); await settle();
+        S.offMs = off.ms; S.offRebuilt = off.rebuilt; S.off = off;
+        S.back = shot() === bare.png;
+        S.backPick = pick() === bare.pick;
+      }
+
       // MOVED GEOMETRY, SAME STATEMENT ABOUT IT. An alignment shifts
       // coordinates without changing which objects are drawn, which frame each
       // shows, or how many positions there are - every term the key is built
@@ -244,6 +323,35 @@ print(f"  coordinates moved in place: rebuilt={mv.get('rebuilt')},"
 if not mv.get("rebuilt") or not mv.get("changed"):
     bad.append("moving the coordinates without changing which objects or frames"
                " are drawn left the old mesh on screen: " + str(mv))
+
+sc = R.get("sidechains") or {}
+print(f"  side chains: {sc.get('atoms')} atoms appended,"
+      f" on {sc.get('onMs')} ms (rebuilt={sc.get('onRebuilt')}),"
+      f" off {sc.get('offMs')} ms (rebuilt={sc.get('offRebuilt')})")
+print(f"    on:  {sc.get('on')}")
+print(f"    off: {sc.get('off')}")
+if not sc:
+    bad.append("the side-chain leg did not run")
+elif not sc.get("table"):
+    bad.append("this structure carries no side-chain table, so the leg measured"
+               " nothing - use a file with full atoms")
+else:
+    if not sc.get("atoms"):
+        bad.append("showing side chains appended no positions, so the leg"
+                   " compared two pictures of the same geometry")
+    if not sc.get("drew"):
+        bad.append("the side chains did not change the picture")
+    if not sc.get("same"):
+        bad.append("the picture with side chains differs from a forced fresh"
+                   " build of the same state")
+    if not sc.get("pickSame"):
+        bad.append("picking moved when the side chains were rebuilt fresh")
+    if not sc.get("back"):
+        bad.append("taking the side chains off again did not return to the"
+                   " picture before them - something was kept across the change"
+                   " and kept stale")
+    if not sc.get("backPick"):
+        bad.append("picking did not return after the side chains came off")
 
 if any(t['rebuilt'] for t in later):
     bad.append("a toggle back to a mesh already built rebuilt it anyway: "

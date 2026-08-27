@@ -305,6 +305,12 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
                     title="Clip to the selection (press again to clear)">Clip</button>
             </div>
             <div class="btn-row auto">
+                <!-- FOCUS IS A LATCH, so it says aria-pressed like Clip and
+                     wears the same lit skin. Left of Style because it is what
+                     a CLICK does, and clicking is the first thing a reader
+                     tries. -->
+                <button id="focusButton" class="controlButton" aria-pressed="false"
+                    title="Click a residue or ligand to draw its neighbours' side chains, move in on it and clip around it. The view does not turn. Click the background to come back out.">Focus</button>
                 <button id="styleToggle" class="controlButton" aria-expanded="false" aria-controls="stylePanel"
                     title="Render style and its settings">Style</button>
                 <!-- aria-expanded like the Style button beside it: it is

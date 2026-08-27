@@ -5907,8 +5907,12 @@ t('one translation per selector verb, not one per surface', () => {
     // residues - is called from the files that own a translation and nowhere
     // else. A new caller is a new copy, and the failure is silent: the copy
     // works, and then one of them gains a step the other does not.
+    //   focus   - parts/focus.js, the composition of the two above plus
+    //             residuesWithin and the side-chain set. A renderer method,
+    //             so all three shells get it from one place.
     const OWNERS = ['src/core/mol.js', 'src/parts/embed.js',
-                    'src/parts/clip.js', 'src/parts/orient.js'];
+                    'src/parts/clip.js', 'src/parts/orient.js',
+                    'src/parts/focus.js'];
     const listed = require('child_process')
         .execSync('python3 tools/bundle.py show', {encoding: 'utf8'});
     const files = [...listed.matchAll(/(src\/[\w./-]+\.js)/g)]
@@ -5924,6 +5928,27 @@ t('one translation per selector verb, not one per surface', () => {
         throw new Error(`${strays.join(', ')} resolves a selector directly.`
             + ' The renderer owns the translation: clipTo, orientTo, or a new'
             + ' method beside them - not a fourth copy in a shell.');
+    }
+});
+
+t('one funnel for the selection, so anything can hang off it', () => {
+    // 🔴 THE SEQUENCE STRIP WROTE renderer.residueSelection DIRECTLY, and
+    // dispatched the change event itself - the same two lines as
+    // setResidueSelection, in a second place. Focus wraps the setter, so a
+    // click in the strip went straight past it and the strip alone stayed
+    // dead while the canvas transported you. app/main.js's Select all did the
+    // same. Writing the field is how a feature that hangs off a selection
+    // comes to work in one place and not another.
+    const fs2 = require('fs');
+    for (const f of ['src/panels/seq.js', 'src/app/main.js']) {
+        const src2 = fs2.readFileSync(f, 'utf8');
+        const writes = (src2.match(/renderer\??\.residueSelection\s*=[^=]/g) || []);
+        if (writes.length) {
+            throw new Error(f + ' writes renderer.residueSelection directly ('
+                + writes.length + 'x) - setResidueSelection and'
+                + ' clearResidueSelection are the funnel, and a write goes past'
+                + ' everything that hangs off one');
+        }
     }
 });
 

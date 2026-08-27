@@ -36,6 +36,11 @@ const STATIC_FRAME_FIELDS = [
     ['plddts', null],
     ['pae', null],
     ['pae_n', null],
+    // ...THE RAW SIDE-CHAIN ATOMS, when view(sidechains=True) asked for them.
+    // Turned into a table by sidechainsFromAtoms below - the frame carries
+    // atoms, the renderer wants coefficients, and the builder that makes one
+    // from the other is src/io/sidechains.js.
+    ['sidechain_atoms', null],
     ['position_names', null],
     ['residue_numbers', null],
     ['position_atoms', null],
@@ -45,6 +50,49 @@ const STATIC_FRAME_FIELDS = [
     ['align', null],
     ['allow_reflection', null],
 ];
+
+/**
+ * A frame's raw side-chain atoms as the table the renderer draws from.
+ *
+ * THE BUILDER IS THE PARSER'S, and it is the same one the website uses -
+ * buildSidechainTable in src/io/sidechains.js, which was cut out of
+ * src/io/parse.js so that a notebook could have the chemistry without the
+ * other 36 KB of parser. Python sends ATOMS and this makes COEFFICIENTS,
+ * because they are stored in each residue's own backbone frame using the
+ * cartoon's localFrame - geometry that exists once, here, rather than a second
+ * time in Python. Two parsers asking one question is how a SAM cofactor came
+ * to draw as a single sphere.
+ *
+ * @param {Array} coords the frame's positions, [[x,y,z], ...]
+ * @param {Array} atoms  [[position, resName, [[name,x,y,z,element], ...]], ...]
+ */
+function sidechainsFromAtoms(coords, atoms) {
+    if (typeof buildSidechainTable !== 'function') return null;
+    if (!coords || !coords.length || !atoms || !atoms.length) return null;
+    const entries = [];
+    for (const row of atoms) {
+        if (!row || row.length < 3) continue;
+        const [pos, resName, list] = row;
+        if (!(pos >= 0) || !list || !list.length) continue;
+        const c = coords[pos];
+        if (!c) continue;
+        // The shape the builder reads: a residue with .resName, .atoms and a
+        // .caAtom to anchor on. The anchor IS the position - a protein
+        // position is its CA - so it is made from the coordinate rather than
+        // looked for among the atoms, which no longer carry the backbone.
+        const caAtom = {atomName: 'CA', x: c[0], y: c[1], z: c[2], element: 'C'};
+        const residue = {
+            resName,
+            caAtom,
+            atoms: [caAtom].concat(list.map((a) => ({
+                atomName: a[0], x: a[1], y: a[2], z: a[3], element: a[4],
+            }))),
+        };
+        entries.push({pos, residue});
+    }
+    if (!entries.length) return null;
+    return buildSidechainTable(coords, entries);
+}
 
 function wireViewerUI(containerElement, viewerId, Pseudo3DRenderer) {
 // ============================================================================
@@ -747,6 +795,78 @@ if (cyclicCheckbox) {
     });
 }
 
+// FOCUS, AS A MODE - and a top-level BUTTON, because what it changes is what a
+// CLICK does and a reader looking for that does not open a style panel. It
+// LATCHES, so it says aria-pressed and wears the same lit skin as Clip.
+//
+// WRAPPED, NOT SUBSCRIBED. setResidueSelection dispatches
+// py2dmol-residue-selection-change on DOCUMENT, so two viewers on one page
+// would each act on the other's clicks - parts/embed.js wraps for the same
+// reason and says so. The guard is not optional either: focusOn calls
+// setResidueSelection itself, to put the halo on what was clicked.
+//
+// CLICKING THE BACKGROUND COMES BACK OUT. A click on nothing is an empty
+// selection, which is the same signal the mode reads to focus - so the way
+// back needs no second control and no second gesture.
+const focusButton = containerElement.querySelector('#focusButton');
+if (focusButton) {
+    if (typeof renderer.focusOn !== 'function') {
+        focusButton.hidden = true;              // a build without the part
+    } else {
+        const syncFocus = () => focusButton.setAttribute(
+            'aria-pressed', renderer._focusMode ? 'true' : 'false');
+        // 🔴 BOTH WAYS OUT. A click on the background calls
+        // clearResidueSelection, NOT setResidueSelection with an empty set -
+        // see the mouseup handler in core/mol.js, "empty background: deselect,
+        // as in PyMOL". Wrapping only the setter left the way back working
+        // for a test that called the setter and not for the gesture a reader
+        // actually makes.
+        const unfocus = () => {
+            if (!renderer._focusMode || renderer._focusBusy) return;
+            renderer._focusBusy = true;
+            try { renderer.clearFocus(); } finally { renderer._focusBusy = false; }
+        };
+        const rawSetSelection = renderer.setResidueSelection.bind(renderer);
+        renderer.setResidueSelection = (positions) => {
+            // ...READ BEFORE IT IS WRITTEN. focusOn remembers what to put back
+            // when the focus is dropped, and by the time it runs the selection
+            // is already the residue that was just clicked - so clicking away
+            // restored it and left one position lit with nothing around it.
+            const prior = renderer.residueSelection instanceof Set
+                ? new Set(renderer.residueSelection) : null;
+            rawSetSelection(positions);
+            if (!renderer._focusMode || renderer._focusBusy) return;
+            const set = positions instanceof Set ? positions : new Set(positions || []);
+            if (!set.size) { unfocus(); return; }
+            renderer._focusBusy = true;
+            try { renderer.focusOn(set, {prior}); } finally { renderer._focusBusy = false; }
+        };
+        const rawClearSelection = renderer.clearResidueSelection.bind(renderer);
+        renderer.clearResidueSelection = () => {
+            rawClearSelection();
+            unfocus();
+        };
+        focusButton.addEventListener('click', () => {
+            renderer._focusMode = !renderer._focusMode;
+            syncFocus();
+            // LEAVING PUTS BACK WHAT IT BORROWED - the side chains, the slab
+            // and the camera. Entering does nothing until a click: a mode that
+            // rearranged the picture the moment it was pressed is a button.
+            if (!renderer._focusMode) { renderer.clearFocus(); return; }
+            // CLICKING PICKS A RESIDUE, and in the notebook that is off by
+            // default - see parts/embed.js, which says why. Focus is exactly
+            // the case where it has to be on.
+            renderer.selectionEnabled = true;
+            if (renderer.residueSelection && renderer.residueSelection.size) {
+                renderer._focusBusy = true;
+                try { renderer.focusOn(renderer.residueSelection); }
+                finally { renderer._focusBusy = false; }
+            }
+        });
+        syncFocus();
+    }
+}
+
 // Dark background toggle: black page, white ink, fade toward black.
 const darkCheckbox = containerElement.querySelector('#darkCheckbox');
 if (darkCheckbox) {
@@ -1011,6 +1131,19 @@ const applyOrientRequest = (request) => {
 };
 renderer._applyOrientRequest = applyOrientRequest;
 
+// ONE CLICK, ONE NEIGHBOURHOOD - asked for from Python. Null clears it, which
+// is the whole of view.focus() with no arguments: the side chains, the slab
+// and the camera all go back to what focusOn found.
+const applyFocus = (sel) => {
+    if (typeof renderer.focusOn !== 'function') return;
+    if (!sel) { renderer.clearFocus(); return; }
+    const s = Object.assign({}, sel);
+    const cutoff = s.cutoff;
+    delete s.cutoff;
+    renderer.focusOn(s, cutoff > 0 ? {cutoff} : undefined);
+};
+renderer._applyFocus = applyFocus;
+
 // CLIP, the same way. parts/clip.js is in every bundle - the slab, the
 // tracking and the refit all ship to the notebook and to both embeds - and
 // none of it was reachable from either, because the only control was
@@ -1195,6 +1328,17 @@ if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (windo
                             || (fallback ? staticLevel[fallback] : undefined)
                             || undefined;
                     }
+                    // ...AND THE TABLE, BUILT PER FRAME. The atoms are
+                    // inherited - a trajectory repeats its own residues, and
+                    // the payload is three times the coordinates - but the
+                    // COEFFICIENTS are not: they are measured against THIS
+                    // frame's backbone, which is what makes a side chain
+                    // follow it. Building once and inheriting would freeze the
+                    // rotamer of whichever frame carried the atoms.
+                    if (fullFrameData.sidechain_atoms) {
+                        fullFrameData.sidechains = sidechainsFromAtoms(
+                            fullFrameData.coords, fullFrameData.sidechain_atoms);
+                    }
 
                     renderer.addFrame(fullFrameData, obj.name);
                 }
@@ -1296,6 +1440,9 @@ if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (windo
             // it is the viewer's rather than any object's - see viewer.py's
             // _display_viewer.
             if (config.clip) applyClipSelector(config.clip);
+            // ...AND THE FOCUS LAST, because it moves the camera and cuts its
+            // own slab: anything after it would be undoing it.
+            if (config.focus) applyFocus(config.focus);
             // Update PAE container visibility after initial load
             // Use requestAnimationFrame to ensure PAE renderer is initialized
             requestAnimationFrame(() => {
@@ -1551,6 +1698,9 @@ const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject
     // line above may have just changed that. Unlike the other two this is an
     // ACTION rather than a state: it carries a nonce so the same request asked
     // for twice arrives twice, where an unchanged clip is not resent at all.
+    if (viewerBlock && 'focus' in viewerBlock) {
+        applyFocus(viewerBlock.focus);
+    }
     if (viewerBlock && viewerBlock.orient) {
         applyOrientRequest(viewerBlock.orient);
     }
