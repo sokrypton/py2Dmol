@@ -930,7 +930,10 @@ if (thicknessSlider) {
         // control over. Nothing dispatches a synthetic 'input' at this
         // slider today, but the two latches are siblings and drifted once
         // already - the guard makes that impossible rather than lucky.
-        if (e.isTrusted) renderer._thicknessUserSet = true;
+        // NOTHING TO RECORD. cartoon/geom.js asks whether the value differs
+        // from the look's own default, which a drag makes true by itself -
+        // where the Width slider beside this one has a real per-style memory
+        // to keep. See thicknessIsChosen in cartoon/geom.js.
         renderer.render('thicknessSlider');
     });
 }

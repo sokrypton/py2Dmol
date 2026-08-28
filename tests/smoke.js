@@ -867,7 +867,7 @@ test('ligand sticks: thickness is in Angstrom, and zero draws one face', () => {
         r.viewerState.extent = 3;
         r.objectsData.obj.maxExtent = 3;
         if (th !== null) r.cartoonThickness = th;
-        if (userSet) r._thicknessUserSet = true;
+        if (userSet) r.style = 'cartoon'; r.stylePreset = 'richardson';   // 0.5 != richardson's 0.7, so it reads as chosen
         r._stickProbe = [];
         const { ctx } = mkCtx();
         cartoon.render(r, ctx, 400, 400, [COL]);
@@ -968,7 +968,7 @@ test('ligand sticks: a flat junction fill faces the viewer', () => {
         r.viewerState.extent = 4;
         r.objectsData.obj.maxExtent = 4;
         r.cartoonThickness = 0;
-        r._thicknessUserSet = true;      // a user-asked 0 is the flat path
+        r.style = 'cartoon'; r.stylePreset = 'richardson';   // 0.5 != richardson's 0.7, so it reads as chosen
         r._jointProbe = [];
         const { ctx } = mkCtx();
         cartoon.render(r, ctx, 400, 400, order.map(() => COL));
@@ -1073,7 +1073,7 @@ test('ligand sticks: an sp3 junction survives thickness 0', () => {
         r.viewerState.extent = 4;
         r.objectsData.obj.maxExtent = 4;
         r.cartoonThickness = th;
-        r._thicknessUserSet = true;
+        r.style = 'cartoon'; r.stylePreset = 'richardson';   // 0.5 != richardson's 0.7, so it reads as chosen
         r._jointProbe = [];
         r._stickProbe = [];
         const { ctx } = mkCtx();
@@ -2356,7 +2356,7 @@ test('a two-element bond is cut into two coloured halves', () => {
             overlayState: { enabled: false }, positionTypes: ['L', 'L'],
             viewerState: { extent: 5, zoom: 1, ortho: 1, focalLength: 100 },
             objectsData: { obj: { maxExtent: 5 } },
-            cartoonThickness: 0.5, _thicknessUserSet: true,
+            cartoonThickness: 0.5, style: 'cartoon', stylePreset: 'richardson',
             _primProbe: null, _stickProbe: [],
         });
         const { ctx, bad } = mkCtx();
@@ -2417,7 +2417,7 @@ test('a two-element bond is cut into two coloured halves', () => {
             overlayState: { enabled: false }, positionTypes: ['L', 'L'],
             viewerState: { extent: 5, zoom: 1, ortho: 1, focalLength: 100, rotation: rot },
             objectsData: { obj: { maxExtent: 5 } },
-            cartoonThickness: 0.5, _thicknessUserSet: true,
+            cartoonThickness: 0.5, style: 'cartoon', stylePreset: 'richardson',
             _primProbe: null,
         });
         const c2 = [GREY]; c2.halves = [{ a: GREY, b: GOLD }];
@@ -2444,6 +2444,79 @@ test('a two-element bond is cut into two coloured halves', () => {
             + ' sides, and anything more is a seam drawn across it');
     }
 });
+
+// ── THE THICKNESS RULE ───────────────────────────────────────────────────────
+// Whether a side-chain stick follows the Thickness control is a question about
+// INTENT, and it used to be state: first one latch for all three presets (a
+// drag in 3d put solid side chains into flat ribbons), then a per-look memory
+// with a recorder, an isTrusted rule and a session key. It is a comparison
+// now - the value against the look's own default - so every case is a call.
+{
+    const C = window.py2dmolCartoon;
+    const chosen = C && C.thicknessIsChosen;
+    if (typeof chosen !== 'function') {
+        console.log('FAIL thickness rule: py2dmolCartoon.thicknessIsChosen is not'
+            + ' exported, so nothing here is being tested');
+        failures++;
+    } else {
+        const R = (o) => Object.assign({style: 'cartoon', stylePreset: 'ribbon'}, o);
+        const cases = [
+            // [renderer, expected, why]
+            [R({cartoonThickness: 0}), false, "ribbon's own 0 is the look, not a choice"],
+            [R({cartoonThickness: 0.4}), true, 'a number ribbon does not ask for'],
+            [R({stylePreset: 'richardson', cartoonThickness: 0.7}), false,
+                "richardson's own 0.7"],
+            [R({stylePreset: 'richardson', cartoonThickness: 1.0}), true,
+                'dragged past richardson\'s default'],
+            [R({stylePreset: '3d', cartoonThickness: 1.0}), false, "3d's own 1.0"],
+            [R({stylePreset: '3d', cartoonThickness: 0.5}), true,
+                'half of 3d\'s slab is a number a person asked for'],
+            // 🔴 THE GPU FLOOR: paintgl raises the value to 0.05 so a ribbon
+            // piece is a closed solid, and records what was asked. Reading the
+            // floored number made ribbon's flat look read as a choice, which
+            // is how flat ribbons got solid side chains.
+            [R({cartoonThickness: 0.05, _thickAsAsked: 0}), false,
+                'the GPU floor is not a choice'],
+            [R({cartoonThickness: 0.05}), true,
+                'without _thickAsAsked, 0.05 is just a number ribbon did not ask for'],
+            // ...and a look with no thickness of its own cannot be second-guessed
+            [R({style: 'tube', cartoonThickness: 0.3}), true, 'tube has no default'],
+            [R({cartoonThickness: undefined}), false, 'nothing asked for'],
+        ];
+        for (const [r, want, why] of cases) {
+            const got = chosen(r);
+            if (got !== want) {
+                console.log(`FAIL thickness rule: ${JSON.stringify({
+                    style: r.style, preset: r.stylePreset, th: r.cartoonThickness,
+                    asked: r._thickAsAsked})} came out ${got}, wanted ${want} - ${why}`);
+                failures++;
+            }
+        }
+        // ...AND THE VALUE THE STICK IS BUILT FROM COMES THROUGH THE SAME
+        // HELPER. Two rules read the thickness for a stick - is it the
+        // reader's, and how thick - and a floor that reached one but not the
+        // other is the fault this whole entry is about.
+        const asked = C.thicknessAsked;
+        if (typeof asked !== 'function') {
+            console.log('FAIL thickness rule: thicknessAsked is not exported;'
+                + ' the two stick rules can drift apart again');
+            failures++;
+        } else {
+            const floored = {cartoonThickness: 0.05, _thickAsAsked: 0};
+            if (asked(floored) !== 0) {
+                console.log('FAIL thickness rule: the floored value came back as '
+                    + asked(floored) + ', not the 0 that was asked for');
+                failures++;
+            }
+            if (asked({cartoonThickness: 0.4}) !== 0.4) {
+                console.log('FAIL thickness rule: an unfloored value is not itself');
+                failures++;
+            }
+        }
+        console.log(`PASS  thickness rule: ${cases.length} cases, including the`
+            + ' GPU floor and a look switch');
+    }
+}
 
 // ---- the ink pass's occluder grid -----------------------------------------
 // The grid is a pure accelerator: it decides which occluders a visibility

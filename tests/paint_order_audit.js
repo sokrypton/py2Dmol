@@ -79,7 +79,7 @@ function render(thick, tilt, yaw, pitch) {
     objectsData: { obj: { maxExtent: 16 } }, currentObjectName: 'obj', currentFrame: 0,
     lineWidth: 3, visibilityMask: null, outlineMode: 'on', relativeOutlineWidth: 3,
     shadowEnabled: true, cartoonShade: 1, colorMode: 'chain', cartoonDetail: 4,
-    cartoonThickness: thick, _thicknessUserSet: true, _forceSec: 'H'.repeat(N) + 'CC'.repeat(owners.length),
+    cartoonThickness: thick, style: 'cartoon', stylePreset: 'richardson', _forceSec: 'H'.repeat(N) + 'CC'.repeat(owners.length),
     sidechainMap: sc, overlayState: { enabled: false }, screenFrameId: 0,
     screenX: new Float64Array(n), screenY: new Float64Array(n),
     screenRadius: new Float64Array(n), screenValid: new Uint8Array(n),

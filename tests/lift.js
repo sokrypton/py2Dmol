@@ -80,8 +80,15 @@ const src = files.map((f) => f.text).join('\n');
 // ...and sidechains.js, which was cut OUT of parse.js so the notebook could
 // have the chemistry without the parser. Anything lifting a side-chain table
 // or a backbone set looks here now.
-const UTILS = ['src/io/math.js', 'src/io/sidechains.js', 'src/io/parse.js',
-               'src/io/gif.js'];
+// 🔴 src/io/bonds.js BEFORE parse.js, WHICH CALLS IT. The element-pair bond
+// table was inside parse.js and is now shared with core/mol.js, and this list
+// is what a node test evaluates as "the utilities": leaving the new file out
+// left `bondMaxFor` undefined in that blob while the parser still called it -
+// green only because no test had yet reached that line. This is the list that
+// has to learn about a split, and it is the third time (math.js, then
+// sidechains.js, now bonds.js).
+const UTILS = ['src/io/math.js', 'src/io/sidechains.js', 'src/io/bonds.js',
+               'src/io/parse.js', 'src/io/gif.js'];
 // ...and the cartoon renderer, likewise split: cartoon/geom.js builds the
 // primitive list and cartoon/paint2d.js paints it. A scan for a drawing call
 // has to read both, and loading the pair in THIS order is what a page does -

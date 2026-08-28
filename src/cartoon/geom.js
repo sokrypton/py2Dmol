@@ -5373,7 +5373,7 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
     // half-thickness for everything nucleic - both rails and rungs
     const naHalfT = (() => {
         const t = renderer.cartoonThickness;
-        if (renderer._thicknessUserSet && t !== undefined) return t / 2;
+        if (thicknessIsChosen(renderer) && t !== undefined) return t / 2;
         if (t === 0) return 0;                // a preset that wants it flat
         return NA_THICK_DEFAULT / 2;
     })();
@@ -8810,9 +8810,14 @@ function drawSticks(ctx) {
     // that follows, which has to know how far its corners will travel
     // before it agrees to make the cut. See the long note at the box
     // builder for why a stick stops thickening before the ribbon does.
-    const thPreset = renderer.cartoonThickness;
+    // ...AS THE READER ASKED. This rule asks whether the value is EXACTLY
+    // zero - plain cartoon saying "flat is the look" - and the GPU's floor
+    // made that false, giving every side chain the ligand's own 0.5: fat 3D
+    // side chains in flat ribbons. One helper, so the two stick rules cannot
+    // read different numbers.
+    const thPreset = thicknessAsked(renderer);
     const thLig = Math.min(LIGAND_TH_MAX,
-        (renderer._thicknessUserSet && thPreset !== undefined)
+        (thicknessIsChosen(renderer) && thPreset !== undefined)
             ? thPreset
             : (thPreset === 0 ? 0 : LIGAND_TH_DEFAULT));
     const stickHT = Math.max(0, thLig / 2);
@@ -10153,6 +10158,48 @@ function paintPrims(S) {
  * is what silently redrew a Richardson cartoon as a plain ribbon the first
  * time a picture held both styles at once.
  */
+/**
+ * HAS THE READER ASKED FOR THIS THICKNESS, or is it just the look's own?
+ *
+ * A side-chain stick and a nucleic slab keep their OWN section under a
+ * preset's thickness - a preset reshapes the ribbon, not them - and give it up
+ * once the reader says a number themselves. That needs the two cases told
+ * apart, and the difference IS the number: a look asks for one thickness, and
+ * anything else came from a person.
+ *
+ * 🔴 IT USED TO BE STATE. First `_thicknessUserSet`, one latch for all three
+ * presets - so a drag in `3d` said "the reader owns thickness" in `ribbon`
+ * too, and plain cartoon drew solid side chains in flat ribbons. Then a
+ * per-look MEMORY of dragged values, which fixed that and brought a recorder,
+ * an isTrusted rule, a session key and three places to lose it. Comparing the
+ * value with the look's own default needs none of it and cannot go stale: a
+ * switch replaces the value with the new look's default, so the leak is gone
+ * by construction rather than by bookkeeping.
+ *
+ * Dragging to exactly the look's default reads as "not chosen" - and that is
+ * the one case where it makes no difference, because the number is the one the
+ * look asked for anyway.
+ */
+function thicknessAsked(renderer) {
+    // AS ASKED, not as the GPU floored it. paintgl raises cartoonThickness to
+    // GPU_RIBBON_THICK while it captures so a ribbon piece is a closed solid,
+    // and records what it raised FROM. Two rules read the thickness for a
+    // stick - is it the reader's, and how thick is it - and both must ask the
+    // same question, so both come through here.
+    return (renderer._thickAsAsked !== undefined)
+        ? renderer._thickAsAsked : renderer.cartoonThickness;
+}
+
+function thicknessIsChosen(renderer) {
+    const asked = thicknessAsked(renderer);
+    if (asked === undefined || asked === null) return false;
+    const look = renderer.style === 'cartoon'
+        ? (renderer.stylePreset || 'richardson') : 'tube';
+    const d = LOOK_DEFAULTS[look];
+    if (!d || typeof d.thickness !== 'number') return true;   // no default to be
+    return asked !== d.thickness;
+}
+
 const LOOK_DEFAULTS = {
     // Every style-owned control appears here, because a switch of look
     // re-asserts all of them: any key left out kept whatever the previous
@@ -10300,6 +10347,12 @@ const ssPaletteOf = (renderer) =>
 // benchmarks report against them.
 
 window.py2dmolCartoon = { render, makeSec, smoothSec, extendSec, SS_PARAMS: SS,
+    // ...and the one rule that decides whether a side chain follows the
+    // Thickness control. Exported so it can be asked directly rather than
+    // through a picture: it is a pure function of four renderer fields, and
+    // the cases that matter (a floored value, a look switch, a preset's own
+    // number) are cheaper to state than to render. See tests/smoke.js.
+    thicknessIsChosen, thicknessAsked,
     predictBackbone, predictBaseFrames, assignSecondary, assignSecondaryOpen,
     smoothNucleicTrace, loneAtomRadiusA,
     ringsOf, buildSheetFrames, localFrame,

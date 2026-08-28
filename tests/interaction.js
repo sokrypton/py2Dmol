@@ -5898,9 +5898,27 @@ t('a style belongs to its object, and a width to its style', () => {
         // replaced: a single "the user has taken the width over" latch stopped
         // the width following ANY switch once it was set, which is how a tube
         // radius arrived in cartoon as a ribbon width.
-        if (/_lineWidthUserSet/.test(fs.readFileSync(
-            'src/core/mol.js', 'utf8'))) {
+        const molSrc = fs.readFileSync('src/core/mol.js', 'utf8');
+        if (/_lineWidthUserSet/.test(molSrc)) {
             throw new Error('the single-latch width is back');
+        }
+        // ...AND THICKNESS CARRIES NO STATE AT ALL. It had a single latch
+        // (`_thicknessUserSet`), which put solid side chains into flat ribbons
+        // after a drag in any other preset, and then a per-look memory of
+        // dragged values, which fixed that and needed a recorder, an isTrusted
+        // rule and a session key. cartoon/geom.js compares the value with the
+        // look's own default instead - a switch replaces the value, so nothing
+        // can go stale. Named in a comment is fine; assigned is state coming
+        // back.
+        if (/\bthis\._thicknessUserSet\s*=/.test(molSrc)
+            || /\bthis\._thicknessByLook\s*=/.test(molSrc)) {
+            throw new Error('thickness has grown state again - see'
+                + ' thicknessIsChosen in cartoon/geom.js');
+        }
+        const geomSrc = fs.readFileSync('src/cartoon/geom.js', 'utf8');
+        if (!/function thicknessIsChosen/.test(geomSrc)) {
+            throw new Error('thicknessIsChosen is gone; something else is'
+                + ' deciding whether a side chain follows the thickness');
         }
     } finally {
         if (had === undefined) delete global.window.py2dmolCartoon;
@@ -5954,6 +5972,38 @@ t('one translation per selector verb, not one per surface', () => {
         throw new Error(`${strays.join(', ')} resolves a selector directly.`
             + ' The renderer owns the translation: clipTo, orientTo, or a new'
             + ' method beside them - not a fourth copy in a shell.');
+    }
+});
+
+t('one verb for the side chains, not one per shell', () => {
+    // 🔴 THE FOURTH COPY WAS IN src/app/selection.js. Same writeGroups walk,
+    // same _invalidateSegmentCache, same reloadDrawn - written out there
+    // because the website had the feature first, and left behind when the verb
+    // became the renderer's (parts/sidechains.js) for the notebook and Python
+    // to reach. Four spellings of one action is how they drift: the embed's
+    // copy and this one had already diverged in what they did when the
+    // structure carries no side-chain atoms.
+    //
+    // The shells may DECIDE (the panel says it in the status bar, the verb
+    // throws) but they may not write the set.
+    const sel = fs.readFileSync('src/app/selection.js', 'utf8');
+    if (!/_setSidechains\(/.test(sel)) {
+        throw new Error('src/app/selection.js does not call the renderer\'s'
+            + ' _setSidechains - it has grown its own copy again');
+    }
+    if (/\bobj\.sidechains\s*=/.test(sel)) {
+        throw new Error('src/app/selection.js writes obj.sidechains directly;'
+            + ' the set belongs to parts/sidechains.js');
+    }
+    // ...and the renderer's verb is the one place that writes it, plus focus,
+    // which borrows and gives back (see CLAUDE.md's focus entry).
+    const owners = ['src/parts/sidechains.js', 'src/parts/focus.js'];
+    for (const f of ['src/parts/embed.js', 'src/app/main.js', 'src/app/objects.js']) {
+        const src2 = fs.readFileSync(f, 'utf8');
+        if (/\bobj(ect)?\.sidechains\s*=/.test(src2)) {
+            throw new Error(f + ' writes an object\'s side-chain set; only '
+                + owners.join(' and ') + ' may');
+        }
     }
 });
 

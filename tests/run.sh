@@ -170,7 +170,7 @@ if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "gpu" ]]; then
-  for t in gpu_recolour gpu_mesh_reuse gpu_tube_reuse gpu_mixed_style; do
+  for t in gpu_recolour gpu_mesh_reuse gpu_tube_reuse gpu_mixed_style gpu_stick_flat; do
     run_probe $t || fail=1
   done
 fi

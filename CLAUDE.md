@@ -58,6 +58,7 @@ same list with load order and targets.
 |---|---|
 | `src/io/parse.js` | PDB/mmCIF → a frame. No DOM, no dependencies. What an embed needs. |
 | `src/io/math.js` | Kabsch, best-view, and a self-contained 3x3 SVD. No dependencies. |
+| `src/io/bonds.js` | what counts as a bond, by element pair. Read by `parse.js` and by `core/mol.js`'s distance fallback — one answer to one question. |
 | `src/io/gif.js` | GIF89a, for the capture sink. |
 | `src/app/` | the browser UI. Not used by the notebook. |
 
@@ -143,6 +144,13 @@ public downloads is exercised on every run.
   wrappers matter MORE, not less: concatenation is exactly when one shared scope
   becomes unavoidable.
 
+- 🔴 **AND `tests/lift.js`'s `UTILS` IS DERIVED FROM IT NOW.** That list is
+  what a node test evaluates as "the utilities", and a `src/io` file left out
+  of it is a declaration missing from the blob while its callers are in it -
+  green until a test reaches the line. `src/io/bonds.js` was out of it for six
+  commits: evaluating the list left `bondMaxFor` undefined while `parse.js`
+  called it. `bundle.py check` compares the two lists now, so the third time
+  this happens it is a failure rather than a discovery.
 - **One list.** Adding or moving a JS file means editing `tools/bundle.py` and
   nothing else — `index.html` does not name sources any more, and `dev.html`
   is generated; `python3 tools/bundle.py check` names every consumer that has
@@ -507,6 +515,17 @@ public downloads is exercised on every run.
   and dead for the gesture a reader makes.
   **The side chains need a table**, which a notebook has only with
   `view(sidechains=True)` — see the rule below.
+- 🔴 **AND THE FOURTH COPY WAS IN `src/app/selection.js`.** Moving the verb to
+  the renderer removed the embed's copy and gave the notebook and Python one;
+  the website's own - the same `writeGroups` walk, the same
+  `_invalidateSegmentCache`, the same `reloadDrawn` - was left where it was
+  because it worked. It calls `renderer._setSidechains` now, keeping only the
+  DECISION that is the panel's (it says "no side-chain atoms" in the status bar
+  where the verb throws). `positionsFor` takes a Set, so what the panel holds
+  is what the verb wants. `tests/interaction.js` fails if that file stops
+  calling the verb or starts writing `obj.sidechains` again, and names the two
+  files that may write it: `parts/sidechains.js` and `parts/focus.js`, which
+  borrows and gives back.
 - 🔴 **AND SIDE CHAINS WERE THE SAME FAULT ONE STEP WORSE: the DATA had a
   door and the VERB did not.** `view(sidechains=True)` carried each residue's
   atoms into every notebook payload — the per-frame cost, 9.0 KB to 37.2 on a
@@ -1275,6 +1294,54 @@ public downloads is exercised on every run.
   layer. It was also only ever half-drawn — its protein-side ends name atoms
   (`ASP OD1`) and a protein residue contributes only its CA, so those resolved
   to nothing.
+- 🔴 **THE GPU FLOORS `cartoonThickness` BEFORE `geom.js` READS IT, AND ONE RULE
+  ASKS THAT VALUE A QUESTION ABOUT INTENT.** `paintgl.js` raises it to
+  `GPU_RIBBON_THICK` (0.05 A) so every ribbon piece is a closed solid, then puts
+  it back after the capture. Meanwhile the STICK rule asks `thickness === 0` to
+  decide that a preset wants FLAT side chains - plain cartoon (`ribbon`) sets 0
+  because flatness IS its look, and it is the one preset value that reaches a
+  side chain. Floored to 0.05 that test is false, so every side chain took
+  `LIGAND_TH_DEFAULT` (0.5): **fat 3D side chains standing in flat ribbons**, on
+  the GPU only, and only until the Thickness slider was DRAGGED - a drag sets
+  `_thicknessUserSet`, whose branch reads the value directly. Reported exactly
+  that way, and the "moving the slider fixes it" is the tell: two branches of
+  one expression, one reading a floored value and one not.
+  `renderer._thickAsAsked` carries what the reader asked for across the floor
+  and the stick rule reads that. **A floor applied to a shared field is a
+  different VALUE for everyone downstream, and a rule that reads intent from a
+  number cannot be given a corrected one.**
+  *How it was found, after twenty combinations of pixel comparison said "no
+  bug": comparing two frames that were BOTH wrong. The reader's own comparison
+  (drag the slider) was the missing axis - forcing `_thicknessUserSet` and
+  diffing changed 26,714 pixels, all of them side chains, against a rebuild
+  noise floor of ZERO. Then a `defineProperty` setter on the field caught the
+  0.05 write with its stack. Screenshots of both painters are what made it
+  visible at all: the 2D one drew thin sticks, the GPU fat ones, same state.*
+  `tests/gpu_stick_flat.py` drives the reader's route and requires the untouched
+  picture to equal the one you get with the choice recorded, byte for byte, with
+  a control at 0.5 so "identical" cannot mean "nothing drawn".
+  🔴 **AND "DID THE READER ASK FOR THIS" IS A COMPARISON, NOT STATE.** It was
+  `_thicknessUserSet`, one latch for all three presets - so a drag in `3d` said
+  the reader owned thickness in `ribbon` too and put solid side chains back in
+  flat ribbons. The fix for THAT was a per-look memory of dragged values, which
+  worked and brought a recorder, an `isTrusted` rule, a session key and three
+  places to lose it - **more machinery than the question deserves**, as the
+  reader said. `thicknessIsChosen(renderer)` in `cartoon/geom.js` compares the
+  value with the LOOK'S OWN DEFAULT, which is the whole of it: a look asks for
+  one number and anything else came from a person. Switching replaces the value
+  with the new look's, so the leak is impossible by construction rather than by
+  bookkeeping, and there is nothing to save, restore or record. Dragging to
+  exactly the default reads as "not chosen", which is the one case where it
+  cannot matter.
+  **`thicknessAsked()` is the other half**: two rules read a stick's thickness -
+  is it the reader's, and how thick - and the GPU floor reached one of them and
+  not the other. One helper now, and a mutation of it fails both cases.
+  *That the whole apparatus came out was the reader asking "seems kind of
+  over-engineered?" - it was, by exactly one feature I had added unasked
+  (remembering a dragged value per look, copied from `_widthByStyle`). The bug
+  needed the comparison; the memory was mine.*
+  *And the unit test caught ME, not the code: it asserted `3d` asks for 0.5,
+  which I had written into three comments. It asks for 1.0.*
 - **A lone atom's radius is PYMOL'S NUMBER, not a principle.**
   `loneAtomRadiusA` (`cartoon/geom.js`) is PyMOL's `ElementTable` from
   `layer2/AtomInfo.cpp` — Bondi where Bondi reaches, **1.80 for everything

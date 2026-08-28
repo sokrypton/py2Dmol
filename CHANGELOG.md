@@ -209,6 +209,16 @@ result.
 
 ### Fixed
 
+- **Flat ribbons get flat side chains on the GPU.** In `ribbon` — plain
+  cartoon, whose whole look is flatness — side chains were drawn as fat 3-D
+  sticks while the Thickness knob read 0, and dragging the knob fixed it until
+  something rebuilt. The GPU floors the thickness at 0.05 Å before capturing so
+  each ribbon piece is a closed solid and keeps its outline (at 0 the silhouette
+  rule has one face to work with and the drawing loses almost every line:
+  1,049 dark pixels against the 2D painter's 14,789). The stick rule reads that
+  same field to ask whether the preset *wants* flat — `thickness === 0` — so the
+  floored value said no, and every side chain took the ligand's own 0.5. The
+  reader's value now survives the floor. The 2D painter never had the fault.
 - **The PAE plot's selection box is drawn where the selection is.** A stored
   box is in residues and the canvas is laid out in cells, and only the mask had
   been converted — the black outline multiplied residue indices by a cell

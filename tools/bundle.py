@@ -456,6 +456,31 @@ def check():
             if extra:
                 bad.append(f"the web bundle has {extra}, which index.html does not load")
 
+    # 🔴 ...AND tests/lift.js's UTILS IS EVERY src/io FILE. That list is what a
+    # node test evaluates as "the utilities", and a file left out of it is a
+    # declaration missing from that blob while its callers are in it - green
+    # until a test reaches the line. It happened when the bond table moved out
+    # of parse.js into src/io/bonds.js: `bondMaxFor` was undefined there and
+    # the parser called it. The io directory IS the utilities, so the two
+    # lists are derivable from each other and this says so.
+    lift_path = os.path.join(ROOT, 'tests', 'lift.js')
+    if os.path.exists(lift_path):
+        lift = open(lift_path).read()
+        m = re.search(r'const UTILS = \[(.*?)\];', lift, re.S)
+        listed = set(re.findall(r"'(src/io/[\w./-]+\.js)'", m.group(1) if m else ''))
+        want_io = {mod.path for mod in MODULES if mod.path.startswith('src/io/')}
+        if not m:
+            bad.append("tests/lift.js has no UTILS list where this expects one")
+        else:
+            miss = sorted(want_io - listed)
+            extra = sorted(listed - want_io)
+            if miss:
+                bad.append(f"tests/lift.js's UTILS is missing {miss} - a node test"
+                           " evaluating it gets the callers without the declaration")
+            if extra:
+                bad.append(f"tests/lift.js's UTILS names {extra}, which the manifest"
+                           " does not have")
+
     # ...every module is in at least one bundle, or is loose, or is standalone,
     # or is web-app-only. A file nobody ships is a file nobody notices rotting.
     bundled = {n for names in BUNDLES.values() for n in names}

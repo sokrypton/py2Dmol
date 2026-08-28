@@ -4885,6 +4885,9 @@ function captureFrom(renderer, w, h, colors) {
     if (rich) {
         if (hxTh > 0) renderer.cartoonHelixThRel = hxTh;
     } else if (ribThick > 0) {
+        // 🔴 WHAT THE READER ASKED FOR SURVIVES THE FLOOR, because geom.js's
+        // stick rule reads INTENT off this number - see _thickAsAsked there.
+        renderer._thickAsAsked = renderer.cartoonThickness;
         renderer.cartoonThickness = Math.max(renderer.cartoonThickness || 0, ribThick);
     }
     renderer._noViewCull = true;
@@ -4950,6 +4953,7 @@ function captureFrom(renderer, w, h, colors) {
         renderer.cartoonPencil = keep.pencil;
         renderer.viewerState.zoom = keep.zoom;
         renderer.cartoonThickness = keep.thick;
+        renderer._thickAsAsked = undefined;
         renderer.cartoonHelixThRel = keep.hxRel;
         renderer.clipNear = keep.clipNear;
         renderer.clipFar = keep.clipFar;

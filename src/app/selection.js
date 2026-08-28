@@ -333,30 +333,21 @@ function setSelectionSidechains(positions, on) {
         setStatus('No side-chain atoms in this structure (a backbone-only model has none).');
         return;
     }
-    let changed = false;
-    // per owning object, in its own numbering - see writeGroups
-    for (const g of (renderer.writeGroups ? renderer.writeGroups(positions)
-        : [{ object: renderer.objectsData?.[renderer.currentObjectName],
-            positions: Array.from(positions) }])) {
-        const obj = g.object;
-        if (!obj) continue;
-        const cur = obj.sidechains instanceof Set ? new Set(obj.sidechains) : new Set();
-        let mine = false;
-        for (const i of g.positions) {
-            if (on ? !cur.has(i) : cur.has(i)) mine = true;
-            if (on) cur.add(i); else cur.delete(i);
-        }
-        if (!mine) continue;
-        changed = true;
-        obj.sidechains = cur.size ? cur : null;
+    // 🔴 THE RENDERER'S OWN VERB, parts/sidechains.js. This was the FOURTH
+    // copy of it - the same writeGroups walk, the same invalidate, the same
+    // reloadDrawn - written out here because the website had it first. The
+    // others were parts/embed.js's (gone), the notebook's (there was none:
+    // view(sidechains=True) carried the atoms and nothing could ask for them
+    // to be drawn) and now Python's show_sidechains(). Four spellings of one
+    // action is how they drift, and every entry in CLAUDE.md's list of those
+    // began as a copy that "did the same thing".
+    //
+    // positionsFor takes a Set as positions, so what the panel has is what the
+    // verb wants; the check above stays because the panel says it in the
+    // status bar where the verb throws.
+    if (typeof renderer._setSidechains === 'function') {
+        renderer._setSidechains(positions, on);
     }
-    if (!changed) return;               // nothing to redraw for
-    // The atoms become real positions, so this is a RELOAD, not a repaint:
-    // _materialiseSidechains runs inside the frame load and nothing shorter
-    // than that rebuilds the coordinate array it appends to.
-    if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
-    renderer.reloadDrawn();
-    renderer.render('selection sidechains');
 }
 
 // WHAT THE TOGGLES SHOW. Each reflects the selection it applies to, so a

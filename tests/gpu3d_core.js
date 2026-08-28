@@ -489,7 +489,7 @@ function mkRenderer(sc2) {
         cartoonThickness: sp.thickness,
         cartoonSheetFlat: sp.sheetFlat,
         cartoonSmooth: sp.smooth,      // the same switch the shader reads
-        _thicknessUserSet: true,
+        style: 'cartoon', stylePreset: 'richardson',
         sidechainMap, overlayState: { enabled: false }, screenFrameId: 0,
         screenX: new Float64Array(n), screenY: new Float64Array(n),
         screenRadius: new Float64Array(n), screenValid: new Uint8Array(n),

@@ -1222,7 +1222,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // the 0 came from a preset rather than from the user - see
             // cartoon/geom.js. Once the control has been touched, it is the
             // user's, 0 included.
-            this._thicknessUserSet = false;
+            // The reader's own thickness needs no flag: cartoon/geom.js compares
+            // the value with the look's own default, which is the whole of
+            // "did a person ask for this". See thicknessIsChosen there.
             // ...FROM THE LOOK, like every other style-owned default above it.
             // This was a bare 3.0, so a viewer built as richardson came up with
             // a 3.0 outline where the preset asks for 1.0 - "the outline states
@@ -6459,7 +6461,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // as a ribbon width - see tests/interaction.js, which forbids the
             // name outright and caught it being written back here.
             this._widthByStyle = {};
-            this._thicknessUserSet = false;
             this._applyLookDefaults(
                 this.style === 'cartoon' ? (this.stylePreset || 'richardson') : 'tube');
             if (this._syncStylePanel) this._syncStylePanel();
