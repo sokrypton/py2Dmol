@@ -61,7 +61,7 @@ function checkFrameBuilders(){
     let a=src.indexOf('{',i), d=0, k=a;
     for(;k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){d--; if(!d)break;} }
     const body=src.slice(a,k+1);
-    for(const field of ['sidechains','position_atoms','position_elements']){
+    for(const field of ['sidechains','position_elements']){
       if(!new RegExp('\\b'+field+'\\b').test(body)){
         console.log(`FAIL ${file}: \`${marker}\` does not carry \`${field}\` -`
           +` it will be dropped in silence`);
@@ -575,12 +575,12 @@ if(!out.position_types.slice(fo.coords.length).every(t=>t==='L')){
 // a row of blanks.
 const ligAt=[]; for(let q=0;q<fd.position_types.length;q++) if(fd.position_types[q]==='L') ligAt.push(q);
 if(ligAt.length){
-  if(!fd.position_atoms||!fd.position_elements){
-    console.log(`FAIL ${name}: ${ligAt.length} ligand atoms captured with no name or element`);
+  if(!fd.position_elements){
+    console.log(`FAIL ${name}: ${ligAt.length} ligand atoms captured with no element`);
     failures++; return;
   }
-  if(!fo.position_atoms||fo.position_atoms.length!==fd.coords.length){
-    console.log(`FAIL ${name}: the web app's frameObj dropped the ligand atom names`);
+  if(!fo.position_elements||fo.position_elements.length!==fd.coords.length){
+    console.log(`FAIL ${name}: the web app's frameObj dropped the ligand elements`);
     failures++; return;
   }
   const noEl=ligAt.filter((q)=>!fd.position_elements[q]);
@@ -588,16 +588,17 @@ if(ligAt.length){
     console.log(`FAIL ${name}: ${noEl.length} of ${ligAt.length} ligand atoms have no element`);
     failures++; return;
   }
-  const named=fd.position_atoms.filter((nm,q)=>nm&&fd.position_types[q]!=='L');
-  if(named.length){
-    console.log(`FAIL ${name}: ${named.length} non-ligand positions were given an atom name -`
-      +` a backbone position stands for a residue, not an atom`);
+  // ...AND ONLY A LIGAND HAS ONE. A backbone position stands for a residue,
+  // not an atom, so an element there would be a claim about the wrong thing.
+  const elemented=fd.position_elements.filter((el,q)=>el&&fd.position_types[q]!=='L');
+  if(elemented.length){
+    console.log(`FAIL ${name}: ${elemented.length} non-ligand positions were given an`
+      +` element - a backbone position stands for a residue, not an atom`);
     failures++; return;
   }
-  if(out.position_atoms.length!==out.coords.length
-    ||out.position_elements.length!==out.coords.length){
-    console.log(`FAIL ${name}: materialising left the atom arrays ${out.position_atoms.length}`
-      +` long against ${out.coords.length} coordinates`);
+  if(out.position_elements.length!==out.coords.length){
+    console.log(`FAIL ${name}: materialising left the element array`
+      +` ${out.position_elements.length} long against ${out.coords.length} coordinates`);
     failures++; return;
   }
   // ...and the element reaches the colour: a bond into a ligand nitrogen or
@@ -610,7 +611,7 @@ if(ligAt.length){
     const other=ligAt.find((q)=>q!==het);
     const hh=w._segmentElementHalves({idx1:other,idx2:het,origIndex:other});
     if(!hh||!hh.b){
-      console.log(`FAIL ${name}: a bond into ligand atom ${fd.position_atoms[het]}`
+      console.log(`FAIL ${name}: a bond into ligand atom ${het}`
         +` (${fd.position_elements[het]}) took no element colour`);
       failures++; return;
     }

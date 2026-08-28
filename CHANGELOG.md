@@ -7,6 +7,14 @@ for the five things below that change what existing code does.
 
 ### Breaking
 
+**`position_atoms` is gone.** `add()`, `replace()` and the payload no longer
+take or carry a ligand atom's NAME. It was produced by both parsers, copied
+through every field-by-field rebuilder and stored on the renderer, and read by
+nothing — 2.7 KB a frame on 4HHB, 574 of whose 748 entries were blank, paid
+again per frame per viewer in a notebook. `position_elements` stays and now
+does two jobs: colour by element, and the per-pair bond thresholds. Passing
+`position_atoms=` is now a `TypeError` rather than a silent no-op.
+
 **Biological assemblies are built by default.** `add_pdb`, `from_pdb` and
 `from_afdb` all took `use_biounit=False`; they take `use_biounit=True` now, and
 the website and the embed do the same. A multimeric entry loads as the multimer
@@ -201,6 +209,24 @@ result.
 
 ### Fixed
 
+- **The PAE plot's selection box is drawn where the selection is.** A stored
+  box is in residues and the canvas is laid out in cells, and only the mask had
+  been converted — the black outline multiplied residue indices by a cell
+  width, so on a matrix resampled for the panel (which happens in a notebook,
+  above `pae.size`) it framed a region 1.2× out from the region it was
+  highlighting. The chain boundary lines had the same fault from the other
+  side, walking cells while indexing residues. `render()` converts once and
+  hands cells to both.
+- **Focus is a mode with one focus at a time.** Four things it got wrong:
+  loading a structure, or anything else that emptied the selection, handed the
+  Sele dropdown back to Highlight while the Focus button stayed lit; a click in
+  the sequence strip ADDED to the focus rather than moving it, so each click
+  focused the union and walked the camera to the centroid of everything ever
+  clicked; switching objects and coming back parked you at the pocket you had
+  focused with nothing marked, since the camera is per object and the selection
+  was not; and merging objects left one structure's slab cutting through
+  another. Clear All drops the mode too, rather than carrying a snapshot of
+  objects that no longer exist into the next structure.
 - **Anything that can be set can now be unset.** `set_color(None)`,
   `add_contacts([])` and `add_bonds([])` clear, and for `set_color` the clear
   reaches exactly as far as the selector that set it — the object, one chain,

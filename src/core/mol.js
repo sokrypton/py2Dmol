@@ -3122,6 +3122,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 requestAnimationFrame(() => {
                     this._switchQuiet = false;
                     this.render('object switch settled');
+                    // ...then the focus mode's memory - see parts/focus.js.
+                    if (this._focusRecallAfterSwitch) {
+                        this._focusRecallAfterSwitch(newObjectName, mergedMask);
+                    }
                 });
             } else {
                 this._switchQuiet = false;
@@ -3186,6 +3190,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // edited - and the strip SETS the edited object from where you
             // clicked, so clearing here would throw away the selection that
             // asked for the switch.
+            // ...BUT THE FOCUS MODE KEEPS ONE PER OBJECT. The camera already
+            // is per object, so dropping the selection alone left a returning
+            // reader parked at the pocket they had focused with nothing marked
+            // and no side chains. parts/focus.js holds the memory; it is the
+            // MODE's and is dropped with it.
+            if (this._focusRememberBeforeSwitch) {
+                this._focusRememberBeforeSwitch(this.currentObjectName, mergedMask);
+            }
             if (this.currentObjectName !== newObjectName && !mergedMask) {
                 this.clearResidueSelection();
             }
@@ -4440,10 +4452,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 plddts: sourcePlddt ? [] : undefined,
                 position_types: frame.position_types ? [] : undefined,
                 position_names: frame.position_names ? [] : undefined,
-                // a ligand atom's own name and element, where the frame has
-                // them - a copy of a ligand that lost these would lose its
-                // element colours with them
-                position_atoms: frame.position_atoms ? [] : undefined,
+                // a ligand atom's element, where the frame has it - a copy of
+                // a ligand that lost this would lose its element colours and
+                // its bond thresholds with it
                 position_elements: frame.position_elements ? [] : undefined,
                 residue_numbers: frame.residue_numbers ? [] : undefined,
                 pae: undefined, // Will be handled separately
@@ -4475,9 +4486,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
                     if (frame.position_names && idx < frame.position_names.length) {
                         extractedFrame.position_names.push(frame.position_names[idx]);
-                    }
-                    if (frame.position_atoms && idx < frame.position_atoms.length) {
-                        extractedFrame.position_atoms.push(frame.position_atoms[idx]);
                     }
                     if (frame.position_elements && idx < frame.position_elements.length) {
                         extractedFrame.position_elements.push(frame.position_elements[idx]);
@@ -5453,9 +5461,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const mergedChains = [];
             const mergedPositionTypes = [];
             const mergedPositionNames = [];
-            // ligand atom names and elements, blank-filled for the frames that
-            // have none so the merged arrays stay in step with the coordinates
-            const mergedPositionAtoms = [];
+            // ligand atom elements, blank-filled for the frames that have
+            // none so the merged array stays in step with the coordinates
             const mergedPositionElements = [];
             const mergedResidueNumbers = [];
             const mergedBonds = [];
@@ -5504,9 +5511,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 append(mergedPlddts, plddts);
                 append(mergedPositionTypes, positionTypes);
                 append(mergedPositionNames, positionNames);
-                append(mergedPositionAtoms, (frame.position_atoms
-                    && frame.position_atoms.length === frameAtomCount
-                    ? frame.position_atoms : Array(frameAtomCount).fill('')));
                 append(mergedPositionElements, (frame.position_elements
                     && frame.position_elements.length === frameAtomCount
                     ? frame.position_elements : Array(frameAtomCount).fill('')));
@@ -5544,7 +5548,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 chains: mergedChains,
                 position_types: mergedPositionTypes,
                 position_names: mergedPositionNames,
-                position_atoms: mergedPositionAtoms,
                 position_elements: mergedPositionElements,
                 residue_numbers: mergedResidueNumbers,
                 // NO PAE ACROSS FRAMES. A matrix is a square over one
@@ -5641,7 +5644,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const chains = [];
             const positionTypes = [];
             const positionNames = [];
-            const positionAtoms = [];
             const positionElements = [];
             const residueNumbers = [];
             const bonds = [];
@@ -5695,7 +5697,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 append(plddts, fill(frame.plddts, () => Array(n).fill(50.0)));
                 append(positionTypes, fill(frame.position_types, () => Array(n).fill('P')));
                 append(positionNames, fill(frame.position_names, () => Array(n).fill('UNK')));
-                append(positionAtoms, fill(frame.position_atoms, () => Array(n).fill('')));
                 append(positionElements, fill(frame.position_elements, () => Array(n).fill('')));
                 append(residueNumbers, fill(frame.residue_numbers,
                     () => Array.from({ length: n }, (_, i) => i + 1)));
@@ -5735,7 +5736,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 chains,
                 position_types: positionTypes,
                 position_names: positionNames,
-                position_atoms: positionAtoms,
                 position_elements: positionElements,
                 residue_numbers: residueNumbers,
                 pae,
@@ -6599,7 +6599,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // rather than grown to the coordinate count: _setDataField would
             // take a short array for a missing one and fill in the default,
             // which is the same blank.
-            const atomNames = (data.position_atoms || []).slice();
             const atomEls = (data.position_elements || []).slice();
             const plddts = data.plddts ? data.plddts.slice() : null;
             const bondsOut = (data.bonds || []).slice();
@@ -6644,7 +6643,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // from a SAVED table - see trimSidechainTable - so a reloaded
                 // session leaves these blank and the side chain colours from
                 // sidechainMap.el instead, which is where it always came from.
-                if (atomNames.length) atomNames.push((sc.names && sc.names[k]) || '');
                 if (atomEls.length) atomEls.push((sc.elements && sc.elements[k]) || '');
                 // pLDDT is a per-RESIDUE confidence, so an atom of that residue
                 // carries the residue's own value - which also keeps a side
@@ -6782,7 +6780,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 ...data,
                 coords, position_types: types, chains,
                 position_names: names, residue_numbers: numbers, bonds: bondsOut,
-                position_atoms: atomNames.length ? atomNames : data.position_atoms,
                 position_elements: atomEls.length ? atomEls : data.position_elements,
                 plddts: plddts || data.plddts,
             };
@@ -6806,7 +6803,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     data.residue_numbers,
                     skipRender,
                     data.bonds,
-                    data.position_atoms,
                     data.position_elements
                 );
             } else {
@@ -6814,7 +6810,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
         }
 
-        setCoords(coords, plddts, chains, positionTypes, hasPAE = false, positionNames, residueNumbers, skipRender = false, bonds = null, positionAtoms = null, positionElements = null) {
+        setCoords(coords, plddts, chains, positionTypes, hasPAE = false, positionNames, residueNumbers, skipRender = false, bonds = null, positionElements = null) {
             // Invalidate shadow cache when coordinates change (different geometry needs new shadows)
             this._invalidateShadowCache();
             this.lastShadowRotationMatrix = null;
@@ -6900,7 +6896,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._setDataField('residueNumbers', 'cachedResidueNumbers', residueNumbers, n, (n) => Array.from({ length: n }, (_, i) => i + 1));
             // Blank everywhere but a ligand atom, which is the only position
             // that stands for one atom of the file rather than a whole residue.
-            this._setDataField('positionAtoms', 'cachedPositionAtoms', positionAtoms, n, (n) => Array(n).fill(''));
             this._setDataField('positionElements', 'cachedPositionElements', positionElements, n, (n) => Array(n).fill(''));
 
             // Calculate what 'auto' should resolve to
@@ -7109,7 +7104,34 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const cutoffs = this.config.cutoffs || {};
                 const proteinChainbreak = cutoffs.protein_bond ?? 5.0;
                 const nucleicChainbreak = cutoffs.nucleic_bond ?? 7.5;
-                const ligandBondCutoff = cutoffs.ligand_bond ?? 2.0;
+                // 🔴 ONE FLAT NUMBER FOR EVERY PAIR OF ELEMENTS, and it was
+                // the whole of what a notebook had: viewer.py forwards only
+                // bonds a caller supplied by hand, so this fallback IS the
+                // notebook's ligand chemistry, while the website got
+                // src/io/parse.js's element table. One question, two answers,
+                // decided by which page you were on.
+                //
+                // src/io/bonds.js is the table now and both read it. The flat
+                // number stays as the fallback for a pair it does not name and
+                // as an EXPLICIT override: `cutoffs.ligand_bond` set by a
+                // caller means that number and nothing else, which is what it
+                // has always meant.
+                const ligandBondFlat = cutoffs.ligand_bond ?? 2.0;
+                const ligandBondFixed = cutoffs.ligand_bond !== undefined
+                    && cutoffs.ligand_bond !== null;
+                const ligElems = (!ligandBondFixed && typeof bondMaxFor === 'function')
+                    ? this.positionElements : null;
+                // The prefilter has to be the LARGEST threshold in play or a
+                // long bond is dropped before its own rule is asked.
+                const ligandBondCutoff = ligElems
+                    ? Math.max(ligandBondFlat, (typeof BOND_MAX_ANY === 'number')
+                        ? BOND_MAX_ANY : ligandBondFlat)
+                    : ligandBondFlat;
+                // ...and the pair's own answer, for a candidate that passed it.
+                const ligandBonded = ligElems
+                    ? ((a, b, d2) => d2 < Math.pow(
+                        bondMaxFor(ligElems[a], ligElems[b], ligandBondFlat), 2))
+                    : ((a, b, d2) => d2 < ligandBondFlat * ligandBondFlat);
                 const proteinChainbreakSq = proteinChainbreak * proteinChainbreak;
                 const nucleicChainbreakSq = nucleicChainbreak * nucleicChainbreak;
                 const ligandBondCutoffSq = ligandBondCutoff * ligandBondCutoff;
@@ -7395,7 +7417,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                                 const start = this.coords[idx1];
                                 const end = this.coords[idx2];
                                 const distSq = start.distanceToSq(end);
-                                if (distSq < ligandBondCutoffSq) {
+                                if (distSq < ligandBondCutoffSq
+                                    && ligandBonded(idx1, idx2, distSq)) {
                                     // already found as an explicit bond?
                                     if (emittedBondKeys.has(bondKey(idx1, idx2))) continue;
                                     emittedBondKeys.add(bondKey(idx1, idx2));
@@ -7427,7 +7450,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                                 const start = this.coords[idx1];
                                 const end = this.coords[idx2];
                                 const distSq = start.distanceToSq(end);
-                                if (distSq < ligandBondCutoffSq) {
+                                if (distSq < ligandBondCutoffSq
+                                    && ligandBonded(idx1, idx2, distSq)) {
                                     // already found as an explicit bond?
                                     if (emittedBondKeys.has(bondKey(idx1, idx2))) continue;
                                     emittedBondKeys.add(bondKey(idx1, idx2));
@@ -8936,7 +8960,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             //
             // The segment list is the one answer both are built from, so there
             // is nothing to keep in step.
-            const segsAll = this.segmentIndices;
+            // ...AND ONLY WHEN SOMETHING SELECTED IS AN ATOM. Every edge this
+            // finds has an atom at one end - that is the test inside the loop -
+            // so a selection of ordinary residues cannot produce one, and
+            // walking the segment list to discover that is pure cost: it is one
+            // entry per drawn bond, 13,689 on a ribosome, EVERY FRAME while
+            // anything is selected. Measured on 4UG0 with 20 residues selected:
+            // 0.46 ms a frame against 0.02. The scan for an atom is over the
+            // SELECTION, which is the small set.
+            let anyAtom = false;
+            for (let k = 0; k < idx.length; k++) {
+                if (isAtom(idx[k])) { anyAtom = true; break; }
+            }
+            const segsAll = anyAtom ? this.segmentIndices : null;
             if (segsAll && segsAll.length) {
                 for (const sg of segsAll) {
                     if (!sg || sg.type === 'C') continue;   // contacts, below
@@ -8946,7 +8982,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     if (!isAtom(a) && !isAtom(b)) continue;
                     addEdge(a, b);
                 }
-            } else if (this.bonds) {
+            } else if (anyAtom && this.bonds) {
                 // ...and the file's own list where there are no segments yet,
                 // which is a frame that has not been drawn.
                 for (const [a, b] of this.bonds) {

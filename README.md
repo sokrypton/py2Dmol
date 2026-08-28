@@ -187,6 +187,24 @@ The depth is the selection's own depth along the view; there is no thickness to
 set, and the renderer refits it every frame. The Clip button does the same
 thing to whatever is selected.
 
+**Bonds in a ligand.** Most files do not list them — mmCIF's `_struct_conn`
+carries the exceptions, not the ordinary bonds inside a residue — so they are
+derived from distance, per pair of elements: S–S out to 2.4 Å, C–O to 1.65,
+C–I to 2.4. Pass `position_elements` with your coordinates and that table is
+used; without it every pair falls back to one number, `cutoffs["ligand_bond"]`
+(2.0 Å), which misses a disulfide at 2.05 and joins an O···O contact at 1.9.
+
+```python
+viewer.add(xyz, position_types=['L'] * 4,
+           position_elements=['S', 'S', 'O', 'O'])
+viewer.add(xyz, bonds=[[0, 1]])          # ...or say so outright
+```
+
+Setting `cutoffs={"ligand_bond": 2.2}` still means that number for every pair,
+as it always did. Note the element is not the atom name — in 3PTB `CA` is both
+the alpha carbon and the calcium ion — and only the element travels: an atom's
+name was carried everywhere and read by nothing, so it was dropped.
+
 **Showing side chains.** `focus` draws a neighbourhood's for you; to name them
 yourself, ask.
 

@@ -125,13 +125,24 @@
                 };
                 settle();
             }
-            // THE MARK GOES BACK ONLY IF THE MODE IS STILL WEARING ITS OWN.
-            // Same line as the rotation: what focus changed, focus puts back;
-            // what the reader changed while they were in there is theirs. If
-            // they picked Highlight or None from the panel mid-focus, that is
-            // a choice about how they want selections marked, not a thing the
-            // mode borrowed.
-            if (this.selectionMark === 'outline'
+            // THE MARK GOES BACK WHEN THE MODE IS OVER, AND NOT BEFORE.
+            // 🔴 This restored it on every clearFocus, and clearFocus INSIDE
+            // the mode is the way out of one focus rather than out of the
+            // mode - so a click on the background, or anything else that
+            // empties the selection, took the outline off and left the mode
+            // running with the reader's mark on. Loading a new structure is
+            // exactly that: it clears the selection, ui.js reads an empty
+            // selection as the background gesture, and the Sele dropdown
+            // dropped to Highlight while Focus stayed lit. `_focusMode` is
+            // already false by the time exitFocusMode restores, so this needs
+            // no argument.
+            //
+            // Same line as the rotation otherwise: what focus changed, focus
+            // puts back; what the reader changed while they were in there is
+            // theirs. If they picked Highlight or None from the panel
+            // mid-focus, that is a choice about how they want selections
+            // marked, not a thing the mode borrowed.
+            if (!this._focusMode && this.selectionMark === 'outline'
                 && snap.selectionMark && snap.selectionMark !== 'outline') {
                 this.selectionMark = snap.selectionMark;
                 if (this._syncSelectionMark) this._syncSelectionMark();
@@ -155,6 +166,7 @@
             if (this._focusMode) return false;
             this._focusEntry = this._focusSnapshot();
             this._focusPrev = null;
+            this._focusByObject = null;   // both exits clear it; say so here too
             this._focusMode = true;
             // A CLEAN SLATE, or the session is the reader's leftovers plus the
             // mode's: side chains they turned on by hand look like ones focus
@@ -204,6 +216,80 @@
             return true;
         },
 
+        // ====================================================================
+        // THE MODE REMEMBERS ONE FOCUS PER OBJECT
+        //
+        // A switch drops the residue selection - the indices mean nothing in
+        // the object being switched to - but the CAMERA is per object already
+        // (`obj.viewerState` in `_switchToObject`). So leaving a focused
+        // object and coming back parked you exactly where the focus had put
+        // you, with no selection, no side chains and no slab: the camera
+        // remembered and nothing else did.
+        //
+        // Both halves are the mode's, so the memory is too - it is dropped
+        // when the mode ends, and a click on the background forgets the
+        // object it was on, because dismissing a focus is a decision.
+        // ====================================================================
+
+        /**
+         * Before a switch: keep what is focused on the object being left.
+         *
+         * 🔴 NOT WHILE OBJECTS ARE MERGED, at either end. There the selection
+         * is not dropped by the switch at all - the indices are the merged
+         * array's and mean the same thing whichever object is being edited -
+         * and the strip SETS the edited object from where you clicked. So a
+         * recall would replace the selection that ASKED for the switch, which
+         * is the very thing that branch of `_switchToObject` exists to
+         * protect.
+         *
+         * The two guards cover different things and only one is observable
+         * from inside a single mode. RECALL is the load-bearing one: a set
+         * stored in an object's OWN numbering, then Multi turned on, is a set
+         * of merged indices naming different residues - turning Multi on
+         * translates the live selection (residue 10 of the second object
+         * becomes 10 + its offset) but a stored one is just numbers.
+         * REMEMBER matters the other way round: without it a merged selection
+         * would be filed under an object name and read back after Multi is
+         * turned off. The range check below is the backstop there, and it
+         * only catches the out-of-range half.
+         */
+        _focusRememberBeforeSwitch(fromName, merged) {
+            if (merged) return false;
+            if (!this._focusMode || !fromName) return false;
+            if (!this._focusByObject) this._focusByObject = new Map();
+            const sel = this.residueSelection;
+            if (sel instanceof Set && sel.size) this._focusByObject.set(fromName, new Set(sel));
+            else this._focusByObject.delete(fromName);
+            return true;
+        },
+
+        /**
+         * ...and after it, focus again whatever that object was showing.
+         *
+         * Called from `_switchToObject`'s settle frame, AFTER its one draw:
+         * the first version returned early when it recalled, on the reasoning
+         * that focusOn draws anyway, and that skipped the draw a switch owes -
+         * `tests/interaction.js` has a rule that the hold is always released
+         * with one, because without it the previous object stays on screen.
+         */
+        _focusRecallAfterSwitch(toName, merged) {
+            if (merged) return false;
+            if (!this._focusMode || !this._focusByObject) return false;
+            const want = this._focusByObject.get(toName);
+            if (!want || !want.size) return false;
+            // The object's coordinates are loaded by the switch's CALLER, so
+            // this runs a frame later - and an index past the end means the
+            // object changed under the memory, which is a memory to drop.
+            const n = (this.coords || []).length;
+            for (const i of want) {
+                if (!(i >= 0 && i < n)) { this._focusByObject.delete(toName); return false; }
+            }
+            if (this._focusBusy) return false;
+            this._focusBusy = true;
+            try { this.focusOn(new Set(want)); } finally { this._focusBusy = false; }
+            return true;
+        },
+
         /**
          * FORGET THE MODE ENTIRELY, without restoring anything.
          *
@@ -223,6 +309,7 @@
             this._focusEntry = null;
             this._focusPrev = null;
             this._focusBusy = false;
+            this._focusByObject = null;      // the mode's memory, not the object's
             this._focusAnim = null;          // cancels whatever was flying
             if (this.selectionMark === 'outline') {
                 this.selectionMark = (snap && snap.selectionMark) || 'highlight';
@@ -239,6 +326,7 @@
             const snap = this._focusEntry || this._focusPrev;
             this._focusEntry = null;
             this._focusPrev = null;
+            this._focusByObject = null;
             return this._focusRestore(snap, animate);
         },
 
@@ -296,6 +384,22 @@
             const near = (typeof this.residuesWithin === 'function')
                 ? this.residuesWithin(seed, cut, {sidechainsOnly: scOnly})
                 : new Set(seed);
+            // 🔴 A SIDE-CHAIN ATOM IS ITS RESIDUE, the rule `_wholeThingAt`
+            // already applies to a click. Showing side chains APPENDS their
+            // atoms as real positions, so the search can return one - and only
+            // when some are already out, which inside the mode is the restored
+            // baseline. That put an index past the last residue into the
+            // object's side-chain set: 748 on a 748-residue 4HHB, six
+            // neighbours where the same focus finds five from a clean start.
+            // Self-correcting (the next focus replaces the set) and invisible
+            // (its residue is drawn either way), but it is not a residue.
+            const scMap = this.sidechainMap;
+            if (scMap && scMap.size) {
+                for (const i of [...near]) {
+                    const owns = scMap.get(i);
+                    if (owns) { near.delete(i); near.add(owns.owner); }
+                }
+            }
 
             // THE FIRST FOCUS REMEMBERS WHAT WAS THERE, so clearFocus can put
             // it back. A second focus must NOT overwrite that record with its

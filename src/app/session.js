@@ -81,7 +81,6 @@ function saveViewerState() {
                 if (frame.name) frameData.name = frame.name;
                 if (frame.position_types) frameData.position_types = frame.position_types;
                 if (frame.residue_numbers) frameData.residue_numbers = frame.residue_numbers;
-                if (frame.position_atoms) frameData.position_atoms = frame.position_atoms;
                 if (frame.position_elements) frameData.position_elements = frame.position_elements;
                 if (frame.bonds) frameData.bonds = frame.bonds;
                 if (frame.scatter) frameData.scatter = frame.scatter;
@@ -475,7 +474,6 @@ async function loadViewerState(stateData) {
                         pae: frameData.pae,  // undefined if missing (will use inheritance or default)
                         scatter: frameData.scatter,  // undefined if missing (will use inheritance or default)
                         position_names: frameData.position_names,  // undefined if missing (will default)
-                        position_atoms: frameData.position_atoms,  // ligands only; undefined elsewhere
                         position_elements: frameData.position_elements,
                         residue_numbers: frameData.residue_numbers,  // undefined if missing (will default)
                         bonds: frameData.bonds || objBonds,  // undefined if both missing

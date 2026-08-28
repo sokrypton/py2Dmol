@@ -371,6 +371,80 @@ public downloads is exercised on every run.
   **And the selection panel stays away while the mode is on**: there is always
   a selection in focus - the residue just clicked - so the panel would slide in
   and sit there, with buttons acting on what is really the mode's bookmark.
+  🔴 **THE MARK COMES BACK WHEN THE MODE ENDS, NOT WHEN A FOCUS DOES.**
+  `_focusRestore` handed it back on every `clearFocus` - and inside the mode
+  `clearFocus` is the way out of one FOCUS, not out of the mode. So anything
+  that empties the selection took the outline off and left the mode running
+  with the reader's mark on: **loading a structure is exactly that**, it clears
+  the selection, `parts/ui.js` reads an empty selection as the background
+  gesture, and the Sele dropdown dropped to Highlight while Focus stayed lit.
+  `_focusMode` is already false by the time `exitFocusMode` restores, so the
+  guard is `!this._focusMode` and needs no argument.
+  🔴 **AND THE MODE REMEMBERS ONE FOCUS PER OBJECT.** A switch drops the
+  residue selection - the indices belong to the object being left - while the
+  CAMERA is per object already (`obj.viewerState`), so leaving a focused object
+  and coming back parked the reader at the pocket they had focused with nothing
+  marked, no side chains and no slab: the camera remembered and nothing else
+  did. `_focusByObject` is written on the way out of an object and replayed on
+  the way in, from `_switchToObject`'s settle frame - which is where the
+  caller has finally loaded the frames. **AFTER that frame's draw, never
+  instead of it**: the first version returned early when it recalled, on the
+  reasoning that `focusOn` draws anyway, and `tests/interaction.js`'s rule that
+  a switch releases its hold WITH a draw caught it. The memory is the MODE'S
+  and dies with it, and **an empty selection CLEARS that object's slot** -
+  which is the whole of "a dismissed focus stays dismissed", because a
+  background click leaves the selection empty and the switch stores what it
+  finds. That fell out of a mutation: a separate `_focusSwitching` flag and a
+  delete in `clearFocus` were written first, and mutating the delete away
+  changed nothing, because the empty store already said it.
+  🔴 **AND CHANGING WHAT IS ON SCREEN DROPS THE FOCUS - THE MODE'S ONLY.**
+  `view.focus()` and the embed's `v.focus(sel)` call `focusOn` without ever
+  entering the mode, and `focus()` then `show_objects()` is two instructions of
+  which both were asked for, so the clear is guarded on `_focusMode`. What it
+  drops is a focus a READER made by clicking, whose picture then changed under
+  them. It lives inside `setShownObjects` - the one setter every route goes through, so the Multi
+  button, `show_objects()` and `multi=True` all get it. A focus is a
+  NEIGHBOURHOOD measured against the picture it was made in: merge a second
+  structure in and the slab, cut to one residue's depth in the first, slices
+  through the one that has just arrived, while the camera sits in a pocket that
+  is now a corner of a bigger scene. Reported as two objects with different
+  focuses merged together. The MODE stays on - the reader did not leave it -
+  and the per-object memories go, because they name residues of a picture that
+  no longer exists. What comes back is the mode's ENTRY baseline, which is not
+  necessarily empty: the mode restores what it FOUND, so a test has to compare
+  against that baseline rather than against nothing.
+  🔴 **AND A SIDE-CHAIN ATOM IS ITS RESIDUE, in the neighbourhood as well as
+  under a click.** Showing side chains APPENDS their atoms as real positions,
+  so `residuesWithin` can return one - only when some are already out, which
+  inside the mode is the restored baseline - and it was filed in the object's
+  side-chain set as a residue to draw: `4HHB:748` on a 748-residue structure,
+  six neighbours where the same focus finds five from a clean start.
+  Self-correcting and invisible, and still not a residue; `focusOn` maps them
+  through `sidechainMap` to their owner, the rule `_wholeThingAt` already
+  applies to a click.
+  🔴 **AND NONE OF IT EXISTS WHILE OBJECTS ARE MERGED.** There the switch does
+  not drop the selection - the indices are the merged array's and mean the same
+  thing whichever object is edited - and the strip SETS the edited object from
+  where you clicked, so a recall would replace the selection that ASKED for the
+  switch. Both hooks take `mergedMask` and answer false. The two guards cover
+  different crossings: RECALL is the one a single session can hit, because a
+  set stored in an object's own numbering becomes wrong the moment Multi is
+  turned on; REMEMBER matters after Multi is turned OFF again, and the
+  recall's range check only catches the out-of-range half of that. The renderer TRANSLATES a
+  live selection when Multi goes on - residue 10 of the second object becomes
+  10 + its offset, 758 on 4HHB + 1UBQ - which is exactly what a stored set
+  cannot do for itself, and why a stored one must never be replayed across
+  that boundary. (The focus itself is dropped on that transition anyway, by
+  the rule above; the guards are what stop a memory outliving it.)
+  🔴 **AND THE SEQUENCE STRIP MEANS SOMETHING ELSE INSIDE THE MODE.** The strip
+  BUILDS a selection - click to add, click again to take away, drag for a range
+  - and a canvas click in focus REPLACES. `baselinePositions` in
+  `panels/seq.js` is "what does this gesture toggle against", and it answers
+  the standing selection - so a strip click ADDED to the focus instead of
+  moving it, and each click focused the UNION: three clicks on 4HHB took the
+  side chains 5 -> 14 -> 23 and walked the camera to the centroid of
+  everything ever clicked. In the mode the baseline is EMPTY. The way to look
+  at two things at once is to leave.
   🔴 **AND CLEAR ALL DROPS THE MODE, from inside `clearAllObjects`.** The
   entry snapshot names objects that are about to stop existing, and a latch
   that outlives the clear puts the NEXT structure straight into a mode nobody
@@ -933,6 +1007,28 @@ public downloads is exercised on every run.
   for this because it is the notebook path: four atoms in a line 1.5 A apart,
   three bonds, six path points - eight would be a hair per atom, which is the
   bug's own signature.
+- 🔴 **THE SEQUENCE STRIP'S SCROLL WAS O(CELLS) PER CHAIN LABEL PER FRAME.**
+  Reported as "slow to scroll" on 7Y7A - 511,631 positions, 309,416 cells - and
+  it was **84 ms a wheel notch**, five frames. Not where anyone would look:
+  the cell loops are virtual-scrolled already and cost 1.8 ms. It was
+  `cellsOfChain`, which SCANS every cell of the layout, called once per chain
+  label ON SCREEN, on every frame, to ask whether that chain carries one
+  uniform colour override. Twenty labels x 309,416 cells x 60 Hz. The index is
+  built once and cached on the layout object (`__chainCells`, non-enumerable so
+  nothing serialising a layout picks it up): **84 ms -> 16.6**, which is the
+  frame wait itself, and the labels section 70.6 ms -> 0.3.
+  **The bisection I wrote first was the wrong fix and I measured it as such**:
+  `residuePositions` is ordered by y (0 out of order in 309,416), so the
+  visible rows are a contiguous slice and the two cell loops now start and stop
+  there rather than walking everything - correct, kept, and worth about 2 ms of
+  the 84. The instrumentation is what found the real one, and the marks were
+  off by one section until I read them properly: a mark pushed BEFORE a section
+  attributes its delta to the section BEFORE it.
+  🔴 **AND A CACHED INDEX MUST ANSWER WHAT THE SCAN ANSWERED.** The scan took a
+  cell with no `object` whatever object was asked for, so a chain holding both
+  kinds cannot be served by one lookup; those chains are remembered and fall
+  back to the scan. A subset would have been a silently wrong colour on one
+  label.
 - **Subsystems are optional and guarded.** `if (window.PAE)`, `if (window.MSA)`,
   `typeof C2S === 'undefined'`. A build without one loses a feature, not a page.
 - **Prove a move changed nothing.** `node tests/paint_trace.js` digests every
@@ -1203,6 +1299,67 @@ public downloads is exercised on every run.
   feature worked perfectly on the website. **`align` and these were found the
   same way**: counting the field names on each side of the payload and reading
   off which were missing — viewer.py's `light_frame` names 15, `ui.js` named 12.
+- 🔴 **A LIGAND'S BONDS ARE JUDGED PER ELEMENT PAIR, FROM ONE TABLE, AND THERE
+  USED TO BE TWO ANSWERS.** `src/io/parse.js` had the table; `core/mol.js`'s
+  distance fallback - which is what runs when a file carried no bonds, so the
+  whole notebook path, since `viewer.py` forwards only bonds a caller supplied
+  by hand - used ONE number for every pair, `cutoffs.ligand_bond`, 2.0 A.
+  `src/io/bonds.js` is the table now and both read it.
+  **Measured, the two rules agree exactly on every ligand in the fixtures**
+  (3PTB, 4HHB, 1HVR, 1EHZ, 2R8S - 243 ligand atoms, zero disagreements), and
+  that is not luck: a bond between C, N, O, P or S is 1.2-1.8 A and the nearest
+  non-bonded contact is 2.2 or more, so 2.0 sits in the gap. What it gets wrong
+  is outside that band - **S-S at 2.05** (a disulfide drawn as two loose
+  spheres), **C-I at 2.14**, C-Br at 1.94 which is inside 2.0 by 0.06. The
+  reason to share it is not today's pictures; it is that one question had two
+  answers and which you got depended on whether you were on the website.
+  **AND IT COSTS NOTHING, MEASURED ON THE WORST CASE.** The prefilter had to
+  widen from 2.0 to the table's largest entry (3.0) or a long bond would be
+  dropped before its own rule was asked - 3.4x the candidate volume, each
+  candidate then building a key string. On 7Y7A (511,631 positions, **206,884
+  ligand atoms**) the segment rebuild is ~475 ms with the table and ~483 flat,
+  and the two produce the SAME 526,177 segments. The pair of numbers is
+  order-dependent - whichever runs second is 20% faster, 507/415 one way and
+  444/552 the other - so a single A/B here reports warm-up as a result. Run it
+  both ways round.
+  **No fixture exercises the halogen rows**: scanning every HETATM element in
+  all 30 `.cif` files finds no F, Br, I or Se, and `C-CL` at 2.0 is what the
+  default already gave. The new rows change no picture in the corpus, which is
+  the point - they are for the ligands the corpus does not have.
+  **AND WITHOUT ELEMENTS IT IS EXACTLY WHAT IT WAS.** Handing raw coordinates
+  to `add()` gives a ligand with no elements at all - the array is blanks, not
+  null - and `bondMaxFor` answers the caller's own flat cutoff for a blank, so
+  every pair takes 2.0 A: four atoms 1.5 A apart still come out as three bonds,
+  and the atom still gets its default grey. That is the behaviour there was
+  before there was a table, which is the only acceptable answer for a fallback.
+  `tests/minimal_input.py` carries the case beside the S-S one; removing the
+  blank fallback leaves four lone atoms and no bonds.
+  🔴 **AND THE PYTHON DEFAULT WAS A VALUE THE RENDERER COULD NOT TELL FROM A
+  CHOICE.** `viewer.py`'s config carried `"ligand_bond": 2.0`, so "the caller
+  pinned a number" was true on every notebook and the table never ran on the
+  one path it was written for. It is `None` there now - the renderer decides -
+  and a number still means that number for every pair. Checked in
+  `tests/minimal_input.py` with a ligand where the two rules disagree in BOTH
+  directions: S-S at 2.05 (a bond the flat rule misses) and O-O at 1.9 (a
+  contact it draws). Pinning the default back flips the answer to exactly its
+  inverse - the O pair bonded, the disulfide two lone dots.
+- 🔴 **THE ATOM NAME IS GONE FROM THE WIRE; THE ELEMENT STAYS.**
+  `position_atoms` was produced by both parsers, copied through the merge, the
+  extract, the session save and the side-chain append, stored by
+  `_setDataField` - and **read by nothing**. `this.positionAtoms` had no reader
+  at all: the side-chain path that needs atom identity uses `sidechainMap`,
+  which carries its own record. 21 mentions in `src/` and 11 in `viewer.py`,
+  every one of them transport. It cost 2.7 KB a frame on 4HHB, 574 of whose
+  748 entries were `""`, and a notebook pays that per frame per viewer.
+  What it is NOT is redundant with the element - see the entry below, which is
+  why removing it endangers neither colour nor bonding. Bring it back only with
+  a reader: labels, or `{atom: "OD1"}` in the selector grammar.
+  🔴 **AND ITS GATE WAS THE ELEMENTS' GATE, IN BOTH PARSERS.**
+  `src/io/parse.js` attached the element array only `if (anyAtomNames)`, and
+  `viewer.py` wrote `position_elements if any(position_atoms)`. A file that
+  named no atoms but declared elements would have lost both - and a naive
+  removal of the names takes the elements with it. Each now asks about the
+  array it is gating.
 - **The atom name and the element are two things, and 3PTB proves it.**
   `ATOM 2 C CA . ILE` is the alpha carbon — element `C`, atom name `CA`.
   `HETATM 1630 CA CA . CA` is the calcium ion — element `CA`, atom name `CA`.

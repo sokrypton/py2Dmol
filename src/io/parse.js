@@ -1364,8 +1364,7 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
     // atom. A backbone position stands for a whole residue - "the atom" there
     // is the alpha carbon or the C4', which is a fact about the model rather
     // than about the file - so only the ligand branch, where a position IS an
-    // atom, has a name and an element to record.
-    const position_atoms = [];
+    // atom, has an element to record.
     const position_elements = [];
 
     // Map atom serial/ID to new index in coords array
@@ -1534,10 +1533,9 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
                     position_chains.push(atom.chain);
                     position_types.push('L');
                     // Written by index rather than pushed: the other branches
-                    // have no atom to name, and padding them with a blank at
-                    // every push is three more places to get the alignment
+                    // have no element to record, and padding them with a blank
+                    // at every push is three more places to get the alignment
                     // wrong. Filled in below.
-                    position_atoms[newIndex] = atom.atomName || '';
                     position_elements[newIndex] = elementOfAtom(atom);
                             residues.push(atom.res_name || atom.resName || residue.resName);
                     residue_numbers.push(atom.res_seq || atom.resSeq || residue.resSeq);
@@ -1659,15 +1657,18 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
     // are as long as the coordinates and every consumer can index them
     // directly. Attached only when something actually filled one: a structure
     // with no ligand would otherwise carry two arrays of nothing per frame.
-    let anyAtomNames = false;
+    // 🔴 GATED ON THE ELEMENTS, which is what the array IS now. It used to be
+    // gated on the atom NAMES - a second array, carried beside this one all
+    // the way to the renderer and never read by it - and dropping those took
+    // the elements' own gate with them. A file naming no atoms but declaring
+    // elements would have lost both.
+    let anyElements = false;
     for (let i = 0; i < coords.length; i++) {
-        if (position_atoms[i]) anyAtomNames = true; else position_atoms[i] = '';
-        if (!position_elements[i]) position_elements[i] = '';
+        if (position_elements[i]) anyElements = true; else position_elements[i] = '';
     }
 
     const result = { coords, atomIdToIndex };
-    if (anyAtomNames) {
-        result.position_atoms = position_atoms;
+    if (anyElements) {
         result.position_elements = position_elements;
     }
 
@@ -1997,42 +1998,12 @@ function extractLigandBondsFromAtoms(atoms, frameData) {
     const processedBonds = new Set(); // Prevent duplicates
 
 
-    // Element-specific bond distance thresholds (in Å)
-    // Based on typical covalent bond lengths + tolerance
-    const getBondDistanceThreshold = (elem1, elem2) => {
-        // Normalize element names to uppercase
-        const e1 = (elem1 || '').toUpperCase();
-        const e2 = (elem2 || '').toUpperCase();
-
-        // Sort elements alphabetically for consistent lookup
-        const [elemA, elemB] = e1 < e2 ? [e1, e2] : [e2, e1];
-        const pair = `${elemA}-${elemB}`;
-
-        // Common bond type maxima (with ~15% tolerance)
-        const bondThresholds = {
-            'C-C': 1.8,   // Single: 1.54, Double: 1.34, Triple: 1.20
-            'C-N': 1.7,   // Single: 1.47, Double: 1.27, Triple: 1.16
-            'C-O': 1.65,  // Single: 1.43, Double: 1.20
-            'C-S': 2.1,   // Single: 1.82
-            'C-P': 2.1,   // Single: 1.84
-            'N-N': 1.7,   // Single: 1.45, Double: 1.25
-            'N-O': 1.6,   // Single: 1.40
-            'N-S': 2.0,   // Single: 1.68
-            'O-O': 1.7,   // Single: 1.48
-            'O-S': 2.0,   // Single: 1.70
-            'O-P': 1.9,   // Single: 1.63
-            'S-S': 2.4,   // Single: 2.05 (disulfide bonds!)
-            'P-P': 2.5,   // Single: 2.21
-            // Metal-ligand bonds (typically longer)
-            'C-FE': 2.5, 'C-ZN': 2.5, 'C-MG': 2.5, 'C-CA': 2.8,
-            'N-FE': 2.5, 'N-ZN': 2.5, 'N-MG': 2.5, 'N-CA': 2.8,
-            'O-FE': 2.5, 'O-ZN': 2.5, 'O-MG': 2.5, 'O-CA': 2.8,
-            'S-FE': 2.8, 'S-ZN': 2.8, 'S-MG': 2.8, 'S-CA': 3.0,
-        };
-
-        // Return specific threshold if found, otherwise use conservative default
-        return bondThresholds[pair] || 2.0;
-    };
+    // ...AGAINST src/io/bonds.js, WHICH THE RENDERER READS TOO. This table
+    // used to live here, which meant the notebook - where core/mol.js derives
+    // the bonds instead, from one flat 2.0 A - answered the same question a
+    // different way. See the banner in that file.
+    const getBondDistanceThreshold = (elem1, elem2) =>
+        bondMaxFor(elem1, elem2, 2.0);
 
     for (const [resKey, atomsInResidue] of residueMap) {
         // Only process ligand atoms

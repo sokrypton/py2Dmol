@@ -181,7 +181,6 @@ window.addEventListener('load', () => {
       R.elements = {
         n: r.coords.length,
         els: (r.positionElements || []).slice(0, 4),
-        atoms: (r.positionAtoms || []).slice(0, 4),
         has: r.hasElementsFor ? r.hasElementsFor(ligAll) : null,
         elementAt0: r.elementAt ? r.elementAt(0) : null,
       };
@@ -231,6 +230,48 @@ window.addEventListener('load', () => {
           R.clip.afterClick = r.clipSlabOn();
           R.clip.pressedAfter = cb.getAttribute('aria-pressed');
         }
+      }
+
+      // ...AND WITHOUT ELEMENTS IT STILL DRAWS. No table can be consulted,
+      // so every pair takes the flat cutoff - the behaviour there was before
+      // the table existed, and the common case for raw coordinates.
+      {
+        const was = r.currentObjectName;
+        r._switchToObject('noel'); r.setFrame(0);
+        await settle();
+        const segs = (r.segmentIndices || []).filter((sg) => sg && sg.type !== 'C');
+        R.noel = {
+          els: (r.positionElements || []).slice(0, 4),
+          pairs: segs.filter((sg) => sg.idx1 !== sg.idx2)
+            .map((sg) => [sg.idx1, sg.idx2].sort((a, b) => a - b).join('-')).sort(),
+          lone: segs.filter((sg) => sg.idx1 === sg.idx2).length,
+          colour: r.getAtomColor ? r.getAtomColor(0, 'auto') : null,
+        };
+        r._switchToObject(was); r.setFrame(0);
+        await settle();
+      }
+
+      // BONDS BY ELEMENT, NOT BY ONE NUMBER. src/io/bonds.js is the table
+      // and the renderer's distance fallback reads it, which is the only
+      // route a notebook has.
+      {
+        const was = r.currentObjectName;
+        r._switchToObject('chem'); r.setFrame(0);
+        await settle();
+        const segs = (r.segmentIndices || []).filter((sg) => sg && sg.type !== 'C');
+        // A LONE ATOM IS A SEGMENT TOO - zero length, drawn as a dot - so
+        // the bonds are the ones joining two DIFFERENT positions, and the
+        // lone ones are the other half of the answer: the O pair must come
+        // out as two dots, not as a bond.
+        R.chem = {
+          els: (r.positionElements || []).slice(0, 4),
+          pairs: segs.filter((sg) => sg.idx1 !== sg.idx2)
+            .map((sg) => [sg.idx1, sg.idx2].sort((a, b) => a - b).join('-')).sort(),
+          lone: segs.filter((sg) => sg.idx1 === sg.idx2)
+            .map((sg) => sg.idx1).sort((a, b) => a - b),
+        };
+        r._switchToObject(was); r.setFrame(0);
+        await settle();
       }
 
       // ...AND THE PAE ARRIVED AS BYTES. panels/pae.js keeps a Uint8Array at
@@ -560,8 +601,25 @@ def main():
     _lig = np.array([[0., 0., 0.], [1.5, 0., 0.], [3.0, 0., 0.], [4.5, 0., 0.]])
     v.add(_lig, name='lig',
           position_types=['L'] * 4,
-          position_atoms=['CA', 'C1', 'N1', 'O1'],
           position_elements=['CA', 'C', 'N', 'O'])
+
+    # ...AND A LIGAND WHERE THE FLAT CUTOFF AND THE ELEMENT TABLE DISAGREE,
+    # in both directions at once. A notebook derives its ligand bonds in the
+    # renderer - viewer.py forwards only bonds a caller supplied by hand - and
+    # that used one number, 2.0 A, for every pair of elements:
+    #   S-S at 2.05  a disulfide, MISSED by the flat rule (table says 2.4)
+    #   O-O at 1.90  not a bond,  DRAWN by the flat rule (table says 1.7)
+    # Far enough apart that nothing else is a candidate.
+    v.add(np.array([[0., 0., 0.], [2.05, 0., 0.], [0., 6., 0.], [1.9, 6., 0.]]),
+          name='chem', position_types=['L'] * 4,
+          position_elements=['S', 'S', 'O', 'O'])
+
+    # ...AND THE SAME LIGAND WITH NO ELEMENTS AT ALL, which is what handing
+    # raw coordinates to add() gives you. The table cannot be consulted, so
+    # every pair falls back to the flat cutoff and the picture is what it was
+    # before there was a table: four atoms 1.5 A apart, three bonds.
+    v.add(np.array([[0., 0., 0.], [1.5, 0., 0.], [3.0, 0., 0.], [4.5, 0., 0.]]),
+          name='noel', position_types=['L'] * 4)
 
     v.clip(name='spun', position=(0, 3))
     body = v._display_viewer(static_data=v.objects)
@@ -716,6 +774,35 @@ def main():
                        f" {round(200 * cells / 360)} of {cells}. The walk is"
                        " over residues and the line is drawn in cells")
 
+    noel = R.get('noel') or {}
+    print(f"  no elements: {noel.get('els')} -> bonds {noel.get('pairs')},"
+          f" {noel.get('lone')} lone, colour {noel.get('colour')}")
+    if any(noel.get('els') or []):
+        bad.append(f"the no-element fixture arrived with {noel.get('els')} -"
+                   " it exists to test the path where there are none")
+    elif noel.get('pairs') != ['0-1', '1-2', '2-3'] or noel.get('lone'):
+        bad.append(f"a ligand with NO elements bonded as {noel.get('pairs')}"
+                   f" with {noel.get('lone')} lone atoms, wanted the three"
+                   " bonds of four atoms 1.5 A apart. Without elements every"
+                   " pair takes the flat cutoff, which is what there was"
+                   " before the table")
+    elif not noel.get('colour'):
+        bad.append('an atom with no element got no colour at all')
+
+    chem = R.get('chem') or {}
+    print(f"  bond table: elements {chem.get('els')} -> bonds"
+          f" {chem.get('pairs')}, lone atoms {chem.get('lone')}")
+    if chem.get('els') != ['S', 'S', 'O', 'O']:
+        bad.append(f"the elements arrived as {chem.get('els')} - without them"
+                   " the table cannot be consulted and this leg proves nothing")
+    elif chem.get('pairs') != ['0-1'] or chem.get('lone') != [2, 3]:
+        bad.append(f"the ligand bonded as {chem.get('pairs')} with lone atoms"
+                   f" {chem.get('lone')}, wanted ['0-1'] and [2, 3]. S-S at"
+                   " 2.05 A is a disulfide the flat 2.0 cutoff misses, and O-O"
+                   " at 1.9 A is not a bond the flat cutoff draws anyway."
+                   " src/io/bonds.js is the table both the parser and the"
+                   " renderer read")
+
     pae = R.get('pae') or {}
     print(f"  pae: {pae}")
     _n = 60
@@ -823,8 +910,6 @@ def main():
                    ' loader rebuilds each frame field by field and a field it'
                    ' does not name is one it throws away, so element colouring'
                    ' was dead in every notebook')
-    if e.get('atoms') != ['CA', 'C1', 'N1', 'O1']:
-        bad.append(f"the ligand's atom names arrived as {e.get('atoms')}")
     if not e.get('has'):
         bad.append('hasElementsFor says no on a ligand that carries elements')
     lm = R.get('ligMark') or {}

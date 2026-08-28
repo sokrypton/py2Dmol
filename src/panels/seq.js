@@ -196,16 +196,68 @@ function chainBoxOf(layout, item) {
  * colour.
  */
 function cellsOfChain(layout, chainId, objectName) {
-    const out = [];
-    for (const rp of ((layout && layout.residuePositions) || [])) {
-        const rd = rp.residueData;
-        if (!rd || rd.chain !== chainId) continue;
-        if (objectName && rd.object && rd.object !== objectName) continue;
-        const ids = rd.positionIndices
-            || (rd.positionIndex >= 0 ? [rd.positionIndex] : []);
-        for (const i of ids) out.push(i);
+    // 🔴 ONE PASS FOR THE WHOLE LAYOUT, CACHED ON IT - not one pass per call.
+    // The chain-label loop asks this for EVERY LABEL ON SCREEN, on every
+    // frame, and each call walked all the cells: 309,416 of them on 7Y7A,
+    // twenty-odd labels, sixty times a second. It measured 70 ms of a 91 ms
+    // scroll step - the whole of "the sequence viewer is slow to scroll" on a
+    // large structure. The index is built the first time it is wanted and
+    // hangs off the layout object, so a rebuilt layout gets a fresh one.
+    if (!layout) return [];
+    let index = layout.__chainCells;
+    if (!index) {
+        index = new Map();
+        const mixed = new Set();          // chains with objectless cells
+        for (const rp of (layout.residuePositions || [])) {
+            const rd = rp.residueData;
+            if (!rd || rd.chain === undefined || rd.chain === null) continue;
+            const ids = rd.positionIndices
+                || (rd.positionIndex >= 0 ? [rd.positionIndex] : []);
+            if (!ids.length) continue;
+            // Keyed by (object, chain) AND by chain alone, because the caller
+            // may not name an object - the same two answers the scan gave.
+            // The bare key is every cell of that chain, which is the answer
+            // when no object is named. The (object, chain) key is the answer
+            // when one is - EXCEPT where a cell carries no object at all: the
+            // scan counted those in either way, so a chain holding both kinds
+            // falls back to the scan rather than to a subset.
+            const bare = '\u0000' + rd.chain;
+            let all = index.get(bare);
+            if (!all) { all = []; index.set(bare, all); }
+            for (const i of ids) all.push(i);
+            if (rd.object === undefined || rd.object === null) {
+                mixed.add(rd.chain);
+            } else {
+                const key = rd.object + '\u0000' + rd.chain;
+                let arr = index.get(key);
+                if (!arr) { arr = []; index.set(key, arr); }
+                for (const i of ids) arr.push(i);
+            }
+        }
+        index.mixed = mixed;
+        try {
+            Object.defineProperty(layout, '__chainCells',
+                { value: index, enumerable: false, configurable: true });
+        } catch (e) { layout.__chainCells = index; }
     }
-    return out;
+    if (!objectName) return index.get('\u0000' + chainId) || [];
+    // A chain whose cells do not all name an object is the one case the index
+    // cannot answer in one lookup - the scan took objectless cells whatever
+    // object was asked for. Rare enough to be worth a scan and not worth a
+    // wrong answer.
+    if (index.mixed && index.mixed.has(chainId)) {
+        const out = [];
+        for (const rp of (layout.residuePositions || [])) {
+            const rd = rp.residueData;
+            if (!rd || rd.chain !== chainId) continue;
+            if (rd.object && rd.object !== objectName) continue;
+            const ids = rd.positionIndices
+                || (rd.positionIndex >= 0 ? [rd.positionIndex] : []);
+            for (const i of ids) out.push(i);
+        }
+        return out;
+    }
+    return index.get(objectName + '\u0000' + chainId) || [];
 }
 
 /**
@@ -443,6 +495,12 @@ function drawScrollbars(ctx, canvasWidth, canvasHeight, scrollableAreaHeight, fu
 }
 
 // Main canvas rendering function
+// "All of them", for a reader that only asks whether one is in. Cheaper than
+// the answer it replaces by exactly the number of positions - see the note in
+// renderSequenceCanvas. Anything that ITERATES what is visible needs a real
+// Set and must not be handed this.
+const ALL_POSITIONS = { has: () => true, size: Infinity };
+
 function renderSequenceCanvas() {
     if (!sequenceCanvasData) return;
 
@@ -491,12 +549,14 @@ function renderSequenceCanvas() {
             // Use visibilityModel directly (no copy needed for read-only access)
             visiblePositions = visibilityModel.positions;
         } else if (renderer.visiblePositions === null) {
-            // All positions visible - create Set only if needed (lazy)
-            const n = renderer.coords ? renderer.coords.length : 0;
-            visiblePositions = new Set();
-            for (let i = 0; i < n; i++) {
-                visiblePositions.add(i);
-            }
+            // 🔴 EVERY POSITION, WITHOUT BUILDING A SET OF THEM. `null` means
+            // "all", and materialising that cost one Set insert per position
+            // EVERY FRAME - 511,631 of them on 7Y7A, allocated and thrown away
+            // again on each scroll step. That is what made the sequence strip
+            // slow to scroll on a large structure, and it is the ordinary case
+            // rather than a corner: nothing hidden is what a viewer starts in.
+            // The two readers below only ever ask `.has`.
+            visiblePositions = ALL_POSITIONS;
         } else if (renderer.visiblePositions && renderer.visiblePositions.size > 0) {
             // Use visiblePositions directly (no copy needed for read-only access)
             visiblePositions = renderer.visiblePositions;
@@ -607,6 +667,29 @@ function renderSequenceCanvas() {
         }
     }
 
+    // 🔴 THE VISIBLE WINDOW IS A SLICE, AND IT IS FOUND BY BISECTION. The two
+    // loops below each walked EVERY cell to skip the ones off screen -
+    // "virtual scrolling" that still pays for the whole document on every
+    // frame. On 7Y7A that is 309,416 cells for the few hundred on screen, and
+    // it measured 70 ms of a 91 ms scroll step. `residuePositions` is built
+    // row by row so its `y` only ever increases (checked: 0 out of order in
+    // those 309,416), which makes the rows on screen contiguous.
+    //
+    // The per-cell guards below STAY. This only decides where to start and
+    // when to stop; cells sharing a row have the same y and differing
+    // heights, so the exact answer is still the one each cell gives.
+    const RP = layout.residuePositions || [];
+    let visFrom = 0;
+    {
+        let lo = 0, hi = RP.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            const p = RP[mid];
+            if (p.y + (p.height || 0) < scrollTop) lo = mid + 1; else hi = mid;
+        }
+        visFrom = Math.max(0, lo - 2);      // a row's worth of slack
+    }
+    const pastBottom = (p) => (p.y - scrollTop) > scrollableAreaHeight;
     // Draw position characters and ligand tokens (with virtual scrolling)
     if (layout.residuePositions && allResidueData) {
         // Get renderer's getAtomColor function for dynamic color computation
@@ -614,7 +697,9 @@ function renderSequenceCanvas() {
         // Cache effective color mode to avoid redundant lookups in the loop
         const effectiveColorMode = renderer?._getEffectiveColorMode?.() || 'auto';
 
-        for (const pos of layout.residuePositions) {
+        for (let ri = visFrom; ri < RP.length; ri++) {
+            const pos = RP[ri];
+            if (pastBottom(pos)) break;
             const yOffset = pos.y - scrollTop;
 
             // Skip if residue is outside visible area
@@ -702,7 +787,9 @@ function renderSequenceCanvas() {
             : renderer?.residueSelection;
         if (target && target.size) {
             const rects = new Map();
-            for (const pos of layout.residuePositions) {
+            for (let ri = visFrom; ri < RP.length; ri++) {
+                const pos = RP[ri];
+                if (pastBottom(pos)) break;
                 const rd = pos.residueData;
                 if (!rd) continue;
                 // A LIGAND TOKEN is one cell standing for several atoms, so
@@ -1864,6 +1951,17 @@ function setupCanvasSequenceEvents() {
     // drag SUBTRACTED its range from the whole structure. The committed
     // target was the exact inverse of what had been dragged over.
     const baselinePositions = () => {
+        // 🔴 ...AND IN FOCUS MODE IT IS EMPTY, because there the gesture means
+        // something else. The strip BUILDS a selection - click to add, click
+        // again to take away, drag for a range - and a canvas click in focus
+        // mode REPLACES: one residue, its neighbourhood, the camera moved in.
+        // Toggling against the standing selection made a strip click add to
+        // the focus instead of moving it, so each click focused the UNION:
+        // measured on 4HHB, three clicks took the side chains 5 -> 14 -> 23
+        // and walked the camera off to the centroid of everything ever
+        // clicked. The mode is "look at this one thing", and the way to see
+        // two things at once is to leave it.
+        if (renderer && renderer._focusMode) return new Set();
         return renderer?.residueSelection ? new Set(renderer.residueSelection) : new Set();
     };
 

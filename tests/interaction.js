@@ -7009,7 +7009,7 @@ t('a field missing from one object cannot shift the ones after it', () => {
     // B has no names, types or residue numbers at all, and a plddts array
     // one short of its coordinates
     for (const k of ['plddts', 'chains', 'position_types', 'position_names',
-        'position_atoms', 'position_elements', 'residue_numbers']) {
+        'position_elements', 'residue_numbers']) {
         eq(m[k].length, 5, k + ' length');
     }
     // ...and A's own values are still against A's positions

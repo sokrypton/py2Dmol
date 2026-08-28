@@ -137,10 +137,19 @@ which is the thing that was genuinely wrong once.
 
 ## Focus wears the outline
 
-The mode switches `selectionMark` to `outline` on entry and puts the reader's
-choice back on exit — it is the case the outline was built for, since focus
-moves in on one residue and the highlight lays a band over exactly that. It
-does NOT put it back if the reader changed the mark themselves while inside
+The mode switches `selectionMark` to `outline` on entry — it is the case the
+outline was built for, since focus moves in on one residue and the highlight
+lays a band over exactly that.
+
+It puts the reader's choice back **when the mode ends**, not on every
+`clearFocus`: inside the mode that is the way out of one *focus* rather than
+out of the mode. Restoring there took the outline off and left the mode running
+with the reader's mark on, and anything that empties the selection reaches it —
+loading a structure does, so the Sele dropdown dropped to Highlight while Focus
+stayed lit. The guard is `!this._focusMode`, which needs no argument because
+`exitFocusMode` clears the flag before it restores.
+
+It does NOT put it back if the reader changed the mark themselves while inside
 (`selectionMark === 'outline'` is the test): that is a preference, not
 something the mode borrowed. `parts/ui.js` installs `_syncSelectionMark` so the
 dropdown follows. See the focus entry in CLAUDE.md for the rest of the mode's

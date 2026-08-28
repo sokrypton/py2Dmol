@@ -43,6 +43,26 @@ other residues, a clip, a turned camera, a zoom:
 That is the one asymmetry in the mode and it is the whole reason the snapshot
 is not simply "the viewer": what the mode borrows it gives back, and what the
 reader does inside it stands.
+
+The later legs are about the DOORS the mode did not know it had - every way
+the picture can change under a focus while the reader is still in there:
+
+  the sequence strip   BUILDS a selection (click to add, drag for a range) and
+                       a canvas click REPLACES. In the mode a strip click
+                       moves the focus rather than growing it.
+  a load               clears the selection, which the mode reads as the
+                       background gesture - and that must not hand back the
+                       mark, because leaving one focus is not leaving the mode.
+  an object switch     drops the selection while the camera is per object
+                       already, so the mode keeps one focus per object and
+                       replays it.
+  a merge              makes every part of a focus wrong at once - the slab
+                       cuts the structure that just arrived - so the focus
+                       goes and the mode stays.
+  focusOn ALONE        is view.focus() and the embed's v.focus(sel), which
+                       never enter the mode. None of the above applies to it.
+  Clear All            drops the mode itself: its snapshot names objects that
+                       are about to stop existing.
 """
 import http.server, json, os, re, shutil, socketserver, subprocess, sys, threading, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -99,6 +119,21 @@ window.addEventListener('load', () => {
           return b ? b.getAttribute('aria-pressed') : null;
         })(),
         n: r.coords.length,
+        // ...AND ANY POSITION IN A SIDE-CHAIN SET THAT IS NOT A RESIDUE. The
+        // frame's own coordinate array is the residue count and does not grow
+        // when side chains are materialised; the renderer's does. A search
+        // that returns an appended ATOM would file it as a residue to show.
+        scPast: (() => {
+          const out = [];
+          for (const k of Object.keys(r.objectsData || {})) {
+            const o = r.objectsData[k];
+            const set = o.sidechains;
+            const nres = ((o.frames || [])[0] || {}).coords;
+            if (!set || !nres) continue;
+            for (const i of set) if (i >= nres.length) out.push(k + ':' + i);
+          }
+          return out;
+        })(),
         mark: r.selectionMark || 'highlight',
         markSel: (() => {
           const el = document.getElementById('selectionMarkSelect');
@@ -190,6 +225,155 @@ window.addEventListener('load', () => {
       await settle(); await landed(); await settle();
       R.afterChose = state();
 
+      // LEG FIVE: THE SEQUENCE STRIP, AND A LOAD, BOTH INSIDE THE MODE.
+      //
+      // The strip BUILDS a selection - click to add, click again to take
+      // away, drag for a range - and a canvas click in focus mode REPLACES.
+      // Toggling against the standing selection made a strip click add to the
+      // focus rather than move it, so each click focused the UNION and walked
+      // the camera off to the centroid of everything ever clicked.
+      //
+      // And loading a structure CLEARS the selection, which ui.js reads as the
+      // background gesture, which called clearFocus - the way out of one focus
+      // and NOT out of the mode - which restored the entry snapshot's mark.
+      // Focus stayed lit with the reader's Highlight on the dropdown.
+      const dpi = 200 / 96;
+      const clickCell = async (idx) => {
+        const lay = window.SEQ.layout();
+        const cv = document.getElementById('sequenceCanvas');
+        const cell = lay.residuePositions.find(
+          (rp) => rp.residueData && rp.residueData.positionIndex === idx);
+        if (!cell) return 'no strip cell for position ' + idx;
+        const bx = cv.getBoundingClientRect();
+        const x = bx.left + (cell.x + 2) * bx.width / (cv.width / dpi);
+        const y = bx.top + (cell.y + 2 - (lay.scrollTop || 0))
+          * bx.height / (cv.height / dpi);
+        cv.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, clientX: x, clientY: y}));
+        window.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, clientX: x, clientY: y}));
+        await settle(); await landed(); await settle();
+        return null;
+      };
+      await until(() => document.getElementById('sequenceCanvas') && window.SEQ
+        && window.SEQ.layout() && (window.SEQ.layout().residuePositions || []).length, 20000);
+      r.clearResidueSelection();
+      await settle();
+      // OUTSIDE the mode first, or the leg cannot tell "replaces" from "the
+      // strip never adds": two clicks there must give TWO residues.
+      R.stripErrA = await clickCell(20);
+      R.stripErrB = await clickCell(50);
+      R.stripPlain = state().sel;
+      r.clearResidueSelection();
+      await settle();
+      btn.click();                       // enter with nothing selected
+      await settle(); await settle();
+      R.stripErrC = await clickCell(20);
+      R.stripOne = state();
+      R.stripErrD = await clickCell(50);
+      R.stripTwo = state();
+      // ...and now a second structure arrives while the mode is on.
+      R.beforeLoad = state();
+      await load('1UBQ.cif');
+      await settle(); await landed(); await settle();
+      R.afterLoad = state();
+      R.afterLoad.objects = Object.keys(r.objectsData).length;
+      if (r._focusMode) { btn.click(); await settle(); await landed(); await settle(); }
+
+      // LEG SIX: ONE FOCUS PER OBJECT, remembered across a switch.
+      //
+      // A switch drops the residue selection - the indices belong to the
+      // object being left - while the CAMERA is per object already. So
+      // leaving a focused object and coming back parked the reader at the
+      // pocket they had focused with nothing marked, no side chains and no
+      // slab: the camera remembered and nothing else did.
+      const names = Object.keys(r.objectsData);
+      const settleObj = async (nm) => {
+        r._switchToObject(nm); r.setFrame(0);
+        await settle(); await landed(); await settle();
+      };
+      const focusIn = async (nm, i) => {
+        await settleObj(nm);
+        r.setResidueSelection(new Set([i]));
+        await settle(); await landed(); await settle();
+      };
+      await settleObj(names[0]);
+      btn.click();                       // enter, nothing selected
+      await settle(); await settle();
+      await focusIn(names[0], 20);
+      R.focusA = state();
+      await focusIn(names[1], 10);
+      R.focusB = state();
+      await settleObj(names[0]);
+      R.recallA = state();
+      await settleObj(names[1]);
+      R.recallB = state();
+      // ...AND A DISMISSED FOCUS STAYS DISMISSED. Clicking the background is
+      // a decision; the switch's own clearing of the selection is not, and
+      // the two arrive at the same place.
+      r.clearResidueSelection();
+      await settle(); await landed(); await settle();
+      await settleObj(names[0]);
+      await settleObj(names[1]);
+      R.afterDismiss = state();
+      // ...and the memory is the MODE'S: leaving and re-entering forgets it.
+      btn.click(); await settle(); await landed(); await settle();
+      btn.click(); await settle(); await settle();
+      await settleObj(names[0]);
+      R.freshMode = state();
+
+      // LEG SEVEN: MERGED, WHERE THE MEMORY MUST NOT EXIST AT ALL. With
+      // several objects drawn the switch does NOT drop the selection - the
+      // indices are the merged array's and mean the same thing whichever
+      // object is being edited - and the strip sets the edited object from
+      // where you clicked. So a recall would replace the selection that ASKED
+      // for the switch, which is what that branch exists to protect.
+      // ...AND THE MEMORY IS WRITTEN FIRST, WHILE STILL SINGLE, because that
+      // is the case only the RECALL guard covers: a set stored in one
+      // object's own numbering, then Multi turned on, where the same numbers
+      // are merged indices naming a different residue.
+      // ...AGAINST THE MODE'S OWN BASELINE, not against nothing. A focus
+      // dropped inside the mode restores what the mode FOUND - this probe has
+      // been at it for six legs and enters with side chains and a slab
+      // already there, which the mode is obliged to give back.
+      R.modeBaseline = state();
+      await focusIn(names[0], 20);
+      await settleObj(names[1]);          // stores 20 against the first object
+      await focusIn(names[1], 10);
+      if (r.setShownObjects) r.setShownObjects(names.slice());
+      await settle(); await landed(); await settle();
+      R.mergedOn = !!((r.multiState && r.multiState.enabled)
+        || (r._mergeWanted && r._mergeWanted()));
+      // 🔴 TURNING MULTI ON MID-FOCUS CLEARS THE FOCUS. A focus is a
+      // NEIGHBOURHOOD measured against the picture it was made in: the slab
+      // is cut to one residue's depth and would slice through the structure
+      // that has just arrived, and the camera sits in a pocket that is now a
+      // corner of a bigger scene. The mode stays on; this focus does not.
+      R.mergedCleared = state();
+      r.setResidueSelection(new Set([40]));
+      await settle(); await landed(); await settle();
+      await settleObj(names[0]);          // the switch the strip makes
+      R.mergedBack = state();
+      if (r.setShownObjects) r.setShownObjects([names[0]]);
+      await settle(); await landed(); await settle();
+      if (r._focusMode) { btn.click(); await settle(); await landed(); await settle(); }
+
+      // LEG EIGHT: THE API'S focusOn, WHICH IS NOT THE MODE. view.focus() and
+      // the embed's v.focus(sel) call focusOn directly and never set
+      // _focusMode - so the clear above, which is guarded on that flag, must
+      // not touch them. `view.focus(...)` then `view.show_objects([...])` is
+      // two instructions and both were asked for; the mode's clear is about a
+      // reader whose PICTURE changed under a focus they made by clicking.
+      if (r._focusMode) { btn.click(); await settle(); await landed(); await settle(); }
+      await settleObj(names[0]);
+      r.focusOn(new Set([20]));
+      await settle(); await landed(); await settle();
+      R.apiFocus = state();
+      if (r.setShownObjects) r.setShownObjects(names.slice());
+      await settle(); await landed(); await settle();
+      R.apiAfterMerge = state();
+      r.clearFocus(false);
+      if (r.setShownObjects) r.setShownObjects([names[0]]);
+      await settle(); await landed(); await settle();
+
       // LEG FIVE: CLEAR ALL while the mode is on. Nothing of it may survive -
       // the snapshot names objects that are about to stop existing, and a
       // latch that outlives the clear puts the NEXT structure straight into a
@@ -247,7 +431,11 @@ p = subprocess.Popen([CHROME, "--headless=new", "--user-data-dir=/tmp/py2dmol-fo
                       "--no-first-run", "--window-size=1100,900",
                       "http://127.0.0.1:9765/_focusmode.html?f=" + FILE],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-end = time.time() + DEADLINE
+# ...WITH ITS OWN BUDGET. Six legs, two structures and a dozen camera flights
+# to wait out: 15 s alone against the shared 30, which the parallel UI lane
+# doubles often enough to fail as "no result posted" - a timeout wearing a
+# crash's clothes. The legs are the point, so the budget moves.
+end = time.time() + DEADLINE * 2
 while not box and time.time() < end:
     time.sleep(0.5)
 p.kill(); httpd.shutdown()
@@ -401,7 +589,152 @@ else:
                    f" out ({afterChose['mark']!r}) - focus puts back what it"
                    " borrowed, and it did not borrow that")
 
+for k in ("stripErrA", "stripErrB", "stripErrC", "stripErrD"):
+    if R.get(k):
+        bad.append(f"{k}: {R[k]}")
+plain, one, two = (R.get(k) or {} for k in ("stripPlain", "stripOne", "stripTwo"))
+if isinstance(plain, dict):
+    plain = plain.get("sel")
+if plain is None or not one or not two:
+    bad.append("the sequence-strip leg did not run")
+else:
+    print(f"  strip    outside={plain!r} in focus: {one['sel']!r} then"
+          f" {two['sel']!r} (side chains {one['sc']} -> {two['sc']})")
+    if plain != '20,50':
+        bad.append(f"outside the mode two strip clicks left {plain!r}, not"
+                   " '20,50' - the strip BUILDS a selection, and if it stopped"
+                   " doing that the focus leg below proves nothing")
+    if one['sel'] != '20':
+        bad.append(f"a strip click in focus mode selected {one['sel']!r}")
+    if two['sel'] != '50':
+        bad.append(f"a second strip click left {two['sel']!r}, not '50' - in"
+                   " focus mode a click REPLACES, the way a canvas click does."
+                   " Toggling against the standing selection focuses the UNION"
+                   " and walks the camera to the centroid of every residue"
+                   " ever clicked")
+    flat = lambda st: {f"{k}:{p}" for k, v in (st.get('sc') or {}).items()
+                       for p in str(v).split(',') if p}
+    kept = flat(one) & flat(two)
+    if kept:
+        bad.append(f"{len(kept)} of the first click's side chains are still"
+                   f" out after the second ({sorted(kept)[:6]}): residues 20"
+                   " and 50 of 4HHB are nowhere near each other, so the"
+                   " neighbourhoods are piling up rather than replacing")
+
+bl, al = (R.get(k) or {} for k in ("beforeLoad", "afterLoad"))
+if not bl or not al:
+    bad.append("the load-inside-the-mode leg did not run")
+else:
+    print(f"  loaded   {al.get('objects')} objects, mode still on:"
+          f" pressed={al['pressed']!r} mark={al['mark']} (dropdown {al['markSel']!r})")
+    if bl['pressed'] != 'true' or bl['mark'] != 'outline':
+        bad.append("the mode was not on and wearing its outline before the"
+                   " load, so that leg proves nothing")
+    if (al.get('objects') or 0) < 2:
+        bad.append("the second structure did not load")
+    if al['pressed'] != 'true':
+        bad.append("loading a structure turned the mode off but left the"
+                   " snapshot - either it is a mode or it is not")
+    elif al['mark'] != 'outline' or al['markSel'] != 'outline':
+        bad.append(f"the mode is still on and the mark went to {al['mark']!r}"
+                   f" (dropdown {al['markSel']!r}). A load clears the"
+                   " selection, ui.js reads that as the background gesture,"
+                   " and clearFocus is the way out of one FOCUS - not out of"
+                   " the mode, so it must not hand the mark back yet")
+
+fa, fb, ra, rb = (R.get(k) or {} for k in ("focusA", "focusB", "recallA", "recallB"))
+ad, fm = (R.get(k) or {} for k in ("afterDismiss", "freshMode"))
+if not fa or not rb:
+    bad.append("the per-object memory leg did not run")
+else:
+    print(f"  per object  focused {fa['sel']!r} then {fb['sel']!r};"
+          f" back: {ra['sel']!r} / {rb['sel']!r}; dismissed -> {ad['sel']!r};"
+          f" fresh mode -> {fm['sel']!r}")
+    if fa['sel'] != '20' or fb['sel'] != '10':
+        bad.append(f"the two focuses came out {fa['sel']!r} and {fb['sel']!r}"
+                   " - the leg cannot test a memory it never wrote")
+    if ra['sel'] != '20':
+        bad.append(f"switching back left {ra['sel']!r}, not '20'. The camera is"
+                   " per object already, so dropping the selection alone parks"
+                   " a returning reader at the pocket they focused with nothing"
+                   " marked and no side chains")
+    elif not ra['sc'] or not ra['clipOn']:
+        bad.append(f"the selection came back but the neighbourhood did not"
+                   f" (side chains {ra['sc']}, slab {ra['clipOn']}) - a focus is"
+                   " all four things or it is a highlight")
+    if rb['sel'] != '10':
+        bad.append(f"the other object came back as {rb['sel']!r}, not '10' -"
+                   " the memory is per object, not one slot")
+    if ad['sel']:
+        bad.append(f"a focus dismissed with a background click came back as"
+                   f" {ad['sel']!r} after a switch. What is remembered is"
+                   " whatever is focused at the moment of the switch, so an"
+                   " empty selection has to CLEAR that object's slot rather"
+                   " than leave the last one in it")
+    if fm['sel']:
+        bad.append(f"a fresh mode opened already focused on {fm['sel']!r} - the"
+                   " memory belongs to the mode and dies with it")
+
+mb = R.get("mergedBack") or {}
+if not mb:
+    bad.append("the merged leg did not run")
+else:
+    mc0 = R.get('mergedCleared') or {}
+    print(f"  merged      Multi on mid-focus drops the focus back to the"
+          f" mode's baseline (sel {mc0.get('sel')!r}, still in mode"
+          f" {mc0.get('pressed')!r}); after the switch: {mb['sel']!r}")
+    if not R.get("mergedOn"):
+        bad.append("the objects did not merge, so that leg tested the"
+                   " single-object path twice")
+    elif (mc := R.get('mergedCleared') or {}) and (
+            mc['sel'] or mc['sc'] != (R.get('modeBaseline') or {}).get('sc')
+            or mc['clipOn'] != (R.get('modeBaseline') or {}).get('clipOn')):
+        bad.append(f"turning Multi on mid-focus left the focus behind:"
+                   f" selection {mc['sel']!r}, side chains {mc['sc']} against"
+                   f" the mode's baseline {(R.get('modeBaseline') or {}).get('sc')},"
+                   f" slab {mc['clipOn']}. The slab was cut to one residue of"
+                   " one structure and now cuts the one that just arrived")
+    elif (R.get('mergedCleared') or {}).get('pressed') != 'true':
+        bad.append("turning Multi on left the MODE as well - the reader did"
+                   " not press Focus, and the next click should still focus")
+    elif mb['sel'] != '40':
+        bad.append(f"a merged switch left {mb['sel']!r}, not the '40' that was"
+                   " selected just before it. Merged, the switch keeps the"
+                   " selection - the indices mean the same thing whichever"
+                   " object is edited, and the strip switches the edited object"
+                   " FROM a click - so the per-object memory must not exist"
+                   " there at all")
+
 bc, ac = (R.get(k) or {} for k in ("beforeClear", "afterClear"))
+af, am = (R.get(k) or {} for k in ("apiFocus", "apiAfterMerge"))
+if not af or not am:
+    bad.append("the API-focus leg did not run")
+else:
+    print(f"  api focus   without the mode: sel {af['sel']!r} sc {af['sc']};"
+          f" after a merge: sel {am['sel']!r} sc {am['sc']}")
+    if af['pressed'] == 'true' or am['pressed'] == 'true':
+        bad.append("that leg entered the MODE, so it is not testing focusOn")
+    if not af['sel'] or not af['sc']:
+        bad.append(f"focusOn on its own drew nothing ({af['sel']!r},"
+                   f" {af['sc']}), so the leg cannot see it survive")
+    elif (am['sel'] != af['sel'] or am['sc'] != af['sc']
+          or am['clipOn'] != af['clipOn']):
+        bad.append(f"a focus made through the API did not survive a merge:"
+                   f" {af['sel']!r}/{af['sc']} became {am['sel']!r}/{am['sc']}."
+                   " view.focus() then view.show_objects() is two instructions"
+                   " and both were asked for - the mode's clear is guarded on"
+                   " _focusMode for exactly this reason")
+
+past = sorted({p for k in ("focusA", "focusB", "recallA", "recallB",
+                             "mergedCleared", "afterChose", "after")
+               for p in ((R.get(k) or {}).get("scPast") or [])})
+if past:
+    bad.append(f"a side-chain set holds {past}, which is past the last residue"
+               " - showing side chains APPENDS their atoms as positions, and a"
+               " neighbourhood search that returns one files an ATOM as a"
+               " residue. A side-chain atom is its residue, the same rule"
+               " _wholeThingAt applies to a click")
+
 if not R.get("hasClear"):
     bad.append("the page has no Clear All button, so that leg tested nothing")
 elif not bc or not ac:

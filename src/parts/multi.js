@@ -199,6 +199,28 @@
             }
             const after = this.drawnObjects().join(' ');
             if (before === after) return false;
+            // 🔴 WHAT IS ON SCREEN HAS CHANGED, SO A FOCUS IS ON THE WRONG
+            // THING. A focus is one residue's NEIGHBOURHOOD - its side chains,
+            // a slab cut to its depth, the camera moved in - and all three are
+            // measured against the picture that was there when it was made.
+            // Merge a second structure in and the slab, fitted to a residue of
+            // the first, cuts straight through the one that has just arrived,
+            // while the camera sits in a pocket that is now a corner of a
+            // bigger scene. The mode STAYS ON - the reader did not leave it,
+            // and the next click focuses in the new picture - but this focus
+            // goes, the way it does when they click the background. The
+            // per-object memories go with it: they name residues of a picture
+            // that no longer exists.
+            // ...THE MODE ONLY. `view.focus()` and the embed's `v.focus(sel)`
+            // call focusOn without ever entering it, and `focus()` then
+            // `show_objects()` is two instructions of which both were asked
+            // for. What this drops is a focus a READER made by clicking, whose
+            // picture then changed under them.
+            if (this._focusMode && !this._focusBusy && this.clearFocus) {
+                this._focusBusy = true;
+                try { this.clearFocus(false); } finally { this._focusBusy = false; }
+                this._focusByObject = null;
+            }
             this._applyShownObjects(skipRender, opts);
             return true;
         },

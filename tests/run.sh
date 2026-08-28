@@ -114,7 +114,19 @@ CAP="${CAP:-60}"
 # found" - what an unfinished page looks like, and nothing to do with the page.
 # tests/colab.py starts SIX browsers one after another, because each one is a
 # different arrival order of the same cell outputs and they cannot share a page.
-probe_cap () { [[ $1 == embed ]] && print 240 || { [[ $1 == colab ]] && print 160 || print $CAP } }
+# ...and tests/focus_mode.py drives EIGHT legs through two structures, with a
+# camera flight to wait out at nearly every step: 18 s alone, and the parallel
+# lane doubles it. Killed at thirty it reported "no result posted", which is
+# what an unfinished page looks like and nothing to do with the page - the same
+# disguise the note above describes.
+probe_cap () {
+  case $1 in
+    (embed) print 240 ;;
+    (colab) print 160 ;;
+    (focus_mode) print 120 ;;
+    (*) print $CAP ;;
+  esac
+}
 run_probe () {   # name, then its arguments
   local name=$1; shift
   local log=/tmp/py2dmol-test-$name.log

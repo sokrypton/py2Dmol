@@ -2334,7 +2334,6 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
             // A LIGAND ATOM'S OWN NAME AND ELEMENT, present only where the file
             // had a ligand in it. The element is what colour-by-element reads;
             // the name is what the atom is called.
-            position_atoms: frameData.position_atoms ? [...frameData.position_atoms] : undefined,
             position_elements: frameData.position_elements ? [...frameData.position_elements] : undefined,
             residue_numbers: frameData.residue_numbers ? [...frameData.residue_numbers] : undefined,
             pae: frameData.pae,

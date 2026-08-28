@@ -21,7 +21,7 @@
 //
 // viewer.py holds the other half of this list, as FRAME_INHERITED and
 // FRAME_ALWAYS, and tests/config.js checks the two still name the same things.
-// They did not, three times: `align`, `allow_reflection`, `position_atoms` and
+// They did not, three times: `align`, `allow_reflection` and
 // `position_elements` were each sent by Python and dropped here, and every one
 // of them was a feature that quietly did not happen - a trajectory that never
 // superposed, and element colouring that never coloured. Adding a field is
@@ -43,7 +43,6 @@ const STATIC_FRAME_FIELDS = [
     ['sidechain_atoms', null],
     ['position_names', null],
     ['residue_numbers', null],
-    ['position_atoms', null],
     ['position_elements', null],
     ['color', null],
     ['scatter', null],

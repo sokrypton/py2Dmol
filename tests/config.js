@@ -192,7 +192,7 @@ if (sb.normalizeConfig({ gpu: false }).rendering.gpu !== false) {
 // viewer.py builds each frame of the static payload from FRAME_INHERITED and
 // FRAME_ALWAYS; parts/ui.js takes it apart again with STATIC_FRAME_FIELDS.
 // They were two hand-written runs of `if`s, and they disagreed three times
-// over - `align`, `allow_reflection`, `position_atoms` and `position_elements`
+// over - `align`, `allow_reflection` and `position_elements`
 // were each sent by one side and dropped by the other. Nothing failed: a
 // trajectory simply did not superpose, and element colouring simply did not
 // colour, on the notebook path alone.
