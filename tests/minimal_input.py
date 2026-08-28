@@ -307,6 +307,47 @@ window.addEventListener('load', () => {
             }
           }
           R.bigPae.bright = [x1, y1, x2, y2];
+          // ...AND THE OUTLINE, which is a SECOND drawing from the same
+          // stored box and was the one that stayed in residues. The mask
+          // above was converted and correct; `_drawSelectionBoxes`
+          // multiplied residue indices by a cell size, so the black
+          // rectangle sat outside the region it was framing. Only the
+          // stroke makes a pixel DARKER - the overlay lightens everything
+          // it covers - so the darkened pixels are the outline and nothing
+          // else.
+          let ox1 = 1e9, oy1 = 1e9, ox2 = -1, oy2 = -1, on = 0;
+          for (let y = 0; y < cv.height; y++) {
+            for (let x = 0; x < cv.width; x++) {
+              const i = (y * cv.width + x) * 4;
+              const d = (plainPx[i] - boxedPx[i]) + (plainPx[i + 1] - boxedPx[i + 1])
+                      + (plainPx[i + 2] - boxedPx[i + 2]);
+              if (d > 120) {
+                on++;
+                if (x < ox1) ox1 = x; if (x > ox2) ox2 = x;
+                if (y < oy1) oy1 = y; if (y > oy2) oy2 = y;
+              }
+            }
+          }
+          R.bigPae.outline = [ox1, oy1, ox2, oy2];
+          // ...AND THE CHAIN LINE, ruled from the same two spaces. A full
+          // height stroke is a spike against its own neighbours, which a
+          // gradient is not - so no second render is needed to find it.
+          const dark = new Float64Array(cv.width);
+          for (let x = 0; x < cv.width; x++) {
+            let sum = 0;
+            for (let y = 0; y < cv.height; y++) {
+              const i = (y * cv.width + x) * 4;
+              sum += 765 - plainPx[i] - plainPx[i + 1] - plainPx[i + 2];
+            }
+            dark[x] = sum;
+          }
+          let best = -1, bestScore = 0;
+          for (let x = 6; x < cv.width - 6; x++) {
+            const sc = dark[x] - (dark[x - 5] + dark[x + 5]) / 2;
+            if (sc > bestScore) { bestScore = sc; best = x; }
+          }
+          R.bigPae.chainLine = best;
+          R.bigPae.outlinePx = on;
           R.bigPae.canvas = cv.width;
           R.bigPae.cells = p2.n;
           r.setVisibility({paeBoxes: [], positions: new Set(),
@@ -508,8 +549,13 @@ def main():
     # looking perfectly plausible.
     _big = 360
     _bigpae = np.minimum(np.add.outer(np.arange(_big), 2 * np.arange(_big)), 31.0)
+    # TWO CHAINS, so the panel's boundary line has somewhere to be wrong: it
+    # is ruled at a residue index on a canvas laid out in cells, the same
+    # crossing as the selection box.
+    _bigsplit = 200
     v.add(np.stack([np.arange(_big) * 1.5, np.zeros(_big), np.zeros(_big)], 1),
-          name='big', pae=_bigpae)
+          name='big', pae=_bigpae,
+          chains=['A'] * _bigsplit + ['B'] * (_big - _bigsplit))
 
     _lig = np.array([[0., 0., 0.], [1.5, 0., 0.], [3.0, 0., 0.], [4.5, 0., 0.]])
     v.add(_lig, name='lig',
@@ -636,6 +682,39 @@ def main():
                    f" against {sv.get('shadesOff')} unshaded - the pass gives"
                    ' each segment its own value, so it differs but is not'
                    ' shading')
+
+    bp = R.get('bigPae') or {}
+    if bp.get('outline'):
+        cells, cw = bp.get('cells'), bp.get('canvas')
+        # residues 0..119 of 360, drawn on a 300-cell matrix -> cells 0..99,
+        # so the outline's far edge is at 100/300 of the canvas. The bug puts
+        # it at 120/300 - the residue index used as a cell one.
+        want = round(100 * cw / cells)
+        ox1, oy1, ox2, oy2 = bp['outline']
+        print(f"  pae outline: {bp['outline']} ({bp.get('outlinePx')} px),"
+              f" far edge wanted ~{want} on a {cw}px canvas of {cells} cells")
+        if not bp.get('outlinePx'):
+            bad.append('the selection box drew no outline at all, so this leg'
+                       ' is measuring nothing')
+        elif ox1 > 3 or oy1 > 3:
+            bad.append(f"the outline starts at ({ox1}, {oy1}) for a box at"
+                       " residue 0 - it should touch the corner")
+        elif abs(ox2 - want) > 4 or abs(oy2 - want) > 4:
+            bad.append(f"the selection outline ends at ({ox2}, {oy2}), wanted"
+                       f" ~{want}: a stored box is in RESIDUES and this canvas"
+                       " is laid out in CELLS. The mask above is converted and"
+                       " the outline was not, so the black rectangle frames a"
+                       " different region from the one it highlights")
+
+    if bp.get('chainLine') is not None:
+        cells, cw = bp['cells'], bp['canvas']
+        wantc = round(round(200 * cells / 360) * cw / cells)
+        print(f"  pae chain line: x={bp['chainLine']}, wanted ~{wantc}")
+        if abs(bp['chainLine'] - wantc) > 4:
+            bad.append(f"the chain boundary is ruled at x={bp['chainLine']},"
+                       f" wanted ~{wantc}: residue {200} of 360 is cell"
+                       f" {round(200 * cells / 360)} of {cells}. The walk is"
+                       " over residues and the line is drawn in cells")
 
     pae = R.get('pae') or {}
     print(f"  pae: {pae}")

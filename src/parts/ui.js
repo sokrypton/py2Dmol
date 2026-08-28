@@ -1067,6 +1067,24 @@ const applyClipSelector = (sel) => {
 };
 renderer._applyClipSelector = applyClipSelector;
 
+// ...AND THE SIDE CHAINS PYTHON ASKED FOR, replayed IN ORDER. show and hide
+// are relative verbs, so the list is the state: [{sel, on}, ...], newest last.
+// The renderer's own verb does the work (parts/sidechains.js); a request for
+// atoms this payload never carried throws there, and one bad request must not
+// stop the ones after it - so each is caught and named.
+const applySidechainRequests = (list) => {
+    if (!Array.isArray(list) || typeof renderer._setSidechains !== 'function') return;
+    for (const req of list) {
+        if (!req) continue;
+        try {
+            renderer._setSidechains(req.sel || undefined, !!req.on);
+        } catch (e) {
+            console.error('py2Dmol: ' + (req.on ? 'show' : 'hide')
+                + '_sidechains: ' + (e && e.message ? e.message : e));
+        }
+    }
+};
+
 // WHICH OBJECTS ARE ON SCREEN, asked for from Python - the renderer's own
 // setter and nothing else. setShownObjects is what keeps _framedObjects, the
 // record of which objects the camera has already accommodated; assigning
@@ -1404,6 +1422,9 @@ if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (windo
             // it is the viewer's rather than any object's - see viewer.py's
             // _display_viewer.
             if (config.clip) applyClipSelector(config.clip);
+            // ...AND THE SIDE CHAINS BEFORE THE FOCUS, because focus takes a
+            // snapshot of what is out and puts it back on the way home.
+            if (config.sidechains) applySidechainRequests(config.sidechains);
             // ...AND THE FOCUS LAST, because it moves the camera and cuts its
             // own slab: anything after it would be undoing it.
             if (config.focus) applyFocus(config.focus);
@@ -1662,6 +1683,9 @@ const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject
     // line above may have just changed that. Unlike the other two this is an
     // ACTION rather than a state: it carries a nonce so the same request asked
     // for twice arrives twice, where an unchanged clip is not resent at all.
+    if (viewerBlock && viewerBlock.sidechains) {
+        applySidechainRequests(viewerBlock.sidechains);
+    }
     if (viewerBlock && 'focus' in viewerBlock) {
         applyFocus(viewerBlock.focus);
     }

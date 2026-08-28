@@ -60,6 +60,15 @@ result.
 
 ### New
 
+- **`view.show_sidechains()` / `view.hide_sidechains()`** — name the residues
+  whose side chains are drawn, with the same selector as `clip` and `focus`.
+  Relative, both of them: `show_sidechains(chain="A")` then
+  `hide_sidechains(position=45)` is chain A without residue 45, and with
+  nothing named either means every residue. Needs `view(sidechains=True)`,
+  which is what carries the atoms; without it there is nothing to draw and the
+  call says so. The verb itself moved out of `parts/embed.js` into
+  `parts/sidechains.js`, so all three shells have it — the embed's JS API could
+  draw a side chain and a notebook could not ask at all.
 - **`view(style=...)`** — one flat list: `tube`, `richardson`, `ribbon`, `3d`,
   with `preset`, `smooth`, `thickness`, `sheet_flat`, `pencil`, `arrows`,
   `base_plates`, `detail`, `fade`, `highlight`, `outline_tint`, `shade`, `bg`

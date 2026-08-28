@@ -32,6 +32,7 @@ same list with load order and targets.
 | `parts/panel.js` | the Style panel's rows, as data — `buildStylePanel` builds the DOM. **One copy**; both pages mount it and skin it with their own CSS. |
 | `parts/viewport.js` | `setupViewport` — find the canvas, size it for the display, keep it sized. The one thing both entry points share. |
 | `parts/embed.js` | the selector (`positionsFor`), `window.py2Dmol.show` and `wireEmbedUI` — a viewer on a bare canvas, and the JS API on top of it. `core/mol.js` picks between the two wirers on `config.embed`, which `show` sets from whether `controls`/`play` were asked for: with them it is `wireViewerUI` and the notebook's own panel in a scoped shell, without them a canvas and nothing else. |
+| `parts/sidechains.js` | which residues show theirs — `showSidechains`/`hideSidechains`, the relative pair. Was written out in `parts/embed.js`, so only the embed's JS API could reach it. |
 | `parts/shadow.js` | which segments darken which. |
 | `parts/align.js` | the renderer's side of TM-align; the transform lives on the object and is applied on the way out. |
 | `core/objstate.js` | `OBJECT_STATE` — every per-object field keyed by position index — plus the per-frame ligand cache. |
@@ -106,12 +107,12 @@ public downloads is exercised on every run.
 
   | lines | file | | lines | function |
   |---|---|---|---|---|
-  | 11,516 | `core/mol.js` | | 2,449 | `cartoon/paint2d.js` `paintPrims()` |
-  | 10,418 | `cartoon/geom.js` | | 1,912 | `cartoon/geom.js` `render()` |
-  | 8,434 | `app/ (total)` | | 1,901 | `cartoon/geom.js` `drawRun()` |
-  | 6,250 | `cartoon/paintgl.js` | | 1,473 | `cartoon/geom.js` `drawSticks()` |
-  | 5,312 | `panels/msa.js` | | 1,084 | `cartoon/geom.js` `mergeBondRuns()` |
-  | 2,878 | `io/parse.js` | | 1,018 | `cartoon/paintgl.js` `buildMeshPart()` |
+  | 11,803 | `core/mol.js` | | 2,449 | `cartoon/paint2d.js` `paintPrims()` |
+  | 10,495 | `cartoon/geom.js` | | 1,926 | `cartoon/geom.js` `render()` |
+  | 8,443 | `app/ (total)` | | 1,917 | `cartoon/geom.js` `drawRun()` |
+  | 6,368 | `cartoon/paintgl.js` | | 1,487 | `cartoon/geom.js` `drawSticks()` |
+  | 5,312 | `panels/msa.js` | | 1,087 | `cartoon/geom.js` `mergeBondRuns()` |
+  | 2,878 | `io/parse.js` | | 1,052 | `cartoon/paintgl.js` `buildMeshPart()` |
 
   `buildMeshPart` is the old `makeResident` under its new name and it was
   always this size - the split gave it a name that says it builds ONE HALF, and
@@ -432,6 +433,22 @@ public downloads is exercised on every run.
   and dead for the gesture a reader makes.
   **The side chains need a table**, which a notebook has only with
   `view(sidechains=True)` — see the rule below.
+- 🔴 **AND SIDE CHAINS WERE THE SAME FAULT ONE STEP WORSE: the DATA had a
+  door and the VERB did not.** `view(sidechains=True)` carried each residue's
+  atoms into every notebook payload — the per-frame cost, 9.0 KB to 37.2 on a
+  251-residue design — and the only thing that could draw one was `focus()`,
+  which picks the residues itself. `showSidechains` was written out in
+  `parts/embed.js`, so the embed's JS API had it and the notebook had no way to
+  ask at all. It is `parts/sidechains.js` now, a renderer method like `clipTo`
+  and `orientTo` before it, and `view.show_sidechains()` /
+  `hide_sidechains()` is the Python door. **They are RELATIVE and travel as an
+  ORDERED LIST**, not a resolved set: show adds, hide subtracts, and with no
+  selector either means every residue — so the state IS the sequence, and
+  replaying it is what reproduces it. Python sends only the requests past a
+  watermark on the live path and the whole list on the static one, which is
+  what makes a reopened notebook come back with the same side chains out.
+  `hide_sidechains()` with nothing named truncates the list, because nothing
+  before a reset can still be showing — that is what keeps it bounded.
 - **A capability in the bundle that no interface reaches is not shipped.**
   `parts/clip.js` is in every build and only `index.html` could get to it: the
   website had a Clip panel, the embed had `v.clip(sel)`, the notebook had
@@ -499,6 +516,24 @@ public downloads is exercised on every run.
   a descendant selector misses the element itself** — `.py2dmol-viewer-instance
   *` left the instance, the header and the sequence strip as content-box, so
   three blocks with the same stated width had three different right edges.
+- 🔴 **A STORED PAE BOX IS IN RESIDUES; EVERYTHING ON THAT CANVAS IS DRAWN IN
+  CELLS - AND THERE ARE FIVE CROSSINGS, NOT THREE.** The entry below found
+  three and fixed the drawing that was reported; the same box is drawn TWICE
+  and the panel rules chain lines from a third walk, and neither was told.
+  `_drawSelectionBoxes` multiplied residue indices by a cell width, so the
+  black rectangle framed a region 1.2x out from the highlight it was framing
+  on a 360-residue matrix resampled to 300 - reported as "the box showing the
+  selection is not matching selection", from a notebook, which is the only
+  place a resample happens. `_drawChainBoundaries` walked `n` CELLS while
+  indexing the chain array by RESIDUE, so it missed every chain past cell 300
+  and ruled the ones it found at the wrong column. `render()` converts ONCE
+  now and hands cells to both drawings, which is the only shape of fix that
+  stops a sixth appearing.
+  **The probe that covered this measured the MASK, and the mask was right** -
+  the two drawings are a few lines apart and only one had been checked. The
+  outline is measured as the pixels that got DARKER (the overlay only
+  lightens) and the chain line as a spike against its own neighbours (a
+  gradient has none), both on the canvas, for the reason below.
 - 🔴 **A STORED PAE BOX IS IN RESIDUES; THE MASK IS DRAWN IN CELLS.** Three
   crossings, not two: `cellsToResidues` on the way out of a drag,
   `residueToCell` for the sequence highlight — and `render()`, which lays the
@@ -1228,3 +1263,11 @@ public downloads is exercised on every run.
 
 Every assertion should be verified by breaking the code and watching it fail.
 A third of one early batch passed while asserting nothing.
+
+🔴 **AN EMPTY TEST FILE PASSES, AND `open(p, 'w')` EMPTIES ONE BEFORE IT
+WRITES.** A patch script whose `write()` threw left `tests/interaction.js` at
+zero bytes; node exited 0 with no output and the suite reported
+`node interaction: ok`. The rule that a crash must not read as a pass is
+already in `tests/run.sh`; this is its other half — silence is not a pass
+either. Build the new text, assert it differs, and only then open the file for
+writing.

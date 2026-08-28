@@ -652,41 +652,13 @@ function attach(renderer) {
         return applyVisible(next);
     };
 
-    // SIDE CHAINS, PER RESIDUE, which is the app's model exactly: a Set on the
-    // object, in the OBJECT's numbering, and writeGroups does the translation
-    // from merged indices. Not a repaint - the atoms become real positions
-    // appended to the coordinate array, and only a frame load builds those.
-    const setSidechains = (sel, on) => {
-        if (on && !renderer.sidechains) {
-            throw new Error('py2Dmol.showSidechains: this structure has no'
-                + ' side-chain atoms - a C-alpha trace carries none, so there'
-                + ' is nothing to show');
-        }
-        const set = positionsFor(renderer, sel);
-        const groups = renderer.writeGroups ? renderer.writeGroups(set)
-            : [{ object: renderer.objectsData[renderer.currentObjectName],
-                positions: [...set] }];
-        let changed = false;
-        for (const g of groups) {
-            if (!g.object) continue;
-            const cur = g.object.sidechains instanceof Set
-                ? new Set(g.object.sidechains) : new Set();
-            for (const i of g.positions) {
-                if (on ? !cur.has(i) : cur.has(i)) changed = true;
-                if (on) cur.add(i); else cur.delete(i);
-            }
-            g.object.sidechains = cur.size ? cur : null;
-        }
-        if (!changed) return renderer;
-        renderer._invalidateSegmentCache();
-        renderer.reloadDrawn();
-        renderer.render('py2Dmol.sidechains');
-        return renderer;
-    };
-    /** Draw these residues' side chains. */
-    renderer.showSidechains = (sel) => setSidechains(sel, true);
-    /** ...and take them away again. */
-    renderer.hideSidechains = (sel) => setSidechains(sel, false);
+    // SIDE CHAINS, PER RESIDUE, AND NOT HERE ANY MORE. showSidechains and
+    // hideSidechains were written out in this file, which put them out of
+    // reach of the notebook: view(sidechains=True) could carry the atoms and
+    // nothing could ask for them to be drawn. They are prototype methods now
+    // (parts/sidechains.js), so `v.showSidechains(sel)` still answers on the
+    // embed - the renderer IS the embed's API object - and view.show_sidechains()
+    // reaches the same code. Nothing to wire here; this note is the pointer.
 
     /**
      * ELEMENT COLOURS, which are ON already and this turns off.

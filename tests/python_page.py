@@ -103,7 +103,10 @@ def _check_state_round_trip():
 
 SAME, WEB_FRAMES, VIEWER_OWN = _check_state_round_trip()
 
-v = py2Dmol.view()
+# SIDE CHAINS, WHICH PYTHON COULD NOT ASK FOR AT ALL until show_sidechains.
+# The flag carries the atoms - without it there is no table and nothing to draw
+# - and the two verbs are RELATIVE, so this is 10-14 minus 12.
+v = py2Dmol.view(sidechains=True)
 v.add_pdb(ROOT + '/1UBQ.cif', name='ubq')
 v.add_pdb(ROOT + '/6MRR.cif', name='pep')
 v.set_color('red', name='ubq', position=3)      # ubq's OWN residue 3
@@ -113,6 +116,8 @@ v.set_sse('H', name='pep', position=5)
 # 10-20 exists in ubq and in pep, so each must resolve inside its own window
 v.add_contacts([['A', 10, 'A', 20, 1.0]], name='ubq')
 v.add_contacts([['A', 10, 'A', 20, 1.0]], name='pep')
+v.show_sidechains(name='ubq', position=(10, 15))
+v.hide_sidechains(name='ubq', position=12)
 
 # ...and two more, THE SAME LENGTH, one carrying chains and one carrying none.
 # The renderer's per-field caches let a frame that omits `chains` inherit the
@@ -142,6 +147,15 @@ window.addEventListener('load', () => {
       const ids = Object.keys(window.py2dmol_viewers || {});
       R.viewers = ids;
       const r = window.py2dmol_viewers[ids[0]].renderer;
+      // WHAT PYTHON ASKED FOR, AS THE OBJECT SEES IT. The set is the
+      // object's own numbering and the requests are replayed in order, so
+      // show(10..14) then hide(12) is four residues and not five.
+      R.sc = {
+        set: [...((r.objectsData.ubq || {}).sidechains || [])].sort((a, b) => a - b),
+        map: r.sidechainMap ? r.sidechainMap.size : -1,
+        table: !!(r.sidechains),
+        coords: r.coords ? r.coords.length : -1,
+      };
       R.objects = Object.keys(r.objectsData);
       R.drawn = r.drawnObjects();
       R.current = r.currentObjectName;
@@ -256,7 +270,23 @@ if R['drawn'] != ['ubq'] or R['merged']:
                " resting state there as everywhere else")
 if R['bothDrawn'] != ['ubq', 'pep'] or not R['bothMerged']:
     bad.append(f"showing both left {R['bothDrawn']}")
-if R['bothN'] != 144 or R['offsets'] != [0, 76]:
+sc = R.get('sc') or {}
+print(f"  side chains: python asked for {sc.get('set')}, {sc.get('map')} atom"
+      f" positions materialised (table: {sc.get('table')})")
+if not sc.get('table'):
+    bad.append('view(sidechains=True) sent no side-chain table, so this leg is'
+               ' measuring nothing')
+elif sc.get('set') != [10, 11, 13, 14]:
+    bad.append(f"show_sidechains(position=(10, 15)) then"
+               f" hide_sidechains(position=12) left {sc.get('set')}, wanted"
+               " [10, 11, 13, 14] - the two verbs are relative and replayed in"
+               " order, so the hide has to subtract from the show")
+elif not sc.get('map'):
+    bad.append('the set is right but nothing was materialised - the request'
+               ' reached the object and no side chain was drawn')
+# ...+ the side-chain atoms, which are APPENDED positions: 144 is the two
+# objects' residues and the rest is what the request above drew.
+if R['bothN'] != 144 + sc.get('map', 0) or R['offsets'] != [0, 76]:
     bad.append(f"the merge came out {R['bothN']} positions at {R['offsets']}")
 if R['ubqThird'] == R['pepThird']:
     bad.append(f"both objects' residue 3 is {R['ubqThird']} - a per-position"

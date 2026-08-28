@@ -187,6 +187,23 @@ The depth is the selection's own depth along the view; there is no thickness to
 set, and the renderer refits it every frame. The Clip button does the same
 thing to whatever is selected.
 
+**Showing side chains.** `focus` draws a neighbourhood's for you; to name them
+yourself, ask.
+
+```python
+viewer = py2Dmol.view(sidechains=True)   # carries the atoms — see below
+viewer.add_pdb('3PTB.cif')
+viewer.show_sidechains(position=(40, 60))
+viewer.hide_sidechains(position=45)      # ...all but that one
+viewer.hide_sidechains()                 # off again
+```
+
+Both are relative — `show` adds to what is drawn and `hide` takes away, and with
+nothing named either means every residue. `view(sidechains=True)` is what makes
+it possible at all: side-chain atoms are coordinates, so they are a per-frame
+cost (a 251-residue design goes from 9.0 KB a frame to 37.2) and they are not
+sent unless you ask. Without them there is nothing to draw and the call says so.
+
 **Fetching a chain.** The fetch box takes a chain suffix: `1timA`, `1TIM_A`,
 `1tim_AB` (one chain per character) or `1tim:A,B` (commas for multi-character
 chain IDs). Only four-character PDB IDs take a suffix, which keeps a UniProt

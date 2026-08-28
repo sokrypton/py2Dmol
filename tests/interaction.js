@@ -5931,9 +5931,14 @@ t('one translation per selector verb, not one per surface', () => {
     //   focus   - parts/focus.js, the composition of the two above plus
     //             residuesWithin and the side-chain set. A renderer method,
     //             so all three shells get it from one place.
+    //   sidechains - parts/sidechains.js. The FOURTH to arrive this way: it
+    //             was written out in parts/embed.js, so the embed's JS API
+    //             could draw a side chain and a notebook could not ask at all,
+    //             with view(sidechains=True) carrying the atoms for nothing.
+    //             view.show_sidechains() is the door that needed it.
     const OWNERS = ['src/core/mol.js', 'src/parts/embed.js',
                     'src/parts/clip.js', 'src/parts/orient.js',
-                    'src/parts/focus.js'];
+                    'src/parts/focus.js', 'src/parts/sidechains.js'];
     const listed = require('child_process')
         .execSync('python3 tools/bundle.py show', {encoding: 'utf8'});
     const files = [...listed.matchAll(/(src\/[\w./-]+\.js)/g)]

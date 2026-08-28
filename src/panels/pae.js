@@ -561,6 +561,17 @@ class PAERenderer {
         }
 
         const activeBoxes = this.mainRenderer.visibilityModel.paeBoxes || [];
+        // 🔴 CONVERTED ONCE, HERE, because there are TWO things drawn from a
+        // stored box - the mask and the outline - and only the mask had been
+        // told. A box is stored in RESIDUES; everything on this canvas is laid
+        // out in CELLS. `residueToCell` is the identity until a matrix is
+        // resampled, which is why this only ever went wrong in a notebook.
+        const activeCells = activeBoxes.map((box) => ({
+            i_start: this.residueToCell(Math.min(box.i_start, box.i_end)),
+            i_end: this.residueToCell(Math.max(box.i_start, box.i_end)),
+            j_start: this.residueToCell(Math.min(box.j_start, box.j_end)),
+            j_end: this.residueToCell(Math.max(box.j_start, box.j_end)),
+        }));
         const previewBox = (this.isDragging && this.selection.x1 !== -1) ? this.selection : null;
         if (this.cachedSequencePositions === null) this.cachedSequencePositions = this.getSequenceSelectedPAEPositions();
         const sequenceSelectedPositions = this.cachedSequencePositions;
@@ -581,21 +592,10 @@ class PAERenderer {
                 const h = Math.ceil((i_end - i_start + 1) * cellSize);
                 maskCtx.fillRect(x, y, w, h);
             };
-            // 🔴 A STORED BOX IS IN RESIDUES; THIS DRAWS IN CELLS. The mask
-            // is laid out at `this.size / this.n` per CELL, and paeBoxes hold
-            // the range of RESIDUES handed to setVisibility - the same numbers
-            // only while the matrix is one cell per residue. On a resampled
-            // one the rectangle came out at the wrong place and the wrong
-            // size, which is a selection that highlights a different region
-            // from the one that was dragged. The preview box below is already
-            // in cells (it is what the pointer drew), and residueToCell is the
-            // identity when nothing was resampled.
-            for (const box of activeBoxes) {
-                const i_start = this.residueToCell(Math.min(box.i_start, box.i_end));
-                const i_end = this.residueToCell(Math.max(box.i_start, box.i_end));
-                const j_start = this.residueToCell(Math.min(box.j_start, box.j_end));
-                const j_end = this.residueToCell(Math.max(box.j_start, box.j_end));
-                drawMaskRegion(i_start, i_end, j_start, j_end);
+            // The preview box is already in cells - it is what the pointer
+            // drew - and the stored ones were converted at the top.
+            for (const b of activeCells) {
+                drawMaskRegion(b.i_start, b.i_end, b.j_start, b.j_end);
             }
             if (previewBox && previewBox.x1 !== -1) {
                 const i_start = Math.min(previewBox.y1, previewBox.y2);
@@ -636,13 +636,21 @@ class PAERenderer {
         }
 
         // 4. Draw selection boxes (outlines)
-        this._drawSelectionBoxes(activeBoxes, previewBox, n, this.size / n);
+        this._drawSelectionBoxes(activeCells, previewBox, n, this.size / n);
 
         // 5. Draw chain boundary lines
         this._drawChainBoundaries(n, this.size / n);
     }
 
     // Helper to draw selection boxes around selected regions
+    /**
+     * `activeBoxes` here is IN CELLS - `render()` converts before calling, and
+     * this is the drawing that made that necessary: it multiplied residue
+     * indices by a cell size, so on a resampled matrix the outline sat at the
+     * wrong place and the wrong size while the mask under it was right. The
+     * reported symptom is exactly that: "the box showing the selection is not
+     * matching selection".
+     */
     _drawSelectionBoxes(activeBoxes, previewBox, n, cellSize) {
         this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)'; // Black box
         this.ctx.lineWidth = 2;
@@ -699,14 +707,19 @@ class PAERenderer {
         const chainAt = (i) => (renderer.chainKeyAt
             ? renderer.chainKeyAt(i) : renderer.chains[i]);
 
-        // Find chain boundaries
-        for (let r = 0; r < n - 1 && r + off < renderer.chains.length - 1; r++) {
+        // ...AND THE WALK IS OVER RESIDUES, THE LINE IS DRAWN IN CELLS.
+        // Same crossing as the selection box two functions up. `n` is the
+        // matrix side, so on a resampled matrix this walked 300 of 360
+        // residues - the chains past that got no line at all - and then ruled
+        // the ones it did find at a residue index times a cell width.
+        const N = this.residues || n;
+        for (let r = 0; r < N - 1 && r + off < renderer.chains.length - 1; r++) {
             const chain1 = chainAt(r + off);
             const chain2 = chainAt(r + off + 1);
 
             if (chain1 !== chain2) {
                 // Chain boundary at position r+1 (draw line before this position)
-                boundaries.add(r + 1);
+                boundaries.add(this.residueToCell(r + 1));
             }
         }
 

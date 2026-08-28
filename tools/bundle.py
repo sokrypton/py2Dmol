@@ -91,6 +91,11 @@ MODULES = [
     # ...one click, one neighbourhood. Composes clip, the side-chain set and
     # residuesWithin, so it loads after clip and before ui.js, which wires it.
     Mod('focus',      'src/parts/focus.js',     ['web']),
+    # ...and which residues show their side chains. After focus.js, which is
+    # the other thing that writes that set. Named for the part rather than the
+    # file so it does not collide with src/io/sidechains.js, which builds the
+    # TABLE this one decides what to draw from - same split as mol-align.
+    Mod('mol-sidechains', 'src/parts/sidechains.js', ['web']),
     Mod('capture',    'src/parts/capture.js',   ['web']),
     Mod('savepanel',  'src/parts/savepanel.js', ['web']),
     Mod('mol-align',  'src/parts/align.js',     ['web']),
@@ -151,7 +156,7 @@ BUNDLES = {
     # INLINED INTO THE .ipynb, uncompressed, once per show() cell. Bytes here
     # are paid again for every viewer in the document.
     'notebook': ['math', 'sidechains', 'svg', 'objstate', 'viewport', 'shadow', 'clip', 'focus',
-                 'capture', 'savepanel', 'multi', 'panel', 'orient',
+                 'mol-sidechains', 'capture', 'savepanel', 'multi', 'panel', 'orient',
                  'ui', 'mol', 'geom', 'paintgl', 'paint2d', 'pae', 'scatter'],
     # ONE NOTEBOOK BUNDLE, WITH BOTH PAINTERS. There were three - GPU, 2D, and
     # a tube-only one without the cartoon geometry - and they existed for one
@@ -175,7 +180,7 @@ BUNDLES = {
     # and one gpu=False used to carry 429 + 384 KB of two different libraries,
     # neither of which could serve the other.
     'web': ['math', 'sidechains', 'parse', 'gif', 'svg', 'objstate', 'viewport', 'shadow', 'clip', 'focus',
-            'capture', 'savepanel', 'mol-align', 'multi', 'panel', 'orient', 'ui', 'mol',
+            'mol-sidechains', 'capture', 'savepanel', 'mol-align', 'multi', 'panel', 'orient', 'ui', 'mol',
             'geom', 'paint2d', 'paintgl', 'pae', 'scatter', 'seq', 'msa',
             'app', 'app-select', 'app-objects', 'app-fetch', 'app-scatter',
             'app-session'],
@@ -217,7 +222,7 @@ BUNDLES = {
     # the notebook's own Style panel and is wired by wireViewerUI, rather than
     # growing a third set of controls to keep in step. 25 KB for exact parity.
     'embed': ['math', 'sidechains', 'parse', 'objstate', 'viewport', 'shadow', 'clip', 'focus',
-              'capture', 'savepanel', 'multi', 'panel', 'orient', 'ui', 'embed',
+              'mol-sidechains', 'capture', 'savepanel', 'multi', 'panel', 'orient', 'ui', 'embed',
               'mol', 'geom', 'paintgl'],
     # ...and the same embed drawn on the CPU. THE SECOND ARTEFACT THAT EARNS ITS
     # KEEP, where embed-tube did not: it draws the same picture from the same
@@ -230,8 +235,8 @@ BUNDLES = {
     # NOT A FALLBACK. Neither bundle has anything behind it; parts/embed.js asks
     # which painter is present and refuses a request for the other one.
     'embed.cpu': ['math', 'sidechains', 'parse', 'objstate', 'svg', 'viewport', 'shadow',
-                  'clip', 'focus', 'capture', 'savepanel', 'multi', 'panel', 'orient',
-                  'ui', 'embed', 'mol', 'geom', 'paint2d'],
+                  'clip', 'focus', 'mol-sidechains', 'capture', 'savepanel', 'multi',
+                  'panel', 'orient', 'ui', 'embed', 'mol', 'geom', 'paint2d'],
 }
 
 BUNDLE_DIR = 'py2Dmol/resources/bundles'

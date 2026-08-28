@@ -32,3 +32,8 @@ dist/
 *.pdb
 *.a3m
 *.zip
+
+# The browser probes each write a page next to index.html and delete it after -
+# _pypage.html, _ligweb.html and so on. One survived a crash and was committed
+# (_panelpic2.html, 1,022 lines of nothing).
+_*.html

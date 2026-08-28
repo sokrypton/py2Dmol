@@ -723,6 +723,11 @@ class view:
                 can be drawn and so Focus can measure side chain to side chain
                 rather than trace to trace. Default False.
 
+                THIS IS THE DATA, NOT THE DRAWING. With it on, name the ones
+                you want with show_sidechains() / hide_sidechains(), or let
+                focus() pick a neighbourhood's for you. Without it there is
+                nothing to draw and show_sidechains() says so.
+
                 THE COST IS PER FRAME, because side-chain atoms are
                 coordinates and every frame's differ: a 251-residue design goes
                 from 9.0 KB a frame to 37.2, so six frames is 54 KB against 223
@@ -977,6 +982,15 @@ class view:
         # the slab is: it is the camera and the drawing, not any one object.
         self._focus = None
         self._sent_focus = False
+        # ...AND WHICH RESIDUES SHOW THEIR SIDE CHAINS, as an ordered list of
+        # requests rather than a resolved set. show/hide are RELATIVE verbs -
+        # they add to and subtract from what is drawn now - so the state is
+        # the sequence, and replaying it in order is what reproduces it. Only
+        # the ones past the watermark are sent on the live path; the static
+        # payload carries the whole list, which is why a reopened notebook
+        # comes back with the same side chains out.
+        self._sidechains = []
+        self._sent_sidechains = 0
         # ...AND WHETHER THE PAYLOAD CARRIES SIDE-CHAIN ATOMS. Read by
         # _parse_model, the only thing that can collect them, and a VIEWER-wide
         # setting rather than a per-load one: the table is per FRAME with no
@@ -1396,6 +1410,10 @@ class view:
             viewer_block = viewer_block or {}
             viewer_block["focus"] = self._focus
             self._sent_focus = copy.deepcopy(self._focus)
+        if len(self._sidechains) > self._sent_sidechains:
+            viewer_block = viewer_block or {}
+            viewer_block["sidechains"] = self._sidechains[self._sent_sidechains:]
+            self._sent_sidechains = len(self._sidechains)
         if self._orient_request is not None:
             viewer_block = viewer_block or {}
             viewer_block["orient"] = self._orient_request
@@ -1564,6 +1582,11 @@ class view:
         else:
             self.config.pop("focus", None)
         self._sent_focus = copy.deepcopy(self._focus)
+        if self._sidechains:
+            self.config["sidechains"] = copy.deepcopy(self._sidechains)
+        else:
+            self.config.pop("sidechains", None)
+        self._sent_sidechains = len(self._sidechains)
         if self._orient_request is not None:
             # ...AND A STATIC VIEWER ALWAYS JUMPS. It has only just appeared,
             # and a cell that opens mid-flight reads as a bug.
@@ -2658,6 +2681,65 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._clip = self._selector(name=name, chain=chain, position=position)
         if self._is_live:
             self._send_incremental_update()
+
+    def show_sidechains(self, name=None, chain=None, position=None):
+        """
+        Draw these residues' side chains.
+
+            view = py2Dmol.view(sidechains=True)   # REQUIRED - see below
+            view.add_pdb("3PTB")
+            view.show_sidechains(position=(40, 60))
+            view.show_sidechains(chain="A")
+            view.hide_sidechains()                 # all of them off again
+
+        Relative, both of them: show adds to what is drawn and hide subtracts
+        from it, and with nothing named the selector means every residue. So
+        show_sidechains(chain="A") then hide_sidechains(position=45) is chain A
+        without residue 45.
+
+        IT NEEDS THE ATOMS, AND THEY ARE NOT SENT BY DEFAULT. A side chain is
+        drawn from its own coordinates, which is a per-frame cost - so
+        py2Dmol.view(sidechains=True) is what carries them, and without it
+        there is nothing to draw and this raises. See view()'s `sidechains`.
+
+        Args:
+            name (str, optional): Object to draw in. Defaults to the current.
+            chain (str, optional): A whole chain's side chains.
+            position (int, list, tuple, range, optional): Position index or
+                indices. A 2-tuple is a half-open range, matching set_color.
+
+        Note:
+            The same verb the embed's `v.showSidechains(sel)` calls and the
+            website's selection panel drives - one implementation, in
+            parts/sidechains.js. focus() draws a neighbourhood's side chains
+            for you; this is how to name them yourself.
+        """
+        return self._request_sidechains(True, name, chain, position)
+
+    def hide_sidechains(self, name=None, chain=None, position=None):
+        """
+        Take these residues' side chains away again.
+
+            view.hide_sidechains(position=45)   # one of them
+            view.hide_sidechains()              # all of them
+
+        See show_sidechains() - this is its other half, and with nothing named
+        it clears every side chain that is out.
+        """
+        return self._request_sidechains(False, name, chain, position)
+
+    def _request_sidechains(self, on, name, chain, position):
+        sel = self._selector(name=name, chain=chain, position=position)
+        # HIDE-EVERYTHING IS A RESET, and it is what keeps this list bounded:
+        # nothing before it can still be showing, so the requests before it
+        # cannot matter to the replay.
+        if not on and sel is None:
+            self._sidechains = []
+            self._sent_sidechains = 0
+        self._sidechains.append({"sel": sel, "on": bool(on)})
+        if self._is_live:
+            self._send_incremental_update()
+        return self
 
     def focus(self, name=None, chain=None, position=None, cutoff=None):
         """
@@ -4233,6 +4315,10 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # exist, which is what a standing instruction should do.
             self._clip = self.config.get("clip")
             self._shown_objects = self.config.get("shown_objects")
+            # ...and the side chains, which are written from _sidechains and
+            # so would be popped at the next show() exactly like the two above.
+            self._sidechains = self.config.get("sidechains") or []
+            self._sent_sidechains = 0
             # Normalise the style, which used to name three things. A state
             # written when "richardson" was a style would otherwise be read as
             # "tube" (the only non-cartoon value) and render as the wrong thing
