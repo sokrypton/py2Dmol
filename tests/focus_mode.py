@@ -687,13 +687,23 @@ else:
         bad.append("the objects did not merge, so that leg tested the"
                    " single-object path twice")
     elif (mc := R.get('mergedCleared') or {}) and (
-            mc['sel'] or mc['sc'] != (R.get('modeBaseline') or {}).get('sc')
-            or mc['clipOn'] != (R.get('modeBaseline') or {}).get('clipOn')):
+            mc['sel'] or mc['sc'] != (R.get('modeBaseline') or {}).get('sc')):
         bad.append(f"turning Multi on mid-focus left the focus behind:"
                    f" selection {mc['sel']!r}, side chains {mc['sc']} against"
-                   f" the mode's baseline {(R.get('modeBaseline') or {}).get('sc')},"
-                   f" slab {mc['clipOn']}. The slab was cut to one residue of"
-                   " one structure and now cuts the one that just arrived")
+                   f" the mode's baseline {(R.get('modeBaseline') or {}).get('sc')}")
+    elif mc['clipOn']:
+        # 🔴 AND THE SLAB GOES RATHER THAN COMING BACK. It is a near and a far
+        # along the view, measured on the picture that was there when the mode
+        # was entered - put back onto a different set of objects it cuts
+        # somewhere arbitrary and can take the whole structure with it. The
+        # camera has the same fault and is WIDENED to fit; a slab has no
+        # equivalent, so it is dropped, and the Clip button follows it off so
+        # nothing is silently wrong. What the mode gives back is what it
+        # borrowed, and a slab it never touched stops being about anything
+        # once the picture changes.
+        bad.append("the slab survived a change of what is drawn - it was cut"
+                   " to a depth on the old picture and now cuts the new one"
+                   " somewhere arbitrary")
     elif (R.get('mergedCleared') or {}).get('pressed') != 'true':
         bad.append("turning Multi on left the MODE as well - the reader did"
                    " not press Focus, and the next click should still focus")

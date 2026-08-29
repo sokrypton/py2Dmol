@@ -5975,6 +5975,51 @@ t('one translation per selector verb, not one per surface', () => {
     }
 });
 
+t('the colour picker is organised the way PyMOL organises colours', () => {
+    // ONE ROW PER FAMILY, each running its own shades - reds, greens, blues,
+    // yellows, magentas, cyans, oranges, tints, grays - which is the structure
+    // of PyMOL's colour menu (all_colors_list in modules/pymol/menu.py) and
+    // its values (reg_named_color in layer1/Color.cpp).
+    //
+    // 🔴 IT USED TO BE THE CHAIN CYCLE: the 40 colours PyMOL hands to chains,
+    // in the order it hands them, which is deliberately unlike itself from one
+    // entry to the next so neighbours contrast. Right for chains, unusable as
+    // a grid to choose from - finding a darker red meant reading all 43.
+    //
+    // src/app/main.js draws one <div> per row, so the rows ARE the layout.
+    const mol = L.src;
+    const at = mol.indexOf('const PYMOL_COLOR_FAMILIES');
+    if (at < 0) throw new Error('PYMOL_COLOR_FAMILIES is gone');
+    // ...to the ']' and not past the ';', or the eval below is `(...];)`
+    const table = mol.slice(at, mol.indexOf('];', at) + 1);
+    const rows = eval(table.replace('const PYMOL_COLOR_FAMILIES =', '(') + ')');
+    if (rows.length < 8) {
+        throw new Error('only ' + rows.length + ' colour families - the picker'
+            + ' is meant to be one row per family');
+    }
+    for (const row of rows) {
+        if (row.length < 5) {
+            throw new Error('a family has only ' + row.length + ' shades; the'
+                + ' point of the rows is that each colour has levels');
+        }
+        for (const hex of row) {
+            if (!/^#[0-9a-f]{6}$/.test(hex)) {
+                throw new Error('not a hex colour: ' + hex);
+            }
+        }
+    }
+    // ...and the FIRST of each row is that family's own colour, which is what
+    // makes the left column readable as red/green/blue/...
+    const firsts = rows.map((r) => r[0]);
+    for (const want of ['#ff0000', '#00ff00', '#0000ff', '#ffff00',
+        '#ff00ff', '#00ffff', '#ff8000']) {
+        if (!firsts.includes(want)) {
+            throw new Error(want + ' does not start any row - PyMOL\'s families'
+                + ' begin with their own primary');
+        }
+    }
+});
+
 t('one verb for the side chains, not one per shell', () => {
     // 🔴 THE FOURTH COPY WAS IN src/app/selection.js. Same writeGroups walk,
     // same _invalidateSegmentCache, same reloadDrawn - written out there

@@ -68,6 +68,12 @@ result.
 
 ### New
 
+- **The colour picker is organised by colour.** One row per family — reds,
+  greens, blues, yellows, magentas, cyans, oranges, tints, grays — each running
+  its own shades, which is how PyMOL's colour menu is laid out and where these
+  values come from. It used to be the chain cycle: 40 colours in the order
+  PyMOL hands them to chains, deliberately unlike itself from one to the next
+  so neighbours contrast, which is right for chains and unreadable as a grid.
 - **`view.show_sidechains()` / `view.hide_sidechains()`** — name the residues
   whose side chains are drawn, with the same selector as `clip` and `focus`.
   Relative, both of them: `show_sidechains(chain="A")` then
@@ -209,6 +215,19 @@ result.
 
 ### Fixed
 
+- **Focus gives back a camera that shows what is drawn.** The mode snapshots
+  the camera when you press Focus and restores it on every background click —
+  a camera measured on the picture that was there at the time. Turn Multi on,
+  or switch which objects are drawn, and that snapshot framed one object inside
+  a scene of several: clicking the background put you back there every time,
+  with Orient the only way out. It now widens to fit when the drawn set has
+  changed, and the slab goes rather than coming back, since a near and a far
+  along the view cut somewhere arbitrary once the picture is different.
+- **The sequence strip forgets its hover when it is rebuilt.** Copy a
+  selection, move the pointer up to a chain label, and part of the old
+  selection stayed marked. The hover is a set of position indices and the only
+  thing that took it back was a mousemove on the strip's canvas — which a
+  rebuild destroys, so no `mouseleave` could ever arrive.
 - **Flat ribbons get flat side chains on the GPU.** In `ribbon` — plain
   cartoon, whose whole look is flatness — side chains were drawn as fat 3-D
   sticks while the Thickness knob read 0, and dragging the knob fixed it until

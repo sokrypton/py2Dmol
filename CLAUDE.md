@@ -108,8 +108,8 @@ public downloads is exercised on every run.
 
   | lines | file | | lines | function |
   |---|---|---|---|---|
-  | 11,803 | `core/mol.js` | | 2,449 | `cartoon/paint2d.js` `paintPrims()` |
-  | 10,495 | `cartoon/geom.js` | | 1,926 | `cartoon/geom.js` `render()` |
+  | 11,882 | `core/mol.js` | | 2,449 | `cartoon/paint2d.js` `paintPrims()` |
+  | 10,548 | `cartoon/geom.js` | | 1,926 | `cartoon/geom.js` `render()` |
   | 8,443 | `app/ (total)` | | 1,917 | `cartoon/geom.js` `drawRun()` |
   | 6,368 | `cartoon/paintgl.js` | | 1,487 | `cartoon/geom.js` `drawSticks()` |
   | 5,312 | `panels/msa.js` | | 1,087 | `cartoon/geom.js` `mergeBondRuns()` |
@@ -344,7 +344,10 @@ public downloads is exercised on every run.
   zoom - and then CLEARS the decorations, because a mode that starts from the
   reader's leftovers cannot be told from one that drew them: side chains turned
   on by hand look exactly like the mode's, and a slab from before cuts the
-  neighbourhood the mode is about to move to. `exitFocusMode` puts it all back.
+  neighbourhood the mode is about to move to. `exitFocusMode` puts back what
+  still means anything - see the rule below on what a snapshot is measured
+  against, which is why the camera can come back WIDER and the slab may not
+  come back at all.
   🔴 **EXCEPT THE ROTATION, WHICH IS NOT THE MODE'S TO GIVE BACK.** Focus never
   turns the camera, so an angle that moved was moved by the READER - to see the
   pocket from the other side, which is half the reason to be in there - and
@@ -405,6 +408,32 @@ public downloads is exercised on every run.
   finds. That fell out of a mutation: a separate `_focusSwitching` flag and a
   delete in `clearFocus` were written first, and mutating the delete away
   changed nothing, because the empty store already said it.
+  🔴 **AND WHAT IS RESTORED IS ONLY MEANINGFUL AGAINST THE PICTURE IT WAS
+  MEASURED ON.** The snapshot records `drawn` - the object names - and two of
+  its fields are checked against it. The CAMERA is widened to fit when the
+  picture changed (below). The SLAB is dropped: it is a near and a far along
+  the view, and put back onto a different set of objects it cuts somewhere
+  arbitrary and can take the whole structure with it. There is no widening a
+  slab, and the Clip button follows it off, so nothing is silently wrong.
+  Everything else in the snapshot - side chains per object, the selection, the
+  mark - is about residues rather than about space, and travels unchanged.
+  🔴 **AND THE CAMERA IT GIVES BACK MUST SHOW WHAT IS DRAWN.** The entry
+  snapshot is a camera measured on the picture that was there when Focus was
+  pressed, and the picture can change under it - an eye toggle adds an object
+  and deliberately does NOT re-frame ("things appear and disappear where they
+  are", `parts/multi.js`, and `tests/multi_object.py` asks for it). So a click
+  on the background restored a camera built for one object into a scene of
+  several, again and again, with Orient the only way out: **stuck zoomed out**.
+  `_focusRestore` widens to `_currentExtent()` when the snapshot no longer
+  covers the picture - **and only when the DRAWN SET CHANGED**, which the
+  snapshot records as `drawn`. Comparing extents alone is wrong twice over:
+  materialising side chains grows the drawn extent by a few Angstrom without
+  changing the picture, so `clearFocus` handed back 36 where it had borrowed 33
+  and `tests/cut_ligands.py` said so; and the reader's own framing is theirs
+  however wide it is. *Two of my three attempts at this rule broke a test that
+  was right: re-framing on any toggle (the eye rule) and widening on any extent
+  difference (the mode's contract). The condition is "the picture changed", not
+  "the numbers differ".*
   🔴 **AND CHANGING WHAT IS ON SCREEN DROPS THE FOCUS - THE MODE'S ONLY.**
   `view.focus()` and the embed's `v.focus(sel)` call `focusOn` without ever
   entering the mode, and `focus()` then `show_objects()` is two instructions of
@@ -1156,6 +1185,25 @@ public downloads is exercised on every run.
   call updated Python, emitted nothing the browser could use, and was silently
   lost. Frame colours ride with the other per-object metadata now, as
   `frame_colors`, keyed by frame index.
+- 🔴 **A REBUILD OF THE SEQUENCE STRIP DESTROYS THE CANVAS THE POINTER IS OVER,
+  SO NO `mouseleave` EVER ARRIVES.** The hover is a set of position indices -
+  `hoverAtoms` here, `renderer.highlightedAtoms` there - and the ONLY thing
+  that ever took it back was a mousemove or a mouseleave on that canvas.
+  `buildSequenceView` empties the container, so after a Copy the last hover
+  stayed lit over residues that had come to mean something else: copy a
+  selection, move the pointer up to a chain label, and part of the old one is
+  still marked. Reported as "an echo of past positions".
+  `forgetPositionState()` drops both sets and TELLS THE RENDERER - a module
+  that forgets while the picture does not is the same bug with fewer symptoms.
+  **From the REBUILD, not just from `clear()`**: Cut rebuilds without clearing
+  (`app/main.js`), and the deferred build is two frames late, so it forgets at
+  SCHEDULE time - the canvas standing in that window still has its listeners
+  and its own layout. The drag preview goes with it: `previewByObject` is keyed
+  by object NAME, which survives a Cut renumbering the object it names.
+  *The layout cache added the same day (`__chainCells`) was the first suspect
+  and is innocent: `buildSequenceView` builds a fresh layout object literal, so
+  the cache dies with the layout it hangs off. Worth stating, because a cache
+  hung off a REUSED object would have been exactly this bug.*
 - **The custom-event bus is `document`-scoped**, so two viewers on one page
   cross-talk: `py2dmol-color-change`, `-frame-change`, `-visibility-change`,
   `-residue-selection-change`.
@@ -1342,6 +1390,22 @@ public downloads is exercised on every run.
   needed the comparison; the memory was mine.*
   *And the unit test caught ME, not the code: it asserted `3d` asks for 0.5,
   which I had written into three comments. It asks for 1.0.*
+- **THE COLOUR PICKER IS PyMOL'S COLOURS, ORGANISED AS PyMOL ORGANISES THEM:
+  one row per family.** `PYMOL_COLOR_FAMILIES` in `core/mol.js` is nine rows -
+  reds, greens, blues, yellows, magentas, cyans, oranges, tints, grays - taken
+  from `all_colors_list` in PyMOL's `modules/pymol/menu.py` with the values
+  from `reg_named_color` in `layer1/Color.cpp`, and the greys from its own
+  `grey<NN> = NN/99` loop. `src/app/main.js` already drew one `<div>` per row,
+  so the rows ARE the layout and nothing there changed.
+  It used to be the CHAIN CYCLE - the 40 colours PyMOL hands to chains, in the
+  order it hands them, which is deliberately unlike itself from one entry to
+  the next so that neighbours contrast. Exactly right as a chain palette, and
+  it is still one; as a grid to pick from it was confetti, and finding a darker
+  red meant reading all 43 squares. **Two lists answering two questions.**
+  The first cell of each row is that family's own primary, which is what makes
+  the left column read as red/green/blue. Colourblind mode keeps its own
+  categorical list - reorganising that by hue would be organising the thing it
+  exists not to depend on.
 - **A lone atom's radius is PYMOL'S NUMBER, not a principle.**
   `loneAtomRadiusA` (`cartoon/geom.js`) is PyMOL's `ElementTable` from
   `layer2/AtomInfo.cpp` — Bondi where Bondi reaches, **1.80 for everything

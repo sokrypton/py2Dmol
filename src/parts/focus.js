@@ -59,6 +59,9 @@
                 extent: this.viewerState.extent,
                 extentAspect: this.viewerState.extentAspect,
                 zoom: this.viewerState.zoom,
+                // ...AND WHICH OBJECTS IT WAS MEASURED ON: a camera is only
+                // meaningful against a picture. See _focusRestore.
+                drawn: (this.drawnObjects ? this.drawnObjects().join(',') : ''),
                 // NOT THE ROTATION. Everything else here is something the mode
                 // BORROWS - it drew those side chains, it cut that slab, it
                 // moved that centre - and giving back what you borrowed is the
@@ -97,20 +100,62 @@
             this._invalidateSegmentCache();
             this.reloadDrawn(true);
 
+            // 🔴 THE SLAB IS A DEPTH ON A PICTURE TOO. `snap.clip` is a near
+            // and a far along the view, measured when the mode was entered -
+            // put back onto a different set of objects it cuts somewhere
+            // arbitrary, and can take the whole structure with it. Same
+            // condition as the camera below: if what is drawn has changed, the
+            // slab the reader had is no longer about anything, so it goes.
+            const shownNow = this.drawnObjects ? this.drawnObjects().join(',') : '';
+            const pictureSame = (snap.drawn === undefined) || snap.drawn === shownNow;
             if (typeof this.setClipSlab === 'function') {
-                if (snap.clip) this.setClipSlab(snap.clip.near, snap.clip.far);
-                else this.setClipSlab(null, null);
+                if (snap.clip && pictureSame) {
+                    this.setClipSlab(snap.clip.near, snap.clip.far);
+                } else this.setClipSlab(null, null);
                 if (this._syncClipButton) this._syncClipButton();
             }
             // THE ANGLE IS LEFT ALONE - see the snapshot. The centre and the
             // zoom come back because the mode moved them; the rotation does
             // not, because only the reader did.
             this.viewerState.zoom = snap.zoom;
+            // 🔴 ...AND NEVER TO A CAMERA THAT DOES NOT SHOW WHAT IS DRAWN.
+            // The snapshot was measured on the picture that was there when the
+            // mode was entered, and the picture can change under it: turning
+            // Multi on adds an object without re-framing (an eye toggle moves
+            // nothing, deliberately - see parts/multi.js), so a click on the
+            // background restored a camera framed on one object and left the
+            // rest off the screen, every time. Reported as being stuck zoomed
+            // out, and Orient was the only way back.
+            //
+            // Widen only, and only when it does not fit: a reader who was
+            // zoomed in when they entered gets their zoom back, because zoom
+            // and extent are different fields.
+            // ...ONLY WHEN THE PICTURE ITSELF CHANGED, which is what the
+            // snapshot's `drawn` records. Materialising side chains grows the
+            // drawn extent by a few Angstrom without changing the picture, and
+            // comparing extents alone made clearFocus hand back 36 where it
+            // had borrowed 33 - the mode's whole contract is that it gives
+            // back what it took.
+            const sameShown = pictureSame;
+            const drawn = this._currentExtent();
+            let want = (snap.extent !== null && snap.extent !== undefined)
+                ? snap.extent : drawn;
+            let where = snap.center;
+            let aspect = snap.extentAspect;
+            if (!sameShown && drawn > want * 1.02) {
+                // ...AND THE CENTRE WITH IT. Widening around the old centre
+                // leaves the new picture off to one side, which is the same
+                // fault one step smaller. The stats are what `_applyShownObjects`
+                // frames with, so this lands where a fresh merge would.
+                const st = this.drawnStats ? this.drawnStats() : null;
+                want = drawn;
+                aspect = null;
+                if (st && st.center && st.center.length === 3) {
+                    where = { x: st.center[0], y: st.center[1], z: st.center[2] };
+                }
+            }
             this.focusMoveTo({
-                center: snap.center,
-                extent: (snap.extent !== null && snap.extent !== undefined)
-                    ? snap.extent : this._currentExtent(),
-                extentAspect: snap.extentAspect,
+                center: where, extent: want, extentAspect: aspect,
             }, animate !== false);
             // ...and the extent goes back to EXACTLY what was there, null
             // included: the tween needs a number to move to, and null means
@@ -412,34 +457,19 @@
             // directly) the first focus still remembers, which is what
             // clearFocus has always undone.
             if (!this._focusPrev && !this._focusEntry) {
-                this._focusPrev = {
-                    sidechains: new Map(),
-                    clip: (typeof this.clipSlabOn === 'function' && this.clipSlabOn())
-                        ? { near: this.clipNear, far: this.clipFar } : null,
-                    center: this.viewerState.center
-                        ? Object.assign({}, this.viewerState.center) : null,
-                    extent: this.viewerState.extent,
-                    extentAspect: this.viewerState.extentAspect,
-                    zoom: this.viewerState.zoom,
-                    // 🔴 WHAT WAS SELECTED BEFORE THE CLICK, which is not
-                    // what is selected now. parts/ui.js's wrap sets the
-                    // selection and THEN focuses, so reading it here captured
-                    // the residue that had just been clicked - and clicking
-                    // away restored it, leaving one position highlighted with
-                    // nothing else on screen. The caller passes the earlier
-                    // one; `prior` may legitimately be null.
-                    selection: ('prior' in o)
-                        ? o.prior
-                        : (this.residueSelection instanceof Set
-                            ? new Set(this.residueSelection) : null),
-                };
-                for (const name of this.drawnObjects()) {
-                    const obj = this.objectsData[name];
-                    if (!obj) continue;
-                    this._focusPrev.sidechains.set(
-                        name, obj.sidechains instanceof Set
-                            ? new Set(obj.sidechains) : null);
-                }
+                // ...THROUGH _focusSnapshot, WHICH IS THE SAME RECORD. This was
+                // written out a second time here and the two drifted at once:
+                // `drawn` had to be added to both, and `selectionMark` was only
+                // ever added to one.
+                //
+                // 🔴 EXCEPT THE SELECTION, WHICH IS NOT WHAT IS SELECTED NOW.
+                // parts/ui.js's wrap sets the selection and THEN focuses, so
+                // the snapshot would capture the residue that has just been
+                // clicked - and clicking away restored it, leaving one position
+                // marked with nothing else on screen. The caller passes the
+                // earlier one; `prior` may legitimately be null.
+                this._focusPrev = this._focusSnapshot();
+                if ('prior' in o) this._focusPrev.selection = o.prior;
             }
 
             // THE HALO FIRST, AND THE SIDE CHAINS AFTER.
@@ -618,17 +648,12 @@
             return (framed && framed.maxExtent > 0) ? framed.maxExtent : 30.0;
         },
 
-        /** Is a focus in place? */
-        focusOn_active() {
-            return !!this._focusPrev;
-        },
-
         /**
          * BACK TO WHAT WAS THERE - the side chains each object had, the slab,
          * the camera and the selection. Restoring is why _focusPrev is written
          * once and not on every focus.
          */
-        clearFocus(opts) {
+        clearFocus(animate) {
             // INSIDE THE MODE this is the way BACK OUT of one focus, not the
             // way out of the mode: a click on the background zooms out and
             // leaves the reader still in focus, ready for the next click. So
@@ -641,7 +666,7 @@
             // Inside the mode the selection goes EMPTY rather than back to
             // what the reader had before they entered; outside it, clearFocus
             // is the undo of one focusOn and puts back what that focus found.
-            return this._focusRestore(snap, opts !== false, !inMode);
+            return this._focusRestore(snap, animate !== false, !inMode);
         },
     },
 });

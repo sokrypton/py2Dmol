@@ -149,7 +149,7 @@ run_probe () {   # name, then its arguments
 }
 
 if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
-  UI=(pick_empty selection_mark focus_mode pae_objects pae_visibility hidden_reload cut_ligands
+  UI=(pick_empty selection_mark focus_mode hover_echo pae_objects pae_visibility hidden_reload cut_ligands
       sidechain_toggle nucleic_multi save_multi selection_panel minimal_input
       object_reload python_page python_multi style_per_object align_objects embed panel)
   pids=(); names=()
@@ -159,6 +159,7 @@ if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
     while (( $(jobs -r | wc -l) >= JOBS )); do sleep 0.2; done
   done
   ( run_probe multi_object 1BBH.cif 1EHZ.cif ) & pids+=($!); names+=(multi_object)
+  ( run_probe multi_frame_fit ) & pids+=($!); names+=(multi_frame_fit)
   for p in $pids; do wait $p || fail=1; done
 
   # ...and then colab, ALONE. Not because it measures time - it does not - but

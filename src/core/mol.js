@@ -443,8 +443,50 @@ const namedColorsMap = {
 // white / grey / black are constantly wanted and are not chain colours, so
 // they join the end of the same run rather than sitting in a row of their own.
 const PALETTE_NEUTRALS = ['#FFFFFF', '#808080', '#000000'];
+
+// ...AND THE PICKER'S OWN COLOURS ARE PyMOL'S, ORGANISED AS PyMOL ORGANISES
+// THEM: one ROW PER FAMILY, each running its own shades - reds, greens, blues,
+// yellows, magentas, cyans, oranges, tints, grays. That is the structure of
+// PyMOL's colour menu (`all_colors_list` in modules/pymol/menu.py) and these
+// are its values (`reg_named_color` in layer1/Color.cpp), the greys from its
+// own `grey<NN> = NN/99` loop.
+//
+// It used to be the CHAIN CYCLE - the 40 colours PyMOL hands to chains, in the
+// order it hands them, which is deliberately unlike itself from one entry to
+// the next so that neighbouring chains contrast. As a chain palette that is
+// exactly right and it still is one; as a grid to pick from it was confetti,
+// and finding "a darker red" meant reading all 43 squares. The two lists
+// answer different questions, which is why they are now two lists.
+//
+// The rows are what src/app/main.js draws, one <div> each, so the layout is
+// the data - nothing there had to change.
+const PYMOL_COLOR_FAMILIES = [
+    // reds
+    ['#ff0000', '#ff3333', '#b24c66', '#ba8c85', '#ff9999', '#ff8080', '#d93380', '#b22121', '#993333', '#8e391c', '#a6522b'],
+    // greens
+    ['#00ff00', '#33ff33', '#80ff00', '#85bf00', '#8cb266', '#a6e6a6', '#00ff80', '#80ff80', '#bfff40', '#339933'],
+    // blues
+    ['#0000ff', '#4c4cff', '#0080ff', '#8080ff', '#bfbfff', '#3380cc', '#8000ff', '#4040a6', '#1a1a99'],
+    // yellows
+    ['#ffff00', '#ffff33', '#ffff80', '#ffde5e', '#bfff40', '#fcd1a6', '#b88c4c'],
+    // magentas
+    ['#ff00ff', '#ff33cc', '#ff0080', '#ffa6d9', '#ffbfde', '#b28080', '#ff80ff', '#8c4099', '#bf00bf', '#991a99'],
+    // cyans
+    ['#00ffff', '#ccffff', '#80ffff', '#40ffbf', '#00bfbf', '#1a9999', '#66b2b2'],
+    // oranges
+    ['#ff8000', '#ff8c26', '#ffb233', '#ffcc80', '#ffde5e', '#c4b200', '#99991a'],
+    // tints
+    ['#fcd1a6', '#a6e6a6', '#bfbfff', '#ffff80', '#ffbfde', '#ccffff', '#ffcc80', '#d9d9ff'],
+    // grays
+    ['#ffffff', '#e8e8e8', '#cecece', '#b4b4b4', '#9b9b9b', '#818181', '#676767', '#4d4d4d', '#343434', '#1a1a1a', '#000000'],
+];
+
 function getPaletteColors(colorblind) {
-    const src = colorblind ? chainColorsColorblind : chainColors;
+    // COLOURBLIND MODE KEEPS ITS OWN LIST, which is a categorical palette
+    // chosen to stay distinguishable - reorganising it by hue would be
+    // organising the thing it exists to avoid relying on.
+    if (!colorblind) return PYMOL_COLOR_FAMILIES.map((row) => row.slice());
+    const src = chainColorsColorblind;
     const rgbToHex = (c) => '#' + [c.r, c.g, c.b]
         .map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
     const cells = src

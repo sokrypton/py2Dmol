@@ -98,16 +98,23 @@ function setLocalPreview(setOrNull) {
     }
     const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
     if (!renderer || !renderer.updateSelectionPreview) return;
-    if (setOrNull && setOrNull.size > 0) {
-        renderer.updateSelectionPreview(setOrNull);
-    } else {
-        // cleared: hand the view back to the committed selection. The
-        // caller that clears is either committing (a render follows) or
-        // cancelling (this restores it), so a repaint here is the safe end.
-        const wasLive = renderer._previewLive;
-        renderer.endSelectionPreview();
-        if (wasLive) renderer.render('selection preview end');
-    }
+    if (setOrNull && setOrNull.size > 0) renderer.updateSelectionPreview(setOrNull);
+    else endPreviewOnRenderer();
+}
+
+/**
+ * Hand the view back to the committed selection.
+ *
+ * The caller that clears is either committing (a render follows) or cancelling
+ * (this restores it), so a repaint here is the safe end. Two callers - a drag
+ * ending, and a rebuild forgetting everything - so it is one function.
+ */
+function endPreviewOnRenderer() {
+    const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
+    if (!renderer || !renderer.endSelectionPreview) return;
+    const wasLive = renderer._previewLive;
+    renderer.endSelectionPreview();
+    if (wasLive) renderer.render('selection preview end');
 }
 
 // Schedule render using requestAnimationFrame to throttle
@@ -1235,6 +1242,11 @@ function setStripEnabled(on) {
 
 function buildSequenceViewDeferred() {
     if (typeof requestAnimationFrame !== 'function') { buildSequenceView(); return; }
+    // ...FORGOTTEN NOW, NOT IN TWO FRAMES. The canvas standing between here and
+    // the rebuild still has its listeners and its own layout, so a pointer
+    // moving over it in that window would light positions from the structure
+    // that is being replaced.
+    forgetPositionState();
     if (deferredBuild) return;
     deferredBuild = requestAnimationFrame(() => {
         requestAnimationFrame(() => { deferredBuild = 0; buildSequenceView(); });
@@ -1248,6 +1260,8 @@ function buildSequenceView() {
     // Clear cache when rebuilding
     lastSequenceUpdateHash = null;
     sequenceCanvasData = null;
+    // ...AND THE INDICES, which the DOM below is about to make meaningless.
+    forgetPositionState();
 
     sequenceViewEl.innerHTML = '';
 
@@ -2511,6 +2525,33 @@ function setHoverAtoms(atoms) {
     hoverAtoms = (atoms && atoms.size) ? atoms : null;
 }
 
+/**
+ * FORGET EVERY SET OF POSITION INDICES THIS MODULE IS HOLDING.
+ *
+ * An index only means a residue against the structure it was taken from, and
+ * these outlive one: the hover (here and on the renderer) and the drag preview
+ * (keyed by object NAME, so it survives the object that made it - right for a
+ * switch, wrong after a Cut, which renumbers what is left).
+ *
+ * 🔴 THE ONLY THING THAT EVER TOOK THE HOVER BACK WAS A MOUSEMOVE OR A
+ * MOUSELEAVE ON THE STRIP'S CANVAS, and a rebuild destroys that canvas
+ * (`innerHTML = ''`), so the mouseleave can never arrive. The last hover stayed
+ * lit over residues that had come to mean something else: copy a selection,
+ * move the pointer up to a chain label, and part of the old one is still
+ * marked - reported as an echo of past positions.
+ *
+ * Called from the REBUILD rather than only from clear(), because Cut rebuilds
+ * without clearing (app/main.js) - and at SCHEDULE time for the deferred one,
+ * which is two frames later and is the path a switch takes.
+ */
+function forgetPositionState() {
+    setHoverAtoms(null);
+    hoveredResidueInfo = null;
+    pushHover();                 // ...or this module forgets and the picture does not
+    previewByObject.clear();
+    endPreviewOnRenderer();
+}
+
 // ============================================================================
 // PUBLIC API
 // ============================================================================
@@ -2564,6 +2605,28 @@ window.SEQ = {
         sequenceCanvasData = null;
         lastSequenceFrameIndex = -1;
         lastSequenceUpdateHash = null;
+        // 🔴 ...AND EVERY SET OF POSITION INDICES THIS MODULE IS HOLDING.
+        //
+        // Both callers of clear() mean "the structure under the strip has
+        // changed" - a switch, and the tail of Copy/Cut - and an index only
+        // means a residue against the structure it was taken from. The hover
+        // and the drag preview are sets of them, and neither was dropped:
+        //
+        //   * `hoverAtoms` lives here and `renderer.highlightedAtoms` lives
+        //     there, and the ONLY thing that ever took them back was a
+        //     mousemove or a mouseleave on the strip's canvas. A rebuild
+        //     DESTROYS that canvas (`innerHTML = ''`), so the mouseleave can
+        //     never arrive: the last hover stayed lit over residues that now
+        //     mean something else. Copy a selection, move the pointer up to a
+        //     chain label, and part of the old selection is still marked -
+        //     reported as an echo of past positions.
+        //   * `previewByObject` is keyed by object NAME, so a preview survives
+        //     the object that made it. That is right for a switch, where the
+        //     object is unchanged, and wrong after a CUT, which removes
+        //     residues from the source and renumbers what is left.
+        //
+        // ...through the one helper, which the rebuild calls too.
+        forgetPositionState();
     },
 
     // Clear preview for current object

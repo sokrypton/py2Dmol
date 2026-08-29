@@ -568,4 +568,52 @@ test('no listener is registered under a name that can never fire', () => {
     if (m) throw new Error('dead listener names: ' + m.join(', '));
 });
 
+test('a rebuild forgets every set of position indices', () => {
+    // 🔴 AN INDEX MEANS A RESIDUE ONLY AGAINST THE STRUCTURE IT CAME FROM, and
+    // two sets here outlive one: the hover (module-level, mirrored on the
+    // renderer as highlightedAtoms) and the drag preview (keyed by object
+    // NAME, so it survives the object that made it).
+    //
+    // The only thing that ever took the hover back was a mousemove or a
+    // mouseleave on the strip's canvas - and a rebuild DESTROYS that canvas,
+    // so the mouseleave can never arrive. Copy a selection, move the pointer
+    // to a chain label, and part of the old one is still marked: an echo of
+    // positions from a structure that has been replaced.
+    const src = fs.readFileSync(path.join(ROOT, 'src/panels/seq.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function forgetPositionState'),
+        src.indexOf('function forgetPositionState') + 700);
+    if (!fn.startsWith('function forgetPositionState')) {
+        throw new Error('forgetPositionState is gone - nothing drops the hover'
+            + ' or the preview when the strip is rebuilt');
+    }
+    for (const [what, why] of [
+        ['setHoverAtoms(null)', 'the hover set stays here'],
+        ['pushHover()', 'the renderer is never told, so it keeps drawing it'],
+        ['previewByObject.clear()', 'a drag preview survives its object'],
+    ]) {
+        if (!fn.includes(what)) throw new Error('forgetPositionState does not '
+            + what + ' - ' + why);
+    }
+    // ...FROM THE REBUILD, not only from clear(): Cut rebuilds without
+    // clearing (src/app/main.js), and the deferred build is two frames late,
+    // so it forgets at SCHEDULE time.
+    for (const [caller, end] of [
+        ['function buildSequenceView()', '\n}'],
+        ['function buildSequenceViewDeferred()', '\n}'],
+        ['clear: function', '\n    },'],
+    ]) {
+        const at = src.indexOf(caller);
+        if (at < 0) throw new Error('cannot find ' + caller);
+        // ...THE WHOLE BODY, not a guessed number of characters. The first
+        // version sliced 900 and failed on correct code, because clear()
+        // carries a long comment before the call it makes.
+        const body = src.slice(at, src.indexOf(end, at) + end.length);
+        if (!body.includes('forgetPositionState()')) {
+            throw new Error(caller + ' does not forget the position state -'
+                + ' every path that replaces the strip has to, or the hover'
+                + ' outlives the structure it was taken from');
+        }
+    }
+});
+
 process.exit(failures ? 1 : 0);
