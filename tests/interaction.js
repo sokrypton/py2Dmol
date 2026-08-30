@@ -80,6 +80,16 @@ for (const nm of ['KYTE_DOOLITTLE', 'HYDROPHOBICITY_BANDS', 'namedColorsMap',
     'DEFAULT_GREY', 'SELECTOR_KEYS']) {
     eval('global.' + L.constExpr(nm));
 }
+// ...and the pLDDT ramp, so _calculatePlddtColors can be run rather than
+// paraphrased. hsvToRgb and lightenColor are what the ramp is built from.
+for (const nm of ['DEFAULT_CONTACT_COLOR', 'LIGHTEN_FACTOR']) {
+    eval('global.' + L.constLine(nm));
+}
+for (const name of ['hsvToRgb', 'lightenRgb', 'lightenColor', 'getPlddtRainbowColor',
+    'getPlddtColor', 'getPlddtAFColor']) {
+    eval('global.' + name + ' = '
+        + L.topFunction(name).replace('function ' + name, 'function'));
+}
 for (const name of ['getHydrophobicityColor', 'getAllValidColorModes',
     'positionsFor', 'selectorRange']) {
     eval('global.' + name + ' = '
@@ -104,7 +114,7 @@ global.OBJECT_STATE = new Function(
 // orient's rotation solver, scored as shipped
 eval(L.utils.match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_colorForMode','setSidechainColor','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyLookDefaults','autoClip','_autoClipDepth','_autoClipHalf','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_transformedFrame','_parkedFrameIndex','setAlignTransform','clearAlignments','anyAlignment','_reapplyAfterAlign','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','_applyRecordVisibility','_composeAndApplyMask','_visibleForObject','_syncModelToMask','withSidechainAtoms','_baseCount','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','ligandGroupsOf','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_colorForMode','setSidechainColor','_calculatePlddtColors','_segmentElementColor','_calculateSegmentColors','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyLookDefaults','autoClip','_autoClipDepth','_autoClipHalf','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_transformedFrame','_parkedFrameIndex','setAlignTransform','clearAlignments','anyAlignment','_reapplyAfterAlign','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','_applyRecordVisibility','_composeAndApplyMask','_visibleForObject','_syncModelToMask','withSidechainAtoms','_baseCount','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','ligandGroupsOf','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
 const body={};
 for(const nm of names) body[nm]=L.method(nm);
 // ...and the STATICS the lifted methods reach through this.constructor. Only
@@ -1657,6 +1667,70 @@ t('a side chain can follow a colour MODE, resolved when it is drawn', () => {
     if (!red || red.r !== 255 || red.g !== 0 || red.b !== 0) {
         throw new Error('a named side-chain colour came out '
             + JSON.stringify(red));
+    }
+});
+
+t('an override keeps a mixed bond\'s element half, in EVERY colour mode', () => {
+    // 🔴 THE OVERRIDE BRANCH OF _calculatePlddtColors `continue`d STRAIGHT PAST
+    // THE HALVES. A bond between a carbon and a heteroatom is drawn as two
+    // halves - the carbon end takes the residue's colour, the far end takes
+    // its element's - and _calculateSegmentColors reaches that assignment by
+    // FALLING THROUGH while the pLDDT copy reaches it by not jumping. It
+    // jumped. So any explicit colour on a side chain flattened its mixed bonds
+    // to one colour in plddt/deepmind mode and nowhere else: the oxygen lost
+    // its red, the nitrogen its blue.
+    //
+    // Reported against setSidechainColor, which makes it reachable on every
+    // side chain at once - but setColor on a residue does the same thing and
+    // always did. The mode is the axis, not the verb.
+    const v = new Cls();
+    // one C-O bond, as the materialiser emits it: [owner CA, atom]
+    v.coords = new Array(6).fill([0, 0, 0]);
+    v.plddts = [80, 80, 80, 80, 80, 80];
+    v.currentObjectName = 'obj';
+    v.objectsData = { obj: {} };
+    v.sidechainMap = new Map([[4, { owner: 1, el: 'C' }], [5, { owner: 1, el: 'O' }]]);
+    v.segmentIndices = [{ idx1: 4, idx2: 5, origIndex: 4, type: 'L' }];
+    v._getEffectiveColorMode = () => 'plddt';
+    const RED = { r: 255, g: 0, b: 255 };
+
+    // ...with nothing overridden, the halves are there
+    v.getColorOverride = () => null;
+    const plain = v._calculatePlddtColors();
+    if (!plain.halves[0]) {
+        throw new Error('the fixture produces no halves at all, so the check'
+            + ' below would pass against anything');
+    }
+    // ...and with one, they must still be there
+    v.getColorOverride = () => RED;
+    const over = v._calculatePlddtColors();
+    const h = over.halves[0];
+    if (!h) {
+        throw new Error('an override dropped the bond\'s halves - the'
+            + ' heteroatom end loses its element colour, and only in'
+            + ' plddt/deepmind mode');
+    }
+    const O = Cls.ELEMENT_COLORS.O;
+    if (h.b.r !== O.r || h.b.g !== O.g || h.b.b !== O.b) {
+        throw new Error('the oxygen half came out ' + JSON.stringify(h.b)
+            + ' rather than the element table\'s ' + JSON.stringify(O));
+    }
+    // ...and the carbon half takes the override, which is the whole point of
+    // an override: it is the colour of the atom with no element of its own.
+    if (h.a.r !== RED.r || h.a.g !== RED.g || h.a.b !== RED.b) {
+        throw new Error('the carbon half came out ' + JSON.stringify(h.a)
+            + ' rather than the override');
+    }
+    // ...and the two paths AGREE. That is the actual rule: one of them
+    // reaching its halves line by falling through and the other by jumping is
+    // how they came to differ in the first place.
+    v.getAtomColor = () => RED;
+    v.colorMode = 'chain';
+    const seg = v._calculateSegmentColors('chain');
+    const hs = seg.halves && seg.halves[0];
+    if (!hs || hs.b.r !== O.r || hs.b.g !== O.g || hs.b.b !== O.b) {
+        throw new Error('the two colour paths disagree about a mixed bond: '
+            + JSON.stringify(hs) + ' against ' + JSON.stringify(h));
     }
 });
 

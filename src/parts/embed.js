@@ -924,7 +924,81 @@ async function fetchStructure(id) {
 // and what they are called. Reading them off a picture, or copying the table
 // into the host page, is how a legend comes to disagree with the viewer beside
 // it. `[{ min, hex, label }]`, most hydrophobic first.
-window.py2Dmol = { show, fetch: fetchStructure, frameFromText, framesFromText,
+/**
+ * Superpose one set of coordinates onto another, and hand back the result.
+ *
+ * Kabsch has been in every bundle since the browser took the viewing geometry
+ * over from numpy, and `addFrame` uses it - but only on ITSELF, frame to frame,
+ * when a frame asks with `align: true`. A caller who wants to know where a
+ * structure WOULD sit had no way to ask, which is the same shape of gap as the
+ * side chains and the slab before it: the capability shipped, the door did not.
+ *
+ * FIT ON A SUBSET, APPLY TO EVERYTHING, because that is the case that cannot be
+ * done from outside. Two structures of the same molecule rarely have the same
+ * atom list - a point mutation changes one residue's side chain - so the fit is
+ * computed from the atoms they share (the alpha carbons, usually) and the
+ * transform is applied to all of `mobile`. With no subset the two must be the
+ * same length and every point is used.
+ *
+ *     py2Dmol.superpose(mobile, reference)
+ *     py2Dmol.superpose(mobile, reference, {from: caM, to: caR})
+ *
+ * @param {Array<Array<number>>} mobile the coordinates to move
+ * @param {Array<Array<number>>} reference the coordinates to land on
+ * @param {{from?: number[], to?: number[], reflection?: boolean}} [options]
+ *     `from`/`to` are INDEX arrays - into `mobile` and `reference` - naming the
+ *     points the fit is computed from. They must be the same length as each
+ *     other, and both must be given or neither.
+ * @returns {Array<Array<number>>} a new array; `mobile` is not touched.
+ */
+function superpose(mobile, reference, options) {
+    const opts = options || {};
+    if (!Array.isArray(mobile) || !Array.isArray(reference)
+        || !mobile.length || !reference.length) {
+        throw new Error('py2Dmol.superpose: two non-empty coordinate lists are'
+            + ' needed');
+    }
+    const hasFrom = opts.from !== undefined;
+    const hasTo = opts.to !== undefined;
+    if (hasFrom !== hasTo) {
+        throw new Error('py2Dmol.superpose: `from` and `to` name the points the'
+            + ' fit is computed from and go together - got only '
+            + (hasFrom ? '`from`' : '`to`'));
+    }
+    let fitM = mobile;
+    let fitR = reference;
+    if (hasFrom) {
+        if (opts.from.length !== opts.to.length) {
+            throw new Error('py2Dmol.superpose: `from` names ' + opts.from.length
+                + ' points and `to` names ' + opts.to.length
+                + ' - a fit pairs them off, so they must match');
+        }
+        // ...AND AN INDEX THAT IS NOT THERE IS AN ERROR, not an undefined that
+        // reaches the arithmetic and comes back NaN for every atom. A silently
+        // NaN structure draws as nothing at all.
+        const pick = (coords, idx, which) => idx.map((i) => {
+            const p = coords[i];
+            if (!p) {
+                throw new Error(`py2Dmol.superpose: \`${which}\` names index ${i},`
+                    + ` which that list of ${coords.length} does not have`);
+            }
+            return p;
+        });
+        fitM = pick(mobile, opts.from, 'from');
+        fitR = pick(reference, opts.to, 'to');
+    } else if (mobile.length !== reference.length) {
+        throw new Error('py2Dmol.superpose: with no `from`/`to` every point is'
+            + ` paired off, so the lists must be the same length - got ${mobile.length}`
+            + ` and ${reference.length}`);
+    }
+    if (fitM.length < 3) {
+        throw new Error('py2Dmol.superpose: a rotation needs at least three'
+            + ` points to be determined - got ${fitM.length}`);
+    }
+    return align_a_to_b(mobile, fitM, fitR, opts.reflection === true);
+}
+
+window.py2Dmol = { show, fetch: fetchStructure, frameFromText, framesFromText, superpose,
     version: 1 };
 
 // A GETTER, BECAUSE THIS FILE LOADS BEFORE core/mol.js. HYDROPHOBICITY_BANDS

@@ -1732,21 +1732,12 @@ const handleReplaceFrame = (frame, meta = {}, objectName = null, seq = null) => 
     }
     const obj = renderer.objectsData[objName];
 
-    // Replace last frame (or add if no frames exist)
-    if (obj.frames && obj.frames.length > 0) {
-        // Remove the last frame
-        obj.frames.pop();
-
-        // Adjust pLDDT/PAE tracking indices if they point to the removed frame
-        if (obj._lastPlddtFrame >= obj.frames.length) {
-            obj._lastPlddtFrame = obj.frames.length - 1;
-        }
-        if (obj._lastPaeFrame >= obj.frames.length) {
-            obj._lastPaeFrame = obj.frames.length - 1;
-        }
-    }
-    // Add new frame properly using addFrame() to ensure correct processing
-    renderer.addFrame(frame, objName);
+    // THE RENDERER'S VERB. This was the pop, the two tracker fixups and the
+    // addFrame written out here - the only place in the project that could
+    // replace a frame rather than append one, reachable from a notebook over a
+    // BroadcastChannel and from nowhere else. It is renderer.replaceFrame now,
+    // so an embed animating a structure gets the same one.
+    renderer.replaceFrame(frame, objName);
 
 
     // Apply metadata using helper

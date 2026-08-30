@@ -3862,6 +3862,56 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
         }
 
+        /**
+         * Replace the LAST frame of an object rather than appending one.
+         *
+         * THE FRAME COUNT DOES NOT MOVE, which is the whole point: an
+         * animation that walks a structure from one conformation to another
+         * wants to change what is drawn sixty times a second, and doing that
+         * with addFrame leaves sixty frames on the play bar and a viewer that
+         * has to be rebuilt to get rid of them. Replacing in place costs
+         * nothing but the redraw that was going to happen anyway.
+         *
+         * IT ALREADY EXISTED, in `parts/ui.js`'s handleReplaceFrame - pop, then
+         * addFrame - and only a notebook could reach it, over a
+         * BroadcastChannel. Same shape as the slab, the side chains and the
+         * superposition before it, and ui.js calls this now so there is one
+         * copy of the pop.
+         *
+         * THE LAST ONE, not an arbitrary index. `addFrame` pushes, and it is
+         * where the alignment against the previous frame and the pLDDT/PAE
+         * tracking are done - reaching those for a frame in the middle means
+         * taking addFrame apart, and no caller has wanted it.
+         *
+         * @param {Object} frame the replacement, in addFrame's shape
+         * @param {string} [objectName] defaults to the current object
+         * @returns {this}
+         */
+        replaceFrame(frame, objectName) {
+            const name = objectName || this.currentObjectName
+                || Object.keys(this.objectsData)[0];
+            const object = name && this.objectsData[name];
+            if (!object) {
+                throw new Error(`replaceFrame: no object ${JSON.stringify(name)}`);
+            }
+            if (object.frames && object.frames.length > 0) {
+                object.frames.pop();
+                // ...and the trackers, which name a frame index that has just
+                // stopped existing. addFrame will set them again for the
+                // replacement; what must not happen is their pointing past the
+                // end in between.
+                if (object._lastPlddtFrame >= object.frames.length) {
+                    object._lastPlddtFrame = object.frames.length - 1;
+                }
+                if (object._lastPaeFrame >= object.frames.length) {
+                    object._lastPaeFrame = object.frames.length - 1;
+                }
+            }
+            this.addFrame(frame, name);
+            return this;
+        }
+
+
         // Extract current selection to a new object
         /**
          * Drop the residue selection and tell the UI. The selection is a set of
@@ -9695,6 +9745,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     ? this.getColorOverride(positionIndex) : null;
                 if (ov) {
                     colors[i] = ov;
+                    // 🔴 AND IT STILL HAS TWO HALVES. This branch `continue`d
+                    // straight past the halves assignment at the foot of the
+                    // loop, so an override flattened a mixed bond to one
+                    // colour and the heteroatom end lost its element colour -
+                    // in plddt/deepmind ONLY, because _calculateSegmentColors
+                    // reaches its own halves line by falling through rather
+                    // than by jumping. An override is the colour of the atom
+                    // that has no element of its own; it was never an answer
+                    // for the other end. `hp` is computed above and was simply
+                    // unused here.
+                    if (hp && hp.a !== hp.b) {
+                        colors.halves[i] = { a: hp.a || ov, b: hp.b || ov };
+                    }
                     continue;
                 }
 

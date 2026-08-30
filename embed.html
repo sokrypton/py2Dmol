@@ -444,6 +444,12 @@ other.</p>
 <tr><td>v.clip(sel)</td><td>a slab as deep as the selection is, refitted as
     you turn. No argument turns it off</td></tr>
 <tr><td>v.render(reason)</td><td>redraw; everything above already does</td></tr>
+<tr><td>py2Dmol.superpose(mobile, reference, opts?)</td><td>Kabsch, as a
+    function: the coordinates of <code>mobile</code> moved onto
+    <code>reference</code>. <code>{from, to}</code> are index arrays naming the
+    points the fit is computed from &mdash; the alpha carbons, say &mdash; and
+    the transform still applies to every point, which is how two structures
+    with different atom lists are superposed</td></tr>
 </table>
 
 <h3>Choosing what is drawn</h3>

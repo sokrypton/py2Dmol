@@ -612,6 +612,71 @@ public downloads is exercised on every run.
   against a swatch that quietly fell back to the main chain, because the
   fallback is also a colour. It compares against the side chain's drawn colour
   now.*
+- 🔴 **AN ANIMATION IS NOT A TRAJECTORY, AND `replaceFrame` IS THE DIFFERENCE.**
+  Walking a structure from one conformation to another by APPENDING the
+  intermediates is the obvious way and it is wrong twice: the play bar fills
+  with steps that are not frames of anything, and the viewer has to be REBUILT
+  to be rid of them - which loses the camera and re-runs every piece of wiring
+  hung off it. `parts/ui.js`'s `handleReplaceFrame` has done it properly since
+  the notebook's live path existed - pop, then `addFrame`, so the count never
+  moves - and a BroadcastChannel was the only way in. It is
+  `renderer.replaceFrame(frame, object)` now and ui.js calls it, so there is
+  one copy of the pop and an embed can animate.
+  **THE LAST FRAME, not an arbitrary index**: `addFrame` pushes, and it is
+  where the alignment against the previous frame and the pLDDT/PAE tracking
+  live, so replacing a frame in the middle means taking `addFrame` apart. The
+  trackers are pulled back before the re-add, because between the pop and the
+  push they name a frame that does not exist.
+  Measured driving fourteen morph steps into a three-frame viewer: the count
+  reads `[3]` throughout, the drawn structure travels 8.5 A, the last step
+  lands on the frame's original coordinates to within 0, and the neighbouring
+  frames are untouched. **A count check alone would pass against a call that
+  did nothing**, so the travel is asserted beside it.
+- **KABSCH IS A FUNCTION NOW, NOT ONLY A SIDE EFFECT OF `addFrame`.** The fit
+  has been in every bundle since the browser took the viewing geometry over
+  from numpy, and the only way to reach it was to ask a FRAME to align itself
+  to the one before it — same shape of gap as the slab and the side chains.
+  `py2Dmol.superpose(mobile, reference, {from, to})` is the door.
+  **IT FITS ON A SUBSET AND MOVES EVERYTHING**, which is the case `addFrame`
+  cannot do at all: that path refuses two frames of different lengths, and two
+  structures of the same molecule routinely differ — a point mutation changes
+  one residue's atom list. `from`/`to` are INDEX arrays naming the points the
+  fit is computed from (the alpha carbons), and the transform still applies to
+  every point of `mobile`, which is what lets a caller superpose a mutant on
+  its parent. A bad index throws rather than reaching the arithmetic as
+  `undefined`: a fit on NaN returns NaN for every atom, and a NaN structure
+  draws as nothing at all.
+- 🔴 **A MIXED BOND HAS TWO HALVES AND THE OVERRIDE BRANCH JUMPED PAST THE
+  LINE THAT SAYS SO — IN pLDDT MODE ONLY.** A bond between a carbon and a
+  heteroatom is drawn as two halves: the carbon end takes the residue's colour,
+  the far end takes its element's. `_calculateSegmentColors` reaches that
+  assignment by FALLING THROUGH; `_calculatePlddtColors` reaches it by not
+  jumping, and its override branch did `colors[i] = ov; continue;` — with `hp`
+  already computed on the line above and simply unused. So any explicit colour
+  on a side chain flattened its mixed bonds to one colour in `plddt` and
+  `deepmind` and nowhere else: **the oxygen lost its red and the nitrogen its
+  blue**, exactly where an AlphaFold viewer lives.
+  Reported against `setSidechainColor`, which is what makes it reachable on
+  every side chain at once — but `setColor` on a residue did the same thing and
+  always had. **The MODE is the axis, not the verb**, which is why every
+  measurement in `chain` mode said the feature was fine.
+  🔴 **AND `getAtomColor` RETURNING THE RESIDUE'S COLOUR FOR A NITROGEN IS NOT
+  THE BUG — IT IS THE CONTRACT.** It looks like one: ask it about an appended
+  oxygen with a side-chain colour set and it answers hydropathy blue rather
+  than CPK red, because `_sidechainColorOf` is consulted first and answers for
+  every atom of the residue whatever its element. But that answer is the BASE
+  the half-bond logic composes with — `halves = {a: h.a || base, b: h.b ||
+  base}` — so the non-element end has something to be. Make `getAtomColor`
+  return the element colour and the CARBON half of every mixed bond turns red
+  too, which breaks the path that was working. The element is a layer applied
+  per bond-half, not a property of the position colour.
+  *Measured on the segment ARRAY, not on pixels: shading moves every drawn
+  colour off its table value, and pLDDT's own ramp overlaps the element reds,
+  so a pixel count near `#ff4c4c` cannot tell oxygen from low confidence. Two
+  rounds of pixel forensics said "no bug" before the array said `halves: null`.
+  The sulfur count was worse than useless — S gold (229,198,64) and the
+  hydrophobic band (242,201,76) are 13 apart, so a tolerance of 40 counted each
+  as the other and the number moved when nothing about it had.*
 - 🔴 **A SIDE CHAIN CAN CARRY ITS OWN COLOUR, AND FOR YEARS ONE FILE COULD SAY
   SO.** `obj.sidechainColor` — keyed by RESIDUE, because a side-chain atom is a
   position only while it is drawn and its index is reissued whenever the set

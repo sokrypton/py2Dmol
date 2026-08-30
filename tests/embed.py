@@ -1075,6 +1075,72 @@ setTimeout(finish, 80000);
         // on an empty canvas
         R.scColourInk = ink(canvasIn('schue'));
     }
+    // KABSCH AS A FUNCTION. It has been in every bundle since the browser took
+    // the viewing geometry over from numpy, and only addFrame could reach it -
+    // frame to frame, on itself. Two structures of the same molecule rarely
+    // have the same atom list, so the case that matters is fitting on the
+    // atoms they SHARE and moving everything.
+    {
+        const rmsd = (A, B) => Math.sqrt(A.reduce((s, p, i) => s
+            + (p[0] - B[i][0]) ** 2 + (p[1] - B[i][1]) ** 2
+            + (p[2] - B[i][2]) ** 2, 0) / A.length);
+        const A = [];
+        for (let i = 0; i < 30; i++) A.push([Math.cos(i * .6) * 5, Math.sin(i * .6) * 5, i * 1.5]);
+        const t = 0.9;
+        const M = [[Math.cos(t), -Math.sin(t), 0], [Math.sin(t), Math.cos(t), 0], [0, 0, 1]];
+        const B = A.map((p) => [p[0] * M[0][0] + p[1] * M[0][1] + p[2] * M[0][2] + 7,
+            p[0] * M[1][0] + p[1] * M[1][1] + p[2] * M[1][2] - 3,
+            p[0] * M[2][0] + p[1] * M[2][1] + p[2] * M[2][2] + 2]);
+        R.spApart = rmsd(A, B);
+        R.spWhole = rmsd(py2Dmol.superpose(B, A), A);
+        const idx = [0, 5, 10, 15, 20, 25];
+        R.spSubset = rmsd(py2Dmol.superpose(B, A, {from: idx, to: idx}), A);
+        // ...an atom the reference does not have travels with the body, which
+        // is the whole reason the fit takes a subset
+        const plus = B.concat([[99, 99, 99]]);
+        const out = py2Dmol.superpose(plus, A, {from: idx, to: idx});
+        R.spExtraMoved = out.length === 31
+            && out[30].some((v, k) => Math.abs(v - plus[30][k]) > 1e-6);
+        R.spMobileUntouched = plus[0][0] === B[0][0];
+        const err = (f) => { try { f(); return false; } catch (e) { return true; } };
+        R.spRefuses = {
+            mismatch: err(() => py2Dmol.superpose(B, A.slice(0, 5))),
+            halfPair: err(() => py2Dmol.superpose(B, A, {from: idx})),
+            unevenPair: err(() => py2Dmol.superpose(B, A, {from: idx, to: [0, 1]})),
+            badIndex: err(() => py2Dmol.superpose(B, A, {from: [0, 1, 999], to: [0, 1, 2]})),
+            tooFew: err(() => py2Dmol.superpose(B, A, {from: [0, 1], to: [0, 1]})),
+        };
+    }
+    // REPLACING A FRAME RATHER THAN APPENDING ONE. The notebook's live path has
+    // done this since it existed - pop, then addFrame - and only a
+    // BroadcastChannel could reach it. It is what lets an embed ANIMATE a
+    // structure: hand the intermediate conformations to the frame that is
+    // already there and the play bar never learns about them.
+    {
+        const rv = py2Dmol.show('vis', PDB_TEXT);
+        await frame();
+        const objName = rv.currentObjectName;
+        const framesOf = () => rv.objectsData[objName].frames;
+        const base = framesOf()[0].coords[0].slice();
+        rv.addFrame(py2Dmol.frameFromText(PDB_TEXT), objName);
+        R.rfBefore = framesOf().length;
+        // ...a frame whose coordinates are somewhere else entirely
+        const moved = py2Dmol.frameFromText(PDB_TEXT);
+        moved.coords = moved.coords.map((p) => [p[0] + 25, p[1], p[2]]);
+        rv.replaceFrame(moved, objName);
+        R.rfAfter = framesOf().length;
+        R.rfSwapped = framesOf()[framesOf().length - 1].coords[0][0] - base[0];
+        // ...and the frame BEFORE it is untouched, which is the difference
+        // between replacing one and rewriting the trajectory
+        R.rfNeighbourIntact = framesOf()[0].coords[0][0] === base[0];
+        // ...twice more, to show the count is stable rather than merely equal
+        rv.replaceFrame(moved, objName);
+        rv.replaceFrame(moved, objName);
+        R.rfStable = framesOf().length;
+        R.rfRefusesUnknown = (() => {
+            try { rv.replaceFrame(moved, 'nope'); return false; } catch (e) { return true; }
+        })();
+    }
     R.hasOrientBtn = !!menuBox.querySelector('#orientButton');
     if (R.hasOrientBtn) {
         withMenu.viewerState.rotation = [[0, 0, 1], [0, 1, 0], [-1, 0, 0]];
@@ -1844,6 +1910,44 @@ if not R.get('elemHidden'):
                ' default, so turning them off must be visible')
 if not R.get('elemRestored'):
     bad.append('showElements did not put the element colours back')
+print(f"  replaceFrame: {R.get('rfBefore')} frames ->"
+      f" {R.get('rfAfter')} after a replace, {R.get('rfStable')} after three")
+if R.get('rfBefore') != 2:
+    bad.append(f"the fixture has {R.get('rfBefore')} frames, not the two this"
+               ' needs to tell a replace from an append')
+if R.get('rfAfter') != R.get('rfBefore') or R.get('rfStable') != R.get('rfBefore'):
+    bad.append(f"replaceFrame changed the frame count ({R.get('rfBefore')} ->"
+               f" {R.get('rfAfter')} -> {R.get('rfStable')}) - appending is what"
+               ' it exists not to do')
+if not (R.get('rfSwapped') or 0) > 20:
+    bad.append(f'replaceFrame kept the count and moved nothing'
+               f" (x shifted by {R.get('rfSwapped')}) - a call that quietly did"
+               ' nothing would pass every count check above')
+if not R.get('rfNeighbourIntact'):
+    bad.append('replaceFrame disturbed the frame before it')
+if not R.get('rfRefusesUnknown'):
+    bad.append('replaceFrame accepted an object that does not exist instead of'
+               ' saying so')
+print(f"  superpose: {R.get('spApart', 0):.2f} A apart ->"
+      f" {R.get('spWhole', -1):.1e} whole, {R.get('spSubset', -1):.1e} from a subset")
+if not (R.get('spApart') or 0) > 1:
+    bad.append('the superpose fixture is not actually displaced, so a fit that'
+               ' did nothing would score as a perfect one')
+for key, what in (('spWhole', 'every point'), ('spSubset', 'a six-point subset')):
+    if R.get(key) is None or R[key] > 1e-6:
+        bad.append(f'superpose fitting on {what} left an RMSD of {R.get(key)}')
+if not R.get('spExtraMoved'):
+    bad.append('an atom outside the fitted subset did not travel with the body'
+               ' - fitting on a subset and applying to everything is the whole'
+               ' reason this takes from/to at all')
+if not R.get('spMobileUntouched'):
+    bad.append('superpose edited the coordinates it was given rather than'
+               ' returning new ones')
+for name, threw in (R.get('spRefuses') or {}).items():
+    if not threw:
+        bad.append(f'superpose accepted a bad call ({name}) instead of'
+                   ' refusing it - a fit on nonsense returns NaN for every'
+                   ' atom, and a NaN structure draws as nothing at all')
 if not R.get('scColourInk'):
     bad.append('the side-chain colour viewer drew nothing at all, so the three'
                ' comparisons below are between two blank canvases')
