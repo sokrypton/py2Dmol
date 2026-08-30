@@ -201,6 +201,85 @@ function positionsFor(renderer, sel) {
 }
 
 
+/**
+ * WRITE A FRAMING AS ONE ACT.
+ *
+ * `extent` and `extentAspect` are one fact in two fields, and every camera bug
+ * in this file came from writing one without the other or with a different
+ * convention: orient normalising by the 3D radius while focus normalised by
+ * `max(hx, hy)`, the aspect assigned on completion while the extent
+ * interpolated, a session saving the first and not the second.
+ *
+ * The fields STAY - they are copied by Object.assign, serialised into sessions
+ * and stored per object, and an accessor property survives none of that - but
+ * nothing writes them apart any more. Give this the half-spans and it puts
+ * both down together, in one convention: the extent is the larger half-span
+ * and the aspect is the pair over it, so `extent * aspect.x === half.x`
+ * exactly.
+ *
+ * @param {Object} viewerState the camera to write into
+ * @param {{x: number, y: number}|null} half Angstrom, or null for "no framing
+ *     of its own", which is what falls back to the object's own extent.
+ */
+/**
+ * The pair `setViewSpan` wants, from the three fields a caller measured in.
+ *
+ * The inverse of what setViewSpan stores, and the second half of having one
+ * convention: orient measures a radius and a shape, focus measures a radius
+ * and a shape, and both had written this multiplication out themselves - twice
+ * each, once for the jump and once for the flight.
+ *
+ * `zoom` divides, because `_viewHalfSpan` divides by it on the way back out;
+ * pass 1 (or nothing) for a span that is not being scaled by the reader's
+ * multiplier.
+ */
+// How far the camera stands back, for a given ortho setting and a given
+// structure. 1.5x the structure at ortho 0, 20x at ortho 1 - so "orthographic"
+// is a camera far enough away that the divergence is invisible rather than a
+// separate projection.
+const PERSPECTIVE_MIN_MULT = 1.5;
+const PERSPECTIVE_MAX_MULT = 20.0;
+const PERSPECTIVE_STD_DEV_MULT = 2.0;
+const PERSPECTIVE_DEFAULT_SIZE = 30.0;
+
+/**
+ * The focal length an ortho setting asks for, against what is on screen.
+ *
+ * Written out in the ortho slider's handler and, until it was deleted, again
+ * in parts/orient.js - which is how a flight came to move the perspective and
+ * the zoom at once. One copy, and the slider is now just one of its callers.
+ */
+function focalLengthFor(stats, ortho) {
+    let baseSize = PERSPECTIVE_DEFAULT_SIZE;
+    if (stats && stats.stdDev > 0) baseSize = stats.stdDev * PERSPECTIVE_STD_DEV_MULT;
+    else if (stats && stats.maxExtent > 0) baseSize = stats.maxExtent;
+    const t = (typeof ortho === 'number') ? ortho : 1;
+    const mult = (t >= 1) ? PERSPECTIVE_MAX_MULT
+        : PERSPECTIVE_MIN_MULT + (PERSPECTIVE_MAX_MULT - PERSPECTIVE_MIN_MULT) * t;
+    return baseSize * mult;
+}
+
+function halfSpanOf(extent, aspect, zoom) {
+    if (!(extent > 0)) return null;
+    const z = (zoom > 0) ? zoom : 1;
+    return {
+        x: extent * ((aspect && aspect.x > 0) ? aspect.x : 1) / z,
+        y: extent * ((aspect && aspect.y > 0) ? aspect.y : 1) / z,
+    };
+}
+
+function setViewSpan(viewerState, half) {
+    if (!half || !(half.x > 0) || !(half.y > 0)) {
+        viewerState.extent = null;
+        viewerState.extentAspect = null;
+        return;
+    }
+    const e = Math.max(half.x, half.y);
+    viewerState.extent = e;
+    viewerState.extentAspect = { x: half.x / e, y: half.y / e };
+}
+if (typeof window !== 'undefined') window.py2dmolSetViewSpan = setViewSpan;
+
 function getAllValidColorModes() {
     // 'object' only means anything with more than one object merged in, and
     // is what 'auto' resolves to there - see setCoords.
@@ -1168,7 +1247,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 zoom: 1.0,
                 // seeded from the control, not hardcoded: a new object must not
                 // silently discard the ortho setting the viewer is already on
-                ortho: this.orthoSlider ? parseFloat(this.orthoSlider.value) : 1,
+                ortho: this._orthoSetting(),
                 focalLength: 200.0,
                 center: null,
                 extent: null,
@@ -2540,24 +2619,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Value range: 0.0 (strongest perspective) to 1.0 (full orthographic)
             if (this.orthoSlider) {
                 // Constants for perspective focal length calculation
-                const PERSPECTIVE_MIN_MULT = 1.5;  // Closest camera (strongest perspective)
-                const PERSPECTIVE_MAX_MULT = 20.0; // Farthest camera (weakest perspective)
-                const STD_DEV_MULT = 2.0;           // Use stdDev * 2.0 as base size measure
-                const DEFAULT_SIZE = 30.0;         // Fallback if no object loaded
-
                 this.orthoSlider.addEventListener('input', (e) => {
                     const normalizedValue = parseFloat(e.target.value);
-
-                    // Get object size using standard deviation from center
-                    const object = this.drawnStats();
-                    let baseSize = DEFAULT_SIZE;
-                    if (object && object.stdDev > 0) {
-                        // Use standard deviation * 3.0 as the base size measure
-                        baseSize = object.stdDev * STD_DEV_MULT;
-                    } else if (object && object.maxExtent > 0) {
-                        // Fallback to maxExtent if stdDev not available
-                        baseSize = object.maxExtent;
-                    }
 
                     // ORTHO IS THE STATE; there is no separate "perspective is
                     // on" flag to keep in step with it. One used to exist and
@@ -2566,12 +2629,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // left the slider showing perspective while the projection
                     // stayed flat.
                     this.viewerState.ortho = normalizedValue;
-                    if (normalizedValue >= 1.0) {
-                        this.viewerState.focalLength = baseSize * PERSPECTIVE_MAX_MULT;
-                    } else {
-                        const multiplier = PERSPECTIVE_MIN_MULT + (PERSPECTIVE_MAX_MULT - PERSPECTIVE_MIN_MULT) * normalizedValue;
-                        this.viewerState.focalLength = baseSize * multiplier;
-                    }
+                    this.viewerState.focalLength =
+                        focalLengthFor(this.drawnStats(), normalizedValue);
 
                     if (!this.isPlaying) {
                         this.render('orthoSlider');
@@ -3407,7 +3466,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
                 zoom: 1.0,
                 // seeded from the control - see the first of these three defaults
-                ortho: this.orthoSlider ? parseFloat(this.orthoSlider.value) : 1,
+                ortho: this._orthoSetting(),
                 focalLength: 200.0,
                 center: null,
                 extent: null,
@@ -3631,7 +3690,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     viewerState: {
                         rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
                         zoom: 1.0,
-                        ortho: this.orthoSlider ? parseFloat(this.orthoSlider.value) : 1,
+                        ortho: this._orthoSetting(),
                         focalLength: 200.0,
                         center: null,
                         extent: null,
@@ -3796,6 +3855,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             this._recomputeObjectStats(object);
+            // ...AND THE CAMERA'S DISTANCE, when nothing else will set it. The
+            // ortho slider recomputes the focal length on every input; a shell
+            // without one (an embed, a notebook) never did, so a config asking
+            // for perspective would have got the 200 default - a distance with
+            // no relation to the structure in front of it. Here, because this
+            // is where stdDev becomes known.
+            if (!this.orthoSlider && isPerspective(this.viewerState)) {
+                this.viewerState.focalLength =
+                    focalLengthFor(this.drawnStats() || object,
+                        this.viewerState.ortho);
+            }
 
             // First frame in: re-apply the Ortho slider, which sets both the
             // perspective flag and a focal length scaled to the object's size.
@@ -6538,7 +6608,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
                 zoom: 1.0,
                 // seeded from the control - see the first of these three defaults
-                ortho: this.orthoSlider ? parseFloat(this.orthoSlider.value) : 1,
+                ortho: this._orthoSetting(),
                 focalLength: 200.0,
                 center: null,
                 extent: null,
@@ -8489,7 +8559,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * looking at hanging off to one side. Its atoms exist as positions
          * whenever the side chain is drawn (they are appended: see
          * _materialiseSidechains), and they are what the residue actually
-         * occupies, so the framing takes them.
+         * occupies, so the view span takes them.
          *
          * A ligand is the same argument one level up: its atoms are separate
          * positions and picking one means the ligand, so the rest of the group
@@ -10643,17 +10713,75 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * It belongs to that rotation: turning a long structure end-on
          * afterwards can push it past the edge, and Orient reframes it.
          */
-        _viewportScale(displayWidth, displayHeight, object) {
-            const framed = this.drawnStats() || object;
-            const maxExtent = (framed && framed.maxExtent > 0) ? framed.maxExtent : 30.0;
+        /**
+         * THE HALF-WIDTH AND HALF-HEIGHT BEING FRAMED, IN ANGSTROM.
+         *
+         * `extent`, `extentAspect` and `zoom` are four numbers that produce
+         * exactly two, and the slack between them is where this file's camera
+         * bugs have lived: orient and focus normalising the aspect differently,
+         * the aspect assigned on completion while the extent interpolated, a
+         * session saving one and not the other, a cached mesh dividing out the
+         * size and not the shape, a linear zoom ramp against a geometric
+         * extent. None of those are expressible once there is one answer.
+         *
+         *   extent * aspect.x  is the half-width the view span asks for
+         *   dividing by zoom   is the same as multiplying the scale by it
+         *
+         * so the whole view span is this pair, and the scale is what fits it.
+         * The three places that used to combine the fields themselves -
+         * _viewportScale, cartoon/paintgl.js's view-span multiplier, and the
+         * flight in parts/orient.js - ask here instead.
+         *
+         * @returns {{x: number, y: number}} Angstrom
+         */
+        /**
+         * THE PROJECTION THE VIEWER IS ON: the slider when there is one, the
+         * config when there is not.
+         *
+         * 🔴 IT WAS `slider ? value : 1` IN FOUR PLACES, so an embed and a
+         * notebook - neither of which has an ortho slider - were ALWAYS
+         * orthographic, whatever the config said. `normalizeConfig` carried
+         * `rendering.ortho` and nothing read it: the same family as the `gpu`
+         * and `shade` keys before it, except that this one is also documented
+         * in viewer.py's signature and in embed.html, so three surfaces
+         * promised a setting that did nothing.
+         */
+        _orthoSetting() {
+            if (this.orthoSlider) return parseFloat(this.orthoSlider.value);
+            const v = this.config && this.config.rendering
+                && this.config.rendering.ortho;
+            return (typeof v === 'number' && v >= 0 && v <= 1) ? v : 1;
+        }
+
+        _viewHalfSpan(object) {
+            const framed = (this.drawnStats && this.drawnStats()) || object;
+            const maxExtent = (framed && framed.maxExtent > 0)
+                ? framed.maxExtent : 30.0;
             const extent = this.viewerState.extent || maxExtent;
-            const aspect = this.viewerState.extentAspect;
-            const xE = extent * ((aspect && aspect.x > 0) ? aspect.x : 1);
-            const yE = extent * ((aspect && aspect.y > 0) ? aspect.y : 1);
-            const padding = 0.9;   // 90% of the viewport, leaving a margin
-            const baseScale = Math.min((displayWidth * padding) / (xE * 2),
-                                       (displayHeight * padding) / (yE * 2));
-            return baseScale * this.viewerState.zoom;
+            const a = this.viewerState.extentAspect;
+            return halfSpanOf(extent, a, this.viewerState.zoom)
+                || { x: 1, y: 1 };
+        }
+
+        _viewportScale(displayWidth, displayHeight, object) {
+            // 0.85 IS MEASURED, NOT CHOSEN. The half-spans are the exact
+            // projected extent of the POSITIONS, and a fit exact on the points
+            // clips the ink drawn around them - at 0.9 the globular fixture's
+            // ink crosses the canvas edge, which parts/orient.js predicted and
+            // tests/python_multi.py checks. 0.85 is the largest of
+            // 0.9 / 0.85 / 0.82 / 0.78 that clears it.
+            //
+            // A CONSTANT, and it has to be: cartoon/paintgl.js draws a cached
+            // mesh by dividing out the view span it was captured under and
+            // applying the live one, which only works while the view span is the
+            // whole of the scale. Paying for the ink explicitly - the ribbon's
+            // half-width in Angstrom, the outline in pixels - was written,
+            // measured and reverted for exactly that: a reused mesh came out
+            // at 1.099 of the wanted scale.
+            const padding = 0.85;
+            const half = this._viewHalfSpan(object);
+            return Math.min((displayWidth * padding) / (half.x * 2),
+                            (displayHeight * padding) / (half.y * 2));
         }
 
         _gpuWillDraw(ctx) {
@@ -11775,10 +11903,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // If skipShadowCalc is true but cache is invalid, shadows/tints remain uninitialized
             // This should not happen, but if it does, they'll be filled with defaults elsewhere
 
-            // dataRange is just the molecule's extent in Angstroms
-            // Use temporary extent if set (for orienting to visible positions), otherwise use object's maxExtent
-            const effectiveExtent = this.viewerState.extent || maxExtent;
-            const dataRange = (effectiveExtent * 2) || 1.0; // fallback to 1.0 to avoid div by zero
+            // ...and no dataRange: it was the extent doubled, computed here
+            // and read by nothing once _viewportScale became the one place
+            // that decides the scale.
 
             // ...AND THE SCALE, from the one place that decides it. This
             // was a second copy of _viewportScale's arithmetic - same padding,

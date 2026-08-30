@@ -444,6 +444,11 @@ other.</p>
 <tr><td>v.clip(sel)</td><td>a slab as deep as the selection is, refitted as
     you turn. No argument turns it off</td></tr>
 <tr><td>v.render(reason)</td><td>redraw; everything above already does</td></tr>
+<tr><td>{rendering: {ortho}}</td><td>0 is a camera close in with strong
+    perspective, 1 stands it far enough back that the divergence is invisible.
+    <strong>0.5 by default.</strong> Set at <code>show</code>; the focal
+    length is worked out from the structure, so it means the same thing
+    whatever size it is</td></tr>
 <tr><td>py2Dmol.superpose(mobile, reference, opts?)</td><td>Kabsch, as a
     function: the coordinates of <code>mobile</code> moved onto
     <code>reference</code>. <code>{from, to}</code> are index arrays naming the

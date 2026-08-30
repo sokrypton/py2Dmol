@@ -11,6 +11,24 @@
 const fs = require('fs');
 const path = require('path');
 
+// ...and the view scale, which cartoon/geom.js asks the renderer for rather
+// than computing itself (it used to keep a third copy of the formula, and that
+// copy was the one that ignored extentAspect). LIFTED from the source, so this
+// harness scores the shipped arithmetic instead of a paraphrase of it.
+const L__ = require('./lift.js');
+const viewportScale = new Function(
+    'return function ' + L__.method('_viewportScale'))();
+// ...and the sibling it asks for the framing through. Lifted for the same
+// reason: one answer, and this harness must score the shipped one.
+const framingHalfSpan = new Function(
+    'return function ' + L__.method('_viewHalfSpan'))();
+// ...and the module-scope helper BOTH of those reach for. Third time this
+// harness has had to learn about a new callee: the shipped code is lifted, so
+// anything it calls has to be lifted too, and reimplementing it here would be
+// the second convention setViewSpan exists to prevent.
+global.halfSpanOf = new Function(
+    'return ' + L__.topFunction('halfSpanOf'))();
+
 global.window = {
     dispatchEvent: () => {},
     py2dmol_customColors: {},
@@ -115,6 +133,8 @@ function mkRenderer(coords, segments, opts) {
         segmentIndices: segments,
         positionTypes: new Array(n).fill('P'),
         positionNames: new Array(n).fill('ALA'),
+        _viewportScale: viewportScale,
+        _viewHalfSpan: framingHalfSpan,
         viewerState: { extent: 30, zoom: 1, ortho: 1, focalLength: 100 },
         objectsData: { obj: { maxExtent: 30 } },
         currentObjectName: 'obj',

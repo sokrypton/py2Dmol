@@ -31,6 +31,134 @@
 // loads and the first one simply did not zoom.
 //
 // Held on the renderer, which is the thing a flight belongs to.
+// ============================================================================
+// THE CAMERA PATH
+// ============================================================================
+// A flight moves three things: where the camera looks (`centre`), how much it
+// takes in (`extent`), and the shape of that (`aspect`). Interpolating each of
+// them linearly is the obvious thing and it is why Orient overshot.
+//
+// 🔴 MAGNIFICATION IS 1 / EXTENT, SO A LINEAR RAMP IN EXTENT IS NOT A LINEAR
+// RAMP IN ZOOM. Going 38 A -> 8 A linearly, half the flight is spent between
+// 38 and 23 - a magnification change of 1.6x - and the remaining 2.9x arrives
+// in the second half. The picture creeps, then rushes. Zoom is MULTIPLICATIVE,
+// so the even path is the geometric one:
+//
+//     e(t) = e0 * (e1 / e0)^t
+//
+// 🔴 AND A PAN MUST BE EVEN ON THE SCREEN, NOT IN THE MOLECULE. Moving the
+// centre linearly while the extent shrinks fivefold means the last frames
+// cover five times the screen distance of the first. Together with the zoom
+// that reads as the camera swooping out and back - which is what was reported.
+//
+// Screen speed is (dc/dt) / e, so for it to be constant dc/dt must be
+// proportional to e(t). Integrating e0 * k^t gives the pan weight:
+//
+//     w(t) = (k^t - 1) / (k - 1),   k = e1 / e0
+//
+// which is the fraction of the pan completed at t. At k = 1 that is 0/0 and
+// the answer is t - with no zoom, an even pan already IS even on screen - and
+// near 1 the expression is numerically poor, hence the explicit branch.
+//
+// This is the core of Van Wijk & Nuij's smooth zoom-and-pan, minus the part
+// that also chooses the DURATION; the duration here is still the rotation's,
+// which is what keeps a flight feeling like one movement rather than two.
+// 🔴 AND `zoom` IS PART OF THE MAGNIFICATION, NOT A SEPARATE MOVEMENT.
+// _viewportScale returns `baseScale(extent, aspect) * zoom`, and orient ramped
+// the zoom LINEARLY to 1.0 while this ramped the extent geometrically. A
+// geometric ramp times a linear one is not monotonic: with the reader zoomed
+// in at 2.5 and the extent closing on a selection, the product rises, dips and
+// rises again - sudden zoom in and out, mid-flight, with each half of the
+// camera doing exactly what it was told. Caught by counting writes to
+// viewerState during one flight: extent 58, center 58, zoom 57.
+//
+// Both are multiplicative - a zoom of 2 means twice as big, exactly as half
+// the extent does - so both take the geometric path and their quotient, which
+// is what the eye sees, is geometric too.
+// ...written through core/mol.js's setViewSpan, so the extent and the aspect
+// cannot be put down separately or in two conventions. Orient measures a
+// radius and a shape; what is STORED is the half-span pair, normalised one way
+// for everybody.
+// 🔴 `frame` IS A TRAJECTORY FRAME IN THIS PROJECT, NEVER THE VIEWPORT.
+// The camera's is a VIEW SPAN. This helper was called `frame` for one
+// commit and `const frame = object.frames[currentFrame]`, eighty lines
+// below, shadowed it inside the very function that needed it - so the
+// call read `frame is not a function`, which is a shadowed binding and
+// looks nothing like a missing one. The two meanings had already been
+// mixed in `viewSpanOf`, `viewScaleMul` and `setViewTransform` before
+// they were renamed.
+function setViewSpanFrom(renderer, extent, aspect) {
+    setViewSpan(renderer.viewerState, halfSpanOf(extent, aspect));
+}
+
+// 🔴 AND WHAT MUST BE EVEN IS THE MAGNIFICATION ITSELF, NOT ITS INGREDIENTS.
+//
+// The scale is `padding * min(w / ax, h / ay) / (2 * extent) * zoom`. Making
+// the extent geometric and the aspect linear makes each INPUT well behaved and
+// still leaves the output free to misbehave, because of the `min`: if one axis
+// grows while the other shrinks, the term that binds SWAPS part way, and the
+// minimum of a rising and a falling function rises and then falls. The picture
+// zooms in and back out with every input moving monotonically.
+//
+// So the magnification is interpolated directly - geometric between the two
+// endpoint scales - and the extent is SOLVED to produce it:
+//
+//     M(t) = M0 * (M1 / M0)^t          and      e(t) = S(a(t)) * zoom(t) / M(t)
+//
+// where S(a) = min(w / ax, h / ay). At t = 0 that returns e0 exactly and at
+// t = 1, e1, so the flight still lands where it was told. **And when the two
+// endpoints have the SAME magnification it is constant for the whole flight**
+// - a reframing that does not change the zoom no longer animates one, which
+// is the case that was reported.
+//
+// Needs the viewport, which is the one thing here that is not camera state;
+// without it this falls back to the geometric extent, which is what it did
+// before and is right whenever the aspect is not moving.
+function cameraAt(fromHalf, toHalf, fromCentre, toCentre, t, view) {
+    const pos = (v, fallback) => ((v > 0) ? v : fallback);
+    const h0 = { x: pos(fromHalf.x, 1), y: pos(fromHalf.y, 1) };
+    const h1 = { x: pos(toHalf.x, h0.x), y: pos(toHalf.y, h0.y) };
+    // THE SHAPE LINEARLY, THE SIZE SOLVED. Interpolating both half-spans
+    // geometrically would be the obvious thing and it is not enough: the scale
+    // is a `min` of the two terms, so when one axis grows while the other
+    // shrinks the binding term swaps part way and the minimum rises and then
+    // falls. Interpolating the MAGNIFICATION and solving the size for it is
+    // monotonic by construction - and constant when the two ends ask for the
+    // same one, which is a reframing that does not zoom.
+    const fit = (h) => Math.min((view && view.w > 0 ? view.w : 1) / (2 * h.x),
+                                (view && view.h > 0 ? view.h : 1) / (2 * h.y));
+    let half;
+    if (view && view.w > 0 && view.h > 0) {
+        const m0 = fit(h0);
+        const m1 = fit(h1);
+        // ...the shape at t, then scaled so its fit is the geometric one
+        const shape = { x: h0.x + (h1.x - h0.x) * t, y: h0.y + (h1.y - h0.y) * t };
+        const want = m0 * Math.pow(m1 / m0, t);
+        const k = fit(shape) / want;
+        half = { x: shape.x * k, y: shape.y * k };
+    } else {
+        half = { x: h0.x * Math.pow(h1.x / h0.x, t),
+                 y: h0.y * Math.pow(h1.y / h0.y, t) };
+    }
+    // ...and the pan rides on the size, because screen speed is (dc/dt) / half.
+    const s0 = Math.max(h0.x, h0.y);
+    const s1 = Math.max(h1.x, h1.y);
+    const k2 = s1 / s0;
+    // ...1e-6 is where (k^t - 1) / (k - 1) stops being worth computing, not a
+    // tolerance on anything physical.
+    const w = (Math.abs(k2 - 1) < 1e-6) ? t : (Math.pow(k2, t) - 1) / (k2 - 1);
+    const lerp = (a, b, u) => a + (b - a) * u;
+    return {
+        half,
+        centre: (fromCentre && toCentre) ? {
+            x: lerp(fromCentre.x, toCentre.x, w),
+            y: lerp(fromCentre.y, toCentre.y, w),
+            z: lerp(fromCentre.z, toCentre.z, w),
+        } : null,
+    };
+}
+if (typeof window !== 'undefined') window.py2dmolCameraAt = cameraAt;
+
 function animOf(renderer) {
     if (!renderer._orientAnim) {
         renderer._orientAnim = {
@@ -189,16 +317,15 @@ function orientToBestView(renderer, options) {
             sum[2] / coordsForBestView.length
         ];
 
+        // >>> ORIENT EXTENT BEGIN  (tests/interaction.js lifts this block)
         // Calculate extent from selected positions
         let maxDistSq = 0;
-        let sumDistSq = 0;
         for (const c of coordsForBestView) {
             const dx = c[0] - visibleCenter[0];
             const dy = c[1] - visibleCenter[1];
             const dz = c[2] - visibleCenter[2];
             const distSq = dx * dx + dy * dy + dz * dz;
             if (distSq > maxDistSq) maxDistSq = distSq;
-            sumDistSq += distSq;
         }
         // A SINGLE POSITION HAS NO EXTENT, and one residue is a perfectly
         // ordinary thing to orient on - it is the whole point of picking one.
@@ -215,16 +342,28 @@ function orientToBestView(renderer, options) {
         visibleExtent = Math.max(Math.sqrt(maxDistSq), ORIENT_MIN_EXTENT_A);
         frameExtent = visibleExtent;
 
-        // Calculate standard deviation for selected positions
-        const selectedPositionsStdDev = coordsForBestView.length > 0 ? Math.sqrt(sumDistSq / coordsForBestView.length) : 0;
-
-        // Store stdDev for animation
-        rotationAnimation.visibleStdDev = selectedPositionsStdDev;
-        rotationAnimation.originalStdDev = selectedPositionsStdDev;
-    } else {
-        // No coordinates, clear stdDev animation data
-        rotationAnimation.visibleStdDev = null;
-        rotationAnimation.originalStdDev = null;
+        // <<< ORIENT EXTENT END
+        // 🔴 THE PERSPECTIVE IS NOT ORIENT'S TO MOVE, and it was the last
+        // thing in here fighting the zoom.
+        //
+        // `focalLength` came from `object.stdDev * 2 * multiplier` whenever
+        // ortho < 1 - which is the DEFAULT (0.5) - and a flight interpolated
+        // that stdDev to the framed subset's, recomputed the focal length
+        // every frame, and dispatched a synthetic `input` on the ortho slider
+        // to make it stick. So an Orient moved the magnification TWICE, by two
+        // mechanisms: the scale, and the strength of the perspective.
+        // Measured on dev.html flying to a 40-residue selection, scale went
+        // 6.81 -> 12.71 while focalLength went 521.5 -> 283.4. Neither
+        // overshoots on its own - and the second is DEPTH-DEPENDENT, so near
+        // parts of the structure inflate while far parts deflate. Reported as
+        // sudden zoom in and out during Orient, and invisible to every
+        // measurement of `_viewScale`, which is only the linear term.
+        //
+        // Perspective strength belongs to the STRUCTURE and to the reader's
+        // ortho slider, not to whichever subset is being framed - re-deriving
+        // it from a selection makes the slider's meaning drift under the
+        // reader. The whole apparatus is gone rather than deferred to the end
+        // of the flight: there is nothing left to keep in step with.
     }
 
     const Rcur = renderer.viewerState.rotation;
@@ -249,7 +388,7 @@ function orientToBestView(renderer, options) {
     // Measured HERE, once, and stored beside the extent rather than recomputed
     // per frame. Per frame would mean the picture growing and shrinking as the
     // reader drags, and a tumbling trajectory breathing. The cost of settling
-    // it once is that the framing belongs to THIS rotation: turn a long
+    // it once is that the view span belongs to THIS rotation: turn a long
     // structure end-on afterwards and it can overrun the edges, which is what
     // PyMOL's orient does too. Press Orient again to reframe.
     const targetAspect = (() => {
@@ -286,9 +425,24 @@ function orientToBestView(renderer, options) {
         // line width, because fitting the points exactly clips the drawing
         // around them. Measured, not guessed: 1UBQ came out touching the
         // canvas edge on the first attempt at it.
-        const m = Math.max(hx, hy);
-        if (!(m > 0)) return null;
-        return { x: hx / m, y: hy / m };
+        // 🔴 NORMALISED BY THE EXTENT, WHICH MAKES IT THE EXACT 2D FIT.
+        //
+        // It used to normalise by max(hx, hy), which gives the longer axis a
+        // ratio of exactly 1 - so that axis reserved the whole 3D RADIUS for a
+        // span that is only as wide as the projection. That is safe and it is
+        // what left a quarter of the canvas unspent: on AF-Q5VSL9 the radius
+        // is 77.9 A and the half-spans are 58.0 and 61.2, so both axes
+        // reserved 1.27x what they needed and the model filled 0.67 of a 0.90
+        // padding. Dividing by the extent instead makes `extent * aspect.x`
+        // exactly hx, which is what _viewportScale wants.
+        //
+        // The comment this replaces was right that the exact fit CLIPS - the
+        // ink is wider than the points it is drawn around, and 1UBQ came out
+        // touching the edge. That is now paid for where it belongs, in
+        // _viewportScale, in the drawing's own half-width rather than by
+        // leaving a proportion of the extent unused.
+        if (!(visibleExtent > 0) || !(Math.max(hx, hy) > 0)) return null;
+        return { x: hx / visibleExtent, y: hy / visibleExtent };
     })();
 
     const angle = rotationAngleBetweenMatrices(Rcur, Rtarget);
@@ -361,7 +515,6 @@ function orientToBestView(renderer, options) {
     renderer.spinVelocityX = 0;
     renderer.spinVelocityY = 0;
 
-    rotationAnimation.targetAspect = targetAspect;
 
     // If animate is false, set values directly and render once
     if (!animate) {
@@ -375,39 +528,19 @@ function orientToBestView(renderer, options) {
                 y: targetCenter[1],
                 z: targetCenter[2]
             };
-            renderer.viewerState.extent = targetExtent;
-            renderer.viewerState.extentAspect = targetAspect;
+            setViewSpanFrom(renderer, targetExtent, targetAspect);
         } else {
             renderer.viewerState.center = null;
             if (targetExtent !== null && targetExtent !== undefined) {
-                renderer.viewerState.extent = targetExtent;
-                renderer.viewerState.extentAspect = targetAspect;
+                setViewSpanFrom(renderer, targetExtent, targetAspect);
             } else {
-                renderer.viewerState.extent = null;
-                renderer.viewerState.extentAspect = null;
+                setViewSpanFrom(renderer, null, null);
             }
         }
 
         // Set zoom directly
         renderer.viewerState.zoom = targetZoom;
 
-        // Update stdDev if needed
-        if (rotationAnimation.visibleStdDev !== null && rotationAnimation.visibleStdDev !== undefined) {
-            object.stdDev = rotationAnimation.visibleStdDev;
-            // Update focal length if perspective is enabled
-            if (renderer.orthoSlider && renderer.viewerState.ortho < 1) {
-                const STD_DEV_MULT = 2.0;
-                const PERSPECTIVE_MIN_MULT = 1.5;
-                const PERSPECTIVE_MAX_MULT = 20.0;
-                const normalizedValue = parseFloat(renderer.orthoSlider.value);
-
-                if (normalizedValue < 1.0) {
-                    const baseSize = object.stdDev * STD_DEV_MULT;
-                    const multiplier = PERSPECTIVE_MIN_MULT + (PERSPECTIVE_MAX_MULT - PERSPECTIVE_MIN_MULT) * normalizedValue;
-                    renderer.focalLength = baseSize * multiplier;
-                }
-            }
-        }
 
         // Render once with final state
         // Render once with final state
@@ -420,8 +553,6 @@ function orientToBestView(renderer, options) {
     rotationAnimation.api = { renderer };
     rotationAnimation.startMatrix = Rcur.map(row => [...row]);
     rotationAnimation.targetMatrix = Rtarget.map(row => [...row]);
-    rotationAnimation.startZoom = renderer.viewerState.zoom;
-    rotationAnimation.targetZoom = targetZoom;
     rotationAnimation.duration = duration;
     rotationAnimation.startTime = performance.now();
     rotationAnimation.object = object;
@@ -462,12 +593,6 @@ function orientToBestView(renderer, options) {
             y: targetCenter[1],
             z: targetCenter[2]
         };
-        // When temporaryExtent is null, renderer uses object.maxExtent, so we should use that as startExtent
-        // This prevents jumps when transitioning from null (using maxExtent) to visibleExtent
-        rotationAnimation.startExtent = renderer.viewerState.extent !== null && renderer.viewerState.extent !== undefined
-            ? renderer.viewerState.extent
-            : (object.maxExtent || frameExtent);
-        rotationAnimation.targetExtent = targetExtent;
     } else {
         rotationAnimation.startCenter = renderer.viewerState.center ? {
             x: renderer.viewerState.center.x,
@@ -475,16 +600,27 @@ function orientToBestView(renderer, options) {
             z: renderer.viewerState.center.z
         } : null;
         rotationAnimation.targetCenter = null;
-        // When temporaryExtent is null, renderer uses object.maxExtent, so we should use that as startExtent
-        // This prevents jumps when transitioning from null (using maxExtent) to frameExtent
-        rotationAnimation.startExtent = renderer.viewerState.extent !== null && renderer.viewerState.extent !== undefined
-            ? renderer.viewerState.extent
-            : (object.maxExtent || frameExtent);
-        // For multi-frame objects, use frame-specific extent to prevent zoom jumps
-        rotationAnimation.targetExtent = targetExtent; // Will be frameExtent if set above
     }
 
     // Start animation
+    // 🔴 ONE PAIR, CAPTURED ONCE. Both branches recorded the same start
+    // extent and the same start aspect - identical code, twice - and the
+    // flight then interpolated an extent, a shape and a zoom separately.
+    // The view span the renderer actually draws from is one pair of
+    // half-spans, and _viewHalfSpan is where it comes from, so the flight
+    // starts from what is ON SCREEN rather than from a reconstruction of
+    // it.
+    //
+    // AND THE ZOOM SETTLES AT ONCE. It is the reader's multiplier, not a
+    // movement: the span already carries it, so writing the target zoom on
+    // the first frame changes how the framing is SPLIT between the two
+    // fields and not what is drawn. One fewer thing interpolating, and the
+    // geometric-versus-linear fight between them cannot recur.
+    rotationAnimation.startHalf = renderer._viewHalfSpan(object);
+    renderer.viewerState.zoom = targetZoom;
+    rotationAnimation.targetHalf =
+        halfSpanOf(targetExtent, targetAspect, targetZoom);
+
     rotationAnimation.active = true;
     // Set renderer flag to skip shadow/tint updates during orient animation for large systems
     if (renderer) {
@@ -526,6 +662,8 @@ function animateRotation(rotationAnimation) {
     }
     if (!viewerApi || !viewerApi.renderer) {
         rotationAnimation.active = false;
+    rotationAnimation.startHalf = null;
+    rotationAnimation.targetHalf = null;
         // Clear orient animation flag and cache
         if (viewerApi && viewerApi.renderer) {
             const renderer = viewerApi.renderer;
@@ -558,40 +696,24 @@ function animateRotation(rotationAnimation) {
             // Vec3 is defined in core/mol.js - access via window or use object literal
             const target = rotationAnimation.targetCenter;
             renderer.viewerState.center = { x: target.x, y: target.y, z: target.z };
-            renderer.viewerState.extent = rotationAnimation.targetExtent;
-            renderer.viewerState.extentAspect = rotationAnimation.targetAspect;
+            setViewSpan(renderer.viewerState, rotationAnimation.targetHalf
+                ? { x: rotationAnimation.targetHalf.x * (renderer.viewerState.zoom || 1),
+                    y: rotationAnimation.targetHalf.y * (renderer.viewerState.zoom || 1) }
+                : null);
         } else {
             // Clear temporary center if orienting to all positions
             renderer.viewerState.center = null;
             // For multi-frame objects, keep the frame-specific extent to prevent zoom jumps
             // Only clear if we don't            renderer.viewerState.center = null;
-            if (rotationAnimation.targetExtent !== null && rotationAnimation.targetExtent !== undefined) {
-                renderer.viewerState.extent = rotationAnimation.targetExtent;
-                renderer.viewerState.extentAspect = rotationAnimation.targetAspect;
+            if (rotationAnimation.targetHalf) {
+                setViewSpan(renderer.viewerState, {
+                    x: rotationAnimation.targetHalf.x * (renderer.viewerState.zoom || 1),
+                    y: rotationAnimation.targetHalf.y * (renderer.viewerState.zoom || 1) });
             } else {
-                renderer.viewerState.extent = null;
-                renderer.viewerState.extentAspect = null;
+                setViewSpan(renderer.viewerState, null);
             }
         }
 
-        // Set final stdDev to visible subset's stdDev if it was modified during animation
-        if (rotationAnimation.object && rotationAnimation.visibleStdDev !== null && rotationAnimation.visibleStdDev !== undefined) {
-            rotationAnimation.object.stdDev = rotationAnimation.visibleStdDev;
-            // Update focal length directly to avoid triggering a render via ortho slider
-            // This prevents zoom recalculation during animation completion
-            if (renderer.orthoSlider && renderer.viewerState.ortho < 1) {
-                const STD_DEV_MULT = 2.0;
-                const PERSPECTIVE_MIN_MULT = 1.5;
-                const PERSPECTIVE_MAX_MULT = 20.0;
-                const normalizedValue = parseFloat(renderer.orthoSlider.value);
-
-                if (normalizedValue < 1.0) {
-                    const baseSize = rotationAnimation.object.stdDev * STD_DEV_MULT;
-                    const multiplier = PERSPECTIVE_MIN_MULT + (PERSPECTIVE_MAX_MULT - PERSPECTIVE_MIN_MULT) * normalizedValue;
-                    renderer.focalLength = baseSize * multiplier;
-                }
-            }
-        }
 
         // Clear orient animation flag before rendering
         renderer.isOrientAnimating = false;
@@ -605,13 +727,8 @@ function animateRotation(rotationAnimation) {
         // Clear stored values
         rotationAnimation.startCenter = null;
         rotationAnimation.targetCenter = null;
-        rotationAnimation.startExtent = null;
-        rotationAnimation.targetExtent = null;
-        rotationAnimation.startZoom = null;
-        rotationAnimation.targetZoom = null;
         rotationAnimation.object = null;
-        rotationAnimation.visibleStdDev = null;
-        rotationAnimation.originalStdDev = null;
+
         return;
     }
 
@@ -636,110 +753,70 @@ function animateRotation(rotationAnimation) {
         renderer.viewerState.rotation = lerped;
     }
 
-    // Interpolate zoom during animation - use same easing for consistency
-    // Ensure we reach exactly the target value to prevent jumps
-    if (rotationAnimation.targetZoom !== undefined && rotationAnimation.startZoom !== null) {
-        if (progress >= 1.0) {
-            // At completion, use exact target value
-            renderer.viewerState.zoom = rotationAnimation.targetZoom;
-        } else {
-            // During animation, interpolate smoothly
-            const t = eased; // Use same eased value for smooth zoom interpolation
-            renderer.viewerState.zoom = rotationAnimation.startZoom + (rotationAnimation.targetZoom - rotationAnimation.startZoom) * t;
-        }
+    // ...the zoom is cameraAt's now (see its header); all that is left is
+    // landing on the target exactly rather than on k^1.
+    if (progress >= 1.0 && rotationAnimation.targetZoom !== undefined
+        && rotationAnimation.startZoom !== null) {
+        renderer.viewerState.zoom = rotationAnimation.targetZoom;
     }
 
-    // Interpolate stdDev during animation if visible subset exists
-    // This affects ortho focal length calculation, so we update it smoothly
-    if (rotationAnimation.object && rotationAnimation.visibleStdDev !== null && rotationAnimation.visibleStdDev !== undefined &&
-        rotationAnimation.originalStdDev !== null && rotationAnimation.originalStdDev !== undefined) {
-        const t = eased;
-        // Interpolate stdDev from original to visible subset's stdDev
-        rotationAnimation.object.stdDev = rotationAnimation.originalStdDev +
-            (rotationAnimation.visibleStdDev - rotationAnimation.originalStdDev) * t;
 
-        // Update focal length smoothly during animation to coordinate with stdDev changes
-        // This ensures ortho/perspective settings stay in sync with the structure size
-        if (renderer.orthoSlider && renderer.viewerState.ortho < 1) {
-            const STD_DEV_MULT = 2.0;
-            const PERSPECTIVE_MIN_MULT = 1.5;
-            const PERSPECTIVE_MAX_MULT = 20.0;
-            const normalizedValue = parseFloat(renderer.orthoSlider.value);
+    // ONE CAMERA PATH, COMPUTED ONCE. This was four branches - centre and
+    // extent each interpolated separately, an exact-target branch at
+    // progress 1, and a fourth that cleared the centre near the end - and each
+    // wrote viewerState directly. They disagreed about which fields moved
+    // together, which is how the shape came to be assigned only on completion.
+    //
+    // cameraAt is the whole of the movement now: geometric in the extent,
+    // screen-even in the pan, and the aspect carried on the same weight. See
+    // its header for why those are the right curves.
+    const A = rotationAnimation;
+    const goingHome = !A.targetCenter;
+    const ownHalf = () => {
+        const e = (A.object && A.object.maxExtent > 0) ? A.object.maxExtent : 30.0;
+        return { x: e, y: e };
+    };
+    const startHalf = A.startHalf || ownHalf();
+    // ...a flight back to everything has no view span of its own: it is the
+    // object's, which is what the viewer falls back to once the temporary one
+    // is cleared.
+    const targetHalf = A.targetHalf || (goingHome ? ownHalf() : startHalf);
 
-            if (normalizedValue < 1.0) {
-                const baseSize = rotationAnimation.object.stdDev * STD_DEV_MULT;
-                const multiplier = PERSPECTIVE_MIN_MULT + (PERSPECTIVE_MAX_MULT - PERSPECTIVE_MIN_MULT) * normalizedValue;
-                renderer.focalLength = baseSize * multiplier;
-            }
-        }
+    const at = cameraAt(startHalf, targetHalf, A.startCenter, A.targetCenter,
+        eased,
+        (() => {
+            // the viewport in DISPLAY pixels, the units _viewportScale works in
+            const c = renderer.canvas;
+            const dpr = (typeof window !== 'undefined' && window.devicePixelRatio)
+                || 1;
+            return c ? { w: c.width / dpr, h: c.height / dpr } : { w: 0, h: 0 };
+        })());
 
-        // Trigger ortho slider update to recalculate focal length with new stdDev
-        // This ensures the slider's internal state is updated
-        const orthoSlider = document.getElementById('orthoSlider');
-        if (orthoSlider) {
-            orthoSlider.dispatchEvent(new Event('input'));
+    // ...and back into the two fields, times the zoom, because _viewHalfSpan
+    // divides by it on the way out. The zoom has not moved since the flight
+    // began, so this is one multiplication and not a second animation.
+    const z = (renderer.viewerState.zoom > 0) ? renderer.viewerState.zoom : 1;
+    setViewSpan(renderer.viewerState,
+        { x: at.half.x * z, y: at.half.y * z });
+    if (at.centre) renderer.viewerState.center = at.centre;
+
+    if (progress >= 1.0 && A.targetCenter) {
+        // ...land on the target exactly rather than on k^1, which is the same
+        // number up to floating point and not worth a reader wondering about.
+        renderer.viewerState.center = {
+            x: A.targetCenter.x, y: A.targetCenter.y, z: A.targetCenter.z };
+        if (A.targetHalf) {
+            setViewSpan(renderer.viewerState,
+                { x: A.targetHalf.x * z, y: A.targetHalf.y * z });
         }
     }
-
-    // Interpolate center and extent during animation - use same easing for consistency
-    if (rotationAnimation.targetCenter && rotationAnimation.startCenter) {
-        // If at completion, use exact target values to avoid any rounding errors
-        if (progress >= 1.0) {
-            renderer.viewerState.center = {
-                x: rotationAnimation.targetCenter.x,
-                y: rotationAnimation.targetCenter.y,
-                z: rotationAnimation.targetCenter.z
-            };
-            if (rotationAnimation.targetExtent !== null && rotationAnimation.targetExtent !== undefined) {
-                renderer.viewerState.extent = rotationAnimation.targetExtent;
-            }
-        } else {
-            const t = eased; // Use same eased value for smooth interpolation
-            // Smoothly interpolate from start center to target center
-            renderer.viewerState.center = {
-                x: rotationAnimation.startCenter.x + (rotationAnimation.targetCenter.x - rotationAnimation.startCenter.x) * t,
-                y: rotationAnimation.startCenter.y + (rotationAnimation.targetCenter.y - rotationAnimation.startCenter.y) * t,
-                z: rotationAnimation.startCenter.z + (rotationAnimation.targetCenter.z - rotationAnimation.startCenter.z) * t
-            };
-            // Interpolate extent as well for smooth zoom animation
-            if (rotationAnimation.targetExtent !== null && rotationAnimation.targetExtent !== undefined) {
-                renderer.viewerState.extent = rotationAnimation.startExtent + (rotationAnimation.targetExtent - rotationAnimation.startExtent) * t;
-            } else {
-                renderer.viewerState.extent = rotationAnimation.startExtent;
-            }
-        }
-    } else {
-        // Interpolate extent even when clearing center (for smooth transition back to all positions)
-        // For multi-frame objects, we keep the frame-specific extent to prevent zoom jumps
-        if (rotationAnimation.targetExtent !== null && rotationAnimation.targetExtent !== undefined) {
-            // We have a frame-specific extent, interpolate to it and keep it
-            const t = eased;
-            // Always use startExtent as the starting point, not renderer.temporaryExtent
-            // This prevents jumps when camera.extent is null or different
-            const startExtent = rotationAnimation.startExtent !== null && rotationAnimation.startExtent !== undefined
-                ? rotationAnimation.startExtent
-                : (rotationAnimation.object && rotationAnimation.object.maxExtent) || 30.0;
-            renderer.viewerState.extent = startExtent + (rotationAnimation.targetExtent - startExtent) * t;
-        } else {
-            // No frame-specific extent, use object.maxExtent
-            const t = eased;
-            // Always use startExtent as the starting point, not renderer.temporaryExtent
-            const startExtent = rotationAnimation.startExtent !== null && rotationAnimation.startExtent !== undefined
-                ? rotationAnimation.startExtent
-                : (rotationAnimation.object && rotationAnimation.object.maxExtent) || 30.0;
-            const targetExtent = (rotationAnimation.object && rotationAnimation.object.maxExtent) || 30.0;
-            renderer.viewerState.extent = startExtent + (targetExtent - startExtent) * t;
-        }
-        // Clear temporary center if orienting to all positions
-        if (progress >= 0.99) { // Only clear at the very end
-            renderer.viewerState.center = null;
-            // For multi-frame objects, keep the frame-specific extent to prevent zoom jumps
-            // Only clear if we don't have a frame-specific extent
-            if (rotationAnimation.targetExtent === null || rotationAnimation.targetExtent === undefined) {
-                renderer.viewerState.extent = null;
-                renderer.viewerState.extentAspect = null;
-            }
-            // Otherwise, keep extent set to the frame-specific extent
+    // A FLIGHT BACK TO EVERYTHING ENDS WITH NO TEMPORARY VIEW SPAN AT ALL. The
+    // centre and the span go back to null so the viewer uses the object's own,
+    // which is what "orient to all" means.
+    if (goingHome && progress >= 0.99) {
+        renderer.viewerState.center = null;
+        if (!A.targetHalf) {
+            setViewSpan(renderer.viewerState, null);
         }
     }
 

@@ -1141,6 +1141,37 @@ setTimeout(finish, 80000);
             try { rv.replaceFrame(moved, 'nope'); return false; } catch (e) { return true; }
         })();
     }
+    // 🔴 THE PROJECTION FOLLOWS THE CONFIG, and for a long time it could not.
+    // `viewerState.ortho` was seeded from the ortho SLIDER in four places and
+    // an embed has no slider, so it was always 1 - flat - whatever
+    // rendering.ortho said. normalizeConfig carried the key and nothing read
+    // it, while viewer.py's signature, embed.html and the config schema all
+    // promised it worked.
+    {
+        const px = (id) => {
+            const c = canvasIn(id);
+            const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+            let h = 0;
+            for (let i = 0; i < d.length; i += 4) h = (h * 31 + d[i] * 7 + d[i + 1] * 13 + d[i + 2] * 17) >>> 0;
+            return h;
+        };
+        const seen = [];
+        for (const ortho of [1, 0.5, 0]) {
+            const box = document.getElementById('vis');
+            box.replaceChildren();
+            const ov = py2Dmol.show(box, PDB_TEXT, {rendering: {ortho}});
+            await frame();
+            await inked('vis', 4000);
+            await new Promise((r) => setTimeout(r, 400));
+            seen.push({asked: ortho, got: ov.viewerState.ortho,
+                focal: +(ov.viewerState.focalLength || 0).toFixed(1),
+                shot: px('vis')});
+        }
+        R.ortho = seen;
+        // ...three settings, three pictures. Reading back the field alone would
+        // pass against a value that is stored and never projected with.
+        R.orthoDistinct = new Set(seen.map((s) => s.shot)).size;
+    }
     R.hasOrientBtn = !!menuBox.querySelector('#orientButton');
     if (R.hasOrientBtn) {
         withMenu.viewerState.rotation = [[0, 0, 1], [0, 1, 0], [-1, 0, 0]];
@@ -1910,6 +1941,27 @@ if not R.get('elemHidden'):
                ' default, so turning them off must be visible')
 if not R.get('elemRestored'):
     bad.append('showElements did not put the element colours back')
+orth = R.get('ortho') or []
+print("  ortho: " + ", ".join(
+    f"asked {o['asked']} -> {o['got']} (focal {o['focal']})" for o in orth))
+if len(orth) != 3:
+    bad.append('the ortho check did not run')
+else:
+    for o in orth:
+        if o['got'] != o['asked']:
+            bad.append(f"rendering.ortho {o['asked']} reached viewerState as"
+                       f" {o['got']} - an embed has no ortho slider, and the"
+                       ' four places that seed the field read only the slider')
+    persp = [o for o in orth if o['asked'] < 1]
+    if any(o['focal'] <= 0 or o['focal'] == 200.0 for o in persp):
+        bad.append(f"perspective was asked for and the focal length is still"
+                   f" the 200 default: {[o['focal'] for o in persp]}. Nothing"
+                   ' recalibrates it without a slider, so the camera stands at'
+                   ' a distance with no relation to the structure')
+if R.get('orthoDistinct') != 3:
+    bad.append(f"three ortho settings drew {R.get('orthoDistinct')} distinct"
+               ' pictures - the value is being stored and not projected with')
+
 print(f"  replaceFrame: {R.get('rfBefore')} frames ->"
       f" {R.get('rfAfter')} after a replace, {R.get('rfStable')} after three")
 if R.get('rfBefore') != 2:

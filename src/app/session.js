@@ -219,6 +219,7 @@ function saveViewerState() {
                     focalLength: sourceState.focalLength,
                     center: sourceState.center,
                     extent: sourceState.extent,
+                    extentAspect: sourceState.extentAspect,
                     currentFrame: sourceState.currentFrame,
                     clipNear: held.clipNear !== undefined ? held.clipNear : null,
                     clipFar: held.clipFar !== undefined ? held.clipFar : null,
@@ -263,6 +264,15 @@ function saveViewerState() {
             focal_length: renderer.viewerState.focalLength,  // NEW
             center: renderer.viewerState.center,  // NEW - for orient to selection
             extent: renderer.viewerState.extent,  // NEW - for orient to selection
+            // ...AND THE SHAPE BESIDE THE SIZE. The extent is a radius and
+            // extentAspect is how it is shaped; the scale needs both, so a
+            // session that saved one drew at a different magnification when it
+            // came back. It used to be harmless: the aspect was normalised so
+            // the binding axis was exactly 1, and losing it changed nothing on
+            // that axis. Normalised by the extent it is below 1 on BOTH, so
+            // dropping it shrinks the restored picture by the whole reserve -
+            // measured as 56,582 pixels of ink against 82,545.
+            extent_aspect: renderer.viewerState.extentAspect,
             color_mode: renderer.colorMode || 'auto',
             // the SSE palette is a separate axis from the colour MODE:
             // restoring mode 'ss' without it put the ribbon back on the
@@ -572,6 +582,7 @@ async function loadViewerState(stateData) {
                         focalLength: vs.focalLength,
                         center: vs.center,
                         extent: vs.extent,
+                        extentAspect: vs.extentAspect,
                         currentFrame: vs.currentFrame,
                         // ...and what _switchToObject moves on and off the
                         // renderer. Absent in a session saved before these were
@@ -737,8 +748,16 @@ async function loadViewerState(stateData) {
             }
 
             // Restore extent (from orient to selection)
-            if (typeof vs.extent === 'number') {
-                renderer.viewerState.extent = vs.extent;
+
+            // ...saved under either spelling: the viewer block uses the
+            // snake_case wire name, an object's held state the camel one.
+            // ...and the pair put down together, through the one writer, so a
+            // restored session cannot end up with a size from the file and a
+            // shape from whatever was on screen.
+            const savedAspect = vs.extent_aspect || vs.extentAspect;
+            if (typeof vs.extent === 'number' && vs.extent > 0) {
+                setViewSpan(renderer.viewerState,
+                    halfSpanOf(vs.extent, savedAspect));
             }
 
             // Restore render style BEFORE the individual controls: setStyle
@@ -1022,8 +1041,12 @@ async function loadViewerState(stateData) {
                             if (savedView.center) {
                                 renderer.viewerState.center = savedView.center;
                             }
-                            if (typeof savedView.extent === 'number') {
-                                renderer.viewerState.extent = savedView.extent;
+                            const va = savedView.extentAspect
+                                || savedView.extent_aspect;
+                            if (typeof savedView.extent === 'number'
+                                && savedView.extent > 0) {
+                                setViewSpan(renderer.viewerState,
+                                    halfSpanOf(savedView.extent, va));
                             }
                             renderer.render('restored view');
                         }

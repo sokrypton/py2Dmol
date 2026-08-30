@@ -397,6 +397,102 @@ window.addEventListener('load', () => {
         mark: r.selectionMark, markSel: state().markSel,
         pressed: state().pressed, objects: Object.keys(r.objectsData).length,
       };
+      // 🔴 AND MOVING FROM ONE FOCUS TO THE NEXT DOES NOT STEP THE ZOOM.
+      //
+      // focusMoveTo lerps the centre and the extent and used to SNAP the
+      // aspect, on the reasoning that the shape belongs to the target and
+      // lerping it would make the picture breathe sideways. Nothing here
+      // scales anisotropically: the aspect only decides which side of the
+      // viewport binds, and what comes out is one isotropic scale. So the snap
+      // was a step in the ZOOM, and every click lands on a neighbourhood of a
+      // different shape - measured at 44% and 32% of the whole change in a
+      // single frame, against 10-13% once it is interpolated, which is what
+      // the easing's own steepest frame is worth over a flight this length.
+      //
+      // A WIDE BOX, because on a near-square canvas the same side binds
+      // whatever the aspect is and the snap cannot be seen at all.
+      {
+        // ...A STRUCTURE FIRST. This runs after the Clear All leg, which is
+        // exactly what it says it is: there is nothing on screen by then, and
+        // measuring a zoom on an empty viewer reports 0 positions.
+        await load('1UBQ.cif');
+        await until(loaded);
+        await settle(4);
+        const holder = document.getElementById('canvasContainer');
+        const wasStyle = holder.getAttribute('style') || '';
+        holder.style.width = '560px'; holder.style.height = '300px';
+        window.dispatchEvent(new Event('resize'));
+        await settle(8);
+        const worst = [];
+        // ...WINDOWS TAKEN FROM THE STRUCTURE, not written out: this probe is
+        // run against whichever file it is given (4HHB by default, 1UBQ part
+        // way through), and fixed indices past the end of a small one leave
+        // the check with nothing to measure and no way to say so.
+        const N = (r.coords && r.coords.length) || 0;
+        R.focusZoomN = N;
+        const windows = [[0.15, 6], [0.45, 3], [0.70, 8]].map(([at, len]) => {
+          const start = Math.floor(N * at);
+          const out = [];
+          for (let i = start; i < start + len && i < N; i++) out.push(i);
+          return out;
+        });
+        for (const set of windows) {
+          const usable = set.filter((i) => i < r.coords.length);
+          if (usable.length < 2) continue;
+          const seen = [];
+          let sampling = true;
+          const tick = () => {
+            if (!sampling) return;
+            seen.push(r._viewScale || 0);
+            requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+          r.focusOn(new Set(usable));
+          await new Promise((done) => setTimeout(done, 900));
+          sampling = false;
+          let end = seen.length - 1;
+          while (end > 1 && seen[end] === seen[end - 1]) end--;
+          const f = seen.slice(0, end + 1);
+          let mx = 0;
+          for (let i = 1; i < f.length; i++) mx = Math.max(mx, Math.abs(f[i] - f[i - 1]));
+          const span = Math.abs(f[f.length - 1] - f[0]);
+          worst.push({n: usable.length, frames: f.length, span: +span.toFixed(3),
+            maxStep: +mx.toFixed(3), frac: span > 0.05 ? +(mx / span).toFixed(2) : null});
+          await new Promise((done) => setTimeout(done, 300));
+        }
+        R.focusZoom = worst;
+        // 🔴 AND THE MAGNIFICATION MUST NOT SWING ON THE SHAPE OF THE BLOB.
+        // The extent is floored so every focused residue is drawn at the same
+        // size; the aspect was measured raw from the neighbourhood, which at
+        // that size is noise, and it feeds the same single scale. Clicking
+        // from one side chain to the next gave (0.431, 1), (1, 0.861),
+        // (1, 0.874) and swung the zoom 10-15% each time - reported as zooming
+        // in, moving, and zooming back out.
+        //
+        // THE INVARIANT IS scale x extent, not the scale: neighbourhoods
+        // genuinely differ in size and a bigger one SHOULD draw smaller. What
+        // must not vary is the rest of it.
+        // ONE RESIDUE AT A TIME, which is the gesture reported: a click on a
+        // side chain. focusOn expands it to the neighbourhood, and those come
+        // out near the floor in every direction, so the shape is noise and the
+        // magnification should not move. A RUN of residues is a different
+        // thing - a chain segment really is elongated - and is not measured
+        // here for that reason.
+        const products = [];
+        for (const at of [0.15, 0.45, 0.70, 0.30]) {
+          const i = Math.floor(N * at);
+          if (i >= N) continue;
+          r.focusOn(new Set([i]));
+          await new Promise((done) => setTimeout(done, 800));
+          products.push({at: i, ext: +r.viewerState.extent.toFixed(2),
+            product: +r._viewScale.toFixed(2)});
+        }
+        R.focusProducts = products;
+        holder.setAttribute('style', wasStyle);
+        window.dispatchEvent(new Event('resize'));
+        await settle(4);
+      }
+
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});
   };
@@ -775,6 +871,40 @@ else:
                    " the mode borrowed it. Clear All resets the structure; a"
                    " mark is a preference, and the only thing owed here is what"
                    " focus took")
+
+fz = R.get("focusZoom") or []
+print("  focus zoom, biggest single-frame step as a share of the move:")
+for c in fz:
+    print(f"    {c['n']} residues: {c['frames']} frames, span {c['span']},"
+          f" step {c['maxStep']} ({c['frac']})")
+moved = [c for c in fz if (c.get("span") or 0) > 0.5]
+if not moved:
+    bad.append(f"no focus move changed the zoom enough to see a step in it"
+               f" ({R.get('focusZoomN')} positions, {len(fz)} moves measured),"
+               " so the check below would pass against a snap")
+for c in moved:
+    if (c.get("frac") or 0) > 0.25:
+        bad.append(f"a focus move carried {c['maxStep']} of a {c['span']} zoom"
+                   " change in one frame - focusMoveTo lerps the extent and"
+                   " snaps the aspect, and both feed the same single scale, so"
+                   " every click on a neighbourhood of a different shape steps")
+
+pr = R.get("focusProducts") or []
+print("  focus on single residues, magnification:"
+      f" {[p['product'] for p in pr]} (extents {[p['ext'] for p in pr]})")
+vals = [p["product"] for p in pr]
+if len(vals) < 2:
+    bad.append("fewer than two single-residue focuses measured, so a swinging"
+               " magnification would go unreported")
+elif max(vals) - min(vals) > 0.02 * max(vals):
+    bad.append(f"clicking from one residue to the next changes the"
+               f" magnification: it came out {vals}, and it should be one"
+               " number. THE SCALE ITSELF, not scale x extent: the half-spans"
+               " are floored to the same number, so every focused residue is"
+               " fitted to the same box whatever its 3D radius says - which is"
+               " what the floor is for. The aspect is measured from the blob"
+               " and is noise at this size, so without the same floor on it"
+               " the zoom swings on every click")
 
 for m in bad:
     print("FAIL:", m)

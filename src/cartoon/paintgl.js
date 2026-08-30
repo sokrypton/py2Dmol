@@ -2798,7 +2798,7 @@ function setVisible(o) {
     if (o.sticks !== undefined) showSticks = !!o.sticks;
 }
 
-// THE FRAMING, as it stands against the framing the mesh was captured under.
+// THE VIEW SPAN, as it stands against the view span the mesh was captured under.
 //
 // The mesh is model-space Angstrom: the capture divided the renderer's view
 // scale out and its centre off. Both of those move WITHOUT the geometry
@@ -2808,20 +2808,22 @@ function setVisible(o) {
 // the animation can run at all. A rebuild per frame is seconds on the
 // structures this path exists for.
 //
-// frameScaleMul is capExtent/liveExtent (the base scale is padding*size over
-// 2*extent, so the extents divide out exactly), and viewShift is
-// capCentre - liveCentre in model space. Both are 1 and zero for the lab,
-// which has no renderer and never moves either.
-let frameScaleMul = 1;
+// viewScaleMul is the ratio of what the live view span fits to against what the
+// captured one did - see spanFit - and viewShift is capCentre - liveCentre in
+// model space. Both are 1 and zero for the lab, which has no renderer and
+// never moves either.
+let viewScaleMul = 1;
 let viewShift = [0, 0, 0];
-function setFraming(mul, shift) {
-    frameScaleMul = (typeof mul === 'number' && isFinite(mul) && mul > 0) ? mul : 1;
+function setViewTransform(mul, shift) {
+    viewScaleMul = (typeof mul === 'number' && isFinite(mul) && mul > 0) ? mul : 1;
     viewShift = shift || [0, 0, 0];
 }
 // device pixels per Angstrom, the one number both draw passes scale by
-const drawScale = () => (resident
-    ? resident.scale * (viewZoom / (resident.capZoom || 1)) * frameScaleMul
-    : 1) * pixelRatio;
+// ...and NOT a separate zoom term any more: `viewScaleMul` is a ratio of
+// half-spans and those carry the zoom, so dividing it out here as well would
+// apply it twice.
+const drawScale = () => (resident ? resident.scale * viewScaleMul : 1)
+    * pixelRatio;
 // The depth range travels with the shift: it is measured around the capture's
 // centre, and a shift moves every z by the same amount.
 const shiftZ = () => {
@@ -4924,8 +4926,6 @@ function captureFrom(renderer, w, h, colors) {
     // zoom 1 and above, where the fade has saturated. Capturing at the zoom
     // being looked at makes the mesh agree with the 2D pass exactly, and the
     // draw divides that zoom out again so turning and zooming stay redraws.
-    const capZoom = (renderer.viewerState.zoom > 0)
-        ? renderer.viewerState.zoom : 1;
     // ...and never with the grain: it is composited over the finished frame,
     // and there is no finished frame here.
     renderer.cartoonPencil = 0;
@@ -4940,8 +4940,11 @@ function captureFrom(renderer, w, h, colors) {
         // per-frame re-projection returned immediately: the selection halo and
         // the sequence highlight kept whatever screen coordinates the last 2D
         // render had left, and drifted the moment the model turned.
+        // ...and no capZoom: the zoom is inside the half-span the view span
+        // multiplier is built from, so recording it here and dividing it out
+        // at draw time would apply it twice.
         return { prims: renderer._primProbe || [], scale: renderer._viewScale,
-            capZoom, pos: renderer._posProbe, trace: renderer._traceProbe };
+            pos: renderer._posProbe, trace: renderer._traceProbe };
     } finally {
         setCapturing(false);
         renderer._noViewCull = keep.noViewCull;
@@ -5066,16 +5069,40 @@ function invalidate() {
 // THE TWO NUMBERS THAT FRAME THE VIEW, read the way the 2D renderer reads
 // them (core/mol.js: the scale block, and _computeViewCentre). Orient writes
 // both; a pan writes the centre. The fallbacks are the renderer's own.
-function framingOf(renderer) {
+function viewSpanOf(renderer) {
     // the extent of what is DRAWN - see drawnStats: with several objects
     // merged, the current object's is a fraction of the picture
     const o = (renderer.drawnStats && renderer.drawnStats())
         || (renderer.objectsData && renderer.objectsData[renderer.currentObjectName]);
-    const extent = renderer.viewerState.extent
-        || ((o && o.maxExtent > 0) ? o.maxExtent : 30.0);
     let c = renderer.viewerState.center;
     if (!c && renderer._computeViewCentre) c = renderer._computeViewCentre(o);
-    return { extent, centre: c ? [c.x, c.y, c.z] : [0, 0, 0] };
+    // ...AND THE SHAPE. The base scale is not a function of the extent alone
+    // any more - see spanFit below - so a view span that reported only the
+    // extent could not say whether two of them wanted the same scale.
+    // THE HALF-SPAN IS THE VIEW SPAN, and the renderer owns the one answer -
+    // see _viewHalfSpan. It already carries the zoom, which is why the
+    // multiplier below no longer divides that out separately.
+    const half = renderer._viewHalfSpan
+        ? renderer._viewHalfSpan(o)
+        : { x: extent, y: extent };
+    // ...and no `extent`: nothing reads it since the multiplier became a
+    // ratio of half-spans, and a view span that reports two sizes is a view span
+    // that can report them differently.
+    return { centre: c ? [c.x, c.y, c.z] : [0, 0, 0], half };
+}
+
+/**
+ * What a view span fits to, up to the padding: `min(w / 2hx, h / 2hy)`.
+ *
+ * A ratio of two of these IS the ratio of the scales they ask for, so the
+ * view-span multiplier below is one division. It used to be the extents' ratio
+ * times a separate term for the shape times a third for the zoom - three ways
+ * for a cached mesh to be drawn at the wrong size, and two of them were.
+ */
+function spanFit(displayWidth, displayHeight, half) {
+    const hx = (half && half.x > 0) ? half.x : 1;
+    const hy = (half && half.y > 0) ? half.y : 1;
+    return Math.min(displayWidth / (hx * 2), displayHeight / (hy * 2));
 }
 
 // THE SAME PROJECTION THE 2D TAIL DOES, from the captured model-space drawn
@@ -5088,7 +5115,7 @@ function projectPositions(renderer, dw, dh) {
     const persp = isPersp();
     const fl = focalLength();
     // EXACTLY WHAT THE FILLS ARE DRAWN AT, in display pixels: the mesh's scale
-    // carries the zoom and the framing it was captured under, and drawScale
+    // carries the zoom and the view span it was captured under, and drawScale
     // divides both out and applies the live ones. A halo that used a different
     // scale from the picture it sits on is a halo in the wrong place.
     const sc = drawScale() / pixelRatio;
@@ -5314,7 +5341,7 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
                 };
             })() : () => {};
             hm('start');
-            const { prims, scale, capZoom, pos, trace } = captureFrom(renderer,
+            const { prims, scale, pos, trace } = captureFrom(renderer,
                 displayWidth, displayHeight, colors);
             // WHERE THE RIBBON RAN, handed straight to the renderer: the
             // capture puts `_traceProbe` back the way it found it, so without
@@ -5345,13 +5372,12 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
             // the mesh's scale already carries the zoom it was captured at, so
             // the draw multiplies by the RATIO rather than by the zoom itself
             if (resident) {
-                resident.capZoom = capZoom;
-                // ...and the framing, for the same reason: the draw applies
+                // ...and the view span, for the same reason: the draw applies
                 // the RATIO between this and the live one, so both have to be
                 // remembered from the moment the mesh was made.
-                const capFr = framingOf(renderer);
-                resident.capExtent = capFr.extent;
+                const capFr = viewSpanOf(renderer);
                 resident.capCentre = capFr.centre;
+                resident.capHalf = capFr.half;
             }
             // THE DRAWN POSITIONS, in model space. Everything on top of the
             // canvas - the selection halo, the sequence hover, click-picking -
@@ -5405,12 +5431,30 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
             }
         }
         if (!resident) return false;
-        // THE FRAMING THIS FRAME, against the framing the mesh carries. On the
+        // THE VIEW SPAN THIS FRAME, against the view span the mesh carries. On the
         // frame that just rebuilt these are equal, so the multiplier is 1 and
         // the shift is zero; on every frame after an Orient they are not.
-        const fr = framingOf(renderer);
+        const fr = viewSpanOf(renderer);
         const capC = resident.capCentre || fr.centre;
-        setFraming((resident.capExtent || fr.extent) / (fr.extent || 1),
+        // 🔴 THE SHAPE AS WELL AS THE SIZE. This was `capExtent / liveExtent`
+        // alone, on the reasoning that the base scale is padding*size over
+        // 2*extent so the extents divide out exactly - true while the fit was
+        // isotropic, and false the moment `_viewportScale` started reading
+        // extentAspect. Orient writes a new aspect at the END of its flight,
+        // so a viewer that had a cached mesh went on drawing at the shape it
+        // was captured under: measured on 1TIM in a 560x300 box, orienting to
+        // a selection wanted 8.280 px/A and drew at 6.593, and only a rebuild
+        // put it right. Reported as the zoom not animating and needing a
+        // resize of the box to catch up.
+        // ONE RATIO. The scale a view span asks for is spanFit of its half-span,
+        // so what the mesh must be redrawn by is the live one over the captured
+        // one - size, shape and zoom together, because the half-span is all
+        // three. This was `capExtent / liveExtent` alone (which missed the
+        // shape, and drew a reused mesh at 0.796 of the wanted scale after an
+        // Orient) and then that times an aspect term (which still missed the
+        // zoom).
+        setViewTransform(spanFit(displayWidth, displayHeight, fr.half)
+            / spanFit(displayWidth, displayHeight, resident.capHalf || fr.half),
             [capC[0] - fr.centre[0], capC[1] - fr.centre[1], capC[2] - fr.centre[2]]);
         // ...and tell the renderer what the picture is actually drawn at. A pan
         // converts its drag from pixels to Angstrom with this, and on a GPU
@@ -5925,7 +5969,7 @@ function drawTube(cv, renderer, prm) {
     // THE SHIFT, AND THE DEPTH RANGE THAT TRAVELS WITH IT. The range was
     // measured about the centre the instances were built around, and a shift
     // moves every z by the same amount - the rotated shift's z component.
-    const fr = framingOf(renderer);
+    const fr = viewSpanOf(renderer);
     const sh = [tubeCentre[0] - fr.centre[0], tubeCentre[1] - fr.centre[1],
         tubeCentre[2] - fr.centre[2]];
     gl.uniform3f(gl.getUniformLocation(progTube, 'uShift'), sh[0], sh[1], sh[2]);

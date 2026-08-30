@@ -255,6 +255,153 @@ window.addEventListener('load', () => {
         R.moved = {rebuilt: rebuiltAt() !== t0m, changed: shot() !== before};
       }
 
+      // 🔴 A REUSED MESH MUST BE DRAWN AT THE FRAMING THE VIEWER WANTS NOW.
+      //
+      // The mesh carries the extent, centre and SHAPE it was captured under,
+      // and the draw divides those out and applies the live ones. The
+      // multiplier was `capExtent / liveExtent` alone, on the reasoning that
+      // the base scale is padding*size over 2*extent so the extents divide out
+      // exactly - true while the fit was isotropic, and false the moment
+      // _viewportScale started reading extentAspect. Orient writes a new
+      // aspect at the END of its flight, so a viewer with a cached mesh went
+      // on drawing at the shape it was captured under.
+      //
+      // ASKED AS A RATIO, not as a picture: _viewScale is what the GPU drew at
+      // and _viewportScale is what the renderer wants, so their quotient is 1
+      // when the framing is honoured and nothing else has to be known about
+      // the structure. A pixel comparison could not tell "20% too small" from
+      // "a different structure".
+      {
+        const canvas = r.canvas;
+        const dpr = window.devicePixelRatio || 1;
+        const ratio = () => r._viewScale / r._viewportScale(
+          canvas.width / dpr, canvas.height / dpr,
+          r.objectsData[r.currentObjectName]);
+        const F = (R.framing = {});
+        const asp = () => {
+          const a = r.viewerState.extentAspect;
+          return a ? [+a.x.toFixed(3), +a.y.toFixed(3)] : null;
+        };
+        const marks = (R.framingMarks = {});
+        // 🔴 A WIDE BOX, OR THE CHECK BELOW IS VACUOUS. The wanted scale is
+        // `min(w / ax, h / ay)`, and on a canvas that is nearly square the
+        // same side wins whatever the aspect is - so a multiplier that ignores
+        // the aspect entirely still lands on the right number. dev.html's
+        // canvas is square enough for that, and the first version of this test
+        // passed against the bug it was written for. Measured on a 560x300
+        // box, where the two sides genuinely disagree.
+        const holder = document.getElementById('canvasContainer');
+        const wasStyle = holder.getAttribute('style') || '';
+        holder.style.width = '560px';
+        holder.style.height = '300px';
+        window.dispatchEvent(new Event('resize'));
+        await settle(8);
+        marks.canvas = [r.canvas.width, r.canvas.height];
+        marks.aspectBefore = asp();
+        marks.rebuiltBefore = rebuiltAt();
+        F.atRest = ratio();
+        // ...a selection with a very different SHAPE from the whole structure,
+        // which is what makes the aspect move
+        const some = [];
+        for (let i = 30; i < 70 && i < r.coords.length; i++) some.push(i);
+        window.py2dmolOrient.orientTo(r, {positions: some, animate: false});
+        await settle(6);
+        F.orientedToSelection = ratio();
+        marks.aspectAfter = asp();
+        marks.rebuiltAfter = rebuiltAt();
+        window.py2dmolOrient.orientTo(r, {animate: false});
+        await settle(6);
+        F.backToAll = ratio();
+        // ...and the mesh must NOT have been rebuilt across any of that, or
+        // the stale-framing path was never taken and this proves nothing
+        marks.rebuiltAcross = rebuiltAt() !== marks.rebuiltBefore;
+
+        // 🔴 THE MAGNIFICATION IS MONOTONIC, AND A FLIGHT THAT DOES NOT CHANGE
+        // IT ANIMATES NOTHING. The scale is
+        // `padding * min(w / ax, h / ay) / (2 * extent) * zoom`, and making
+        // each INPUT well behaved still leaves the output free to misbehave:
+        // the `min` swaps which term binds part way, and the minimum of a
+        // rising and a falling function rises and then falls. So the
+        // magnification is interpolated directly and the extent solved from
+        // it - which also means two identical requests in a row hold it
+        // exactly still, the case that was reported.
+        const flightOf = async (req) => {
+          const seen = [];
+          let sampling = true;
+          const tick = () => {
+            if (!sampling) return;
+            seen.push(r._viewScale || 0);
+            requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+          window.py2dmolOrient.orientTo(r, req);
+          await new Promise((done) => setTimeout(done, 2400));
+          sampling = false;
+          let end = seen.length - 1;
+          while (end > 1 && seen[end] === seen[end - 1]) end--;
+          const f = seen.slice(0, end + 1);
+          const a = f[0];
+          const b = f[f.length - 1];
+          return {
+            from: +a.toFixed(3), to: +b.toFixed(3),
+            span: +Math.abs(b - a).toFixed(3),
+            // how far the path strays OUTSIDE its own two endpoints
+            outside: +Math.max(Math.max(...f) - Math.max(a, b),
+              Math.min(a, b) - Math.min(...f)).toFixed(3),
+          };
+        };
+        marks.zoomIn = await flightOf({positions: some});
+        marks.zoomRepeat = await flightOf({positions: some});
+        marks.zoomOut = await flightOf({});
+
+        // 🔴 AND THE FLIGHT MUST LAND, NOT ARRIVE. `extent` was interpolated
+        // per frame and `extentAspect` was assigned only on completion, so the
+        // scale - which is a function of both - rotated smoothly and then
+        // stepped onto its final value. Reported as "it would first rotate
+        // then JUMP to new size".
+        //
+        // THE SIGNATURE IS THE LAST STEP, not the biggest one: an eased curve
+        // is steepest in the middle, and over a twenty-frame flight that frame
+        // legitimately carries a sixth of the change. What cannot happen is
+        // the change arriving at the END. Measured before the fix: the biggest
+        // step was 2.409 of a 6.536 span and it was the FINAL frame; after, the
+        // final step is 0.002 and the biggest has moved to the middle.
+        const seen = [];
+        let sampling = true;
+        const tick = () => {
+          if (!sampling) return;
+          seen.push(r._viewScale || 0);
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+        window.py2dmolOrient.orientTo(r, {positions: some});
+        await new Promise((done) => setTimeout(done, 2600));
+        sampling = false;
+        // ...trim the still tail, so the statistics are about the flight
+        let end = seen.length - 1;
+        while (end > 1 && seen[end] === seen[end - 1]) end--;
+        const flight = seen.slice(0, end + 1);
+        const span = Math.abs(flight[flight.length - 1] - flight[0]);
+        let biggest = 0;
+        for (let i = 1; i < flight.length; i++) {
+          biggest = Math.max(biggest, Math.abs(flight[i] - flight[i - 1]));
+        }
+        marks.flight = {
+          frames: flight.length,
+          span: +span.toFixed(3),
+          lastStep: +Math.abs(flight[flight.length - 1]
+            - flight[flight.length - 2]).toFixed(3),
+          // ...and the biggest anywhere, which catches the same fault moved to
+          // the OTHER end: snapping the aspect on the FIRST frame instead of
+          // the last is just as wrong and leaves the last step small.
+          maxStep: +biggest.toFixed(3),
+        };
+
+        holder.setAttribute('style', wasStyle);
+        window.dispatchEvent(new Event('resize'));
+        await settle(4);
+      }
+
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});
   };
@@ -385,6 +532,83 @@ for i, sw in enumerate(R.get("switches") or []):
         bad.append(f"switch {i + 1} to {sw['name']}: picking moved")
 if not R.get("switches"):
     bad.append("the picker leg did not run")
+
+fr = R.get("framing") or {}
+mk = R.get("framingMarks") or {}
+print(f"  framing marks: aspect {mk.get('aspectBefore')} ->"
+      f" {mk.get('aspectAfter')}, rebuild counter"
+      f" {mk.get('rebuiltBefore')} -> {mk.get('rebuiltAfter')}")
+print("  framing after Orient (drawn scale / wanted scale):"
+      f" at rest {fr.get('atRest')}, to a selection"
+      f" {fr.get('orientedToSelection')}, back {fr.get('backToAll')}")
+if not fr:
+    bad.append("the framing check did not run, so a mesh drawn at a stale"
+               " scale would go unreported")
+if mk.get("rebuiltAcross"):
+    bad.append("the mesh was rebuilt during the framing check, so the reused"
+               " mesh never had to honour a framing it was not captured under"
+               " - the check cannot see the bug it exists for")
+if mk.get("aspectBefore") == mk.get("aspectAfter"):
+    bad.append(f"the aspect did not change ({mk.get('aspectBefore')}), so a"
+               " multiplier that ignores it entirely would pass")
+_cv = mk.get("canvas") or [0, 0]
+if not _cv[0] or abs(_cv[0] - _cv[1]) < 0.2 * max(_cv[0], 1):
+    bad.append(f"the framing check ran on a {_cv} canvas - too square for the"
+               " aspect to change which side binds, which is what made the"
+               " first version of this test pass against the bug")
+for tag, value in fr.items():
+    if value is None or abs(value - 1) > 0.02:
+        bad.append(f"a reused mesh is drawn at {value} of the scale the viewer"
+                   f" wants ({tag}) - the framing multiplier divides out the"
+                   " extent but not the shape, so Orient leaves the picture at"
+                   " the aspect the mesh was captured under until something"
+                   " forces a rebuild. Reported as the zoom not animating and"
+                   " needing the box resized to catch up")
+
+for tag in ("zoomIn", "zoomOut", "zoomRepeat"):
+    z = mk.get(tag) or {}
+    print(f"  orient {tag}: {z.get('from')} -> {z.get('to')}"
+          f" (span {z.get('span')}), strays outside its endpoints by"
+          f" {z.get('outside')}")
+    if not z:
+        bad.append(f"the {tag} flight did not run")
+        continue
+    if z["outside"] > 0.02 * max(z["span"], 0.001) + 0.01:
+        bad.append(f"the {tag} flight's magnification left its own endpoints by"
+                   f" {z['outside']} - it zooms past and comes back. The scale"
+                   " is a min() of two terms, so interpolating extent and"
+                   " aspect separately lets the binding axis swap part way and"
+                   " the minimum rise then fall")
+_zi, _zr = mk.get("zoomIn") or {}, mk.get("zoomRepeat") or {}
+if (_zi.get("span") or 0) < 1:
+    bad.append("the first flight barely changed the zoom, so the repeat below"
+               " proves nothing")
+elif _zr.get("span") is None or _zr.get("outside") is None \
+        or _zr["span"] > 0.01 or _zr["outside"] > 0.01:
+    bad.append(f"asking for the SAME framing twice animated a zoom anyway:"
+               f" {_zr} - with both endpoints equal the magnification is"
+               " constant by construction, so any movement means it is being"
+               " rebuilt from inputs rather than interpolated")
+
+fl = mk.get("flight") or {}
+print(f"  animated orient: {fl.get('frames')} frames, scale span"
+      f" {fl.get('span')}, final step {fl.get('lastStep')}")
+if not fl or not fl.get("frames"):
+    bad.append("the animated-orient check did not run")
+elif (fl.get("span") or 0) < 0.5:
+    bad.append(f"the flight changed the scale by only {fl.get('span')}, so a"
+               " jump at the end of it would be too small to see - the check"
+               " needs an orient that actually rezooms")
+elif fl.get("maxStep", 0) > 0.35 * fl["span"]:
+    bad.append(f"one frame of the flight carried {fl['maxStep']} of a"
+               f" {fl['span']} scale change - the easing's steepest frame is"
+               " worth about a sixth of it over a flight this length, so a"
+               " third is a step rather than a curve, wherever it falls")
+elif fl["lastStep"] > 0.1 * fl["span"]:
+    bad.append(f"the last frame of the flight carried {fl['lastStep']} of a"
+               f" {fl['span']} scale change - Orient rotates smoothly and then"
+               " JUMPS onto its final size, because extent is interpolated per"
+               " frame and extentAspect is only assigned on completion")
 
 for m in bad:
     print("FAIL:", m)

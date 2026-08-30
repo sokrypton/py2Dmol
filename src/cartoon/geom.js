@@ -4754,14 +4754,18 @@ function render(renderer, ctx, displayWidth, displayHeight, colors) {
     // --- projection: identical to the ribbon path so zoom/ortho match ---
     // ...including the extent of what is DRAWN rather than of the current
     // object, which with several merged is a fraction of the picture.
-    const framed = (renderer.drawnStats && renderer.drawnStats()) || object;
-    const maxExtent = (framed && framed.maxExtent > 0) ? framed.maxExtent : 30.0;
-    const effectiveExtent = vs.extent || maxExtent;
-    const padding = 0.9;
-    const scale = Math.min(
-        (displayWidth * padding) / (effectiveExtent * 2),
-        (displayHeight * padding) / (effectiveExtent * 2)
-    ) * vs.zoom;
+    // 🔴 THE RENDERER'S, NOT A THIRD COPY OF IT. This computed
+    // `min(w, h) * 0.9 / (2 * extent)` - the same extent on BOTH axes - which
+    // is the isotropic fit `extentAspect` exists to replace, and it is the
+    // path the cartoon actually draws through. So the aspect was measured by
+    // parts/orient.js, stored on the viewer state, read by _viewportScale, and
+    // then not used by the style that runs: 1UBQ was fitted into a square of
+    // side min(520, 360) and drew across 251 of its 520 pixels. Reported as
+    // Orient zooming out too much, and it is 1.44x on that canvas.
+    //
+    // CLAUDE.md already carried "there were two places computing the view
+    // scale"; this was the third, and the one that mattered.
+    const scale = renderer._viewportScale(displayWidth, displayHeight, object);
     const centerX = displayWidth / 2;
     const centerY = displayHeight / 2;
     // the scale this style actually drew at, so a pan drag can convert

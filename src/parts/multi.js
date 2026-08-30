@@ -278,7 +278,7 @@
             // that an eye makes things appear and disappear where they are -
             // but that argument is about a picture you can see. With nothing
             // on screen there is no "where they are", and the first eye lit
-            // was left drawing into whatever framing the last thing happened
+            // was left drawing into whatever view span the last thing happened
             // to use: switch a ribosome and a peptide both off, light the
             // ribosome, and it was drawn at the peptide's scale, 3,200 px off
             // the side of a 1,200 px canvas. A blank window, with the object
@@ -324,7 +324,13 @@
                     if (reframe && own && own.center) {
                         this.viewerState.center = { x: own.center[0],
                             y: own.center[1], z: own.center[2] };
-                        this.viewerState.extent = own.maxExtent || null;
+                        // ...THROUGH setViewSpan, so the SHAPE goes with the
+                        // size. `maxExtent` is a radius and carries no shape,
+                        // and writing it on its own left whatever aspect the
+                        // last Orient measured - a new size fitted to an old
+                        // shape, which is the wrong magnification.
+                        setViewSpan(this.viewerState, own.maxExtent > 0
+                            ? { x: own.maxExtent, y: own.maxExtent } : null);
                     }
                     this._loadFrameData(this.currentFrame >= 0 ? this.currentFrame : 0,
                         skipRender);
@@ -354,7 +360,8 @@
                         && (reframe || !this._framedObjects.has(one))) {
                     this.viewerState.center = { x: back.center[0], y: back.center[1],
                         z: back.center[2] };
-                    this.viewerState.extent = back.maxExtent || null;
+                    setViewSpan(this.viewerState, back.maxExtent > 0
+                        ? { x: back.maxExtent, y: back.maxExtent } : null);
                 }
                 // THE FRAME IS HELD BACK UNTIL THE STATE IS WHOLE. Loading
                 // with a render of its own painted the picture before the
@@ -430,7 +437,8 @@
             if (ms.stats && (reframe || fresh.length)) {
                 this.viewerState.center = { x: ms.stats.center[0],
                     y: ms.stats.center[1], z: ms.stats.center[2] };
-                this.viewerState.extent = ms.stats.maxExtent;
+                setViewSpan(this.viewerState, ms.stats.maxExtent > 0
+                    ? { x: ms.stats.maxExtent, y: ms.stats.maxExtent } : null);
             }
             this._sourceGroupsCache = null;
             this._mergedSetCache = null;

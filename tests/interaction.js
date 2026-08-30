@@ -95,8 +95,12 @@ for (const name of ['getHydrophobicityColor', 'getAllValidColorModes',
     eval('global.' + name + ' = '
         + L.topFunction(name).replace('function ' + name, 'function'));
 }
+// ...and the one writer of the camera's view span, which parts/multi.js calls
+// when it changes what is drawn. Lifted rather than stubbed: a fixture that
+// wrote the extent and the aspect itself would be a second convention, which
+// is the thing setViewSpan exists to make impossible.
 for (const name of ['selectionBandFor', 'ligandGroupsForFrame',
-    'objectStateAbsent']) {
+    'objectStateAbsent', 'setViewSpan']) {
     eval('global.' + name + ' = '
         + L.topFunction(name).replace('function ' + name, 'function'));
 }
@@ -435,10 +439,16 @@ t('a changed selection does not keep the old residue\'s atoms', () => {
 const appSrc = L.app;
 const orientSrc = L.orient;
 const orientBody = (() => {
-    const a = orientSrc.indexOf('        // Calculate extent from selected positions');
-    const b = orientSrc.indexOf('// Calculate standard deviation for selected positions');
+    // MARKERS, NOT NEIGHBOURING PROSE. This sliced from one comment to
+    // another, and the second one belonged to the stdDev block - which was
+    // deleted when the perspective stopped being orient's to animate, taking
+    // the end of this slice with it. The markers say out loud that the region
+    // is lifted, so the next edit inside orient.js can see it.
+    const a = orientSrc.indexOf('// >>> ORIENT EXTENT BEGIN');
+    const b = orientSrc.indexOf('// <<< ORIENT EXTENT END');
     if (a < 0 || b < 0) {
-        throw new Error('orient extent block not found in parts/orient.js');
+        throw new Error('orient extent markers not found in parts/orient.js -'
+            + ' see >>> ORIENT EXTENT BEGIN');
     }
     return orientSrc.slice(a, b);
 })();

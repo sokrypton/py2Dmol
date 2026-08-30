@@ -163,7 +163,8 @@
             if (snap.extent === null || snap.extent === undefined) {
                 const settle = () => {
                     if (this._focusAnim) { requestAnimationFrame(settle); return; }
-                    this.viewerState.extent = snap.extent;
+                    setViewSpan(this.viewerState,
+                        halfSpanOf(snap.extent, snap.extentAspect));
                     this.viewerState.center = snap.center;
                     this._invalidateScreenProjection();
                     this.render('focusRestore');
@@ -569,12 +570,39 @@
             // against. A residue's own reach is about 7 A.
             const FOCUS_MIN_EXTENT_A = 8;
             const extent = Math.max(Math.sqrt(r2), FOCUS_MIN_EXTENT_A);
-            const mx = Math.max(hx, hy);
+            // 🔴 AND THE FLOOR APPLIES TO THE SHAPE TOO, or it does not do its
+            // job. The extent is floored so that every focused residue is
+            // drawn at the same magnification - and the aspect was measured
+            // raw, from the residue's own blob, which at this size is noise:
+            // one click gave (0.431, 1), the next (1, 0.861), the next
+            // (1, 0.874). The scale is min(w / ax, h / ay) / 2 * extent, so
+            // that noise went straight into the magnification and the zoom
+            // swung 10-15% on every click while the extent never moved off 8.
+            // Reported as clicking from side chain to side chain zooming in,
+            // moving, and zooming back out.
+            //
+            // Flooring the half-spans by the SAME number makes a neighbourhood
+            // smaller than the floor come out isotropic - which is what it is,
+            // since what gets framed is the floor's own sphere and not the
+            // residue - and leaves a genuinely elongated selection, a chain or
+            // a pocket, with the shape it really has. Continuous across the
+            // boundary, because a half-span at exactly the floor is unchanged
+            // by the max().
+            hx = Math.max(hx, FOCUS_MIN_EXTENT_A);
+            hy = Math.max(hy, FOCUS_MIN_EXTENT_A);
 
             this.focusMoveTo({
                 center: { x: cx, y: cy, z: cz },
                 extent,
-                extentAspect: (mx > 0) ? { x: hx / mx, y: hy / mx } : null,
+                // 🔴 NORMALISED BY THE EXTENT, THE SAME WAY parts/orient.js
+                // DOES IT. `extentAspect` is one field with one meaning and
+                // there were briefly two: orient moved to `hx / extent` - the
+                // exact fit, so `extent * aspect.x` IS the half-span - and
+                // this was left on `hx / max(hx, hy)`, which keeps the longer
+                // axis at 1 and reserves the whole 3D radius for it. A focus
+                // then handed the viewer an aspect a fifth looser than an
+                // orient's, and moving between them stepped.
+                extentAspect: { x: hx / extent, y: hy / extent },
             }, !(opts && opts.animate === false));
             return true;
         },
@@ -602,10 +630,11 @@
                 extentAspect: st.extentAspect,
             };
             this._focusAnim = null;                 // cancel whatever was running
+            // ...the view span through the one writer, so a focus stores it in
+            // the same convention orient does. See setViewSpan in core/mol.js.
             const apply = (c, e, a) => {
                 st.center = c;
-                st.extent = e;
-                st.extentAspect = a;
+                setViewSpan(st, halfSpanOf(e, a));
                 this._invalidateScreenProjection();
             };
             if (!animate || !from.center || !(from.extent > 0)
@@ -617,6 +646,13 @@
             const anim = { t0: null };
             this._focusAnim = anim;
             const lerp = (a, b, t) => a + (b - a) * t;
+            // ...absent means isotropic, which is what {1, 1} is - so a null
+            // at either end interpolates rather than stepping.
+            const lerpAspect = (a, b, t) => {
+                const from2 = a || { x: 1, y: 1 };
+                const to2 = b || { x: 1, y: 1 };
+                return { x: lerp(from2.x, to2.x, t), y: lerp(from2.y, to2.y, t) };
+            };
             const step = (now) => {
                 if (this._focusAnim !== anim) return;   // superseded
                 if (anim.t0 === null) anim.t0 = now;
@@ -629,11 +665,22 @@
                     y: lerp(from.center.y, target.center.y, e),
                     z: lerp(from.center.z, target.center.z, e),
                 }, lerp(from.extent, target.extent, e),
-                    // THE SHAPE IS NOT INTERPOLATED. It belongs to the target
-                    // and lerping it makes the fit wrong the whole way there -
-                    // the picture would breathe sideways. Applied at once; the
-                    // extent carries the movement.
-                    target.extentAspect);
+                    // 🔴 THE SHAPE IS INTERPOLATED TOO, AND IT HAS TO BE. It
+                    // used to be applied at once, on the reasoning that it
+                    // belongs to the target and lerping it would make the
+                    // picture "breathe sideways" - but nothing here scales
+                    // anisotropically. The aspect only decides WHICH side of
+                    // the viewport binds, and what comes out is a single
+                    // isotropic scale (min(w / ax, h / ay) / 2 * extent). So
+                    // snapping it is not a shape correction, it is a step in
+                    // the ZOOM - and every click on a side chain lands on a
+                    // neighbourhood of a different shape, so every click
+                    // stepped. Reported as an abrupt zoom in and out per
+                    // click, once the drawn scale started honouring the live
+                    // aspect at all (see cartoon/paintgl.js's framing
+                    // multiplier); before that this was invisible rather than
+                    // absent.
+                    lerpAspect(from.extentAspect, target.extentAspect, e));
                 this.render('focusMove');
                 if (t < 1) requestAnimationFrame(step);
                 else if (this._focusAnim === anim) this._focusAnim = null;

@@ -376,7 +376,25 @@ window.addEventListener('load', () => {
         r.viewerState.rotation = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
         r.render('probe');
         window.py2dmolOrient.orientToBestView(r, {animate: true});
-        await until(() => !!r.viewerState.extentAspect, 4000);
+        // 🔴 WAIT FOR THE FLIGHT TO LAND, NOT FOR THE ASPECT TO EXIST. This
+        // waited on `!!extentAspect`, which was a sound proxy while the aspect
+        // was assigned once, on completion - and stopped being one the moment
+        // the flight started INTERPOLATING it, because it is then non-null on
+        // the first frame. The measurement landed 300 ms into a flight and
+        // reported the rod at 6% of the width: the fix for the jump broke the
+        // test's idea of "arrived", not the framing.
+        //
+        // Settling is the honest condition and needs no internals: the same
+        // aspect twice, a few frames apart, is a flight that has stopped.
+        let last = null;
+        await until(() => {
+          const a = r.viewerState.extentAspect;
+          if (!a) { last = null; return false; }
+          const now = a.x + ',' + a.y;
+          const settled = last === now;
+          last = now;
+          return settled;
+        }, 6000);
         await new Promise((s) => setTimeout(s, 300));
         const cv = r.canvas, w = cv.width, h = cv.height;
         const d = cv.getContext('2d').getImageData(0, 0, w, h).data;

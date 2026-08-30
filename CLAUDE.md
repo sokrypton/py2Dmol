@@ -856,11 +856,288 @@ public downloads is exercised on every run.
     than the positions it is drawn around, so a fit that is exact on the points
     clips the drawing — 1UBQ came out touching the canvas edge on the first
     attempt at the exact 2D fit. The probe asserts nothing touches an edge.
-- 🔴 **THERE WERE TWO PLACES COMPUTING THE VIEW SCALE, and the GPU tube path
-  is the one that runs.** It computes its own (it never reaches the 2D block),
-  and the 2D block computed the same padding, extent and `min()` a thousand
-  lines later. The aspect fix was written into the second and measured as NO
-  CHANGE AT ALL on the default build. `_viewportScale` is the one now.
+- **THE VIEW SPAN HAS ONE READER, ONE WRITER AND ONE CONVERSION.**
+  `_viewHalfSpan()` reads it, `setViewSpan()` writes it, and `halfSpanOf(extent,
+  aspect, zoom)` is the multiplication between the fields a caller MEASURES in
+  and the pair everything else works in. That last one was written out six
+  times - twice in orient (jump and flight), twice in focus (the move and the
+  snapshot restore), twice in the session restore - and `extent * aspect.x`
+  now appears exactly once in the tree.
+  🔴 **AND THE NODE HARNESSES HAVE HAD TO LEARN ABOUT A NEW CALLEE THREE TIMES
+  RUNNING**: `_viewportScale` when geom.js started asking for it, `_viewHalfSpan`
+  when _viewportScale started, and `halfSpanOf` when both did. `tests/smoke.js`
+  and `tests/paint_trace.js` hand `cartoon/geom.js` a stub renderer, so every
+  hop the shipped code takes has to be lifted with it. **Lift it, never
+  reimplement it** - a fixture that did this arithmetic itself would be exactly
+  the second convention the whole exercise removed.
+- **AND THE FLIGHT CARRIES TWO NUMBERS NOW, NOT SIX.** `rotationAnimation` held
+  `startExtent`/`targetExtent`, `startAspect`/`targetAspect` and
+  `startZoom`/`targetZoom`, interpolated three ways, with the start pair
+  captured by fifteen IDENTICAL lines in both branches of the setup. It is
+  `startHalf`/`targetHalf` - the view span the renderer actually draws from,
+  read once from `_viewHalfSpan()`, which means a flight begins at what is ON
+  SCREEN rather than at a reconstruction of it.
+  **THE ZOOM SETTLES ON THE FIRST FRAME AND IS NOT ANIMATED.** It is the
+  reader's multiplier, not a movement, and the span already carries it - so
+  writing the target zoom at once changes how the framing is SPLIT between the
+  two stored fields and not what is drawn. One fewer thing interpolating, and
+  the geometric-versus-linear fight between zoom and extent cannot recur.
+  🔴 **HOISTING THE CAPTURE ABOVE THE BRANCH BROKE IT, AND THE CHECK SAID SO IN
+  ONE LINE.** The duplicated block reads `targetExtent`, `targetAspect` and
+  `targetZoom`, which the branch below it had not finished computing - so the
+  flight left and returned to the same view span: `span 0, strays outside its
+  endpoints by 8.298`. It belongs AFTER the branch, where the target locals are
+  final. *Two lines of duplication would have been the lesser evil; the check
+  is what made the hoist safe to attempt at all.*
+- 🔴 **`rendering.ortho` WAS NORMALISED, DOCUMENTED THREE TIMES, AND READ BY
+  NOTHING.** `viewerState.ortho` was seeded `this.orthoSlider ?
+  parseFloat(this.orthoSlider.value) : 1` in FOUR places - so an embed and a
+  notebook, neither of which has that slider, were always orthographic whatever
+  the config said, while `normalizeConfig` carried the key, `viewer.py`'s
+  signature documented `ortho=0.5` and `embed.html` offered it. Same family as
+  the `gpu` and `shade` keys, except that this one was promised on three
+  surfaces at once.
+  `_orthoSetting()` answers it in one place - the slider where there is one,
+  the config where there is not.
+  **AND THE FOCAL LENGTH HAD TO FOLLOW, or the setting is only half wired.**
+  It is `stdDev * 2 * mult(ortho)` and only the SLIDER'S handler ever computed
+  it, so a config asking for perspective would have got the 200 default: a
+  camera at a distance with no relation to the structure in front of it. It is
+  recomputed in `addFrame`, beside `_recomputeObjectStats`, because that is
+  where stdDev becomes known - and the arithmetic is `focalLengthFor()` now,
+  which the slider calls too.
+  🔴 **"EXPLICITLY PROVIDED" WAS NOT AVAILABLE AS A GET-OUT.** The safe-looking
+  fix is to honour the key only when a caller passes it, leaving defaults
+  alone - and `viewer.py` has `ortho=0.5` as a DEFAULT ARGUMENT that it sends
+  unconditionally, so every notebook would have counted as explicit. There was
+  no version of this that changed no pictures; it was a decision, not a
+  refactor, and it was taken deliberately: **every embed and notebook is now
+  perspective 0.5 by default**, which is what the documentation always said.
+  Measured in `tests/embed.py` as THREE SETTINGS, THREE PICTURES - reading the
+  field back passes against a value that is stored and never projected with.
+- 🔴 **`frame` IS A TRAJECTORY FRAME. THE VIEWPORT'S IS A VIEW SPAN.** The word
+  was doing both jobs - `frameScaleMul`, `framingOf`, `setFraming`, "the
+  framing" in a dozen comments - beside `object.frames[currentFrame]`, which is
+  the thing this project animates. A helper called `frame()` in
+  `parts/orient.js` was shadowed eighty lines later by
+  `const frame = object.frames[currentFrame]` INSIDE the function that needed
+  it, and the call read `frame is not a function` - a shadowed binding, which
+  looks nothing like a missing one and sends you hunting for a load-order
+  problem. `setViewSpan`, `_viewHalfSpan`, `viewSpanOf`, `viewScaleMul`,
+  `setViewTransform`, `spanFit`. **`frameExtent` in orient.js keeps its name**,
+  because it really is the current trajectory frame's extent - the rule is
+  about which meaning, not about the letters.
+- 🔴 **`extent`, `extentAspect` AND `zoom` ARE FOUR NUMBERS THAT PRODUCE TWO,
+  AND THE SLACK BETWEEN THEM IS WHERE EVERY CAMERA BUG IN THIS FILE LIVED.**
+  The scale is `padding * min(w / 2hx, h / 2hy)` where `hx = extent *
+  aspect.x`, and dividing by `zoom` is the same as multiplying the scale by it
+  - so the whole framing is ONE PAIR of half-spans in Angstrom, and four fields
+  were spelling it. `renderer._framingHalfSpan()` is that pair, and the places
+  that used to combine the fields themselves ask it instead.
+  The bugs it makes inexpressible, all of them from this session: orient and
+  focus normalising the aspect differently; the aspect assigned on completion
+  while the extent interpolated; a session saving the extent and not the
+  aspect; a cached mesh dividing out the size and not the shape; a linear zoom
+  ramp against a geometric extent.
+  **THE GPU MULTIPLIER IS NOW ONE DIVISION.** `frameScaleMul` was
+  `capExtent / liveExtent`, then that times a shape term, and it still missed
+  the zoom - three ways for a reused mesh to be drawn at the wrong size and two
+  of them were. It is `spanFit(live) / spanFit(captured)` now, and
+  `resident.capAspect`, `resident.capZoom` and the whole `viewZoom / capZoom`
+  term are gone with it: the half-span carries all three, so dividing the zoom
+  out again would apply it twice.
+  **PROVED BY CHANGING NOTHING.** `paint_trace` reports eleven fixtures
+  byte-identical, the cached-mesh ratio is 1.0000000000000002, and a flight
+  measures 4.239 -> 12.537 exactly as it did before. A step that unifies
+  representations must be measurable as a no-op or it is a rewrite wearing a
+  refactor's clothes.
+  🔴 **AND THE NODE HARNESSES LIFT WHAT THE RENDERER CALLS, so a method that
+  gains a sibling breaks them.** `tests/smoke.js` and `tests/paint_trace.js`
+  hand `cartoon/geom.js` a stub renderer and lift `_viewportScale` out of the
+  source; it now calls `_framingHalfSpan`, and both had to lift that too. Same
+  failure as when geom.js first started asking the renderer for its scale at
+  all - the fixture must grow whatever the shipped code reaches for, and
+  lifting rather than reimplementing is what keeps one answer.
+  **What is NOT unified, deliberately**: rotation, centre, and the projection
+  pair (`ortho` + `focalLength`) are different quantities and stay apart. Only
+  the framing triple collapses.
+- 🔴 **THERE WERE THREE MAGNIFICATION CONTROLS AND ORIENT ANIMATED ALL OF
+  THEM.** `_viewportScale` returns `baseScale(extent, aspect) * zoom`, and
+  under perspective the picture is scaled AGAIN by `focalLength / (focalLength
+  - z)`. A flight moved every one: the extent, the zoom (linearly, to 1.0), and
+  the focal length - which came from `object.stdDev * 2 * multiplier` and was
+  re-derived every frame from a stdDev interpolated toward the framed subset's.
+  Reported as sudden zoom in and out during Orient.
+  **THE FOCAL LENGTH IS THE ONE THAT MATTERED, and it is gone.** Measured on
+  dev.html flying to a 40-residue selection: scale 6.81 -> 12.71 while
+  focalLength 521.5 -> 283.4. Neither overshoots alone, and the second is
+  DEPTH-DEPENDENT - near parts of the structure inflate while far parts deflate,
+  which is what "sudden zoom in and out" is. Perspective strength belongs to the
+  structure and to the reader's ortho slider, not to whichever subset is being
+  framed; re-deriving it from a selection makes the slider's meaning drift.
+  Removed outright rather than deferred to the end of the flight - there is
+  nothing left to keep in step with. `focalLength` now reads 521.5 for the whole
+  flight.
+  **AND THE ZOOM JOINED THE GEOMETRIC PATH**, because a geometric ramp times a
+  linear one is not monotonic. Honest note: measured, this one is worth almost
+  nothing on its own (overshoot 0.06 against 0.02) - it is right because
+  magnification is multiplicative, not because it fixed the report.
+  🔴 **AND EVERY MEASUREMENT I TOOK FOR THREE ROUNDS WAS IN THE WRONG SHELL.**
+  `viewerState.ortho` is seeded ONLY from the ortho slider (four places, all
+  `this.orthoSlider ? parseFloat(...) : 1`), so **an embed and a notebook are
+  always orthographic** and `py2Dmol.show({rendering: {ortho: 0.5}})` does
+  nothing - `normalizeConfig` carries the key and nothing reads it. Every probe
+  I wrote used the embed, where the term I was hunting is switched off, and
+  they all came back clean. The website has the slider and defaults to 0.5.
+  **Measure the shell that was reported.** (The config gap is still there and
+  is deliberately not fixed: reading it would flip every embed and notebook
+  from orthographic to perspective, which is a change to every existing
+  picture.)
+  🔴 **AND `renderer.focalLength` IS NOT `renderer.viewerState.focalLength`.**
+  Orient wrote the first; the projection reads the second. Those writes did
+  nothing on their own and the effect arrived through a synthetic
+  `orthoSlider.dispatchEvent(new Event('input'))`, which recomputes the real
+  one. A probe reading the wrong field showed 521.5 -> 283.4 before and 0.0
+  after, and 0.0 was the field being unwritten rather than the perspective
+  being broken.
+- 🔴 **A FLIGHT IS ONE MOVEMENT, AND INTERPOLATING ITS PARTS SEPARATELY IS WHY
+  ORIENT OVERSHOT.** `animateRotation` had four branches writing
+  `viewerState` directly - centre and extent each on their own linear ramp, an
+  exact-target branch at progress 1, and a fourth clearing the centre near the
+  end. They disagreed about which fields move together, which is how the aspect
+  came to be assigned only on completion. `cameraAt(from, to, t)` is the whole
+  of it now, and the maths is the point:
+  **MAGNIFICATION IS 1 / EXTENT, so a linear ramp in extent is not a linear
+  ramp in zoom.** 38 A to 8 A linearly spends half the flight going 38 -> 23,
+  which is 1.6x, and delivers the remaining 2.9x in the second half - the
+  picture creeps, then rushes. Zoom is multiplicative, so the even path is
+  geometric: `e(t) = e0 * (e1 / e0)^t`.
+  **AND A PAN MUST BE EVEN ON THE SCREEN, NOT IN THE MOLECULE.** Moving the
+  centre linearly while the extent shrinks fivefold makes the last frames cover
+  five times the screen distance of the first; with the zoom on top, that reads
+  as the camera swooping out and back. Screen speed is `(dc/dt) / e`, so
+  `dc/dt` must be proportional to `e(t)`, and integrating gives the pan weight
+  `w(t) = (k^t - 1) / (k - 1)` with `k = e1 / e0`. At `k = 1` it is 0/0 and the
+  answer is `t`; near 1 it is numerically poor, hence the explicit branch.
+  This is the core of Van Wijk & Nuij's smooth zoom-and-pan, without the part
+  that also chooses the DURATION - that stays the rotation's, which is what
+  keeps a flight feeling like one movement rather than two.
+  **MEASURED AS TWO RATIOS, because the easing modulates both and neither is
+  constant on its own.** The per-frame magnification RATIO comes out 1.04
+  across a flight (geometric), and the pan measured in SCREEN units against the
+  zoom measured in LOG units keeps step to 1.1 over the middle 60% - the ends
+  are excluded because both go to zero there and their quotient is 0/0.
+  🔴 **AND `extentAspect` MUST MEAN ONE THING.** `parts/orient.js` normalises
+  it by the extent (the exact fit) and `parts/focus.js` was left normalising by
+  `max(hx, hy)` - so a focus handed the viewer an aspect a fifth looser than an
+  orient's and moving between them stepped. One convention, in both.
+- 🔴 **A FLOOR ON THE EXTENT THAT DOES NOT ALSO FLOOR THE SHAPE IS NOT A
+  FLOOR.** `focusCamera` clamps the extent to `FOCUS_MIN_EXTENT_A` (8 A) so
+  that every focused residue is drawn at the same magnification - and measured
+  the aspect RAW, from the neighbourhood's own blob, which at that size is
+  noise. Three consecutive clicks gave `(0.431, 1)`, `(1, 0.861)`, `(1, 0.874)`;
+  the scale is `min(w / ax, h / ay) / (2 * extent)`, so that noise went straight
+  into the magnification and **the zoom swung 10-15% on every click while the
+  extent never moved off 8**. Reported as clicking from side chain to side
+  chain zooming in, moving, and zooming back out. The half-spans take the same
+  floor now, so a neighbourhood smaller than it comes out isotropic - which is
+  what it IS, since what gets framed is the floor's sphere and not the residue -
+  and continuous across the boundary, because a half-span at exactly the floor
+  is unchanged by the max().
+  **THE INVARIANT IS `scale x extent`, NOT THE SCALE.** Neighbourhoods really
+  do differ in size and a bigger one SHOULD draw smaller; what must not vary is
+  the rest. Measured across four clicks: `143, 143, 143` after, against
+  `143, 166, 164` before. `tests/focus_mode.py` asserts it on SINGLE residues -
+  the gesture that was reported - and deliberately not on a RUN of them, which
+  is a chain segment and genuinely elongated. *The first version of that check
+  used runs and failed against correct code.*
+  🔴 **AND THE OVERSHOOT I WENT LOOKING FOR WAS NOT THERE.** "Zooms in, moves,
+  then zooms back out" reads as a camera that overshoots, and the obvious
+  suspect is interpolating `min()` of two terms - so I measured the path per
+  frame and found it monotonic on every move, overshoot exactly 0. The wobble
+  was BETWEEN clicks, not within one. A step check would not have found it
+  either: the swing arrives smoothly. **Measure the thing that was described,
+  not the mechanism you suspect.**
+- 🔴 **THE SCALE IS A FUNCTION OF TWO THINGS AND ONLY ONE OF THEM WAS MOVING.**
+  Once `_viewportScale` read `extentAspect`, the drawn size depended on the
+  extent AND the shape - and three separate places were still treating the
+  aspect as something you assign rather than something you travel through.
+  Each was invisible before the aspect mattered, and each surfaced the moment
+  it did.
+  **(1) THE CACHED MESH.** `cartoon/paintgl.js` draws a resident mesh at
+  `capExtent / liveExtent`, on the reasoning that the base scale is
+  padding*size over 2*extent so the extents divide out exactly - true while
+  the fit was isotropic. `aspectSpan` is the rest of it, and `resident.capAspect`
+  is what it is measured against. Measured on 1TIM in a 560x300 box: orienting
+  to a selection wanted 8.280 px/A and drew at 6.593, and only a rebuild put it
+  right. **Reported as the zoom not animating and needing the box resized.**
+  **(2) THE ORIENT FLIGHT.** `extent` was interpolated in every branch and
+  `extentAspect` was assigned on COMPLETION, so the flight rotated smoothly and
+  the size stepped onto its final value. Measured: the biggest single-frame
+  step was 2.409 of a 6.536 span and it was the LAST frame; interpolated, the
+  final step is 0.002 and the biggest has moved to the middle where an eased
+  curve is steepest. **Reported as "it would first rotate then JUMP to new
+  size".**
+  **(3) THE FOCUS MOVE.** `focusMoveTo` lerped the centre and the extent and
+  SNAPPED the aspect, under a comment saying the shape belongs to the target
+  and lerping it would make the picture "breathe sideways". **Nothing here
+  scales anisotropically** - the aspect only decides which side of the viewport
+  binds, and what comes out is a single isotropic scale - so the snap was a
+  step in the ZOOM, on every click, because every neighbourhood has a different
+  shape. Measured: 44%, 32% and 15% of the whole change in one frame, against a
+  uniform 10-13% once interpolated. **Reported as an abrupt zoom in and out on
+  each click on a side chain.**
+  **A NULL ASPECT INTERPOLATES AS {1, 1}**, in all three, because absent means
+  isotropic - a step to or from "unset" is still a step.
+  🔴 **AND A TEST THAT WAITED ON `!!extentAspect` WAS WAITING FOR THE WRONG
+  THING.** `tests/python_multi.py` used it as a proxy for "the flight has
+  landed", which was sound while the aspect was assigned once on completion and
+  wrong the moment the flight started interpolating it: non-null on the FIRST
+  frame, so the measurement landed 300 ms into a flight and reported the rod at
+  6% of the width. It waits for the aspect to SETTLE now - the same value twice,
+  a few frames apart - which needs no internals and cannot rot the same way.
+  *The fix for a jump broke the test's idea of "arrived", not the framing.*
+  **The regression checks measure a SHAPE, not a number**: the biggest
+  single-frame step as a share of the whole change, with the easing's own
+  steepest frame (about a sixth over a twenty-frame flight) as the yardstick.
+  And each needs **a wide box** - on a near-square canvas the same side binds
+  whatever the aspect is, so the first version of the framing check passed
+  against the bug it was written for.
+- 🔴 **THERE WERE THREE PLACES COMPUTING THE VIEW SCALE, AND THE THIRD WAS THE
+  ONE THE CARTOON DRAWS THROUGH.** The GPU tube path computes its own (it never
+  reaches the 2D block), the 2D block computed the same padding, extent and
+  `min()` a thousand lines later - and `cartoon/geom.js` kept a third, which is
+  the one every cartoon actually runs. The aspect fix was written into the
+  second and measured as NO CHANGE AT ALL on the default build; consolidating
+  the first two left the third still saying
+  `min(w, h) * 0.9 / (2 * extent)` - the same extent on BOTH axes, which is the
+  isotropic fit `extentAspect` exists to replace.
+  So the aspect was measured by `parts/orient.js`, stored on the viewer state,
+  read by `_viewportScale`, and then not used by the style that draws.
+  **Reported as Orient zooming out too much**, and measured on a 520x360
+  viewer: 1UBQ occupied **0.48 of the canvas and now occupies 0.69**, 1TIM
+  0.61 -> 0.87, 6MRR 0.52 -> 0.74. 4HHB does not move, correctly - its aspect
+  is 0.99:1, so there was nothing to give back.
+  `_viewportScale` is the only place with the formula now and has three
+  callers. **The change cannot clip, by construction**: with `aspect` absent it
+  is arithmetically what it was (which is why `paint_trace` reports eleven
+  fixtures unchanged), and where an aspect exists the binding axis keeps its
+  own term while the other's grows - `xE >= hx` and `yE >= hy` always, since
+  the extent is a 3D radius and no projection exceeds it.
+  🔴 **AND `cartoon/geom.js` NOW NEEDS A RENDERER METHOD, which the node
+  harnesses do not stub.** `tests/smoke.js` and `tests/paint_trace.js` hand it
+  a plain object; they lift `_viewportScale` out of the source with
+  `lift.js` rather than writing a second copy into the fixture, which is the
+  whole point. `_viewportScale` guards `this.drawnStats` for the same reason -
+  the copy it replaced in geom.js did.
+  **What is still on the table is the 3D radius itself.** `visibleExtent` is
+  the distance to the farthest atom from the CENTROID, not the projected
+  half-span, so a globular structure reserves room for the atom pointing at the
+  camera: 1UBQ uses 0.69 of a 0.90 padding, so about a quarter of the allowed
+  span is still unspent. `parts/orient.js` says so in its own comment and
+  declines it deliberately - the exact 2D fit CLIPPED 1UBQ, because the ink is
+  wider than the points it is drawn around, and spending it needs the margin
+  worked out in PIXELS against the style's own line width. Not attempted here.
 - 🔴 **`_gpuWillDraw` WAS A GUESS THAT BECAME AN ANSWER.** The CPU occlusion
   pass is skipped when the GPU is going to draw, because the GPU computes its
   own — and the question was asked of the renderer's STATE, with a comment
