@@ -793,7 +793,48 @@ function setupEventListeners() {
         // `apply` says where the colour goes; `current` says what the swatch
         // should show.
         const colorPickers = [];
-        const wireColorPicker = ({ btnId, menuId, swatchId, apply, current }) => {
+
+        // THE COLOUR MODES, FROM THE ONE LIST THAT ALREADY EXISTS.
+        //
+        // The Style panel's #colorSelect is built from parts/panel.js and is
+        // the project's list of colour modes; reading its options here means a
+        // mode added there appears in the picker too, and - the part that
+        // cannot be rewritten from a table - the picker inherits the panel's
+        // decision about which are HIDDEN UNTIL USEFUL. `object` means nothing
+        // with one structure on screen and `entropy` means nothing without an
+        // MSA, and both are hidden by the same code that hides them above.
+        //
+        // 'auto' is dropped because the select's own first entry is Auto and
+        // means something STRONGER: not "resolve the global mode here" but
+        // "have no opinion at all", which is a cleared override.
+        // 🔴 AND `ss:pymol` IS A COMPOSITE, WHICH THIS LIST MUST COLLAPSE.
+        // It is the only value the Style dropdown carries that says two
+        // things - the mode `ss` AND the viewer-wide `ssPalette` - and
+        // resolveColorHierarchy knows only the first: stored at a position it
+        // is not a mode name, so applySpec files it as a LITERAL and the
+        // residues draw from hexToRgb('ss:pymol'), which is grey. Splitting it
+        // the way parts/ui.js does is no better here, because the palette is
+        // the VIEWER's: picking Jmol for four residues would repaint every
+        // sheet on the page. The picker chooses the SCHEME and leaves the
+        // palette where it belongs, so both options collapse to one `ss`.
+        const colorModeOptions = () => {
+            const src = document.getElementById('colorSelect');
+            if (!src) return [];
+            const out = [];
+            const seen = new Set();
+            for (const o of src.options) {
+                if (o.hidden || !o.value || o.value === 'auto') continue;
+                const cut = o.value.indexOf(':');
+                const value = cut < 0 ? o.value : o.value.slice(0, cut);
+                if (seen.has(value)) continue;
+                seen.add(value);
+                out.push([value, cut < 0 ? o.textContent : 'SSE']);
+            }
+            return out;
+        };
+
+        const wireColorPicker = ({ btnId, menuId, swatchId, apply, current,
+            modes, currentMode }) => {
             const btn = document.getElementById(btnId);
             const menu = document.getElementById(menuId);
             const swatch = document.getElementById(swatchId);
@@ -802,27 +843,89 @@ function setupEventListeners() {
             // set, which swaps wholesale with colourblind mode.
             const buildSwatches = () => {
                 menu.textContent = '';
-                // AUTO: clears the override so the residues fall back to whatever
-                // the colour mode says - chain, rainbow, pLDDT, SS palette. Not a
-                // colour, so it gets its own row rather than a swatch that would
-                // have to pretend to be one.
-                const autoRow = document.createElement('div');
-                autoRow.className = 'selection-color-row';
-                const autoBtn = document.createElement('button');
-                autoBtn.type = 'button';
-                autoBtn.className = 'selection-color-auto';
-                autoBtn.textContent = 'Auto (default colour)';
-                autoBtn.title = 'Remove the colour override and follow the colour mode';
-                autoBtn.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    menu.hidden = true;
-                    const positions = getActiveSelection();
-                    if (positions) apply(positions, null);
-                    refresh();
-                });
-                autoRow.appendChild(autoBtn);
-                menu.appendChild(autoRow);
+                // A MODE IS A COLOUR ANSWER, NOT A COLOUR, so it cannot be a
+                // swatch - and a selection can hold one. The hierarchy has
+                // taken a mode name at position level since it was written
+                // (applySpec in core/mol.js), and obj.sidechainColor takes one
+                // too; nothing could SAY one. Set the backbone to Chain and a
+                // pocket's side chains to Hydropathy and both answers are on
+                // one picture.
+                //
+                // AUTO IS THIS CONTROL'S FIRST ENTRY, not a button beside it.
+                // It used to be a row of its own, which was right while the
+                // menu held colours and nothing else; with a mode list in the
+                // same menu, two things reading Auto a few pixels apart is a
+                // coin toss over which one you want. Auto here is the same
+                // action it always was - CLEAR the override - which is what
+                // makes it stronger than the 'auto' MODE: that one resolves
+                // the global scheme at this position, this one leaves the
+                // position with no opinion, so an object-wide colour still
+                // reaches it.
+                const options = modes ? colorModeOptions() : [];
+                if (modes) {
+                    const modeRow = document.createElement('div');
+                    modeRow.className = 'selection-color-row';
+                    const sel = document.createElement('select');
+                    sel.className = 'selection-color-mode';
+                    sel.title = 'Colour these by a scheme rather than by one'
+                        + ' colour. Auto clears it and follows what is set'
+                        + ' above.';
+                    const add = (value, label) => {
+                        const o = document.createElement('option');
+                        o.value = value; o.textContent = label;
+                        sel.appendChild(o);
+                    };
+                    add('', 'Auto (default colour)');
+                    for (const [value, label] of options) add(value, label);
+                    // THE SELECTION IT IS ABOUT, AND IT MAY NOT BE THERE.
+                    // buildSwatches runs once at WIRE time, before anything is
+                    // selected - the first version called currentMode() with
+                    // no argument, which read positions[0] of undefined and
+                    // threw inside setupEventListeners, taking every control
+                    // wired after it with it. tests/selection_panel.py caught
+                    // it as a panel that never opened and rows measuring 0px.
+                    const held = getActiveSelection();
+                    const now = (currentMode && held && held.length)
+                        ? currentMode(held) : null;
+                    sel.value = (now && options.some((o) => o[0] === now)) ? now : '';
+                    sel.addEventListener('change', (e) => {
+                        e.stopPropagation();
+                        menu.hidden = true;
+                        const positions = getActiveSelection();
+                        if (positions) apply(positions, sel.value || null);
+                        refresh();
+                    });
+                    // ...a click inside the open menu must not close it, which
+                    // is what the document-level handler below would do to the
+                    // native dropdown the moment it opened.
+                    sel.addEventListener('click', (e) => e.stopPropagation());
+                    modeRow.appendChild(sel);
+                    menu.appendChild(modeRow);
+                } else {
+                    // AUTO: clears the override so the residues fall back to
+                    // whatever the colour mode says. Not a colour, so it gets
+                    // its own row rather than a swatch that would have to
+                    // pretend to be one. Kept for the pickers with no mode
+                    // list - a contact is one line between two residues, and
+                    // there is no scheme that says what colour it should be.
+                    const autoRow = document.createElement('div');
+                    autoRow.className = 'selection-color-row';
+                    const autoBtn = document.createElement('button');
+                    autoBtn.type = 'button';
+                    autoBtn.className = 'selection-color-auto';
+                    autoBtn.textContent = 'Auto (default colour)';
+                    autoBtn.title = 'Remove the colour override and follow the colour mode';
+                    autoBtn.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        menu.hidden = true;
+                        const positions = getActiveSelection();
+                        if (positions) apply(positions, null);
+                        refresh();
+                    });
+                    autoRow.appendChild(autoBtn);
+                    menu.appendChild(autoRow);
+                }
 
                 const groups = (window.py2dmol_paletteColors
                     ? window.py2dmol_paletteColors(!!viewerApi?.renderer?.colorblindMode)
@@ -898,9 +1001,46 @@ function setupEventListeners() {
             return rgbToHex(renderer.getAtomColor(positions[0]));
         };
 
+        // THE OBJECT THAT OWNS A POSITION, AND THAT POSITION IN ITS NUMBERING.
+        // Every per-object map - color, sidechainColor - is keyed that way,
+        // and a selection arrives in MERGED indices, so reading one without
+        // this asks the wrong object about the wrong residue whenever more
+        // than one structure is on screen.
+        const ownerEntry = (position) => {
+            const renderer = viewerApi?.renderer;
+            if (!renderer) return null;
+            const o = renderer.ownerOf ? renderer.ownerOf(position) : null;
+            const obj = renderer.objectsData?.[
+                o ? o.name : renderer.currentObjectName];
+            return obj ? { obj, at: o ? o.local : position } : null;
+        };
+        // ...and whether what is stored there is a MODE rather than a colour.
+        // Both maps take either, and only the picker needs to tell them apart:
+        // a mode has to come back as the dropdown's value while a hex has to
+        // come back as the swatch's.
+        const asMode = (value) => {
+            if (typeof value !== 'string' || value[0] === '#') return null;
+            const valid = (typeof window.py2dmol_colorModes === 'function')
+                ? window.py2dmol_colorModes() : null;
+            if (valid && !valid.includes(value)) return null;
+            return value;
+        };
+
         wireColorPicker({
             btnId: 'selColorButton', menuId: 'selColorMenu', swatchId: 'selColorSwatch',
             apply: setSelectionColor, current: mainChainColorOf,
+            // A MODE AT POSITION LEVEL, which resolveColorHierarchy's applySpec
+            // has understood since it was written - a string naming a mode
+            // selects the mode and cancels any literal below it - and which
+            // nothing could write. setSelectionColor stores what it is given,
+            // so this needed no renderer change at all.
+            modes: true,
+            currentMode: (positions) => {
+                const e = ownerEntry(positions[0]);
+                const adv = e && e.obj.color && e.obj.color.type === 'advanced'
+                    ? e.obj.color.value : null;
+                return asMode(adv && adv.position && adv.position[e.at]);
+            },
         });
         wireColorPicker({
             btnId: 'scColorButton', menuId: 'scColorMenu', swatchId: 'scColorSwatch',
@@ -919,14 +1059,26 @@ function setupEventListeners() {
                 const renderer = viewerApi?.renderer;
                 const lig = ligandRowPositions(positions);
                 if (lig) return mainChainColorOf(lig);
-                // ...from the object that OWNS the residue, in its own
-                // numbering: the map is per object and the index is merged.
-                const o = renderer?.ownerOf ? renderer.ownerOf(positions[0]) : null;
-                const obj = renderer?.objectsData?.[
-                    o ? o.name : renderer.currentObjectName];
-                const at = o ? o.local : positions[0];
-                const own = obj && obj.sidechainColor && obj.sidechainColor[at];
-                return own || mainChainColorOf(positions);
+                const e = ownerEntry(positions[0]);
+                const own = e && e.obj.sidechainColor
+                    && e.obj.sidechainColor[e.at];
+                if (typeof own === 'string' && own[0] === '#') return own;
+                // ...A MODE IS RESOLVED, NOT SKIPPED. The swatch is meant to
+                // show what is on screen, and a side chain following
+                // hydropathy is not the colour its residue is - showing the
+                // residue's would say the mode had not taken.
+                const mode = asMode(own);
+                if (mode && renderer && renderer._colorForMode) {
+                    return rgbToHex(renderer._colorForMode(positions[0], mode));
+                }
+                return mainChainColorOf(positions);
+            },
+            modes: true,
+            currentMode: (positions) => {
+                if (ligandRowPositions(positions)) return null;
+                const e = ownerEntry(positions[0]);
+                return asMode(e && e.obj.sidechainColor
+                    && e.obj.sidechainColor[e.at]);
             },
         });
         wireColorPicker({

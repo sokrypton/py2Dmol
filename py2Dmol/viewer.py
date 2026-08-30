@@ -241,7 +241,8 @@ import urllib.request
 
 # --- Color System Constants ---
 
-VALID_COLOR_MODES = {"chain", "plddt", "rainbow", "auto", "entropy", "deepmind", "ss"}
+VALID_COLOR_MODES = {"chain", "plddt", "rainbow", "auto", "entropy", "deepmind",
+                     "ss", "hydrophobicity"}
 """Valid color modes for protein visualization.
 
 "ss" colours by secondary structure (strands green, helices blue, loops pale

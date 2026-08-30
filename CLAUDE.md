@@ -32,7 +32,7 @@ same list with load order and targets.
 | `parts/panel.js` | the Style panel's rows, as data — `buildStylePanel` builds the DOM. **One copy**; both pages mount it and skin it with their own CSS. |
 | `parts/viewport.js` | `setupViewport` — find the canvas, size it for the display, keep it sized. The one thing both entry points share. |
 | `parts/embed.js` | the selector (`positionsFor`), `window.py2Dmol.show` and `wireEmbedUI` — a viewer on a bare canvas, and the JS API on top of it. `core/mol.js` picks between the two wirers on `config.embed`, which `show` sets from whether `controls`/`play` were asked for: with them it is `wireViewerUI` and the notebook's own panel in a scoped shell, without them a canvas and nothing else. |
-| `parts/sidechains.js` | which residues show theirs — `showSidechains`/`hideSidechains`, the relative pair. Was written out in `parts/embed.js`, so only the embed's JS API could reach it. |
+| `parts/sidechains.js` | which residues show theirs — `showSidechains`/`hideSidechains`, the relative pair. Was written out in `parts/embed.js`, so only the embed's JS API could reach it. And what colour they are: `setSidechainColor`. |
 | `parts/shadow.js` | which segments darken which. |
 | `parts/align.js` | the renderer's side of TM-align; the transform lives on the object and is applied on the way out. |
 | `core/objstate.js` | `OBJECT_STATE` — every per-object field keyed by position index — plus the per-frame ligand cache. |
@@ -571,6 +571,98 @@ public downloads is exercised on every run.
   what makes a reopened notebook come back with the same side chains out.
   `hide_sidechains()` with nothing named truncates the list, because nothing
   before a reset can still be showing — that is what keeps it bounded.
+- 🔴 **A COLOUR MODE AT POSITION LEVEL WAS ALWAYS LEGAL AND NOTHING COULD SAY
+  ONE.** `resolveColorHierarchy`'s `applySpec` reads a string naming a mode as
+  a MODE at every level it walks — object, chain, frame, position — and
+  `setSelectionColor` stores whatever it is handed, so the whole capability was
+  one dropdown away. The selection panel's colour menus offer the schemes now
+  as well as the swatches, which is what lets the backbone answer one question
+  while a pocket's side chains answer another: `chain` on the residues and
+  `hydrophobicity` on their side chains draws `#66ff66` and `#187bd1` on one
+  picture. Both pickers get it; the CONTACT picker does not — a contact is one
+  line between two residues and no scheme says what colour that line should be,
+  so it keeps the Auto button the other two gave up.
+  **AUTO IS THE DROPDOWN'S FIRST ENTRY AND IT IS A CLEAR, not the `auto`
+  MODE.** They are different: the mode resolves the global scheme AT this
+  position, the entry leaves the position with no opinion so an object-wide
+  colour still reaches it. Two controls reading Auto a few pixels apart is a
+  coin toss over which one you want, so the button went where the list arrived.
+  **THE LIST IS READ OFF `#colorSelect`**, not kept here — which inherits the
+  panel's hidden-until-useful decision for free: `object` means nothing with
+  one structure and `entropy` nothing without an MSA, and both stay out of the
+  picker because they are already hidden there.
+  🔴 **AND `ss:pymol` IS THE ONE COMPOSITE VALUE THAT LIST CARRIES**, the mode
+  plus the viewer-wide `ssPalette`. Stored at a position it is not a mode name,
+  so `applySpec` files it as a LITERAL and the residues draw `hexToRgb` grey.
+  Splitting it the way `parts/ui.js` does is no better here, because the
+  palette belongs to the VIEWER: picking Jmol for four residues would repaint
+  every sheet on the page. Both options collapse to one `ss` — the picker
+  chooses the scheme, the panel chooses the palette.
+  🔴 **AND `buildSwatches` RUNS ONCE AT WIRE TIME, BEFORE ANYTHING IS
+  SELECTED.** The first version seeded the dropdown with `currentMode()` and no
+  argument, which read `positions[0]` of undefined and threw inside
+  `setupEventListeners` — taking every control wired after it with it.
+  `tests/selection_panel.py` reported it as a panel that never opened and rows
+  measuring 0px, which is what a throw halfway through the wiring looks like
+  from the outside.
+  Measured in that probe: the scheme is stored, it changes pixels, reopening
+  the menu READS IT BACK, Auto clears it and returns the picture to where it
+  started, and the two schemes resolve to two different colours. *The swatch
+  assertion's first version checked only that it was not blank — which passes
+  against a swatch that quietly fell back to the main chain, because the
+  fallback is also a colour. It compares against the side chain's drawn colour
+  now.*
+- 🔴 **A SIDE CHAIN CAN CARRY ITS OWN COLOUR, AND FOR YEARS ONE FILE COULD SAY
+  SO.** `obj.sidechainColor` — keyed by RESIDUE, because a side-chain atom is a
+  position only while it is drawn and its index is reissued whenever the set
+  changes — has been read by `core/mol.js` since the selection panel was
+  written, and `src/app/selection.js` was the only thing that could write it.
+  The storage, the resolution and the merge remapping were all there; the
+  embed and the notebook had no door. `setSidechainColor(colour, sel)` in
+  `parts/sidechains.js` is the verb, beside `showSidechains`, and the website's
+  own walk calls it — the FIFTH copy to come home this way, after clip, orient,
+  focus and the side-chain set itself.
+  **UNSET MEANS FOLLOW THE RESIDUE**, which is the whole reason it is a
+  separate map rather than a colour copied at the time: recolour a main chain
+  and the side chains nobody spoke for come along, and the ones that were given
+  a colour stay. That is what lets a backbone say `plddt` while its side chains
+  say `hydrophobicity` — two questions on one picture, and there is no other
+  way to ask both.
+  **AND A MODE IS STORED AS A MODE.** The map holds a hex OR a mode name, and
+  `_sidechainColorOf` resolves the name at DRAW time. Freezing it at set time
+  would be harmless for hydropathy, which is a fact about the residue's
+  identity, and wrong for every other mode: pLDDT is per frame, rainbow follows
+  the chain scale. It resolves through **`_colorForMode`**, which is the tail
+  of `getAtomColor` extracted so it has a caller — going in by `getAtomColor`
+  lets the residue's own explicit colour beat the mode, which is exactly the
+  thing a side-chain mode is being asked to differ from.
+  **ONLY THE CARBON SKELETON MOVES**: element colouring resolves FIRST and
+  returns null for carbon and for a bond's midpoint, so oxygen stays red and
+  sulfur stays gold. PyMOL's behaviour, and `hideElements(sel)` is the flat
+  colour.
+  Measured on the CANVAS in `tests/embed.py`, **against the same side chains
+  uncoloured** — the first version compared them against the bare backbone,
+  which scores `showSidechains` and says nothing about the colour: two
+  mutations that stopped it reaching a pixel walked straight through, because
+  the atoms had still appeared. The pair that differs in one thing is coloured
+  against cleared, and it doubles as the check that unset means follow the
+  residue.
+- **`hydrophobicity` IS A COLOUR MODE, NOT A SIDE-CHAIN FEATURE.** Kyte &
+  Doolittle 1982, by three-letter residue name — which is what a structure
+  carries, where a sequence is not — in **five buckets rather than a ramp**: a
+  gradient over twenty residues reads as twenty slightly different colours,
+  which is a picture you cannot name anything in, and the whole reason to
+  colour by hydropathy is to point at a band. Orange to blue, so there is no
+  second colourblind table. **What the scale does not name is GREY, not the
+  neutral band** — a nucleotide and a ligand have no hydropathy, and the middle
+  colour would say "neither hydrophobic nor hydrophilic", which is an answer.
+  `MSE` is a methionine, because the connectivity table already knows it and a
+  selenomethionine-phased model would otherwise be the one thing on screen
+  drawn grey. `py2Dmol.hydrophobicityBands` publishes the five for a legend —
+  a host page copying the table into itself is how a legend comes to disagree
+  with the viewer beside it — and it is a GETTER, because `parts/embed.js`
+  loads BEFORE `core/mol.js` and a `const` in its temporal dead zone makes even
+  `typeof` throw.
 - **A capability in the bundle that no interface reaches is not shipped.**
   `parts/clip.js` is in every build and only `index.html` could get to it: the
   website had a Clip panel, the embed had `v.clip(sel)`, the notebook had

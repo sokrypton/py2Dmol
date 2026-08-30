@@ -206,6 +206,123 @@ window.addEventListener('load', () => {
       R.sse.push(['back to auto', sseFace()]);
       await press('sidechainHideButton');
 
+      // ---- THE COLOUR PICKER OFFERS MODES, NOT ONLY COLOURS ----------------
+      //
+      // resolveColorHierarchy's applySpec has read a mode name at position
+      // level since it was written, and obj.sidechainColor takes one too -
+      // and nothing in any interface could SAY one. The point of it is the
+      // combination: the backbone answering one question and a pocket's side
+      // chains answering another, on one picture.
+      {
+        const shot = () => {
+          const c = document.querySelector('#canvasContainer canvas');
+          const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+          let h = 0;
+          for (let i = 0; i < d.length; i += 4) {
+            h = (h * 31 + d[i] * 7 + d[i + 1] * 13 + d[i + 2] * 17) >>> 0;
+          }
+          return h;
+        };
+        const menuSelect = async (btnId, menuId) => {
+          document.getElementById(btnId).click();     // builds, then opens
+          await settle();
+          return document.getElementById(menuId)
+            .querySelector('.selection-color-mode');
+        };
+        const pick = async (btnId, menuId, value) => {
+          const sel = await menuSelect(btnId, menuId);
+          if (!sel) return false;
+          sel.value = value;
+          sel.dispatchEvent(new Event('change', {bubbles: true}));
+          await settle();
+          return true;
+        };
+        const obj = () => r.objectsData[r.currentObjectName];
+        const posEntry = (i) => {
+          const c = obj().color;
+          return (c && c.type === 'advanced' && c.value.position)
+            ? c.value.position[i] : undefined;
+        };
+        R.pick = {};
+        await select(r, [10, 11, 12, 13]);
+
+        const sel0 = await menuSelect('selColorButton', 'selColorMenu');
+        R.pick.hasModeSelect = !!sel0;
+        R.pick.options = sel0 ? [...sel0.options].map((o) => o.value) : [];
+        // ...and the one it shows for a selection with no mode set
+        R.pick.emptyValue = sel0 ? sel0.value : null;
+
+        const before = shot();
+        await pick('selColorButton', 'selColorMenu', 'hydrophobicity');
+        R.pick.stored = posEntry(10);
+        R.pick.drew = shot() !== before;
+        // REOPENING SHOWS WHAT IS SET. A control that does not read back is
+        // how the panel comes to disagree with the picture it is driving.
+        const sel1 = await menuSelect('selColorButton', 'selColorMenu');
+        R.pick.readsBack = sel1 ? sel1.value : null;
+        // ...AND AUTO IS THE WAY OUT, which is a CLEAR rather than the 'auto'
+        // mode: the position ends up with no opinion at all.
+        await pick('selColorButton', 'selColorMenu', '');
+        R.pick.cleared = posEntry(10) === undefined;
+        R.pick.backToStart = shot() === before;
+
+        // ...AND SSE IS ONE SCHEME HERE, NOT TWO. The Style dropdown carries
+        // ss:pymol and ss:jmol; the palette is the VIEWER'S, so the picker
+        // offers the scheme alone - and it has to be the bare `ss` that
+        // applySpec recognises, or it is filed as a literal and draws grey.
+        const beforeSs = shot();
+        await pick('selColorButton', 'selColorMenu', 'ss');
+        R.pick.ssStored = posEntry(10);
+        R.pick.ssDrew = shot() !== beforeSs;
+        await pick('selColorButton', 'selColorMenu', '');
+
+        // THE WHOLE POINT: two questions at once. The backbone by chain, the
+        // side chains of the same residues by hydropathy.
+        await press('sidechainShowButton');
+        await pick('selColorButton', 'selColorMenu', 'chain');
+        await pick('scColorButton', 'scColorMenu', 'hydrophobicity');
+        R.pick.bothStored = [posEntry(10),
+          (obj().sidechainColor || {})[10]];
+        // ...and they really are different colours on the canvas. The side
+        // chain is asked through the atom the renderer appended for it, which
+        // is the only index _sidechainColorOf answers for.
+        const scAtom = (() => {
+          if (!r.sidechainMap) return -1;
+          for (const [atom, e] of r.sidechainMap) if (e.owner === 10) return atom;
+          return -1;
+        })();
+        const asHex = (c) => c ? '#' + [c.r, c.g, c.b]
+          .map((v) => Math.round(v).toString(16).padStart(2, '0')).join('') : null;
+        R.pick.backboneColour = asHex(r.getAtomColor(10));
+        R.pick.sidechainColour = scAtom >= 0 ? asHex(r.getAtomColor(scAtom)) : null;
+        // ...the side-chain swatch resolves the mode rather than falling back
+        // ...and it must show the SIDE CHAIN'S colour, not the residue's. A
+        // swatch that falls back to the main chain is never blank, so "it has
+        // a colour" passes against a mode that is not being resolved at all.
+        const swatch = document.getElementById('scColorSwatch');
+        const raw = swatch ? getComputedStyle(swatch).backgroundColor : '';
+        const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(raw);
+        R.pick.scSwatch = m ? '#' + m.slice(1, 4)
+            .map((v) => Number(v).toString(16).padStart(2, '0')).join('') : null;
+        await press('sidechainHideButton');
+        await pick('selColorButton', 'selColorMenu', '');
+        await pick('scColorButton', 'scColorMenu', '');
+
+        // A CONTACT HAS NO SCHEME. It is one line between two residues, and
+        // "rainbow" says nothing about what colour it should be - so that
+        // picker keeps the Auto BUTTON it always had.
+        await select(r, [10, 40]);
+        await press('contactAddButton');
+        document.getElementById('contactColorButton').click();
+        await settle();
+        const cm = document.getElementById('contactColorMenu');
+        R.pick.contactHasModes = !!cm.querySelector('.selection-color-mode');
+        R.pick.contactHasAuto = !!cm.querySelector('.selection-color-auto');
+        document.getElementById('contactColorButton').click();
+        await select(r, [10, 40]);
+        await press('contactDeleteButton');
+      }
+
       // THE ROW STILL FITS. A pair is wider than the switch it replaced, and
       // the side-chain row carries a swatch, the pair, Plate and Elements in a
       // 340px panel - a row that wraps to a second line is the confusion this
@@ -357,6 +474,80 @@ if not bin.get("width") or bin["width"] < 20 or bin["height"] < 20:
 if not bin.get("content") or bin["content"] in ('none', 'normal', '""'):
     bad.append("the bin has no glyph - an icon button with no icon is an empty"
                " square that deletes things")
+
+# ---- THE COLOUR PICKER OFFERS SCHEMES, NOT ONLY COLOURS --------------------
+pick = R.get("pick") or {}
+print(f"  picker: options={pick.get('options')}")
+print(f"  picker: backbone {pick.get('backboneColour')} +"
+      f" side chains {pick.get('sidechainColour')} from {pick.get('bothStored')}")
+if not pick.get("hasModeSelect"):
+    bad.append("the colour menu has no mode list - resolveColorHierarchy has"
+               " taken a mode name at position level since it was written, and"
+               " nothing in any interface could say one")
+opts = pick.get("options") or []
+for want in ("rainbow", "chain", "hydrophobicity", "plddt"):
+    if want not in opts:
+        bad.append(f"the colour menu does not offer {want}: {opts}")
+if "auto" in opts:
+    bad.append("the mode list offers 'auto' beside its own Auto entry - two"
+               " things called Auto in one menu doing different things: the"
+               " mode resolves the global scheme AT this position, the entry"
+               " clears the override so nothing is said here at all")
+for hidden in ("object", "entropy"):
+    if hidden in opts:
+        bad.append(f"{hidden} is offered here while the Style panel hides it -"
+                   " the picker reads that list precisely so it inherits the"
+                   " hidden-until-useful decision rather than keeping its own")
+if [o for o in opts if ":" in o]:
+    bad.append(f"the picker offers a composite value {opts} - ss:pymol is the"
+               " mode AND the viewer-wide palette in one string, and stored at"
+               " a position it is not a mode name at all: applySpec files it as"
+               " a literal and the residues draw grey")
+if opts.count("ss") > 1:
+    bad.append("SSE is offered more than once - the two entries differ only in"
+               " a palette that belongs to the whole viewer")
+if pick.get("ssStored") != "ss":
+    bad.append(f"picking SSE stored {pick.get('ssStored')!r}")
+if not pick.get("ssDrew"):
+    bad.append("picking SSE for a selection changed no pixels")
+if pick.get("emptyValue") != "":
+    bad.append(f"a selection with no scheme set reads {pick.get('emptyValue')!r}")
+if pick.get("stored") != "hydrophobicity":
+    bad.append(f"picking a scheme stored {pick.get('stored')!r} at the position")
+if not pick.get("drew"):
+    bad.append("picking a colour scheme for a selection changed no pixels")
+if pick.get("readsBack") != "hydrophobicity":
+    bad.append(f"reopening the menu reads {pick.get('readsBack')!r} rather than"
+               " the scheme that is set - a control showing something the"
+               " viewer is not doing is worse than no control")
+if not pick.get("cleared"):
+    bad.append("Auto did not clear the override")
+if not pick.get("backToStart"):
+    bad.append("Auto cleared the entry and left the picture changed")
+both = pick.get("bothStored") or []
+if both != ["chain", "hydrophobicity"]:
+    bad.append("the backbone and its own side chains cannot hold two different"
+               f" schemes at once: stored {both}")
+if pick.get("backboneColour") == pick.get("sidechainColour"):
+    bad.append("the backbone is on chain and its side chains on hydropathy and"
+               f" both drew {pick.get('backboneColour')} - two schemes were set"
+               " and one answer came out")
+print(f"  picker: side-chain swatch {pick.get('scSwatch')}")
+if pick.get("scSwatch") != pick.get("sidechainColour"):
+    bad.append(f"the side-chain swatch shows {pick.get('scSwatch')} while the"
+               f" side chain is drawn {pick.get('sidechainColour')}"
+               f" (the residue is {pick.get('backboneColour')}) - the swatch is"
+               " meant to show what is on screen, and a scheme resolves to a"
+               " colour like anything else. Checking only that it is NOT BLANK"
+               " passes against a swatch that quietly fell back to the main"
+               " chain, which is what the first version of this did")
+if pick.get("contactHasModes"):
+    bad.append("the contact picker offers colour schemes - a contact is one"
+               " line between two residues, and no scheme says what colour"
+               " that line should be")
+if not pick.get("contactHasAuto"):
+    bad.append("the contact picker lost its Auto button, which is the only way"
+               " it has to clear a colour")
 
 fitP = R.get("fitProtein") or {}
 print("  protein rows: " + ", ".join(f"{k}={v}" for k, v in fitP.items()))

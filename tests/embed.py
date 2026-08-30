@@ -71,6 +71,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"></head><body>
 <div id="selrel" style="width:180px;height:180px"></div>
 <div id="bu" style="width:120px;height:120px"></div>
 <div id="elem" style="width:220px;height:220px"></div>
+<div id="schue" style="width:220px;height:220px"></div>
 <div id="bu2" style="width:120px;height:120px"></div>
 <div id="bu3" style="width:120px;height:120px"></div>
 <div id="bu4" style="width:120px;height:120px"></div>
@@ -1016,6 +1017,64 @@ setTimeout(finish, 80000);
         await new Promise((r) => setTimeout(r, 500));
         R.elemRestored = shot('elem') === on;
     }
+
+    // SIDE CHAINS CAN CARRY THEIR OWN COLOUR, AND ONLY THE SIDE CHAINS.
+    //
+    // obj.sidechainColor has existed since the selection panel was written and
+    // src/app/selection.js was the only thing that could reach it - the embed
+    // and the notebook had the storage and no door. setSidechainColor is the
+    // renderer's verb, so all three get it, and it takes a colour MODE as
+    // readily as a colour: 'hydrophobicity' over a backbone coloured by
+    // anything else is two questions on one picture.
+    //
+    // MEASURED ON THE CANVAS, because everything about this is arithmetic that
+    // agrees with the bug: the map can be written correctly, the flags set
+    // correctly, and the colour never reach a pixel.
+    {
+        const sv = py2Dmol.show('schue', LIG_TEXT, {style: 'cartoon'});
+        await frame();
+        await inked('schue', 4000);
+        const site = {near: {type: 'L'}};
+        const bare = shot('schue');
+
+        // ...WITH NOTHING DRAWN, IT DRAWS NOTHING. The map is keyed by residue
+        // and only an atom that is on screen reads it, so this is the whole of
+        // "side chains only" stated as a measurement rather than as a claim.
+        sv.setSidechainColor('hydrophobicity');
+        await frame();
+        await new Promise((r) => setTimeout(r, 500));
+        R.scColourInertWithNoSidechains = shot('schue') === bare;
+
+        sv.showSidechains(site);
+        await frame();
+        await new Promise((r) => setTimeout(r, 500));
+        const coloured = shot('schue');
+        R.scColourSidechainsDrawn = coloured !== bare;
+
+        // 🔴 THE COMPARISON IS AGAINST THE SAME SIDE CHAINS UNCOLOURED, NOT
+        // against the bare backbone. Measuring `coloured !== bare` scores
+        // showSidechains and says nothing about the colour: two mutations that
+        // stopped the colour reaching a pixel altogether walked straight
+        // through it, because the atoms had still appeared. Clearing the
+        // colour with the same atoms on screen is the only pair that differs
+        // in one thing - and it doubles as the check that unset means FOLLOW
+        // THE RESIDUE, which is what makes this a second colour rather than a
+        // replacement.
+        sv.setSidechainColor(null);
+        await frame();
+        await new Promise((r) => setTimeout(r, 500));
+        const plain = shot('schue');
+        R.scColourDrew = plain !== coloured;
+
+        sv.setSidechainColor('hydrophobicity');
+        await frame();
+        await new Promise((r) => setTimeout(r, 500));
+        R.scColourRepeatable = shot('schue') === coloured;
+
+        // ...a control, so none of the three comparisons above can be passing
+        // on an empty canvas
+        R.scColourInk = ink(canvasIn('schue'));
+    }
     R.hasOrientBtn = !!menuBox.querySelector('#orientButton');
     if (R.hasOrientBtn) {
         withMenu.viewerState.rotation = [[0, 0, 1], [0, 1, 0], [-1, 0, 0]];
@@ -1785,6 +1844,24 @@ if not R.get('elemHidden'):
                ' default, so turning them off must be visible')
 if not R.get('elemRestored'):
     bad.append('showElements did not put the element colours back')
+if not R.get('scColourInk'):
+    bad.append('the side-chain colour viewer drew nothing at all, so the three'
+               ' comparisons below are between two blank canvases')
+if not R.get('scColourInertWithNoSidechains'):
+    bad.append('setSidechainColor changed pixels while no side chain was'
+               ' drawn - it is meant to reach the side-chain atoms and nothing'
+               ' else, so with none on screen it has nothing to colour')
+if not R.get('scColourSidechainsDrawn'):
+    bad.append('no side chains appeared, so the colour comparison below has'
+               ' nothing to be a colour of')
+if not R.get('scColourDrew'):
+    bad.append("setSidechainColor('hydrophobicity') and setSidechainColor(null)"
+               ' drew the same side chains - either the colour never reaches a'
+               ' pixel, or unset does not mean follow the residue. Both are'
+               ' invisible to every arithmetic check of the map')
+if not R.get('scColourRepeatable'):
+    bad.append('setting the same side-chain colour twice gave two different'
+               ' pictures')
 if sorted(R.get('elemSymbols') or []) == []:
     bad.append("embed.html's inlined structure has no element symbols in"
                ' columns 77-78, so its ligand and side chains draw in one flat'

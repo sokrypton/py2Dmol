@@ -123,8 +123,12 @@ get <code>chain</code>.</p>
 <pre id="v3code" class="ran"></pre>
     <p class="note"><code>auto</code> &middot; <code>chain</code> &middot; <code>rainbow</code>
    &middot; <code>plddt</code> &middot; <code>deepmind</code> &middot;
-   <code>ss</code>. A name it does not know throws, rather than leaving the
-   picture unchanged and letting you wonder.</p>
+   <code>ss</code> &middot; <code>hydrophobicity</code>. A name it does not know
+   throws, rather than leaving the picture unchanged and letting you wonder.</p>
+    <p class="note"><code>hydrophobicity</code> is Kyte &amp; Doolittle in five
+   buckets rather than a ramp, orange for the core and blue for the surface, so
+   you can point at a band and name it. <code>py2Dmol.hydrophobicityBands</code>
+   is the same five, in order, for a legend.</p>
     <p class="note"><code>plddt</code> reads the B-factor column, which in a crystal structure
    is a real B-factor rather than a confidence.</p>
   </div>
@@ -199,12 +203,21 @@ residue number.</p>
 
 <h2>8 &middot; Side chains</h2>
 <p class="sub">The same site, with atoms. Side chains are drawn per residue, so you
-ask for the ones you want to see.</p>
+ask for the ones you want to see &mdash; and they can carry a colour of their
+own, apart from the ribbon they grow out of.</p>
 <div class="ex">
   <div id="v8" class="canvas-box" style="width:340px;height:340px"></div>
   <div class="side">
 <pre id="v8code" class="ran"></pre>
     <p class="note"><code>hideSidechains</code> takes them away again.</p>
+    <p class="note"><code>setSidechainColor</code> takes a colour or a whole
+   colour mode, and the same selector as everything else. It is a
+   <em>second</em> colour, not a replacement: a side chain nobody spoke for
+   follows its residue, so recolouring the main chain carries it along, and one
+   given a colour of its own stays put. That is what lets a backbone say
+   <code>plddt</code> while its side chains say
+   <code>hydrophobicity</code> &mdash; two questions on one picture.
+   <code>v.setSidechainColor(null)</code> hands them back.</p>
     <p class="note">They arrive coloured by element &mdash; carbon in the
     residue's own colour, oxygen red, nitrogen blue &mdash; and so does a
     ligand. That is on by default, since those are the atoms with an element
@@ -444,6 +457,9 @@ other.</p>
 <tr><td>v.showSidechains(sel) &middot; v.hideSidechains(sel)</td><td>side-chain
     atoms, per residue. Throws on a structure that carries none, such as a
     C-alpha trace</td></tr>
+<tr><td>v.setSidechainColor(colour, sel?)</td><td>a colour or a colour mode for
+    the side chains alone. Unset follows the residue, and
+    <code>null</code> puts it back</td></tr>
 <tr><td>v.showElements(sel) &middot; v.hideElements(sel)</td><td>colour those
     atoms by element. <strong>On by default</strong> wherever there are atoms
     to read &mdash; ligands and drawn side chains &mdash; so this is mostly how
@@ -1968,7 +1984,8 @@ example('v8', `const v = py2Dmol.show('v8', text, { style: 'cartoon' });
 
 const site = { near: { type: 'L' } };
 
-v.showSidechains(site);   // draw their atoms`);
+v.showSidechains(site);                  // draw their atoms
+v.setSidechainColor('hydrophobicity');   // ...in their own colours`);
 
 example('v9', `const v = py2Dmol.show('v9', text, { style: 'cartoon' });
 

@@ -78,23 +78,15 @@ function setSelectionColor(positions, color) {
 function setSelectionSidechainColor(positions, color) {
     const renderer = viewerApi?.renderer;
     if (!renderer) return;
-    // ...per owning object and in its numbering, like the residue colours
-    for (const g of (renderer.writeGroups ? renderer.writeGroups(positions)
-        : [{ object: renderer.objectsData?.[renderer.currentObjectName],
-            positions: Array.from(positions) }])) {
-        const obj = g.object;
-        if (!obj) continue;
-        const map = obj.sidechainColor ? { ...obj.sidechainColor } : {};
-        for (const i of g.positions) {
-            if (color === null) delete map[i];
-            else map[i] = color;
-        }
-        obj.sidechainColor = Object.keys(map).length ? map : null;
-    }
-    renderer.colorsNeedUpdate = true;
-    renderer.plddtColorsNeedUpdate = true;
+    // THE WRITE IS THE RENDERER'S - this was the fourth copy of the same walk,
+    // and the same thing happened here as with the side chains themselves:
+    // moving the verb to the renderer gave the notebook and the embed a door
+    // and left the website's own copy where it was because it worked. What
+    // stays here is the panel's part, which is the EVENT: the swatches and the
+    // sequence strip rebuild off it, and the renderer has no business
+    // dispatching a document-scoped bus that would fire once per viewer.
+    renderer.setSidechainColor(color, Array.from(positions));
     document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
-    renderer.render('selection sidechain colour');
 }
 
 // Secondary structure override. Lives on the renderer as a plain

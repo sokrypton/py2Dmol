@@ -63,6 +63,11 @@ const SOURCES = [
     'src/parts/savepanel.js',
     'src/parts/capture.js',
     'src/parts/clip.js',
+    // ...and the side-chain verbs, which own showSidechains/hideSidechains and
+    // setSidechainColor. They were text-scanned and never lifted, so the file
+    // was not here and L.method('setSidechainColor') came back "not found in"
+    // a list that did not contain it.
+    'src/parts/sidechains.js',
     'src/core/mol.js',
 ];
 

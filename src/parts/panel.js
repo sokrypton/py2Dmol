@@ -108,6 +108,7 @@ const STYLE_PANEL_ROWS = [
                  // way in which it did not. Two options in the dropdown that
                  // is already there say the same thing.
                  ['ss', 'SSE', { id: 'ssColorOption' }],
+                 ['hydrophobicity', 'Hydropathy'],
                  ['plddt', 'pLDDT'], ['deepmind', 'DeepMind'],
                  ['entropy', 'Entropy', { id: 'entropyColorOption', hidden: true }]] },
      { kind: 'select', id: 'selectionMarkSelect', label: 'Sele', half: true,

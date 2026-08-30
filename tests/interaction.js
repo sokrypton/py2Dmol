@@ -72,6 +72,19 @@ eval('global.Vec3 = ' + L.klass('Vec3').replace('class Vec3', 'class'));
 // ...and the module-level FUNCTIONS they call, for the same reason: a lifted
 // method that reaches one of these gets a ReferenceError, which reads as ten
 // unrelated halo tests breaking at once.
+// ...the hydropathy table and its palette, and the selector - all module-scope
+// in core/mol.js, all reached by the side-chain colour verb and by
+// _colorForMode. Taken from the source for the usual reason: a copy of the
+// Kyte-Doolittle numbers here would score the copy.
+for (const nm of ['KYTE_DOOLITTLE', 'HYDROPHOBICITY_BANDS', 'namedColorsMap',
+    'DEFAULT_GREY', 'SELECTOR_KEYS']) {
+    eval('global.' + L.constExpr(nm));
+}
+for (const name of ['getHydrophobicityColor', 'getAllValidColorModes',
+    'positionsFor', 'selectorRange']) {
+    eval('global.' + name + ' = '
+        + L.topFunction(name).replace('function ' + name, 'function'));
+}
 for (const name of ['selectionBandFor', 'ligandGroupsForFrame',
     'objectStateAbsent']) {
     eval('global.' + name + ' = '
@@ -91,7 +104,7 @@ global.OBJECT_STATE = new Function(
 // orient's rotation solver, scored as shipped
 eval(L.utils.match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyLookDefaults','autoClip','_autoClipDepth','_autoClipHalf','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_transformedFrame','_parkedFrameIndex','setAlignTransform','clearAlignments','anyAlignment','_reapplyAfterAlign','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','_applyRecordVisibility','_composeAndApplyMask','_visibleForObject','_syncModelToMask','withSidechainAtoms','_baseCount','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','ligandGroupsOf','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_colorForMode','setSidechainColor','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyLookDefaults','autoClip','_autoClipDepth','_autoClipHalf','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_transformedFrame','_parkedFrameIndex','setAlignTransform','clearAlignments','anyAlignment','_reapplyAfterAlign','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','_applyRecordVisibility','_composeAndApplyMask','_visibleForObject','_syncModelToMask','withSidechainAtoms','_baseCount','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','ligandGroupsOf','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
 const body={};
 for(const nm of names) body[nm]=L.method(nm);
 // ...and the STATICS the lifted methods reach through this.constructor. Only
@@ -1530,6 +1543,169 @@ t('a side chain follows its residue\'s colour until given one of its own', () =>
         throw new Error('the residue picked up its side chain\'s colour');
     }
     if (out.coords.length <= first) throw new Error('fixture did not materialise');
+});
+
+
+// ---- HYDROPATHY, AND A SIDE CHAIN THAT CARRIES ITS OWN QUESTION -------------
+// A side chain can be coloured apart from the residue it grows out of, which is
+// what lets a backbone say pLDDT while the side chains say hydrophobicity - two
+// questions on one picture. The storage was here from the day the selection
+// panel was written and src/app/selection.js was the only thing that could
+// reach it; setSidechainColor is the verb every shell gets.
+
+t('hydropathy is five buckets by residue name, and grey for what it cannot say', () => {
+    const rgb = (hex) => hexToRgb(hex);
+    // Kyte & Doolittle, one representative per band. The bands are read out of
+    // the shipped table rather than written here, so a change of taste in the
+    // colours is not a failure - what is pinned is which BAND each residue
+    // lands in, which is the arithmetic.
+    const band = (i) => rgb(HYDROPHOBICITY_BANDS[i].hex);
+    const cases = [['ILE', 0], ['VAL', 0], ['LEU', 0],   // >= 3.0
+        ['PHE', 1], ['CYS', 1], ['MET', 1], ['ALA', 1],  // >= 1.0
+        ['GLY', 2], ['THR', 2], ['SER', 2], ['TRP', 2],  // >= -1.0
+        ['TYR', 3], ['PRO', 3],                          // >= -3.0
+        ['HIS', 4], ['GLU', 4], ['ASP', 4], ['LYS', 4], ['ARG', 4]];
+    for (const [res, want] of cases) {
+        const got = getHydrophobicityColor(res);
+        const w = band(want);
+        if (got.r !== w.r || got.g !== w.g || got.b !== w.b) {
+            throw new Error(res + ' (' + KYTE_DOOLITTLE[res] + ') came out '
+                + JSON.stringify(got) + ', want band ' + want + ' '
+                + HYDROPHOBICITY_BANDS[want].label);
+        }
+    }
+    // ...lower case too: a residue name is read off a file and files disagree
+    if (getHydrophobicityColor('ile').r !== band(0).r) {
+        throw new Error('a lower-case residue name is not recognised');
+    }
+    // SELENOMETHIONINE IS A METHIONINE. The connectivity table knows MSE, so a
+    // structure phased that way draws its side chains - and without its row
+    // they would be the one thing on screen coloured grey.
+    if (getHydrophobicityColor('MSE').r !== getHydrophobicityColor('MET').r) {
+        throw new Error('MSE does not read as the methionine it is');
+    }
+    // 🔴 AND WHAT THE SCALE DOES NOT NAME IS GREY, NOT NEUTRAL. A nucleotide,
+    // a ligand and UNK have no hydropathy; the middle band would say "neither
+    // hydrophobic nor hydrophilic", which is an answer, and there is not one.
+    for (const nothing of ['UNK', 'HOH', 'HEM', 'DA', '', undefined]) {
+        const got = getHydrophobicityColor(nothing);
+        if (got.r !== DEFAULT_GREY.r || got.g !== DEFAULT_GREY.g
+            || got.b !== DEFAULT_GREY.b) {
+            throw new Error(JSON.stringify(nothing) + ' was given a hydropathy'
+                + ' colour: ' + JSON.stringify(got));
+        }
+        if (got.r === band(2).r && got.g === band(2).g && got.b === band(2).b) {
+            throw new Error(JSON.stringify(nothing) + ' came back as the'
+                + ' NEUTRAL band - "no answer" is not "in the middle"');
+        }
+    }
+});
+
+t('hydrophobicity is a colour mode like any other', () => {
+    if (!getAllValidColorModes().includes('hydrophobicity')) {
+        throw new Error('hydrophobicity is not a valid colour mode, so'
+            + ' setColor and py2Dmol.view(color=...) both reject it');
+    }
+    // ...and _colorForMode answers for it from the RESIDUE NAME, which is the
+    // one thing about a position that does not change from frame to frame.
+    const v = new Cls();
+    v.positionNames = ['ILE', 'ARG', 'UNK'];
+    v.positionTypes = ['P', 'P', 'L'];
+    const ile = v._colorForMode(0, 'hydrophobicity');
+    const arg = v._colorForMode(1, 'hydrophobicity');
+    if (ile.r !== hexToRgb(HYDROPHOBICITY_BANDS[0].hex).r) {
+        throw new Error('the mode does not read positionNames: ILE came out '
+            + JSON.stringify(ile));
+    }
+    if (arg.b <= arg.r) {
+        throw new Error('arginine did not come out on the hydrophilic end: '
+            + JSON.stringify(arg));
+    }
+});
+
+t('a side chain can follow a colour MODE, resolved when it is drawn', () => {
+    // 🔴 THE MAP HOLDS A MODE NAME AS WELL AS A HEX, and resolving it at the
+    // moment it was SET would freeze it. Harmless for hydropathy, which is a
+    // fact about the residue's identity - and wrong for every other mode:
+    // pLDDT is per frame, rainbow follows the chain scale. A mode stored as a
+    // mode keeps answering.
+    const d = scFixture();
+    const v = scViewer([2]);
+    v._materialiseSidechains(d);
+    const first = d.coords.length;
+    v.positionNames = ['ALA', 'ALA', 'ILE', 'ALA', 'ALA', 'ALA'];
+    v.positionTypes = new Array(8).fill('P');
+
+    v.objectsData.obj.sidechainColor = { 2: 'hydrophobicity' };
+    const got = v._sidechainColorOf(first);
+    const want = hexToRgb(HYDROPHOBICITY_BANDS[0].hex);   // ILE, very hydrophobic
+    if (!got || got.r !== want.r || got.g !== want.g || got.b !== want.b) {
+        throw new Error('a side chain set to a mode came out '
+            + JSON.stringify(got) + ' rather than ' + JSON.stringify(want)
+            + " - a mode name run through hexToRgb is NaN, which is what the"
+            + ' hex-only version of this did');
+    }
+    // ...and the mode is read against the OWNER, not the appended atom, whose
+    // index is reissued every time the set changes and whose name is blank
+    if (v._sidechainColorOf(first).r !== want.r) {
+        throw new Error('the mode resolved through the atom rather than its'
+            + ' residue');
+    }
+    // A NAMED COLOUR STILL WORKS, and is not mistaken for a mode.
+    v.objectsData.obj.sidechainColor = { 2: 'red' };
+    const red = v._sidechainColorOf(first);
+    if (!red || red.r !== 255 || red.g !== 0 || red.b !== 0) {
+        throw new Error('a named side-chain colour came out '
+            + JSON.stringify(red));
+    }
+});
+
+t('setSidechainColor is the verb, and it writes in the object\'s numbering', () => {
+    const v = new Cls();
+    v.coords = new Array(6).fill([0, 0, 0]);
+    v.currentObjectName = 'obj';
+    v.objectsData = { obj: {} };
+    v.positionNames = ['ALA', 'ALA', 'ILE', 'ALA', 'ALA', 'ALA'];
+    v.render = () => { v.rendered = (v.rendered || 0) + 1; };
+
+    v.setSidechainColor('#ff0000', [2, 3]);
+    if (JSON.stringify(v.objectsData.obj.sidechainColor)
+        !== JSON.stringify({ 2: '#ff0000', 3: '#ff0000' })) {
+        throw new Error('wrote ' + JSON.stringify(v.objectsData.obj.sidechainColor));
+    }
+    // A REPAINT is asked for - the colours are cached behind these two flags
+    // and setting the field alone leaves the picture exactly as it was.
+    if (!v.colorsNeedUpdate || !v.plddtColorsNeedUpdate || !v.rendered) {
+        throw new Error('the colour caches were not invalidated, so the map'
+            + ' changed and the drawing did not');
+    }
+    // A MODE IS STORED AS ITSELF, not resolved into hexes here.
+    v.setSidechainColor('hydrophobicity');
+    const all = v.objectsData.obj.sidechainColor;
+    if (Object.keys(all).length !== 6 || all[2] !== 'hydrophobicity') {
+        throw new Error('a bare mode did not reach every residue as a mode: '
+            + JSON.stringify(all));
+    }
+    // NULL CLEARS, and clearing is not the same as any colour: unset means
+    // follow the residue, which is the state this has to be able to get back to.
+    v.setSidechainColor(null, [2]);
+    if (v.objectsData.obj.sidechainColor[2] !== undefined) {
+        throw new Error('null did not clear position 2');
+    }
+    v.setSidechainColor(null);
+    if (v.objectsData.obj.sidechainColor !== null) {
+        throw new Error('clearing everything left ' + JSON.stringify(
+            v.objectsData.obj.sidechainColor) + ' rather than null - an empty'
+            + ' map is not the same as no map to the code that reads it');
+    }
+    // ...AND A NAME IT DOES NOT KNOW THROWS. Storing it would draw the side
+    // chain grey and leave the reader looking for the bug in their structure.
+    let threw = false;
+    try { v.setSidechainColor('hydrophobicty'); } catch (e) { threw = true; }
+    if (!threw) throw new Error('a misspelled mode was accepted');
+    let threw2 = false;
+    try { v.setSidechainColor(42); } catch (e) { threw2 = true; }
+    if (!threw2) throw new Error('a number was accepted as a colour');
 });
 
 
@@ -5817,13 +5993,16 @@ t('a saved session carries each object\'s clip and style', () => {
 t('the colour modes are ordered by how often they are reached for', () => {
     const opts = L.panelItems().colorSelect.options;
     const order = opts.map((o) => o[0]);
-    // Auto first because it is the answer most of the time, then the three
+    // Auto first because it is the answer most of the time, then the ones
     // that apply to any structure, then the two that only mean anything on a
     // prediction. Entropy is last and hidden until an MSA is loaded, and
     // Object sits with the general schemes but is hidden until there is more
     // than one object on screen - with one it colours everything the same.
-    const want = ['auto', 'rainbow', 'chain', 'object', 'ss', 'plddt',
-        'deepmind', 'entropy'];
+    // Hydropathy is a fact about the residues and so is a general scheme: it
+    // answers for a crystal structure exactly as well as for a prediction,
+    // which is what puts it above pLDDT rather than beside it.
+    const want = ['auto', 'rainbow', 'chain', 'object', 'ss', 'hydrophobicity',
+        'plddt', 'deepmind', 'entropy'];
     const hiddenUntilUseful = opts.filter((o) => o[2] && o[2].hidden).map((o) => o[0]);
     for (const nm of ['object', 'entropy']) {
         if (!hiddenUntilUseful.includes(nm)) {
@@ -6048,6 +6227,23 @@ t('one verb for the side chains, not one per shell', () => {
         if (/\bobj(ect)?\.sidechains\s*=/.test(src2)) {
             throw new Error(f + ' writes an object\'s side-chain set; only '
                 + owners.join(' and ') + ' may');
+        }
+    }
+
+    // ...AND THE SAME AGAIN ONE LAYER ALONG, for what colour they are.
+    // obj.sidechainColor was written here and nowhere else could reach it, so
+    // the embed and the notebook had the storage and no door to it - the
+    // shape of fault this file already carries four instances of.
+    if (!/setSidechainColor\(/.test(sel)) {
+        throw new Error('src/app/selection.js does not call the renderer\'s'
+            + ' setSidechainColor - the colour walk is back in the shell');
+    }
+    for (const f of ['src/app/selection.js', 'src/parts/embed.js',
+        'src/app/main.js', 'src/app/objects.js']) {
+        const src3 = fs.readFileSync(f, 'utf8');
+        if (/\bobj(ect)?\.sidechainColor\s*=/.test(src3)) {
+            throw new Error(f + ' writes an object\'s side-chain COLOUR map;'
+                + ' that belongs to src/parts/sidechains.js');
         }
     }
 });
@@ -7473,7 +7669,11 @@ t('a merged view gives each object a colour of its own', () => {
     };
     const C3 = new Function('resolveColorHierarchy', 'chainColors',
         'chainColorsColorblind', 'DEFAULT_GREY', 'getPlddtColor', 'getPlddtAFColor',
-        'return class {' + grab3('getAtomColor') + grab3('sourceGroups')
+        // ...and _colorForMode, which the mode chain moved into so a side
+        // chain following a MODE could reach it without going through the
+        // literal hierarchy. getAtomColor ends in a call to it now.
+        'return class {' + grab3('getAtomColor') + grab3('_colorForMode')
+        + grab3('sourceGroups')
         + grab3('ownerOf') + grab3('sourceGroups')
         + ' _getEffectiveColorMode(){ return "object"; }'
         + ' _sidechainColorOf(){ return null; }'

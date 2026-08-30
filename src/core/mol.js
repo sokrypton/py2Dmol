@@ -204,7 +204,8 @@ function positionsFor(renderer, sel) {
 function getAllValidColorModes() {
     // 'object' only means anything with more than one object merged in, and
     // is what 'auto' resolves to there - see setCoords.
-    const builtinModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy', 'object'];
+    const builtinModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind',
+        'entropy', 'object', 'hydrophobicity'];
     const customModes = window.py2dmol_customColors ? Object.keys(window.py2dmol_customColors) : [];
     return builtinModes.concat(customModes);
 }
@@ -501,6 +502,12 @@ function getPaletteColors(colorblind) {
     return rows;
 }
 window.py2dmol_paletteColors = getPaletteColors;
+// ...and the colour MODES, beside the colours and for the same reason: the
+// selection panel offers both now, and app/main.js reads its list from here
+// rather than keeping one. getAllValidColorModes already folds in whatever
+// cartoon/geom.js and anyone else registered in py2dmol_customColors, so a
+// mode that exists is a mode the picker can offer.
+window.py2dmol_colorModes = getAllValidColorModes;
 
 function hexToRgb(hex) { if (!hex || typeof hex !== 'string') { return { r: 128, g: 128, b: 128 }; } const r = parseInt(hex.slice(1, 3), 16); const g = parseInt(hex.slice(3, 5), 16); const b = parseInt(hex.slice(5, 7), 16); return { r, g, b }; }
 function rgbToHex({ r, g, b }) { const clamp = (v) => Math.max(0, Math.min(255, Math.round(v))); const cr = clamp(r).toString(16).padStart(2, '0'); const cg = clamp(g).toString(16).padStart(2, '0'); const cb = clamp(b).toString(16).padStart(2, '0'); return `#${cr}${cg}${cb}`; }
@@ -619,6 +626,63 @@ function getPlddtAFColor(plddt, colorblind = false) {
         else if (plddt >= 50) return { r: 254, g: 217, b: 54 }; // Yellow
         else return { r: 253, g: 125, b: 77 };                 // Orange
     }
+}
+
+// ============================================================================
+// HYDROPHOBICITY
+// ============================================================================
+// Kyte & Doolittle 1982, J Mol Biol 157:105-132 - the hydropathy scale
+// everyone means when they say "colour it by hydrophobicity".
+//
+// BY THREE-LETTER NAME, because that is what a structure carries: the renderer
+// keeps positionNames, not a sequence, and a viewer that only knew one-letter
+// codes could not answer for the residues a PDB actually names.
+const KYTE_DOOLITTLE = {
+    ILE: 4.5, VAL: 4.2, LEU: 3.8, PHE: 2.8, CYS: 2.5, MET: 1.9, ALA: 1.8,
+    GLY: -0.4, THR: -0.7, SER: -0.8, TRP: -0.9, TYR: -1.3, PRO: -1.6,
+    HIS: -3.2, GLU: -3.5, GLN: -3.5, ASP: -3.5, ASN: -3.5, LYS: -3.9,
+    ARG: -4.5,
+    // ...and the spellings a real file uses for the same residues.
+    // Selenomethionine IS a methionine - the connectivity table already knows
+    // MSE, so a structure phased that way draws its side chains, and without
+    // this row they would have been the one thing on screen coloured grey.
+    // The histidine protonation states and CYX come out of Amber and its
+    // relatives, which is where a trajectory comes from.
+    MSE: 1.9, HID: -3.2, HIE: -3.2, HIP: -3.2, HSD: -3.2, HSE: -3.2,
+    HSP: -3.2, CYX: 2.5, CYM: 2.5,
+};
+
+// FIVE BUCKETS, NOT A RAMP. A gradient over twenty residues reads as twenty
+// slightly different colours, which is a picture you cannot name anything in.
+// Buckets you can point at - "the orange ones are the core" - and that is the
+// whole reason to colour by hydropathy rather than by anything else.
+//
+// The ramp is orange to blue, so it survives every kind of colour blindness
+// and there is no second table for it - unlike the chain and rainbow palettes,
+// which are hue wheels and need one.
+const HYDROPHOBICITY_BANDS = [
+    { min: 3.0, hex: '#f2994a', label: 'very hydrophobic' },
+    { min: 1.0, hex: '#f2c94c', label: 'hydrophobic' },
+    { min: -1.0, hex: '#cfd8d4', label: 'neutral' },
+    { min: -3.0, hex: '#56b9dc', label: 'hydrophilic' },
+    { min: -Infinity, hex: '#187bd1', label: 'very hydrophilic' },
+];
+
+/**
+ * A residue's hydropathy colour, from its three-letter name.
+ *
+ * Anything the scale does not name - a nucleotide, a ligand, UNK - comes back
+ * GREY rather than the middle band. "No answer" and "neither hydrophobic nor
+ * hydrophilic" are different things, and the neutral colour would say the
+ * second while meaning the first.
+ */
+function getHydrophobicityColor(resName) {
+    const v = KYTE_DOOLITTLE[(resName || '').toUpperCase()];
+    if (v === undefined) return DEFAULT_GREY;
+    for (const band of HYDROPHOBICITY_BANDS) {
+        if (v >= band.min) return hexToRgb(band.hex);
+    }
+    return DEFAULT_GREY;
 }
 
 // PAE color functions moved to panels/pae.js
@@ -8105,8 +8169,25 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const own = this.ownerOf(e.owner);
             const obj = this.objectsData[own ? own.name : this.currentObjectName];
             const at = own ? own.local : e.owner;
-            const hex = obj && obj.sidechainColor && obj.sidechainColor[at];
-            return hex ? hexToRgb(hex) : null;
+            const v = obj && obj.sidechainColor && obj.sidechainColor[at];
+            if (!v || typeof v !== 'string') return null;
+            if (v[0] === '#') return hexToRgb(v);
+            const named = namedColorsMap[v.toLowerCase()];
+            if (named) return hexToRgb(named);
+            // ...OTHERWISE IT IS A MODE, AND IT IS RESOLVED HERE RATHER THAN
+            // WHEN IT WAS SET. Freezing it into hexes would be right for
+            // hydrophobicity, which is a fact about the residue's identity and
+            // never changes, and wrong for every other mode: plddt is per
+            // frame, rainbow follows the chain scale, entropy arrives with an
+            // alignment. A mode stored as a mode keeps answering.
+            //
+            // Through _colorForMode, NOT getAtomColor: the mode is the whole
+            // point of the call, and getAtomColor would let the residue's own
+            // explicit colour beat it - which is exactly the thing a
+            // side-chain mode is being asked to differ from.
+            const mode = (v === 'auto')
+                ? this._getEffectiveColorMode(e.owner) : v;
+            return this._colorForMode(e.owner, mode) || null;
         }
 
         /**
@@ -9323,69 +9404,33 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return null;
         }
 
-        getAtomColor(atomIndex, effectiveColorMode = null) {
-            if (atomIndex < 0 || atomIndex >= this.coords.length) {
-                return DEFAULT_GREY;
-            }
-            // same rule as getColorOverride: a side chain is coloured as its
-            // residue unless it was given a colour of its own
-            const ownSc = this._sidechainColorOf(atomIndex);
-            if (ownSc) return ownSc;
-            atomIndex = this._colorPositionFor(atomIndex);
-
-            // Resolve color through the unified hierarchy
-            // In overlay mode, determine which frame this atom belongs to from frameIdMap
-            let frameIndex = this.currentFrame >= 0 ? this.currentFrame : 0;
-            if (this.overlayState.enabled && this.overlayState.frameIdMap && atomIndex < this.overlayState.frameIdMap.length) {
-                frameIndex = this.overlayState.frameIdMap[atomIndex];
-            }
-
-            const chainId = this.chains[atomIndex] || 'A';
-
-            const context = {
-                frameIndex: frameIndex,
-                posIndex: atomIndex,
-                chainId: chainId,
-                renderer: this
-            };
-
-            const { resolvedMode, resolvedLiteralColor } = resolveColorHierarchy(context, null);
-
-            // Use resolved color mode (frame color takes priority over passed-in global mode)
-            // If resolveColorHierarchy found a specific mode, use it
-            // IMPORTANT: 'auto' is not a real color mode, it must be resolved via _getEffectiveColorMode()
-            if (resolvedMode && resolvedMode !== 'auto' && resolvedMode !== this.colorMode) {
-                effectiveColorMode = resolvedMode;
-            } else if (!effectiveColorMode || effectiveColorMode === 'auto' || resolvedMode === 'auto') {
-                // Resolve 'auto' to actual mode - and to THIS POSITION'S, which
-                // in a merged view is its own object's answer
-                effectiveColorMode = this._getEffectiveColorMode(atomIndex);
-            }
-
-            // If we have a resolved literal color, use it immediately (highest priority)
-            if (resolvedLiteralColor !== null) {
-                let literalColor;
-                if (typeof resolvedLiteralColor === 'string' && resolvedLiteralColor.startsWith('#')) {
-                    literalColor = hexToRgb(resolvedLiteralColor);
-                } else if (typeof resolvedLiteralColor === 'string') {
-                    // Try to convert named color to hex
-                    const hex = namedColorsMap[resolvedLiteralColor.toLowerCase()];
-                    literalColor = hex ? hexToRgb(hex) : DEFAULT_GREY;
-                } else if (resolvedLiteralColor && typeof resolvedLiteralColor === 'object' && (resolvedLiteralColor.r !== undefined || resolvedLiteralColor.g !== undefined || resolvedLiteralColor.b !== undefined)) {
-                    literalColor = resolvedLiteralColor; // Already RGB object
-                }
-                if (literalColor) {
-                    return literalColor;
-                }
-            }
-
+        /**
+         * A COLOUR MODE'S ANSWER FOR ONE POSITION, and nothing else.
+         *
+         * This was the tail of getAtomColor and had no other way in, so a
+         * caller that wanted "what would plddt say here" had to go through the
+         * whole hierarchy - literal colours, frame colours, the side-chain
+         * override - and get one of those back instead. `_sidechainColorOf`
+         * wants exactly this: a side chain told to follow a MODE follows the
+         * mode, not the residue's own explicit colour, which is the one thing
+         * that call is asking to differ from.
+         *
+         * `atomIndex` is already resolved through _colorPositionFor by every
+         * caller: a side-chain atom is coloured as the residue it belongs to.
+         */
+        _colorForMode(atomIndex, effectiveColorMode) {
             const type = (this.positionTypes && atomIndex < this.positionTypes.length) ? this.positionTypes[atomIndex] : undefined;
             let color;
 
             // Ligands should always be grey in chain and rainbow modes (not plddt)
             const isLigand = type === 'L';
 
-            if (effectiveColorMode === 'plddt') {
+            if (effectiveColorMode === 'hydrophobicity') {
+                // BY RESIDUE IDENTITY, so it is the same answer in every frame
+                // of a trajectory and needs nothing from the file but the name.
+                color = getHydrophobicityColor(
+                    this.positionNames && this.positionNames[atomIndex]);
+            } else if (effectiveColorMode === 'plddt') {
                 const plddt = (this.plddts[atomIndex] !== null && this.plddts[atomIndex] !== undefined) ? this.plddts[atomIndex] : 50;
                 color = getPlddtColor(plddt, this.colorblindMode);
             } else if (effectiveColorMode === 'deepmind') {
@@ -9479,6 +9524,65 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             return color;
+        }
+
+        getAtomColor(atomIndex, effectiveColorMode = null) {
+            if (atomIndex < 0 || atomIndex >= this.coords.length) {
+                return DEFAULT_GREY;
+            }
+            // same rule as getColorOverride: a side chain is coloured as its
+            // residue unless it was given a colour of its own
+            const ownSc = this._sidechainColorOf(atomIndex);
+            if (ownSc) return ownSc;
+            atomIndex = this._colorPositionFor(atomIndex);
+
+            // Resolve color through the unified hierarchy
+            // In overlay mode, determine which frame this atom belongs to from frameIdMap
+            let frameIndex = this.currentFrame >= 0 ? this.currentFrame : 0;
+            if (this.overlayState.enabled && this.overlayState.frameIdMap && atomIndex < this.overlayState.frameIdMap.length) {
+                frameIndex = this.overlayState.frameIdMap[atomIndex];
+            }
+
+            const chainId = this.chains[atomIndex] || 'A';
+
+            const context = {
+                frameIndex: frameIndex,
+                posIndex: atomIndex,
+                chainId: chainId,
+                renderer: this
+            };
+
+            const { resolvedMode, resolvedLiteralColor } = resolveColorHierarchy(context, null);
+
+            // Use resolved color mode (frame color takes priority over passed-in global mode)
+            // If resolveColorHierarchy found a specific mode, use it
+            // IMPORTANT: 'auto' is not a real color mode, it must be resolved via _getEffectiveColorMode()
+            if (resolvedMode && resolvedMode !== 'auto' && resolvedMode !== this.colorMode) {
+                effectiveColorMode = resolvedMode;
+            } else if (!effectiveColorMode || effectiveColorMode === 'auto' || resolvedMode === 'auto') {
+                // Resolve 'auto' to actual mode - and to THIS POSITION'S, which
+                // in a merged view is its own object's answer
+                effectiveColorMode = this._getEffectiveColorMode(atomIndex);
+            }
+
+            // If we have a resolved literal color, use it immediately (highest priority)
+            if (resolvedLiteralColor !== null) {
+                let literalColor;
+                if (typeof resolvedLiteralColor === 'string' && resolvedLiteralColor.startsWith('#')) {
+                    literalColor = hexToRgb(resolvedLiteralColor);
+                } else if (typeof resolvedLiteralColor === 'string') {
+                    // Try to convert named color to hex
+                    const hex = namedColorsMap[resolvedLiteralColor.toLowerCase()];
+                    literalColor = hex ? hexToRgb(hex) : DEFAULT_GREY;
+                } else if (resolvedLiteralColor && typeof resolvedLiteralColor === 'object' && (resolvedLiteralColor.r !== undefined || resolvedLiteralColor.g !== undefined || resolvedLiteralColor.b !== undefined)) {
+                    literalColor = resolvedLiteralColor; // Already RGB object
+                }
+                if (literalColor) {
+                    return literalColor;
+                }
+            }
+
+            return this._colorForMode(atomIndex, effectiveColorMode);
         }
 
         // Get chain color for a given chain ID (for UI elements like sequence viewer)

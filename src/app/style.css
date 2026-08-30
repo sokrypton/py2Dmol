@@ -1718,6 +1718,26 @@ table.layout-table td {
     cursor: pointer;
 }
 
+/* THE MODE LIST, sized like the panel's own controls rather than like a
+   swatch: it is a <select> among squares, and at the cells' 16px it would be
+   unreadable. Full width of the menu so it reads as the row it is. */
+.selection-color-mode {
+    flex: 1;
+    height: 24px;
+    font-size: 12px;
+    padding: 0 6px;
+    border: 1px solid #d1d5db;
+    border-radius: 3px;
+    background: #f9fafb;
+    color: #374151;
+    cursor: pointer;
+}
+
+.selection-color-mode:hover {
+    background: #eef2ff;
+    border-color: #6366f1;
+}
+
 .selection-color-auto {
     flex: 1;
     font-size: 11px;

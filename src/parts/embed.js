@@ -919,6 +919,24 @@ async function fetchStructure(id) {
     return res.text();
 }
 
+// THE HYDROPATHY BANDS ARE PART OF THE API because a page that colours by
+// hydropathy needs a LEGEND, and building one means knowing the five colours
+// and what they are called. Reading them off a picture, or copying the table
+// into the host page, is how a legend comes to disagree with the viewer beside
+// it. `[{ min, hex, label }]`, most hydrophobic first.
 window.py2Dmol = { show, fetch: fetchStructure, frameFromText, framesFromText,
     version: 1 };
+
+// A GETTER, BECAUSE THIS FILE LOADS BEFORE core/mol.js. HYDROPHOBICITY_BANDS
+// is a module-scope `const` there, so at the moment this line runs it is in
+// its temporal dead zone - and a `const` in TDZ makes even `typeof` throw, so
+// the usual guard is no guard at all. Read on access and mol.js has long since
+// been evaluated.
+//
+// A COPY EACH TIME, so a host page sorting or pushing onto what it gets back
+// cannot edit the table the viewer draws from.
+Object.defineProperty(window.py2Dmol, 'hydrophobicityBands', {
+    enumerable: true,
+    get() { return HYDROPHOBICITY_BANDS.map((b) => Object.assign({}, b)); },
+});
 }());
