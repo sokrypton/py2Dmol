@@ -133,9 +133,16 @@ MEASURE = r"""(() => {
   // backing store and its CSS box agree. `width: 100%` against a store sized
   // once at build time is a horizontal scale factor, and the letters wear it.
   const sq = document.getElementById('sequenceCanvas');
+  const sbox = document.getElementById('sequence-viewer-container');
   R.strip = sq ? {css: Math.round(sq.getBoundingClientRect().width),
                   logical: Math.round(sq.width / (200 / 96)),
-                  stretch: +(sq.getBoundingClientRect().width / (sq.width / (200 / 96))).toFixed(3)}
+                  stretch: +(sq.getBoundingClientRect().width / (sq.width / (200 / 96))).toFixed(3),
+                  // ...and HOW MUCH OF THE SCREEN it takes. The ceiling used to
+                  // be a line count, which is width-independent while the number
+                  // of lines a sequence needs is not - so the strip grew as the
+                  // screen shrank: 35% of a 1200px desktop and 64% of a phone.
+                  boxH: sbox ? Math.round(sbox.getBoundingClientRect().height) : 0,
+                  share: sbox ? +(sbox.getBoundingClientRect().height / innerHeight).toFixed(2) : 0}
               : null;
   return R;
 })()"""
@@ -233,6 +240,9 @@ for name in ("320px", "360px", "390px", "desktop"):
         print("   WILL NOT SHRINK below %dpx: %s" % (st["min"], st["el"]))
     for k in ("topbar", "fetch", "examples", "play"):
         print("   %-9s %s" % (k, " | ".join("[" + ", ".join(l) + "]" for l in R["rows"][k])))
+    if R["strip"]:
+        print("   strip     box %spx (%d%% of viewport), stretch %s"
+              % (R["strip"]["boxH"], round(R["strip"]["share"] * 100), R["strip"]["stretch"]))
 
 for name in ("320px", "360px", "390px"):
     R = results[name]
@@ -305,6 +315,10 @@ for name in ("320px", "360px", "390px"):
     if sa and sa["over"] > 1:
         bad.append("%s: 'Select all' overflows its own button by %dpx - the label"
                    " wrapped inside it" % (name, sa["over"]))
+    if R["strip"] and R["strip"]["share"] > 0.5:
+        bad.append("%s: the sequence strip is %dpx, %d%% of the viewport - the structure"
+                   " it belongs to is what the reader came for"
+                   % (name, R["strip"]["boxH"], round(R["strip"]["share"] * 100)))
     if R["strip"] and abs(R["strip"]["stretch"] - 1) > 0.02:
         bad.append("%s: the sequence strip's bitmap is %d logical px in a %dpx box - a"
                    " %.2fx horizontal scale, which is what squishes the letters"
@@ -354,6 +368,10 @@ if D["titleOverlap"]:
     bad.append("the desktop title and page actions overlap")
 # ...and the handle is the DESKTOP's affordance, so it must still be there:
 # hiding it everywhere would pass the narrow check by removing the feature.
+# ...and the desktop's strip is NOT squeezed by the viewport share: 4HHB is
+# 35% there and must stay where it was, or the cap has been applied too widely.
+if D["strip"] and D["strip"]["share"] > 0.4:
+    bad.append("the desktop strip is %d%% of the viewport" % round(D["strip"]["share"] * 100))
 if D["resizeHandle"] == "none":
     bad.append("the desktop canvas resize handle was hidden too - that rule is meant"
                " to be narrow-only")

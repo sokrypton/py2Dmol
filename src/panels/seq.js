@@ -1801,9 +1801,32 @@ function buildSequenceView() {
         }
     }
 
-    // Calculate visible area dimensions
-    const maxVisibleLines = 32; // Maximum number of lines to show at once (same as before)
-    const maxVisibleHeight = maxVisibleLines * charHeight + spacing;
+    // ========================================================================
+    // HOW TALL THE STRIP MAY GET, and 🔴 A LINE COUNT IS THE WRONG CEILING.
+    //
+    // 32 lines is width-independent, and the number of lines a sequence needs
+    // is not: narrow the box and each line holds fewer residues, so it takes
+    // MORE lines - the strip grows exactly as the screen it has to fit gets
+    // smaller. Measured on 4HHB, the box was 294px of a 1200px desktop (35% of
+    // the viewport) and 544px on a 390px phone (64%), pinned at the 32-line
+    // ceiling the whole way down.
+    //
+    // The ceiling is a share of the VIEWPORT as well, so it shrinks with the
+    // thing it has to fit in. It is a Math.min of the two: the line count still
+    // caps a huge structure on a tall window, and the viewport share caps a
+    // phone. The floor keeps it usable - below about eight lines a strip is
+    // not worth the room it takes - and the custom scrollbar already handles
+    // whatever does not fit, so this costs scrolling and nothing else.
+    // ========================================================================
+    const maxVisibleLines = 32;
+    const VIEWPORT_SHARE = 0.35;
+    const MIN_VISIBLE_LINES = 8;
+    const viewportH = (typeof window !== 'undefined' && window.innerHeight) || 0;
+    const byLines = maxVisibleLines * charHeight + spacing;
+    const byViewport = viewportH
+        ? Math.max(MIN_VISIBLE_LINES * charHeight + spacing, viewportH * VIEWPORT_SHARE)
+        : byLines;
+    const maxVisibleHeight = Math.min(byLines, byViewport);
     const fullContentHeight = currentY; // Full content height (actual total)
 
     // Store fullContentHeight in layout for later use
