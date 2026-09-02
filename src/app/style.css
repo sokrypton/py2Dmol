@@ -1813,3 +1813,247 @@ table.layout-table td {
     height: 24px; font-size: 12px;
 }
 [hidden] { display: none !important; }
+
+/* ============================================================================
+   THE SHELL WIDTH, AND THE NARROW LAYOUT
+   ----------------------------------------------------------------------------
+   948 = 600 (canvas) + 8 (gap) + 340 (panel). It was written INLINE on four
+   elements - the header, the upload box, the sequence strip and the footer -
+   and an inline width is one no stylesheet can override: not a media query,
+   not a container query, not any amount of specificity. Only `!important`
+   beats one, and a page whose responsive rules all need `!important` is a page
+   with no cascade left. So the number lives here, once, and the block below
+   overrides that one rule instead of four attributes.
+
+   The same fault was in JavaScript and was the real blocker: setupViewport
+   wrote `canvasContainer.style.width`, so every rule aimed at the canvas box
+   lost to an attribute set at load. `data-autosize="css"` on the container
+   turns that write off - see the banner in src/parts/viewport.js, and note the
+   notebook needs the OPPOSITE and needs it in the markup, because Colab
+   measures output HTML before any script has run.
+
+   🔴 AND THIS BLOCK MUST BE LAST IN THE FILE. Its declarations are the same
+   specificity as the ones they replace, so ORDER is the only thing deciding
+   them - the same lesson the selection panel's container query already cost
+   once, where the heights took and the widths did not and it looked exactly
+   like a query that was not matching.
+   ============================================================================ */
+.page-width { width: 948px; }
+
+/* THE TOP BAR. `position: absolute; top: 0; right: 0` was written INLINE on
+   .page-actions - the sixth of these, and the only one that was a POSITION
+   rather than a width. Absolutely positioned means out of flow, so as soon as
+   the page is narrower than title + three buttons the buttons slide left and
+   sit ON TOP of "2Dmol". Reported from a phone, and invisible to a check that
+   only asks whether anything overflows: an overlap costs no width at all. */
+.page-topbar { position: relative; }
+.page-actions {
+    position: absolute;
+    top: 0;
+    right: 0;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+/* WHY 980 AND NOT 948: the shell is 948 plus the page's own margins, so it
+   starts overflowing slightly before its stated width. Below this the two
+   columns cannot sit side by side at all - 600 + 8 + 340 is arithmetic, not
+   styling - so they stack, and everything pinned to the shell becomes fluid.
+   ONE breakpoint for the structure. Touch and target size are asked about
+   separately below, because they are different questions: a 900px tablet with
+   a mouse wants the stack and not the fat controls, and a phone wants both. */
+@media (max-width: 980px) {
+    .page-width,
+    .py2dmol-viewer-instance {
+        width: 100%;
+        max-width: 948px;
+    }
+
+
+    /* WIDTH AS WELL AS DIRECTION. #viewer-container is given `display: flex`
+       INLINE by the JS that reveals it, so #mainContainer is a flex ITEM and
+       sizes to its content - and its content is sized from it, which resolves
+       to an arbitrary 312px in a 452px shell. Stating the width breaks that
+       circularity; on desktop it is 948 either way. */
+    /* THE BAR BECOMES AN ORDINARY ROW. Out of flow is what let the actions
+       overlap the title; in flow they push it or wrap under it instead. */
+    .page-topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px 12px;
+    }
+    .page-actions { position: static; }
+    /* 🔴 AND THE TITLE RESERVES 300px FOR BUTTONS THAT ARE NO LONGER OVER IT.
+       `.page-head` carries `padding-right: 300px` to keep a strapline clear of
+       the absolutely positioned actions - correct while they float, and 300px
+       of dead width once they are in flow. It is most of a phone. */
+    .page-head { margin: 0; padding-right: 0; }
+
+    /* 🔴 THE ROW THAT WOULD NOT SHRINK, AND WHY "no overflow" WAS A LIE.
+       `.fetch-row` is a flex row with no wrap, so the ID box, Fetch, Upload and
+       Options insist on 504px between them - measured with `width: min-content`.
+       Under mobile emulation a page that cannot fit does NOT overflow: the
+       LAYOUT VIEWPORT grows to fit it, so scrollWidth == innerWidth and every
+       overflow check passes while the phone shows a zoomed-out page. Asking for
+       390 gave an innerWidth of 408. Letting the row wrap is what actually
+       makes the page fit. */
+    /* THE ID BOX GETS A LINE OF ITS OWN, then Fetch / Upload / Options share
+       the next one. `flex: 1 1 100%` is what forces the break - letting the row
+       simply wrap put Fetch up beside the box and left Upload and Options
+       stranded on a line of their own, which reads as two unrelated groups.
+
+       SCOPED TO THE INPUT ROW, not `.fetch-row`, which is also the EXAMPLES
+       row: that one is `flex-wrap: nowrap` on purpose (they are a set and read
+       as one), and a `.fetch-row` rule down here has the same specificity and
+       comes later, so it silently turned the nowrap off. */
+    #fetch-input-container { flex-wrap: wrap; }
+    /* `1 0 100%` AND NOT `1 1 100%`: with shrink allowed the flex algorithm
+       is free to squeeze the box back onto one line beside the buttons, which
+       is exactly what it did - the basis is a preference, the shrink is the
+       permission. Zero shrink makes the break unconditional. */
+    /* 🔴 AND IT MUST OUT-SPECIFY `#fetch-input-container input`, which already
+       says `flex: 1 1 auto`. That is (1,0,1) against a bare `#fetch-id`'s
+       (1,0,0), so the plain id rule lost and the box stayed on line one with
+       Fetch beside it - measured as "2 lines" the whole time, because it IS
+       two lines, just split [box, Fetch] / [Upload, Options] instead of
+       [box] / [Fetch, Upload, Options]. A line COUNT cannot tell those apart;
+       only looking at it could. */
+    #fetch-input-container #fetch-id {
+        flex: 1 0 100%;
+        /* ...AND border-box, or `100%` is 100% of the line PLUS its own padding
+           and border, which hangs the box past the card's right edge and takes
+           the layout viewport a pixel with it. The page's global box-sizing is
+           scoped to `.py2dmol-viewer-instance *` and this input is outside it. */
+        box-sizing: border-box;
+        min-width: 0;
+    }
+
+    /* ===== THE THREE ROWS THAT MUST NOT BREAK =====
+       The title and the three page actions on ONE line; the ID box alone on
+       the next; Fetch / Upload / Options together on the one after; and the
+       examples on a single line. Measured at 390 those come to 304, 300 and
+       285 CSS px against a 342px shell - they fit, and at 360 the shell is
+       312 and the top bar is 316, so it breaks by four pixels. THE ROWS ARE
+       TOLD NOT TO WRAP AND THE CONTENT IS TRIMMED TO SUIT, rather than the
+       other way round: a row that is allowed to wrap will, at some width
+       nobody tested. The examples row is NOT restated here - `.fetch-examples`
+       already says nowrap at the top of this file, and the wrap rule below is
+       scoped to the input row so nothing clobbers it. Measured: removing a
+       copy here changed nothing. */
+
+    /* WHAT GIVES: the horizontal padding on the two button groups. Heights are
+       untouched - these are the same controls, narrower.
+
+       A smaller TITLE was written here too and measured as a no-op at every
+       width including 320, so it is not there: "2Dmol" is 84px at its full
+       size and the bar has room for it. */
+    .page-actions .btn,
+    .page-actions .btn-toggle-global > span,
+    .fetch-examples .btn {
+        padding-left: 8px;
+        padding-right: 8px;
+    }
+    /* `.btn` carries `min-width: 100px`, so Fetch / Upload / Options insist on
+       316px with their gaps and do not fit a 320px phone's 272px shell. The
+       floor comes off for these three only - they size to their labels and
+       still share the line. Not `flex: 1 1 0`, which was tried and collapsed
+       them to 30px of clipped text: a zero BASIS with no floor is not the same
+       as a natural width with no floor. */
+    #fetch-input-container > button { min-width: 0; }
+    /* ...and the row's own gap comes down 8 -> 6. Fetch / Upload / Options are
+       65 + 94 + 98 = 257, and two 8px gaps put them at 273 in a 320px phone's
+       272px shell: over by ONE pixel, which is enough to stand Options on a
+       line of its own. Scoped to this row - the examples row has its own 6px. */
+
+    /* 🔴 THE PLAY BAR BREAKS AT THE OVERLAY BUTTON, and the slider is why.
+       A wrapping flex row decides its line breaks from each item's BASE size,
+       and #frameSlider's is an <input>'s natural ~173px - so play(40) +
+       slider(173) + counter(50) + speed(40) + overlay(39) + four gaps came to
+       374 against a 342px row and overlay was pushed to a second line. It then
+       GREW to fill line one, which is why the finished row looks like it has
+       room to spare: the width that caused the break is not the width you see.
+
+       `flex-basis: 0` takes the slider out of that decision - it claims nothing
+       while lines are chosen, then absorbs whatever is left. The min-width is
+       what stops it becoming a hairline, and 40 is a MEASURED number, not a
+       chosen one: at 320 the row's content box is 270 and the other four come
+       to 169 plus four 6px gaps, so the slider may claim 77 and no more. 60
+       was tried and still wrapped. */
+    .py2dmol-viewer-instance #controlsContainer #frameSlider {
+        flex: 1 1 0;
+        min-width: 40px;
+    }
+    /* ...and the row's gap 8 -> 6, which is the last 8px a 320px phone needs.
+       Its content box is the 272px shell less .container-box's padding and
+       border - 254 - against 229 of controls plus four gaps. At 8 that is 261
+       and overlay drops; at 6 it is 253. */
+    .py2dmol-viewer-instance #controlsContainer {
+        gap: 6px;
+        /* ...and 16px of SIDE padding of its own, on top of the card's 8, which
+           is 32px of a 320px phone's row spent on margin. Both this and the gap
+           are load-bearing at 320: removing either puts the overlay button on a
+           second line. (A mutation run reported this rule as a no-op; the
+           regex had failed to match, so "not caught" meant "not mutated" - a
+           mutation that does not mutate is indistinguishable from a rule that
+           does nothing.) */
+        padding-left: 8px;
+        padding-right: 8px;
+    }
+    /* ...and the same 100px floor is why the toolbar row insists on 312px
+       (three buttons plus two gaps), which is 40 more than a 320px phone's
+       shell. Measured as `#rightPanelContainer` refusing to shrink, which is
+       what pushed a 320 device to a 324 layout viewport. */
+
+
+    /* A BUTTON'S LABEL IS NOT A PARAGRAPH. "Select all" broke across two lines
+       inside its own button and took the row's baseline with it, so it sat half
+       a line above Unselect and Invert.
+
+       LETTING THE ROW WRAP IS THE WHOLE FIX. A `white-space: nowrap` on the
+       buttons was written beside this and measured as inert at 320, 360 and
+       390 - with the row free to break, each button gets its natural width and
+       nothing inside one wraps. It is not here. `tests/mobile_layout.py`
+       measures the overflow (scrollHeight against clientHeight) rather than
+       the declaration, and forcing a wrap is caught at 13px. */
+    .sequence-header { flex-wrap: wrap; }
+
+    /* NOTHING TO DRAG, SO NOTHING TO SHOW. The canvas box is `resize: none`
+       here (it is fluid), and the handle is revealed on :hover, which a touch
+       screen does not have - so it was a permanent blue triangle over the
+       corner of the structure that does nothing when tapped. */
+    .py2dmol-viewer-instance #canvasContainer .resize-handle { display: none; }
+
+    .py2dmol-viewer-instance #mainContainer {
+        flex-direction: column;
+        width: 100%;
+    }
+
+    /* min-width 600 is what pinned the viewer column; both it and the panel
+       column become full width and stack. */
+    .py2dmol-viewer-instance #viewerColumn {
+        min-width: 0;
+        width: 100%;
+    }
+    .py2dmol-viewer-instance #rightPanelsContainer,
+    .py2dmol-viewer-instance #rightPanelContainer,
+    .py2dmol-viewer-instance #binding-results-container {
+        width: 100%;
+    }
+
+    /* SQUARE, AND CSS OWNS IT. height comes off with the width or the box keeps
+       its stated 600 and the canvas is letterboxed inside it. `resize: both`
+       goes because a fluid box cannot also be a dragged one - and its handle is
+       revealed on :hover, which a touch screen does not have (below). */
+    .py2dmol-viewer-instance #canvasContainer {
+        width: 100%;
+        height: auto;
+        aspect-ratio: 1 / 1;
+        resize: none;
+    }
+
+    /* the strip is the panel that earns its width most on a narrow screen, and
+       .sequence-section-container pinned it to 600. */
+    .sequence-section-container { min-width: 0; }
+}

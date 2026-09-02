@@ -468,6 +468,18 @@ function setupCanvasDimensions() {
     const canvas = document.getElementById('canvas');
     const viewerColumn = document.getElementById('viewerColumn');
 
+    // 🔴 THE SECOND WRITER OF THE SAME INLINE WIDTH, and guarding only the
+    // first one bought nothing. src/parts/viewport.js writes the canvas box
+    // too and honours `data-autosize="css"` on the container; this is the
+    // website's own copy of the same three lines, so it has to be told
+    // separately or the flag is half-wired - measured at a 390px viewport as
+    // a page that stacked its columns correctly and still overflowed by 234px,
+    // with the container reading `width: 600px` inline and data-autosize set.
+    //
+    // AN INLINE WIDTH IS ONE NO STYLESHEET CAN OVERRIDE. That is the whole
+    // reason the flag exists; see the banner in src/parts/viewport.js.
+    if (canvasContainer && canvasContainer.dataset.autosize === 'css') return;
+
     canvasContainer.style.width = `${FIXED_WIDTH}px`;
     canvasContainer.style.height = `${FIXED_HEIGHT}px`;
     canvas.width = FIXED_WIDTH;
