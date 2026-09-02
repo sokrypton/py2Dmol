@@ -1240,6 +1240,40 @@ function setStripEnabled(on) {
     }
 }
 
+// ============================================================================
+// 🔴 THE STRIP IS A BITMAP AND ITS BOX IS FLUID NOW.
+//
+// The canvas is laid out at `width: 100%` and its backing store is sized once,
+// from the container width measured AT BUILD TIME. While the page was a fixed
+// 948px those could not disagree. Fluid, they disagree the moment anything
+// resizes - a rotated phone, a dragged window, a panel opening - and the
+// browser simply scales the bitmap into the new box: measured on a 6MRR strip,
+// the horizontal scale ran 0.75x at 320px to 2.74x at 1200 while the vertical
+// stayed exactly 1.0. That is what "the letters are squished" is.
+//
+// WIDTH ONLY, or this is an infinite loop: a rebuild sets the canvas HEIGHT
+// from the content it just laid out, which resizes this same element.
+//
+// It rebuilds through buildSequenceViewDeferred so it inherits the two things
+// a rebuild has to do - forgetPositionState() at SCHEDULE time, because the
+// canvas the pointer is over is about to be destroyed and no mouseleave will
+// ever arrive, and the rAF coalescing that stops a drag-resize rebuilding
+// every frame.
+// ============================================================================
+let sequenceWidthObserver = null;
+let sequenceObservedWidth = 0;
+function watchSequenceWidth(el) {
+    if (sequenceWidthObserver || !el || typeof ResizeObserver !== 'function') return;
+    sequenceObservedWidth = Math.round(el.getBoundingClientRect().width);
+    sequenceWidthObserver = new ResizeObserver(() => {
+        const w = Math.round(el.getBoundingClientRect().width);
+        if (Math.abs(w - sequenceObservedWidth) < 2) return;   // our own height change
+        sequenceObservedWidth = w;
+        buildSequenceViewDeferred();
+    });
+    sequenceWidthObserver.observe(el);
+}
+
 function buildSequenceViewDeferred() {
     if (typeof requestAnimationFrame !== 'function') { buildSequenceView(); return; }
     // ...FORGOTTEN NOW, NOT IN TWO FRAMES. The canvas standing between here and
@@ -1332,7 +1366,13 @@ function buildSequenceView() {
     const containerBoxPadding = 12; // --container-padding from CSS
     const availableWidth = sequenceContainerWidth - (containerBoxPadding * 2); // 924px
     const containerWidth = containerRect && containerRect.width > 0 ? containerRect.width : availableWidth;
-    const sequenceWidth = containerWidth;
+    // 🔴 THE SCROLLBAR COMES OUT OF THE WIDTH, IT IS NOT ADDED TO IT. The
+    // backing store below is `sequenceWidth + SCROLLBAR_WIDTH` while the canvas
+    // is laid out at `width: 100%` - the container's width, with no scrollbar
+    // added - so the bitmap was 15px wider than the box it was squeezed into
+    // and every letter came out 4.4% narrow. Permanent, at every size, and
+    // invisible while the page was a fixed 948px because it was still 4.4%.
+    const sequenceWidth = Math.max(charWidth, containerWidth - SCROLLBAR_WIDTH);
     const charsPerLine = Math.floor(sequenceWidth / charWidth);
 
     // Create canvas element
@@ -1799,6 +1839,9 @@ function buildSequenceView() {
     ctx.scale(dpiMultiplier, dpiMultiplier);
 
     sequenceViewEl.appendChild(canvas);
+    // ...and from here on, follow the box. Installed once; #sequenceView itself
+    // survives a rebuild (only its innerHTML is cleared), so the observer does.
+    watchSequenceWidth(sequenceViewEl);
 
     // Store structure
     // NO chainBoundaries OR sortedPositionEntries HERE. They describe one

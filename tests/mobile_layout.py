@@ -128,6 +128,15 @@ MEASURE = r"""(() => {
   // `resize: none` when fluid, so there is nothing for it to do either.
   const rh = document.querySelector('#canvasContainer .resize-handle');
   R.resizeHandle = rh ? getComputedStyle(rh).display : 'absent';
+
+  // THE SEQUENCE STRIP IS A BITMAP, and a bitmap is undistorted only when its
+  // backing store and its CSS box agree. `width: 100%` against a store sized
+  // once at build time is a horizontal scale factor, and the letters wear it.
+  const sq = document.getElementById('sequenceCanvas');
+  R.strip = sq ? {css: Math.round(sq.getBoundingClientRect().width),
+                  logical: Math.round(sq.width / (200 / 96)),
+                  stretch: +(sq.getBoundingClientRect().width / (sq.width / (200 / 96))).toFixed(3)}
+              : null;
   return R;
 })()"""
 
@@ -181,6 +190,32 @@ try:
         R = evaluate(ws, MEASURE, False)
         R["asked"] = w
         results[name] = R
+    # ===== AND THE STRIP MUST FOLLOW A RESIZE, NOT ONLY A FRESH LOAD =====
+    # Every width above navigates, so each one builds the strip at its final
+    # size and would pass with no resize handling at all. The bug reported was
+    # the other half: rotate the phone or drag the window and the bitmap is
+    # scaled into the new box. Same page, three sizes, no reload.
+    ws.call("Emulation.setDeviceMetricsOverride", width=390, height=844,
+            deviceScaleFactor=2, mobile=True)
+    ws.call("Page.navigate", url="http://127.0.0.1:%d/_mobile.html" % PORT)
+    wait_for(ws, "typeof window.processFiles === 'function'")
+    evaluate(ws, """(async () => {
+        const t = await (await fetch('/4HHB.cif')).text();
+        await window.processFiles([{name: 'a.cif',
+            readAsync: () => Promise.resolve(t)}], false); return 1; })()""")
+    wait_for(ws, "!!document.getElementById('sequenceCanvas')")
+    STRIP = ("(() => { const s = document.getElementById('sequenceCanvas');"
+             " if (!s) return null; const b = s.getBoundingClientRect();"
+             " const L = s.width / (200 / 96);"
+             " return {vw: innerWidth, css: Math.round(b.width),"
+             " logical: Math.round(L), stretch: +(b.width / L).toFixed(3)}; })()")
+    resized = []
+    for w in (320, 520, 900):
+        ws.call("Emulation.setDeviceMetricsOverride", width=w, height=844,
+                deviceScaleFactor=2, mobile=(w < 980))
+        evaluate(ws, "new Promise(r => setTimeout(() => r(1), 900))")
+        resized.append(evaluate(ws, STRIP, False))
+    results["resized"] = resized
 finally:
     if proc: proc.kill()
     httpd.shutdown()
@@ -188,7 +223,8 @@ finally:
     shutil.rmtree("/tmp/py2dmol-mobile-prof", ignore_errors=True)
 
 bad = []
-for name, R in results.items():
+for name in ("320px", "360px", "390px", "desktop"):
+    R = results[name]
     print("%s: asked %d, innerWidth %d, scrollWidth %d, columns %s, title overlap %s"
           % (name, R["asked"], R["viewport"], R["scrollW"], R["mainDir"], R["titleOverlap"]))
     print("   shell %s, canvas box %s (content %s), canvas css %s, renderer %s"
@@ -269,6 +305,10 @@ for name in ("320px", "360px", "390px"):
     if sa and sa["over"] > 1:
         bad.append("%s: 'Select all' overflows its own button by %dpx - the label"
                    " wrapped inside it" % (name, sa["over"]))
+    if R["strip"] and abs(R["strip"]["stretch"] - 1) > 0.02:
+        bad.append("%s: the sequence strip's bitmap is %d logical px in a %dpx box - a"
+                   " %.2fx horizontal scale, which is what squishes the letters"
+                   % (name, R["strip"]["logical"], R["strip"]["css"], R["strip"]["stretch"]))
     if R["resizeHandle"] != "none":
         bad.append("%s: the canvas resize handle is showing (display: %s). It is revealed"
                    " on :hover, which a touch screen has not got, and the box is"
@@ -288,6 +328,17 @@ for name in ("320px", "360px", "390px"):
     if R["container"][0] < R["asked"] * 0.75:
         bad.append("%s: the canvas is only %dpx wide - it stacked but did not use the"
                    " width, which is most of the point" % (name, R["container"][0]))
+
+print("strip after RESIZE (no reload):")
+for r in results.get("resized", []):
+    print("   viewport %-5s bitmap %-5s box %-5s stretch %s"
+          % (r["vw"], r["logical"], r["css"], r["stretch"]))
+    if abs(r["stretch"] - 1) > 0.02:
+        bad.append("after resizing to %dpx the strip's bitmap is %d logical px in a %dpx"
+                   " box - a %.2fx horizontal scale. It did not rebuild."
+                   % (r["vw"], r["logical"], r["css"], r["stretch"]))
+if not results.get("resized"):
+    bad.append("the resize pass produced nothing - it is checking neither half")
 
 D = results["desktop"]
 if D["overflow"] > 1: bad.append("the DESKTOP layout overflows by %dpx" % D["overflow"])
