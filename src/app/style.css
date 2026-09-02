@@ -1870,8 +1870,6 @@ table.layout-table td {
         max-width: 948px;
     }
 
-    /* The shell gets air at the edges; at 948 it had the viewport's. */
-    body { padding-left: 8px; padding-right: 8px; box-sizing: border-box; }
 
     /* WIDTH AS WELL AS DIRECTION. #viewer-container is given `display: flex`
        INLINE by the JS that reveals it, so #mainContainer is a flex ITEM and
@@ -1902,7 +1900,120 @@ table.layout-table td {
        overflow check passes while the phone shows a zoomed-out page. Asking for
        390 gave an innerWidth of 408. Letting the row wrap is what actually
        makes the page fit. */
-    .fetch-row { flex-wrap: wrap; }
+    /* THE ID BOX GETS A LINE OF ITS OWN, then Fetch / Upload / Options share
+       the next one. `flex: 1 1 100%` is what forces the break - letting the row
+       simply wrap put Fetch up beside the box and left Upload and Options
+       stranded on a line of their own, which reads as two unrelated groups.
+
+       SCOPED TO THE INPUT ROW, not `.fetch-row`, which is also the EXAMPLES
+       row: that one is `flex-wrap: nowrap` on purpose (they are a set and read
+       as one), and a `.fetch-row` rule down here has the same specificity and
+       comes later, so it silently turned the nowrap off. */
+    #fetch-input-container { flex-wrap: wrap; }
+    /* `1 0 100%` AND NOT `1 1 100%`: with shrink allowed the flex algorithm
+       is free to squeeze the box back onto one line beside the buttons, which
+       is exactly what it did - the basis is a preference, the shrink is the
+       permission. Zero shrink makes the break unconditional. */
+    /* 🔴 AND IT MUST OUT-SPECIFY `#fetch-input-container input`, which already
+       says `flex: 1 1 auto`. That is (1,0,1) against a bare `#fetch-id`'s
+       (1,0,0), so the plain id rule lost and the box stayed on line one with
+       Fetch beside it - measured as "2 lines" the whole time, because it IS
+       two lines, just split [box, Fetch] / [Upload, Options] instead of
+       [box] / [Fetch, Upload, Options]. A line COUNT cannot tell those apart;
+       only looking at it could. */
+    #fetch-input-container #fetch-id {
+        flex: 1 0 100%;
+        /* ...AND border-box, or `100%` is 100% of the line PLUS its own padding
+           and border, which hangs the box past the card's right edge and takes
+           the layout viewport a pixel with it. The page's global box-sizing is
+           scoped to `.py2dmol-viewer-instance *` and this input is outside it. */
+        box-sizing: border-box;
+        min-width: 0;
+    }
+
+    /* ===== THE THREE ROWS THAT MUST NOT BREAK =====
+       The title and the three page actions on ONE line; the ID box alone on
+       the next; Fetch / Upload / Options together on the one after; and the
+       examples on a single line. Measured at 390 those come to 304, 300 and
+       285 CSS px against a 342px shell - they fit, and at 360 the shell is
+       312 and the top bar is 316, so it breaks by four pixels. THE ROWS ARE
+       TOLD NOT TO WRAP AND THE CONTENT IS TRIMMED TO SUIT, rather than the
+       other way round: a row that is allowed to wrap will, at some width
+       nobody tested. The examples row is NOT restated here - `.fetch-examples`
+       already says nowrap at the top of this file, and the wrap rule below is
+       scoped to the input row so nothing clobbers it. Measured: removing a
+       copy here changed nothing. */
+    .page-topbar { flex-wrap: nowrap; }
+    /* ...and the button rows shrink instead of stranding one control */
+    #fetch-input-container { flex-wrap: wrap; }
+
+    /* WHAT GIVES: the horizontal padding on the two button groups. Heights are
+       untouched - these are the same controls, narrower.
+
+       A smaller TITLE was written here too and measured as a no-op at every
+       width including 320, so it is not there: "2Dmol" is 84px at its full
+       size and the bar has room for it. */
+    .page-actions .btn,
+    .page-actions .btn-toggle-global > span,
+    .fetch-examples .btn {
+        padding-left: 8px;
+        padding-right: 8px;
+    }
+    .fetch-row-label { font-size: 13px; }
+    /* `.btn` carries `min-width: 100px`, so Fetch / Upload / Options insist on
+       316px with their gaps and do not fit a 320px phone's 272px shell. The
+       floor comes off for these three only - they size to their labels and
+       still share the line. Not `flex: 1 1 0`, which was tried and collapsed
+       them to 30px of clipped text: a zero BASIS with no floor is not the same
+       as a natural width with no floor. */
+    #fetch-input-container > button { min-width: 0; }
+    /* ...and the row's own gap comes down 8 -> 6. Fetch / Upload / Options are
+       65 + 94 + 98 = 257, and two 8px gaps put them at 273 in a 320px phone's
+       272px shell: over by ONE pixel, which is enough to stand Options on a
+       line of its own. Scoped to this row - the examples row has its own 6px. */
+    #fetch-input-container { gap: 6px; }
+
+    /* 🔴 THE PLAY BAR BREAKS AT THE OVERLAY BUTTON, and the slider is why.
+       A wrapping flex row decides its line breaks from each item's BASE size,
+       and #frameSlider's is an <input>'s natural ~173px - so play(40) +
+       slider(173) + counter(50) + speed(40) + overlay(39) + four gaps came to
+       374 against a 342px row and overlay was pushed to a second line. It then
+       GREW to fill line one, which is why the finished row looks like it has
+       room to spare: the width that caused the break is not the width you see.
+
+       `flex-basis: 0` takes the slider out of that decision - it claims nothing
+       while lines are chosen, then absorbs whatever is left. The min-width is
+       what stops it becoming a hairline, and 40 is a MEASURED number, not a
+       chosen one: at 320 the row's content box is 270 and the other four come
+       to 169 plus four 6px gaps, so the slider may claim 77 and no more. 60
+       was tried and still wrapped. */
+    .py2dmol-viewer-instance #controlsContainer #frameSlider {
+        flex: 1 1 0;
+        min-width: 40px;
+    }
+    /* ...and the row's gap 8 -> 6, which is the last 8px a 320px phone needs.
+       Its content box is the 272px shell less .container-box's padding and
+       border - 254 - against 229 of controls plus four gaps. At 8 that is 261
+       and overlay drops; at 6 it is 253. */
+    .py2dmol-viewer-instance #controlsContainer {
+        gap: 6px;
+        /* ...and 16px of SIDE padding of its own, on top of the card's 8, which
+           is 32px of a 320px phone's row spent on margin. Both this and the gap
+           are load-bearing at 320: removing either puts the overlay button on a
+           second line. (A mutation run reported this rule as a no-op; the
+           regex had failed to match, so "not caught" meant "not mutated" - a
+           mutation that does not mutate is indistinguishable from a rule that
+           does nothing.) */
+        padding-left: 8px;
+        padding-right: 8px;
+    }
+    /* ...and the same 100px floor is why the toolbar row insists on 312px
+       (three buttons plus two gaps), which is 40 more than a 320px phone's
+       shell. Measured as `#rightPanelContainer` refusing to shrink, which is
+       what pushed a 320 device to a 324 layout viewport. */
+    #navigationControls .btn,
+    #navigationControls .btn-toggle { min-width: 0; }
+
 
     /* A BUTTON'S LABEL IS NOT A PARAGRAPH. "Select all" broke across two lines
        inside its own button and took the row's baseline with it, so it sat
