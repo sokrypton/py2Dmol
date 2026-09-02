@@ -1840,6 +1840,22 @@ table.layout-table td {
    ============================================================================ */
 .page-width { width: 948px; }
 
+/* THE TOP BAR. `position: absolute; top: 0; right: 0` was written INLINE on
+   .page-actions - the sixth of these, and the only one that was a POSITION
+   rather than a width. Absolutely positioned means out of flow, so as soon as
+   the page is narrower than title + three buttons the buttons slide left and
+   sit ON TOP of "2Dmol". Reported from a phone, and invisible to a check that
+   only asks whether anything overflows: an overlap costs no width at all. */
+.page-topbar { position: relative; }
+.page-actions {
+    position: absolute;
+    top: 0;
+    right: 0;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
 /* WHY 980 AND NOT 948: the shell is 948 plus the page's own margins, so it
    starts overflowing slightly before its stated width. Below this the two
    columns cannot sit side by side at all - 600 + 8 + 340 is arithmetic, not
@@ -1862,6 +1878,44 @@ table.layout-table td {
        sizes to its content - and its content is sized from it, which resolves
        to an arbitrary 312px in a 452px shell. Stating the width breaks that
        circularity; on desktop it is 948 either way. */
+    /* THE BAR BECOMES AN ORDINARY ROW. Out of flow is what let the actions
+       overlap the title; in flow they push it or wrap under it instead. */
+    .page-topbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px 12px;
+    }
+    .page-actions { position: static; }
+    /* 🔴 AND THE TITLE RESERVES 300px FOR BUTTONS THAT ARE NO LONGER OVER IT.
+       `.page-head` carries `padding-right: 300px` to keep a strapline clear of
+       the absolutely positioned actions - correct while they float, and 300px
+       of dead width once they are in flow. It is most of a phone. */
+    .page-head { margin: 0; padding-right: 0; }
+
+    /* 🔴 THE ROW THAT WOULD NOT SHRINK, AND WHY "no overflow" WAS A LIE.
+       `.fetch-row` is a flex row with no wrap, so the ID box, Fetch, Upload and
+       Options insist on 504px between them - measured with `width: min-content`.
+       Under mobile emulation a page that cannot fit does NOT overflow: the
+       LAYOUT VIEWPORT grows to fit it, so scrollWidth == innerWidth and every
+       overflow check passes while the phone shows a zoomed-out page. Asking for
+       390 gave an innerWidth of 408. Letting the row wrap is what actually
+       makes the page fit. */
+    .fetch-row { flex-wrap: wrap; }
+
+    /* A BUTTON'S LABEL IS NOT A PARAGRAPH. "Select all" broke across two lines
+       inside its own button and took the row's baseline with it, so it sat
+       half a line above Unselect and Invert. The row wraps; the labels do not. */
+    .sequence-header { flex-wrap: wrap; }
+    .sequence-header .btn { white-space: nowrap; }
+
+    /* NOTHING TO DRAG, SO NOTHING TO SHOW. The canvas box is `resize: none`
+       here (it is fluid), and the handle is revealed on :hover, which a touch
+       screen does not have - so it was a permanent blue triangle over the
+       corner of the structure that does nothing when tapped. */
+    .py2dmol-viewer-instance #canvasContainer .resize-handle { display: none; }
+
     .py2dmol-viewer-instance #mainContainer {
         flex-direction: column;
         width: 100%;
