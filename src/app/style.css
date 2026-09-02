@@ -1813,3 +1813,84 @@ table.layout-table td {
     height: 24px; font-size: 12px;
 }
 [hidden] { display: none !important; }
+
+/* ============================================================================
+   THE SHELL WIDTH, AND THE NARROW LAYOUT
+   ----------------------------------------------------------------------------
+   948 = 600 (canvas) + 8 (gap) + 340 (panel). It was written INLINE on four
+   elements - the header, the upload box, the sequence strip and the footer -
+   and an inline width is one no stylesheet can override: not a media query,
+   not a container query, not any amount of specificity. Only `!important`
+   beats one, and a page whose responsive rules all need `!important` is a page
+   with no cascade left. So the number lives here, once, and the block below
+   overrides that one rule instead of four attributes.
+
+   The same fault was in JavaScript and was the real blocker: setupViewport
+   wrote `canvasContainer.style.width`, so every rule aimed at the canvas box
+   lost to an attribute set at load. `data-autosize="css"` on the container
+   turns that write off - see the banner in src/parts/viewport.js, and note the
+   notebook needs the OPPOSITE and needs it in the markup, because Colab
+   measures output HTML before any script has run.
+
+   🔴 AND THIS BLOCK MUST BE LAST IN THE FILE. Its declarations are the same
+   specificity as the ones they replace, so ORDER is the only thing deciding
+   them - the same lesson the selection panel's container query already cost
+   once, where the heights took and the widths did not and it looked exactly
+   like a query that was not matching.
+   ============================================================================ */
+.page-width { width: 948px; }
+
+/* WHY 980 AND NOT 948: the shell is 948 plus the page's own margins, so it
+   starts overflowing slightly before its stated width. Below this the two
+   columns cannot sit side by side at all - 600 + 8 + 340 is arithmetic, not
+   styling - so they stack, and everything pinned to the shell becomes fluid.
+   ONE breakpoint for the structure. Touch and target size are asked about
+   separately below, because they are different questions: a 900px tablet with
+   a mouse wants the stack and not the fat controls, and a phone wants both. */
+@media (max-width: 980px) {
+    .page-width,
+    .py2dmol-viewer-instance {
+        width: 100%;
+        max-width: 948px;
+    }
+
+    /* The shell gets air at the edges; at 948 it had the viewport's. */
+    body { padding-left: 8px; padding-right: 8px; box-sizing: border-box; }
+
+    /* WIDTH AS WELL AS DIRECTION. #viewer-container is given `display: flex`
+       INLINE by the JS that reveals it, so #mainContainer is a flex ITEM and
+       sizes to its content - and its content is sized from it, which resolves
+       to an arbitrary 312px in a 452px shell. Stating the width breaks that
+       circularity; on desktop it is 948 either way. */
+    .py2dmol-viewer-instance #mainContainer {
+        flex-direction: column;
+        width: 100%;
+    }
+
+    /* min-width 600 is what pinned the viewer column; both it and the panel
+       column become full width and stack. */
+    .py2dmol-viewer-instance #viewerColumn {
+        min-width: 0;
+        width: 100%;
+    }
+    .py2dmol-viewer-instance #rightPanelsContainer,
+    .py2dmol-viewer-instance #rightPanelContainer,
+    .py2dmol-viewer-instance #binding-results-container {
+        width: 100%;
+    }
+
+    /* SQUARE, AND CSS OWNS IT. height comes off with the width or the box keeps
+       its stated 600 and the canvas is letterboxed inside it. `resize: both`
+       goes because a fluid box cannot also be a dragged one - and its handle is
+       revealed on :hover, which a touch screen does not have (below). */
+    .py2dmol-viewer-instance #canvasContainer {
+        width: 100%;
+        height: auto;
+        aspect-ratio: 1 / 1;
+        resize: none;
+    }
+
+    /* the strip is the panel that earns its width most on a narrow screen, and
+       .sequence-section-container pinned it to 600. */
+    .sequence-section-container { min-width: 0; }
+}

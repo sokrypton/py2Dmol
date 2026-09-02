@@ -35,8 +35,11 @@ AI Context: STANDALONE WEB APP ENTRY POINT
     </div>
     <!-- End Global Drop Overlay -->
 
-    <!-- Total width (600 + 8 + 340 = 948px) -->
-    <div class="mx-auto" style="width: 948px; position: relative;">
+    <!-- .page-width is the shell: 600 (canvas) + 8 (gap) + 340 (panel). It was
+         written inline on four elements, which is a width no media query can
+         override - see the banner in src/parts/viewport.js. It is a class now,
+         in src/app/style.css, and the narrow layout overrides that one rule. -->
+    <div class="mx-auto page-width" style="position: relative;">
         <!-- SAVE, CLEAR ALL AND GPU are about the page, not about the thing you
              are loading, and they are here every second of a session while
              Fetch and Upload are used once. Smaller and quieter than the
@@ -89,7 +92,7 @@ AI Context: STANDALONE WEB APP ENTRY POINT
             <h1>2Dmol</h1>
         </div>
 
-        <div id="upload-options-container" class="container-box" style="width: 948px; margin-bottom: 10px;">
+        <div id="upload-options-container" class="container-box page-width" style="margin-bottom: 10px;">
 
             <!-- FETCH PANEL. Three lines, and the third is usually not there.
                  It was a two-column table: an ID box and a Load button on the
@@ -248,7 +251,11 @@ AI Context: STANDALONE WEB APP ENTRY POINT
             <div id="mainContainer">
 
                 <div id="viewerColumn">
-                    <div id="canvasContainer" class="container-box">
+                    <!-- data-autosize="css": THE STYLESHEET OWNS THIS BOX, so setupViewport
+                         writes no inline width and a media query can
+                         reach it. The notebook deliberately does NOT set
+                         this - see the banner in src/parts/viewport.js. -->
+                    <div id="canvasContainer" class="container-box" data-autosize="css">
                         <canvas id="canvas"></canvas>
                         <!-- Resize handle -->
                         <div class="resize-handle"></div>
@@ -525,8 +532,8 @@ AI Context: STANDALONE WEB APP ENTRY POINT
         </div>
 
         <!-- Sequence container with box and toggle -->
-        <div id="sequence-viewer-container" class="container-box sequence-section-container"
-            style="width: 948px; display: none;">
+        <div id="sequence-viewer-container" class="container-box sequence-section-container page-width"
+            style="display: none;">
             <div id="sequenceHeader" class="sequence-header">
                 <!-- Left side: Mode dropdown -->
                 <div style="display: flex; align-items: center; gap: 8px;">
@@ -643,15 +650,15 @@ AI Context: STANDALONE WEB APP ENTRY POINT
 
     <!-- Footer -->
     <footer style="margin-top: var(--container-gap); padding: 0; color: #6b7280; font-size: 13px;">
-        <div
-            style="width: 948px; margin: 0 auto; padding: 10px 0 0 0; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap;">
-            <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px;">
+        <div class="page-width"
+            style="margin: 0 auto; padding: 10px 0 0 0; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap;">
+            <div style="flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 12px;">
                 <a href="https://github.com/sokrypton/py2Dmol" target="_blank" rel="noopener noreferrer"
                     style="color: #3b82f6; text-decoration: none;">
                     <i class="fab fa-github" style="margin-right: 6px;"></i>View on GitHub
                 </a>
             </div>
-            <div style="flex: 0 0 auto; font-size: 12px;">
+            <div style="flex: 0 1 auto; min-width: 0; font-size: 12px;">
                 <i class="fa-solid fa-shield-halved" style="margin-right: 6px; color: #10b981;"></i>
                 <strong>Privacy:</strong> All processing is performed locally in your browser. No data is uploaded to a
                 server.

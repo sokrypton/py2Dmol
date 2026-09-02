@@ -30,8 +30,48 @@ function setupViewport(containerElement, config) {
     // trade when the GPU path took over the drawing.
     const dpr = window.canvasDPR !== undefined
         ? window.canvasDPR : (window.devicePixelRatio || 1);
-    const width = config.display?.size[0] || 300;
-    const height = config.display?.size[1] || 300;
+
+    // ...and the box the canvas sits in, which is what actually resizes. The
+    // notebook's markup has all three; an embed has none of them, and the page
+    // still works - it simply does not follow its container.
+    const canvasContainer = containerElement.querySelector('#canvasContainer');
+    const viewerWrapper = containerElement.querySelector('#viewerWrapper');
+
+    // ====================================================================
+    // 🔴 AN INLINE WIDTH IS A WIDTH NO STYLESHEET CAN OVERRIDE, AND THAT IS
+    // WHY THIS PAGE COULD NOT BE MADE RESPONSIVE IN CSS.
+    //
+    // `canvasContainer.style.width = ...` is an inline style. No media
+    // query, no container query and no amount of specificity beats one -
+    // only `!important` does. So every responsive rule written against
+    // #canvasContainer lost to an attribute this function had already set,
+    // and the failure looks like a media query that is not matching.
+    //
+    // A page that sizes its own viewer SAYS SO, on the container, and then
+    // this writes nothing and CSS owns the box. The ResizeObserver below
+    // needs no change at all - it already reads the container's measured
+    // size and drives the canvas from it, which is exactly what a fluid
+    // layout wants.
+    //
+    // OPT-IN, BECAUSE THE NOTEBOOK NEEDS THE OPPOSITE AND NEEDS IT IN THE
+    // MARKUP. viewer.py substitutes the size as an inline style and RAISES
+    // if the token is gone - Colab inserts output HTML with innerHTML,
+    // which never runs a script, and sizes its output iframe from what it
+    // measures in that window. Take the inline size away there and the
+    // measurement falls back to the stylesheet's 600x600, which is the
+    // white space under a grid that rule exists to prevent.
+    // ====================================================================
+    const cssSized = !!(canvasContainer && canvasContainer.dataset
+        && canvasContainer.dataset.autosize === 'css');
+
+    // WHAT THE BOX ACTUALLY IS when CSS owns it, falling back to the config
+    // when it cannot be measured - a container inside a `display: none`
+    // parent measures 0, which is the state index.html starts in. The
+    // observer corrects it the moment the viewer is shown.
+    const asked = [config.display?.size[0] || 300, config.display?.size[1] || 300];
+    const box = cssSized ? canvasContainer.getBoundingClientRect() : null;
+    const width = (box && box.width >= 1) ? box.width : asked[0];
+    const height = (box && box.height >= 1) ? box.height : asked[1];
 
     canvas.width = width * dpr;
     canvas.height = height * dpr;
@@ -40,12 +80,7 @@ function setupViewport(containerElement, config) {
     const ctx = canvas.getContext('2d');
     ctx.scale(dpr, dpr);
 
-    // ...and the box the canvas sits in, which is what actually resizes. The
-    // notebook's markup has all three; an embed has none of them, and the page
-    // still works - it simply does not follow its container.
-    const canvasContainer = containerElement.querySelector('#canvasContainer');
-    const viewerWrapper = containerElement.querySelector('#viewerWrapper');
-    if (canvasContainer) {
+    if (canvasContainer && !cssSized) {
         canvasContainer.style.width = width + 'px';
         canvasContainer.style.height = height + 'px';
         if (viewerWrapper) viewerWrapper.style.width = width + 'px';
