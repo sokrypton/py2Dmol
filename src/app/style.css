@@ -1880,7 +1880,6 @@ table.layout-table td {
        overlap the title; in flow they push it or wrap under it instead. */
     .page-topbar {
         display: flex;
-        flex-wrap: wrap;
         align-items: center;
         justify-content: space-between;
         gap: 8px 12px;
@@ -1943,9 +1942,6 @@ table.layout-table td {
        already says nowrap at the top of this file, and the wrap rule below is
        scoped to the input row so nothing clobbers it. Measured: removing a
        copy here changed nothing. */
-    .page-topbar { flex-wrap: nowrap; }
-    /* ...and the button rows shrink instead of stranding one control */
-    #fetch-input-container { flex-wrap: wrap; }
 
     /* WHAT GIVES: the horizontal padding on the two button groups. Heights are
        untouched - these are the same controls, narrower.
@@ -1959,7 +1955,6 @@ table.layout-table td {
         padding-left: 8px;
         padding-right: 8px;
     }
-    .fetch-row-label { font-size: 13px; }
     /* `.btn` carries `min-width: 100px`, so Fetch / Upload / Options insist on
        316px with their gaps and do not fit a 320px phone's 272px shell. The
        floor comes off for these three only - they size to their labels and
@@ -1971,7 +1966,6 @@ table.layout-table td {
        65 + 94 + 98 = 257, and two 8px gaps put them at 273 in a 320px phone's
        272px shell: over by ONE pixel, which is enough to stand Options on a
        line of its own. Scoped to this row - the examples row has its own 6px. */
-    #fetch-input-container { gap: 6px; }
 
     /* 🔴 THE PLAY BAR BREAKS AT THE OVERLAY BUTTON, and the slider is why.
        A wrapping flex row decides its line breaks from each item's BASE size,
@@ -2011,15 +2005,19 @@ table.layout-table td {
        (three buttons plus two gaps), which is 40 more than a 320px phone's
        shell. Measured as `#rightPanelContainer` refusing to shrink, which is
        what pushed a 320 device to a 324 layout viewport. */
-    #navigationControls .btn,
-    #navigationControls .btn-toggle { min-width: 0; }
 
 
     /* A BUTTON'S LABEL IS NOT A PARAGRAPH. "Select all" broke across two lines
-       inside its own button and took the row's baseline with it, so it sat
-       half a line above Unselect and Invert. The row wraps; the labels do not. */
+       inside its own button and took the row's baseline with it, so it sat half
+       a line above Unselect and Invert.
+
+       LETTING THE ROW WRAP IS THE WHOLE FIX. A `white-space: nowrap` on the
+       buttons was written beside this and measured as inert at 320, 360 and
+       390 - with the row free to break, each button gets its natural width and
+       nothing inside one wraps. It is not here. `tests/mobile_layout.py`
+       measures the overflow (scrollHeight against clientHeight) rather than
+       the declaration, and forcing a wrap is caught at 13px. */
     .sequence-header { flex-wrap: wrap; }
-    .sequence-header .btn { white-space: nowrap; }
 
     /* NOTHING TO DRAG, SO NOTHING TO SHOW. The canvas box is `resize: none`
        here (it is fluid), and the handle is revealed on :hover, which a touch

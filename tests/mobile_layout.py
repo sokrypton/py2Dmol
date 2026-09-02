@@ -106,6 +106,28 @@ MEASURE = r"""(() => {
   };
   R.rows = {topbar: bands('.page-topbar'), fetch: bands('#fetch-input-container'),
             examples: bands('.fetch-examples'), play: bands('#controlsContainer')};
+
+  // A BUTTON'S LABEL IS NOT A PARAGRAPH. "Select all" broke inside its own
+  // button and took the row's baseline with it, so it sat half a line above
+  // Unselect.
+  //
+  // 🔴 MEASURED AS OVERFLOW, NOT AS HEIGHT. The first version compared the
+  // button's height with its neighbour's and could not fail: `.btn` states a
+  // height, so a wrapped label OVERFLOWS the box instead of growing it. Forcing
+  // a wrap deliberately (white-space: normal, max-width: 44px) did not move the
+  // number at all - the check was asserting nothing. scrollHeight against
+  // clientHeight is what a box too small for its own text looks like.
+  const wrapped = (id) => { const e = document.getElementById(id);
+    if (!e) return null;
+    return {over: e.scrollHeight - e.clientHeight, h: Math.round(e.getBoundingClientRect().height)}; };
+  R.seqBtn = {selectAll: wrapped('selectAllResidues'), unselect: wrapped('clearAllResidues')};
+
+  // ...and the canvas resize handle, which is revealed on :hover and so can
+  // never be used on a touch screen - a permanent blue triangle over the
+  // corner of the structure that does nothing when tapped. The box is
+  // `resize: none` when fluid, so there is nothing for it to do either.
+  const rh = document.querySelector('#canvasContainer .resize-handle');
+  R.resizeHandle = rh ? getComputedStyle(rh).display : 'absent';
   return R;
 })()"""
 
@@ -188,6 +210,15 @@ for name in ("320px", "360px", "390px"):
     # the oldest phone still in service rather than a layout bug. The ROW
     # structure below is asserted at 320 like everywhere else, because that is
     # what was actually asked for.
+    # 🔴 320 GETS A BOUND, NOT AN EXEMPTION. A blanket "skip this at 320" hid
+    # the fact that two rules were worth 16px of it: without the button padding
+    # trim the layout viewport is 340, with it 324. A rule whose only effect is
+    # on a number nobody asserts will be deleted by the next person who
+    # mutation-tests it - correctly, on the evidence available.
+    if name == "320px" and R["viewport"] > R["asked"] + 8:
+        bad.append("320px: the layout viewport is %d, more than 8px over the device."
+                   " The toolbar row's min-content is 312, so some expansion is"
+                   " expected - this much is a regression." % R["viewport"])
     if name != "320px" and R["viewport"] != R["asked"]:
         bad.append("%s: asked for a %dpx device and got a %dpx layout viewport - the page"
                    " could not fit, so the viewport grew. It will render zoomed out."
@@ -234,6 +265,15 @@ for name in ("320px", "360px", "390px"):
     if len(rows["examples"]) != 1:
         bad.append("%s: the examples broke across %d lines - they are a set and read as"
                    " one: %s" % (name, len(rows["examples"]), rows["examples"]))
+    sa = R["seqBtn"]["selectAll"]
+    if sa and sa["over"] > 1:
+        bad.append("%s: 'Select all' overflows its own button by %dpx - the label"
+                   " wrapped inside it" % (name, sa["over"]))
+    if R["resizeHandle"] != "none":
+        bad.append("%s: the canvas resize handle is showing (display: %s). It is revealed"
+                   " on :hover, which a touch screen has not got, and the box is"
+                   " resize:none here anyway" % (name, R["resizeHandle"]))
+
     # THE PLAY BAR IS ONE LINE. Reported as breaking at the overlay button:
     # a wrapping flex row chooses its lines from BASE sizes, and #frameSlider's
     # is an <input>'s natural ~173px, so overlay was pushed off before the
@@ -261,6 +301,11 @@ if D["content"] != [598, 598]:
                % D["content"])
 if D["titleOverlap"]:
     bad.append("the desktop title and page actions overlap")
+# ...and the handle is the DESKTOP's affordance, so it must still be there:
+# hiding it everywhere would pass the narrow check by removing the feature.
+if D["resizeHandle"] == "none":
+    bad.append("the desktop canvas resize handle was hidden too - that rule is meant"
+               " to be narrow-only")
 
 for m in bad: print("FAIL:", m)
 sys.exit(1 if bad else 0)
