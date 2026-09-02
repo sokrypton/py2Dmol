@@ -209,8 +209,8 @@ result.
   or coil, or pass `None` to return it to the automatic assignment.
 - **Structural alignment** — TM-align, vendored from foldjs, running in a worker.
 - **Cross-object contacts** — a contact whose two ends are in different objects.
-- **An embeddable build**: `py2Dmol.embed.min.js` (453 KB, WebGL2) and
-  `py2Dmol.embed.cpu.min.js` (414 KB, 2D and SVG-capable), documented by
+- **An embeddable build**: `py2Dmol.embed.min.js` (512 KB, WebGL2) and
+  `py2Dmol.embed.cpu.min.js` (467 KB, 2D and SVG-capable), documented by
   `embed.html`, with one selector grammar shared with the Python API.
 
 ### Fixed

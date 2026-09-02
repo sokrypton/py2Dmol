@@ -205,6 +205,26 @@ as it always did. Note the element is not the atom name — in 3PTB `CA` is both
 the alpha carbon and the calcium ion — and only the element travels: an atom's
 name was carried everywhere and read by nothing, so it was dropped.
 
+**The selection panel.** The website's own, in a notebook: click a residue and it
+slides in beside the viewer.
+
+```python
+viewer = py2Dmol.view(selection=True)
+viewer.add_pdb('3PTB.cif')
+```
+
+Colour (a PyMOL palette or a scheme, on the main chain and the side chains
+separately), Show/Hide per part, element colours, base plates, a
+secondary-structure override, contacts between a pair, Find interactions, and
+Copy / Cut / Delete. Every one of those was already in the library; until now
+only the web app had a control that reached them.
+
+One flag for the panel and for the click, because they are one decision: a click
+that changes a selection with nothing to show it, act on it or clear it is worse
+than no click, which is why picking is off in a notebook by default. *Align* is
+the one row that does not travel — it needs `align/align.js`, which cannot be
+inlined, so the row hides itself.
+
 **Showing side chains.** `focus` draws a neighbourhood's for you; to name them
 yourself, ask.
 
@@ -334,8 +354,8 @@ Two bundles, differing only in the painter:
 
 | file | size | |
 | --- | --- | --- |
-| `py2Dmol.embed.min.js` | 453 KB | WebGL2. Fast on large structures. |
-| `py2Dmol.embed.cpu.min.js` | 414 KB | 2D canvas. No WebGL2 needed, and it can export SVG. |
+| `py2Dmol.embed.min.js` | 512 KB | WebGL2. Fast on large structures. |
+| `py2Dmol.embed.cpu.min.js` | 467 KB | 2D canvas. No WebGL2 needed, and it can export SVG. |
 
 Neither carries the control panel, the save UI or the side panels; for those,
 load the full application. Neither falls back to the other — each has one

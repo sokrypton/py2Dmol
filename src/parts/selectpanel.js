@@ -1,18 +1,68 @@
 // ============================================================================
-// src/app/selection.js
-// --------------------
+// src/parts/selectpanel.js
+// -----------------------
 // AI Context: WHAT IS SELECTED, AND WHAT THE PANEL DOES WITH IT
-// - The selection panel: colour, secondary structure, side chains, elements,
-//   bases, contacts, visibility, Find interactions, Align. Plus the state
-//   readers the panel syncs from - getActiveSelection, visibleState,
+// - The selection panel's verbs: colour, secondary structure, side chains,
+//   elements, bases, contacts, visibility, Find interactions, Align. Plus the
+//   state readers the panel syncs from - getActiveSelection, visibleState,
 //   syncSelectionToggles, updateSelectionToolsState.
-// - Every one of these looks its own DOM up by id. That is why they came out of
-//   setupEventListeners cleanly: tools/free_vars.js measured the whole block at
-//   ZERO enclosing-scope locals, closing over nothing but setStatus and
-//   viewerApi, both module scope in main.js.
+// - It lived under src/app/, which put it out of reach of the notebook and
+//   the embed - the same gap clip, orient, focus and the side-chain set each
+//   came home from. free_vars.js measured it at ZERO enclosing-scope locals,
+//   closing over nothing but the status bar and the app's viewer handle, so
+//   the move was those two names and nothing else.
+// - THE SHELL SAYS WHERE THE VIEWER IS. py2dmolSelectionHost({renderer,
+//   setStatus}) is how: the website passes its own viewer getter and its
+//   status bar; a shell with no status bar passes nothing and the messages go
+//   nowhere. A GETTER rather than a renderer, because the website replaces its
+//   handle when a viewer is rebuilt and a captured reference would go on
+//   editing the dead one.
+// - Every one of these looks its own DOM up by id, which is what makes it
+//   portable at all: the ids are parts/panel.js's now, so whichever shell
+//   mounted the panel is the one it finds.
 // ============================================================================
+
+// The shell's two couplings, defaulted so the file is usable with neither.
+let selectionHost = {
+    renderer: () => null,
+    setStatus: () => {},
+    // ...and what else on the page follows a selection. On the website that is
+    // the MSA, which dims to it; a shell without one passes nothing.
+    afterChange: () => {},
+    // 🔴 AND WHERE THIS VIEWER'S PANEL IS. Every control here is found by id,
+    // which is right - the ids are parts/panel.js's - and `document` is the
+    // wrong place to look for them the moment a page holds two viewers with
+    // chrome. embed.html holds exactly that, and a click in the controls
+    // example drove the PLAY example's panel five sections up the page:
+    // getElementById answers with the first in document order, so one viewer's
+    // click opened another's panel and its own stayed shut. From the reader's
+    // seat, clicking did nothing.
+    //
+    // The third time this file has been written: the sequence strip and the MSA
+    // are still document-scoped and cross-talk the same way. The PAE panel is
+    // the pattern - scope to the container, fall back to the document - and it
+    // is what this follows.
+    root: null,
+};
+
+/**
+ * One control of THIS viewer's panel.
+ *
+ * Falls back to the document when no root was named, which is every caller
+ * that existed before the panel was shared and is still right for a page with
+ * one viewer on it.
+ */
+function byId(id) {
+    const root = selectionHost.root;
+    return (root ? root.querySelector('#' + CSS.escape(id)) : null)
+        || document.getElementById(id);
+}
+function py2dmolSelectionHost(h) {
+    selectionHost = { ...selectionHost, ...h };
+}
+
 function getActiveSelection() {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     if (!renderer || !renderer.currentObjectName) return null;
     // A drag records a selection and leaves visibility alone, so the
     // selection - not the visible set - is what the tools act on.
@@ -26,7 +76,7 @@ function getActiveSelection() {
 // indistinguishable from one set in Python, saves with the object, and is
 // understood by resolveColorHierarchy without any new code path.
 function setSelectionColor(positions, color) {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     if (!renderer) return;
     // EACH OBJECT'S OWN MAP, IN ITS OWN NUMBERING. A selection can reach
     // two objects when several are on screen, and the colour is stored
@@ -76,7 +126,7 @@ function setSelectionColor(positions, color) {
 // the main chain and side chains that were never given their own colour
 // come along, which is what you would expect of a part of the same residue.
 function setSelectionSidechainColor(positions, color) {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     if (!renderer) return;
     // THE WRITE IS THE RENDERER'S - this was the fourth copy of the same walk,
     // and the same thing happened here as with the side chains themselves:
@@ -94,7 +144,7 @@ function setSelectionSidechainColor(positions, color) {
 // and the colour pass, and its contents are part of the SS cache key so an
 // edit invalidates cleanly.
 function setSelectionSse(positions, letter) {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     if (!renderer) return;
     // Stored on the OBJECT as `sse`, exactly where set_color puts `color`
     // and where Python's set_sse writes. It used to live on the renderer,
@@ -132,7 +182,7 @@ function setSelectionSse(positions, letter) {
 // A contact is a line between a PAIR, so all of this needs exactly two
 // residues; the row is not offered otherwise.
 const contactKeyOf = (positions) => {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     if (!renderer || !renderer.chains || positions.length !== 2) return null;
     const [a, b] = positions;
     const rn = renderer.residueNumbers;
@@ -149,7 +199,7 @@ const contactKeyOf = (positions) => {
  * panel refuses it out loud instead - see the contact row.
  */
 const contactOwnerOf = (positions) => {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     if (!renderer || !positions || positions.length !== 2) return null;
     if (!renderer.ownerOf) return renderer.currentObjectName;
     const a = renderer.ownerOf(positions[0]);
@@ -160,7 +210,7 @@ const contactOwnerOf = (positions) => {
 };
 /** ...and the pair in that object's own numbering, for the index form. */
 const contactLocalPair = (positions) => {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     if (!renderer || !renderer.ownerOf) return positions;
     return positions.map((i) => {
         const o = renderer.ownerOf(i);
@@ -197,7 +247,7 @@ const contactMatches = (c, key, positions) => {
 const contactSlots = (c) => ((typeof c[0] === 'number' && typeof c[1] === 'number')
     ? { w: 2, col: 3 } : { w: 4, col: 5 });
 const findContact = (positions) => {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     const owner = contactOwnerOf(positions);
     const obj = owner ? renderer?.objectsData?.[owner] : null;
     const key = contactKeyOf(positions);
@@ -219,7 +269,7 @@ const commitContacts = (renderer, obj, contacts) => {
 };
 /** One end as an address - which is just a selector that names one residue. */
 const contactAddressOf = (i) => {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     const o = renderer.ownerOf ? renderer.ownerOf(i) : null;
     return {
         object: o ? o.name : renderer.currentObjectName,
@@ -237,7 +287,7 @@ const contactAddressOf = (i) => {
  * indices - and an address names the object, so there is no slice to be inside.
  */
 function addCrossObjectContact(positions) {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     const ends = positions.map(contactAddressOf);
     const same = (a, b) => a.object === b.object && a.chain === b.chain
         && a.residues[0] === b.residues[0];
@@ -254,7 +304,7 @@ function addCrossObjectContact(positions) {
     if (window.updateSelectionToolsState) window.updateSelectionToolsState();
 }
 function addSelectionContact(positions) {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     const owner = contactOwnerOf(positions);
     if (!owner) {
         addCrossObjectContact(positions);
@@ -276,7 +326,7 @@ function removeSelectionContact(positions) {
     if (!found) return;
     const contacts = found.obj.contacts.slice();
     contacts.splice(found.i, 1);
-    commitContacts(viewerApi.renderer, found.obj, contacts);
+    commitContacts(selectionHost.renderer(), found.obj, contacts);
 }
 // The stored colour is an {r,g,b} object, which is what the segment builder
 // reads straight through as contactColor.
@@ -293,7 +343,7 @@ function setSelectionContactColor(positions, hex) {
             b: parseInt(hex.slice(5, 7), 16) };
     }
     contacts[found.i] = c;
-    commitContacts(viewerApi.renderer, found.obj, contacts);
+    commitContacts(selectionHost.renderer(), found.obj, contacts);
 }
 
 // Per-contact WIDTH, which is the entry's existing weight slot - the
@@ -306,7 +356,7 @@ function setSelectionContactWidth(positions, w) {
     const c = contacts[found.i].slice();
     c[contactSlots(c).w] = w;
     contacts[found.i] = c;
-    commitContacts(viewerApi.renderer, found.obj, contacts);
+    commitContacts(selectionHost.renderer(), found.obj, contacts);
 }
 
 // SIDE CHAINS, per residue. Stored on the OBJECT as `sidechains`, a Set of
@@ -319,10 +369,10 @@ function setSelectionContactWidth(positions, w) {
 // (buildSidechainTable in src/io/parse.js), so this only ever writes down WHICH
 // residues; a structure with no side-chain data simply draws nothing.
 function setSelectionSidechains(positions, on) {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     if (!renderer) return;
     if (on && !renderer.sidechains) {
-        setStatus('No side-chain atoms in this structure (a backbone-only model has none).');
+        selectionHost.setStatus('No side-chain atoms in this structure (a backbone-only model has none).');
         return;
     }
     // 🔴 THE RENDERER'S OWN VERB, parts/sidechains.js. This was the FOURTH
@@ -363,7 +413,7 @@ function setSelectionSidechains(positions, on) {
 // ligand atom joined a dozen residues would take the side-chain controls
 // away from the residues that do have them.
 function ligandRowPositions(positions) {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     if (!renderer || !positions || !positions.length) return null;
     const t = renderer.positionTypes || [];
     const owners = renderer.sidechainOwners ? renderer.sidechainOwners() : null;
@@ -383,7 +433,7 @@ function ligandRowPositions(positions) {
 // - null there means everything is visible, which is the state a structure
 // nobody has hidden anything in is in.
 function visibleState(positions) {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     const vis = renderer && renderer.visiblePositions;
     if (!vis) return true;
     let on = 0;
@@ -446,7 +496,7 @@ function syncSseSelect(sel, renderer, picked) {
  * hide the pair rather than reaching for a label around a checkbox.
  */
 function setSelectionPair(id, state) {
-    const pair = document.getElementById(id);
+    const pair = byId(id);
     if (!pair) return;
     const [on, off] = pair.querySelectorAll('.selection-switch-btn');
     if (!on || !off) return;
@@ -457,11 +507,11 @@ function setSelectionPair(id, state) {
 }
 
 function syncSelectionToggles(picked, none) {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     const obj = renderer?.objectsData?.[renderer.currentObjectName];
     const list = picked || [];
     const set = (id, state) => {
-        const el = document.getElementById(id);
+        const el = byId(id);
         if (!el) return;
         el.indeterminate = state === null;
         el.checked = state === true;
@@ -550,8 +600,8 @@ function syncSelectionToggles(picked, none) {
     };
     const modes = new Set(res.map(modeOf));
     const mode = modes.size === 1 ? [...modes][0] : '';
-    const scSel = document.getElementById('plateShowToggle');
-    const scTog = document.getElementById('sidechainPair');
+    const scSel = byId('plateShowToggle');
+    const scTog = byId('sidechainPair');
     // WHICH OF THE TWO IS ON THE ROW. A protein side chain is drawn or it
     // is not; only a nucleotide has the plate as well, and only there is a
     // menu worth reading. Never both - two controls for one question is
@@ -609,7 +659,7 @@ function syncSelectionToggles(picked, none) {
     // chain's follow Full: there is nothing to colour while nothing is
     // drawn. Hidden while the ligand is off, and while the selection is
     // half on, where the switch has no one answer to show.
-    const elTog = document.getElementById('elementsShowToggle');
+    const elTog = byId('elementsShowToggle');
     if (elTog) {
         const wrap = elTog.closest ? elTog.closest('label') : null;
         (wrap || elTog).hidden = ligPos
@@ -619,7 +669,7 @@ function syncSelectionToggles(picked, none) {
     // names something the selection has not got - and the swatch means the
     // ligand's colour there, which is why it stays: see the picker's own
     // dispatch on ligandRowPositions.
-    const scRowEl = document.getElementById('sidechainRow');
+    const scRowEl = byId('sidechainRow');
     if (scRowEl) {
         const lbl = scRowEl.querySelector('.selection-panel-label');
         if (lbl) lbl.textContent = ligPos ? 'Ligand' : 'Side chains';
@@ -629,7 +679,7 @@ function syncSelectionToggles(picked, none) {
         // changed with the row. A tooltip promising side chains over a
         // ligand is the same wrong label as the row's own name was.
         const tip = (el, text) => { if (el) el.title = text; };
-        tip(document.getElementById('scColorButton'), ligPos
+        tip(byId('scColorButton'), ligPos
             ? 'Colour the selected ligand'
             : 'Colour the selected side chains');
         tip(scTog && scTog.closest ? scTog.closest('label') : null, ligPos
@@ -642,7 +692,7 @@ function syncSelectionToggles(picked, none) {
     // swatch is the same colour the Ligand row's own swatch sets. So the
     // whole row goes for a ligand rather than sitting there as a duplicate
     // and a no-op.
-    const mcRow = document.getElementById('mainchainRow');
+    const mcRow = byId('mainchainRow');
     if (mcRow) mcRow.hidden = !!ligPos;
     // WHETHER THE MAIN CHAIN IS DRAWN, which two separate things can
     // answer no to, and the control has to mean both:
@@ -671,8 +721,8 @@ function syncSelectionToggles(picked, none) {
     // the two is on the row is decided here; updateSelectionToolsState
     // shows the colour and the slider by the same answer.
     const hasContact = list.length === 2 && !!findContact(list);
-    const addBtn = document.getElementById('contactAddButton');
-    const binBtn = document.getElementById('contactDeleteButton');
+    const addBtn = byId('contactAddButton');
+    const binBtn = byId('contactDeleteButton');
     if (addBtn) addBtn.hidden = hasContact;
     if (binBtn) binBtn.hidden = !hasContact;
 }
@@ -680,7 +730,7 @@ function syncSelectionToggles(picked, none) {
 // Element colours, per residue. A pure repaint - the atoms and bonds are
 // already there, only what colour a bond's halves take changes.
 function setSelectionElements(positions, on) {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     if (!renderer || !renderer.setElementsFor) return;
     if (!renderer.setElementsFor(positions, on)) return;   // nothing to redraw
     renderer.render('selection elements');
@@ -691,14 +741,14 @@ function setSelectionElements(positions, on) {
 // toggles cannot say "one or the other", and with the plate on its own row
 // the panel had two rows called Side chain.
 function setSelectionSidechainMode(positions, mode) {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     if (!renderer) return;
     const t = renderer.positionTypes || [];
     const nuc = positions.filter((i) => t[i] === 'D' || t[i] === 'R');
     // the plate is nucleic only; a protein asked for it gets nothing drawn
     // rather than a control that silently does something else
     if (mode === 'plate' && !nuc.length) {
-        setStatus('Only nucleotides have a base plate.');
+        selectionHost.setStatus('Only nucleotides have a base plate.');
         updateSelectionToolsState();
         return;
     }
@@ -717,7 +767,7 @@ function setSelectionSidechainMode(positions, mode) {
 // other two; composing it means the mask always agrees with the picture,
 // and Orient, the clip and picking all read the mask.
 function syncSelectionVisibility(positions) {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     const obj = renderer?.objectsData?.[renderer.currentObjectName];
     if (!renderer || !obj) return;
     const t = renderer.positionTypes || [];
@@ -766,10 +816,10 @@ const INTERACTION_CUTOFF_A = 5;
  * off its file coordinates, which is not the same question.
  */
 function syncAlignRow(picked, none) {
-    const row = document.getElementById('alignRow');
-    const sel = document.getElementById('alignSelect');
+    const row = byId('alignRow');
+    const sel = byId('alignSelect');
     if (!row || !sel) return;
-    const r = viewerApi?.renderer;
+    const r = selectionHost.renderer();
     const objects = r ? Object.keys(r.objectsData || {}) : [];
     const aligned = !!(r && r.anyAlignment && r.anyAlignment());
     const canAlign = !none && objects.length > 1 && !!window.Align;
@@ -789,20 +839,20 @@ function syncAlignRow(picked, none) {
  * finished in.
  */
 async function runAlign(mode) {
-    const r = viewerApi?.renderer;
-    const sel = document.getElementById('alignSelect');
+    const r = selectionHost.renderer();
+    const sel = byId('alignSelect');
     if (!r) return;
     if (mode === 'none') {
         const n = r.clearAlignments();
-        setStatus(n ? `${n} object${n === 1 ? '' : 's'} back to file coordinates`
+        selectionHost.setStatus(n ? `${n} object${n === 1 ? '' : 's'} back to file coordinates`
             : 'nothing was aligned');
         updateSelectionToolsState();
         return;
     }
     if (sel) sel.disabled = true;
     try {
-        setStatus('Aligning...');
-        r.onAlignProgress = (done, total) => setStatus(`Aligning ${done}/${total}...`);
+        selectionHost.setStatus('Aligning...');
+        r.onAlignProgress = (done, total) => selectionHost.setStatus(`Aligning ${done}/${total}...`);
         const out = await r.alignToSelection(mode);
         r.onAlignProgress = null;
         // What the last run actually did, for the probe: whether it got a
@@ -812,7 +862,7 @@ async function runAlign(mode) {
         window.__alignResult = { ref: out.ref, inWorker: out.inWorker,
             results: out.results, skipped: out.skipped };
         const res = out.results;
-        if (!res.length) { setStatus('nothing could be aligned', true); return; }
+        if (!res.length) { selectionHost.setStatus('nothing could be aligned', true); return; }
         // ONE LINE, and it says the thing you would check: how good the fit
         // is. For a single object that is its own numbers; for several it
         // is the range, because listing four objects' scores is four lines
@@ -820,29 +870,29 @@ async function runAlign(mode) {
         const fmt = (x) => x.toFixed(2);
         if (res.length === 1) {
             const a = res[0];
-            setStatus(`${a.name} ${a.chain} to ${out.ref}: TM ${fmt(a.tm)},`
+            selectionHost.setStatus(`${a.name} ${a.chain} to ${out.ref}: TM ${fmt(a.tm)},`
                 + ` RMSD ${a.rmsd.toFixed(1)} A over ${a.aligned}`);
         } else {
             const tms = res.map((a) => a.tm);
-            setStatus(`${res.length} objects to ${out.ref}: TM `
+            selectionHost.setStatus(`${res.length} objects to ${out.ref}: TM `
                 + `${fmt(Math.min(...tms))}-${fmt(Math.max(...tms))}`);
         }
         updateSelectionToolsState();
     } catch (e) {
         r.onAlignProgress = null;
-        setStatus(String((e && e.message) || e), true);
+        selectionHost.setStatus(String((e && e.message) || e), true);
     } finally {
         if (sel) sel.disabled = false;
     }
 }
 
 function selectNearby(cutoff, sidechainsOnly) {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     if (!renderer || !renderer.residuesWithin) return;
     const sel = renderer.residueSelection;
     const seed = sel ? (sel instanceof Set ? sel : new Set(sel)) : null;
     if (!seed || !seed.size) {
-        setStatus('Select something first, then Within finds what is near it.');
+        selectionHost.setStatus('Select something first, then Within finds what is near it.');
         return;
     }
     const what = sidechainsOnly ? 'side chain to side chain' : 'atom to atom';
@@ -854,14 +904,14 @@ function selectNearby(cutoff, sidechainsOnly) {
         // a glycine, or a structure whose side chains were never captured.
         if (sidechainsOnly && renderer.hasSidechainsFor
             && !renderer.hasSidechainsFor([...seed])) {
-            setStatus('Nothing selected has a side chain to measure from.');
+            selectionHost.setStatus('Nothing selected has a side chain to measure from.');
             return;
         }
-        setStatus(`Nothing else within ${cutoff} \u00c5 (${what}).`);
+        selectionHost.setStatus(`Nothing else within ${cutoff} \u00c5 (${what}).`);
         return;
     }
     renderer.setResidueSelection(found);
-    setStatus(`${added} more residue${added === 1 ? '' : 's'} within ${cutoff} \u00c5`
+    selectionHost.setStatus(`${added} more residue${added === 1 ? '' : 's'} within ${cutoff} \u00c5`
         + ` ${what} - ${found.size} selected.`);
 }
 
@@ -871,7 +921,7 @@ function selectNearby(cutoff, sidechainsOnly) {
 // positions are all still there, so this is a repaint (the GPU recaptures,
 // because prims that are not built cannot be in a mesh).
 function setSelectionBackbone(positions, on) {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     if (!renderer || !renderer.setBackboneHiddenFor) return;
     if (!renderer.setBackboneHiddenFor(positions, !on)) return;
     renderer.render('selection backbone');
@@ -889,7 +939,7 @@ function setSelectionBackbone(positions, on) {
 // false, so the branch had never run. The embed says that shape as
 // resetVisibility() then hide({not: x}), which is two calls that already exist.
 function setSelectionVisible(positions, visible) {
-    const renderer = viewerApi?.renderer;
+    const renderer = selectionHost.renderer();
     if (!renderer || !renderer.coords) return;
     const n = renderer.coords.length;
     const inRange = positions.filter((i) => i >= 0 && i < n);
@@ -926,7 +976,7 @@ function setSelectionVisible(positions, visible) {
 // disabled as well as hidden - a hidden control is still focusable by
 // keyboard, and `disabled` is what actually takes it out of the tab order.
 function updateSelectionToolsState() {
-    const tools = document.getElementById('selectionTools');
+    const tools = byId('selectionTools');
     if (!tools) return;
     const picked = getActiveSelection();
     const none = picked === null;
@@ -936,13 +986,13 @@ function updateSelectionToolsState() {
     // that hiding them left no hint they existed - but they now live in
     // their own panel beside the structure, and a panel sliding in is a
     // louder cue than five buttons changing opacity in a header.
-    const panel = document.getElementById('selectionPanel');
+    const panel = byId('selectionPanel');
     // ...AND NOT IN FOCUS MODE. There is always a selection in there - the
     // residue you just clicked - so the panel would slide in and stay in,
     // beside a mode whose whole point is to look at one thing. Its buttons act
     // on the selection, and in focus the selection is the mode's own bookmark
     // rather than something the reader built up to act on.
-    const inFocus = !!(viewerApi?.renderer?._focusMode);
+    const inFocus = !!(selectionHost.renderer()?._focusMode);
     if (panel) panel.hidden = none || inFocus;
     // HOW MANY, AND ACROSS HOW MANY OBJECTS - and no more than that. The
     // count changes what pressing a button does, so it earns its place;
@@ -951,34 +1001,36 @@ function updateSelectionToolsState() {
     // were cut short, and the tooltip that held the rest is not something
     // anybody hovers a header for. The strip below shows what is selected,
     // in the place made for showing it.
-    const count = document.getElementById('selectionPanelCount');
+    // 🔴 AND THE COUNT IS GONE TOO. It was the last thing left in the head
+    // after the residue ranges came out, and it is the same kind of thing: the
+    // sequence strip below already shows what is selected, in the place made
+    // for showing it, and a number over the top of that is a second answer to a
+    // question nobody asked twice. What the head keeps is the word Selection
+    // and the three actions.
+    //
+    // The element stays, because the head's flex layout uses it as the
+    // stretching middle between the title and the actions - and because
+    // something else may yet want to say something there. It is left empty.
+    const count = byId('selectionPanelCount');
     if (count) {
-        if (none) {
-            count.textContent = '';
-            count.title = '';
-        } else {
-            const r = viewerApi?.renderer;
-            const across = (r && r.objectsInSelection) ? r.objectsInSelection() : [];
-            count.textContent = `${picked.length} residue${picked.length === 1 ? '' : 's'}`
-                + (across.length > 1 ? ` in ${across.length} objects` : '');
-            count.title = '';
-        }
+        count.textContent = '';
+        count.title = '';
     }
     // A contact is a line between a PAIR: nothing to draw for one residue or
     // for five, so the row is offered only for exactly two. Within it the
     // toggle's STATE says whether the pair is joined - which is what the
     // Add/Remove pair could only say by which of the two was showing.
-    const contactRow = document.getElementById('contactRow');
+    const contactRow = byId('contactRow');
     const pair = !none && picked.length === 2;
     if (contactRow) contactRow.hidden = !pair;
     syncAlignRow(picked, none);
     if (pair) {
         const found = findContact(picked);
         const has = !!found;
-        const swatch = document.getElementById('contactColorButton');
+        const swatch = byId('contactColorButton');
         // nothing to colour or size until there is a contact
         if (swatch) swatch.parentElement.hidden = !has;
-        const wSlider = document.getElementById('contactWidthSlider');
+        const wSlider = byId('contactWidthSlider');
         if (wSlider) {
             wSlider.hidden = !has;
             if (has) {
@@ -994,9 +1046,9 @@ function updateSelectionToolsState() {
     // model, and a control that cannot do anything is worse than no
     // control. A NUCLEOTIDE HAS ONE NOW - its base, in the same table -
     // so the row appears for it too and its Plate option with it.
-    const scRow = document.getElementById('sidechainRow');
+    const scRow = byId('sidechainRow');
     if (scRow) {
-        const renderer = viewerApi?.renderer;
+        const renderer = selectionHost.renderer();
         // hasElementsFor, not hasSidechainsFor: it answers yes for every
         // residue with a side chain AND for a ligand atom that knows its
         // element, which is the other reason this row has something to do.
@@ -1017,10 +1069,10 @@ function updateSelectionToolsState() {
     // property rows can go at once - a ligand takes the main chain row
     // away, and a selection with no elements to colour takes the other -
     // and a divider at the top of the panel is a rule under nothing.
-    const divider = document.getElementById('selActionDivider');
+    const divider = byId('selActionDivider');
     if (divider) {
-        const scR = document.getElementById('sidechainRow');
-        const mcR = document.getElementById('mainchainRow');
+        const scR = byId('sidechainRow');
+        const mcR = byId('mainchainRow');
         divider.hidden = none
             || ((!scR || scR.hidden) && (!mcR || mcR.hidden));
     }
@@ -1035,9 +1087,9 @@ function updateSelectionToolsState() {
     // in the tube style nothing else has computed one, so every selection
     // after an edit paid for a full SS pass - 81 ms on a ribosome. Not
     // asking is the cheapest way to not pay.
-    const ssHide = document.getElementById('selSsSelect');
+    const ssHide = byId('selSsSelect');
     if (ssHide) {
-        const renderer = viewerApi?.renderer;
+        const renderer = selectionHost.renderer();
         const drawsSse = !!renderer
             && (renderer.style === 'cartoon' || renderer.colorMode === 'ss');
         ssHide.hidden = none || !renderer || !drawsSse || !renderer.hasSseFor
@@ -1055,7 +1107,7 @@ function updateSelectionToolsState() {
     // Unselect lives outside that group because it does not need a
     // selection to be discoverable - but it does need one to do anything,
     // so it follows the same state. Select all stays enabled either way.
-    const unselectBtn = document.getElementById('clearAllResidues');
+    const unselectBtn = byId('clearAllResidues');
     if (unselectBtn) unselectBtn.disabled = none;
     // The swatches show the SELECTION's colour rather than the last colour
     // picked, so they are refreshed from the same place the enabled state
@@ -1063,3 +1115,609 @@ function updateSelectionToolsState() {
     if (window.refreshSelectionSwatches) window.refreshSelectionSwatches();
 }
 window.updateSelectionToolsState = updateSelectionToolsState;
+
+// ============================================================================
+// WIRING THE PANEL
+// ----------------------------------------------------------------------------
+// 🔴 A CONTROL THE SHARED PANEL SHOWS AND ONE SHELL WIRES IS WORSE THAN NO
+// CONTROL. parts/panel.js builds the selection panel for every shell, so the
+// listeners have to be here rather than in src/app/main.js, where they were:
+// mounted in a notebook they would have appeared on screen, unseeded and inert
+// - the fault Cyclic, Orient, Clip and Draw each shipped once already.
+//
+// It closed over exactly two names of the web app's - the viewer handle and
+// applySelectionToMSA - and both are on the host now. `afterChange` is the
+// second: the MSA dims to the selection on the website, and there is no MSA in
+// a notebook.
+// ============================================================================
+function wireSelectionPanel() {
+    // 🔴 THE PANEL A GESTURE CAME FROM IS THE CURRENT ONE.
+    //
+    // The host is module scope, so naming a root at wire time only changes
+    // WHICH viewer wins on a page with two of them - the last to be built
+    // instead of the first in document order. Neither is the one that was
+    // clicked.
+    //
+    // So each panel claims the host on the way in, from a CAPTURING listener
+    // on its own container: capture runs before any listener on a descendant,
+    // so by the time a control's own handler executes, `byId` and
+    // `selectionHost.renderer()` already answer for the viewer the reader is
+    // touching. One hook per panel rather than a wrapper around forty
+    // handlers, and it covers the controls built later too - the colour cells
+    // are made on the first open of a menu.
+    //
+    // The canvas is inside the container as well, so a PICK claims it too,
+    // which is what makes the right panel open when the right structure is
+    // clicked.
+    const myRoot = selectionHost.root;
+    const myRenderer = selectionHost.renderer;
+    const claim = () => py2dmolSelectionHost({ root: myRoot, renderer: myRenderer });
+    if (myRoot) {
+        for (const type of ['pointerdown', 'mousedown', 'click', 'change', 'input']) {
+            myRoot.addEventListener(type, claim, true);
+        }
+    }
+
+    // Copy selection button (moved to sequence actions)
+    const copySelectionButton = byId('copySelectionButton');
+    if (copySelectionButton) {
+        copySelectionButton.addEventListener('click', () => {
+            const r = selectionHost.renderer();
+            if (!r || !r.extractSelection) {
+                console.warn("Copy selection feature not available");
+                return;
+            }
+            // A SELECTION CAN REACH SEVERAL OBJECTS, and Copy makes one new
+            // object per object it touched - so it says which, rather than
+            // leaving the user to find out that two appeared.
+            const made = r.extractSelection();
+            const names = Array.isArray(made) ? made : (made ? [made] : []);
+            if (names.length > 1) {
+                selectionHost.setStatus(`Copied into ${names.join(' and ')}`
+                    + ' - one object per structure the selection reached.');
+            }
+            selectionHost.afterChange();
+        });
+    }
+
+    // CUT: the copy Copy makes, minus the residues from where they came. The
+    // renderer owns the order (see cutSelection - the two halves cannot simply
+    // be pressed in sequence); this reports what happened, because a cut that
+    // silently did nothing looks exactly like a copy that did.
+    const cutSelectionButton = byId('cutSelectionButton');
+    if (cutSelectionButton) {
+        cutSelectionButton.addEventListener('click', () => {
+            const r = selectionHost.renderer();
+            if (!r || !r.cutSelection) return;
+            const made = r.cutSelection();
+            if (!made) {
+                selectionHost.setStatus('Select something first, then Cut moves it into a new object.');
+                return;
+            }
+            // ...one new object per structure the selection reached, named
+            selectionHost.setStatus(`Cut ${made.removed} residue${made.removed === 1 ? '' : 's'}`
+                + ` into ${made.name}. Reload the file to get them back.`);
+            if (window.SEQ?.buildViewDeferred || window.SEQ?.buildView) {
+                (window.SEQ.buildViewDeferred || window.SEQ.buildView)();
+            }
+            selectionHost.afterChange();
+        });
+    }
+
+    // DELETE, beside Copy in the panel's corner. The renderer does the work;
+    // this only reports what happened, since a delete that silently did nothing
+    // (an empty selection, or one covering everything) is worse than a refusal.
+    const deleteSelectionButton = byId('deleteSelectionButton');
+    if (deleteSelectionButton) {
+        deleteSelectionButton.addEventListener('click', () => {
+            const r = selectionHost.renderer();
+            if (!r || !r.deleteSelection) return;
+            const gone = r.residueSelection ? r.residueSelection.size : 0;
+            // ...from every object the selection reached, which the count
+            // already covers and the message says when it is more than one
+            const across = r.objectsInSelection ? r.objectsInSelection() : [];
+            if (r.deleteSelection()) {
+                selectionHost.setStatus(`Deleted ${gone} residue${gone === 1 ? '' : 's'}`
+                    + (across.length > 1 ? ` from ${across.join(' and ')}` : '')
+                    + '. Reload the file to get them back.');
+                if (window.SEQ?.buildViewDeferred || window.SEQ?.buildView) {
+                    (window.SEQ.buildViewDeferred || window.SEQ.buildView)();
+                }
+                selectionHost.afterChange();
+            }
+        });
+    }
+
+    // Positions the tools act on. In 'default' mode getVisibility() reports
+    // every residue as selected, which is the right answer for visibility but
+    // the WRONG one here - "colour everything because you have not selected
+    // anything" is never what was meant. So an explicit selection is required.
+
+    {
+        const withSelection = (fn) => (e) => {
+            if (e) e.preventDefault();
+            const positions = getActiveSelection();
+            if (!positions) return;
+            fn(positions);
+        };
+
+        // COLOUR: a grid of PyMOL's named colours rather than an OS colour
+        // picker, so the choices are the ones a PyMOL user already knows by
+        // name. Built from the table core/mol.js exports.
+        //
+        // ONE implementation, two pickers - main chain and side chains colour
+        // independently, and a second copy of this would drift from the first.
+        // `apply` says where the colour goes; `current` says what the swatch
+        // should show.
+        const colorPickers = [];
+
+        // THE COLOUR MODES, FROM THE ONE LIST THAT ALREADY EXISTS.
+        //
+        // The Style panel's #colorSelect is built from parts/panel.js and is
+        // the project's list of colour modes; reading its options here means a
+        // mode added there appears in the picker too, and - the part that
+        // cannot be rewritten from a table - the picker inherits the panel's
+        // decision about which are HIDDEN UNTIL USEFUL. `object` means nothing
+        // with one structure on screen and `entropy` means nothing without an
+        // MSA, and both are hidden by the same code that hides them above.
+        //
+        // 'auto' is dropped because the select's own first entry is Auto and
+        // means something STRONGER: not "resolve the global mode here" but
+        // "have no opinion at all", which is a cleared override.
+        // 🔴 AND `ss:pymol` IS A COMPOSITE, WHICH THIS LIST MUST COLLAPSE.
+        // It is the only value the Style dropdown carries that says two
+        // things - the mode `ss` AND the viewer-wide `ssPalette` - and
+        // resolveColorHierarchy knows only the first: stored at a position it
+        // is not a mode name, so applySpec files it as a LITERAL and the
+        // residues draw from hexToRgb('ss:pymol'), which is grey. Splitting it
+        // the way parts/ui.js does is no better here, because the palette is
+        // the VIEWER's: picking Jmol for four residues would repaint every
+        // sheet on the page. The picker chooses the SCHEME and leaves the
+        // palette where it belongs, so both options collapse to one `ss`.
+        const colorModeOptions = () => {
+            const src = byId('colorSelect');
+            if (!src) return [];
+            const out = [];
+            const seen = new Set();
+            for (const o of src.options) {
+                if (o.hidden || !o.value || o.value === 'auto') continue;
+                const cut = o.value.indexOf(':');
+                const value = cut < 0 ? o.value : o.value.slice(0, cut);
+                if (seen.has(value)) continue;
+                seen.add(value);
+                out.push([value, cut < 0 ? o.textContent : 'SSE']);
+            }
+            return out;
+        };
+
+        const wireColorPicker = ({ btnId, menuId, swatchId, apply, current,
+            modes, currentMode }) => {
+            const btn = byId(btnId);
+            const menu = byId(menuId);
+            const swatch = byId(swatchId);
+            if (!btn || !menu) return;
+            // Rebuilt each time the menu opens: the palette is the CHAIN colour
+            // set, which swaps wholesale with colourblind mode.
+            const buildSwatches = () => {
+                menu.textContent = '';
+                // A MODE IS A COLOUR ANSWER, NOT A COLOUR, so it cannot be a
+                // swatch - and a selection can hold one. The hierarchy has
+                // taken a mode name at position level since it was written
+                // (applySpec in core/mol.js), and obj.sidechainColor takes one
+                // too; nothing could SAY one. Set the backbone to Chain and a
+                // pocket's side chains to Hydropathy and both answers are on
+                // one picture.
+                //
+                // AUTO IS THIS CONTROL'S FIRST ENTRY, not a button beside it.
+                // It used to be a row of its own, which was right while the
+                // menu held colours and nothing else; with a mode list in the
+                // same menu, two things reading Auto a few pixels apart is a
+                // coin toss over which one you want. Auto here is the same
+                // action it always was - CLEAR the override - which is what
+                // makes it stronger than the 'auto' MODE: that one resolves
+                // the global scheme at this position, this one leaves the
+                // position with no opinion, so an object-wide colour still
+                // reaches it.
+                const options = modes ? colorModeOptions() : [];
+                if (modes) {
+                    const modeRow = document.createElement('div');
+                    modeRow.className = 'selection-color-row';
+                    const sel = document.createElement('select');
+                    sel.className = 'selection-color-mode';
+                    sel.title = 'Colour these by a scheme rather than by one'
+                        + ' colour. Auto clears it and follows what is set'
+                        + ' above.';
+                    const add = (value, label) => {
+                        const o = document.createElement('option');
+                        o.value = value; o.textContent = label;
+                        sel.appendChild(o);
+                    };
+                    add('', 'Auto (default colour)');
+                    for (const [value, label] of options) add(value, label);
+                    // THE SELECTION IT IS ABOUT, AND IT MAY NOT BE THERE.
+                    // buildSwatches runs once at WIRE time, before anything is
+                    // selected - the first version called currentMode() with
+                    // no argument, which read positions[0] of undefined and
+                    // threw inside setupEventListeners, taking every control
+                    // wired after it with it. tests/selection_panel.py caught
+                    // it as a panel that never opened and rows measuring 0px.
+                    const held = getActiveSelection();
+                    const now = (currentMode && held && held.length)
+                        ? currentMode(held) : null;
+                    sel.value = (now && options.some((o) => o[0] === now)) ? now : '';
+                    sel.addEventListener('change', (e) => {
+                        e.stopPropagation();
+                        menu.hidden = true;
+                        const positions = getActiveSelection();
+                        if (positions) apply(positions, sel.value || null);
+                        refresh();
+                    });
+                    // ...a click inside the open menu must not close it, which
+                    // is what the document-level handler below would do to the
+                    // native dropdown the moment it opened.
+                    sel.addEventListener('click', (e) => e.stopPropagation());
+                    modeRow.appendChild(sel);
+                    menu.appendChild(modeRow);
+                } else {
+                    // AUTO: clears the override so the residues fall back to
+                    // whatever the colour mode says. Not a colour, so it gets
+                    // its own row rather than a swatch that would have to
+                    // pretend to be one. Kept for the pickers with no mode
+                    // list - a contact is one line between two residues, and
+                    // there is no scheme that says what colour it should be.
+                    const autoRow = document.createElement('div');
+                    autoRow.className = 'selection-color-row';
+                    const autoBtn = document.createElement('button');
+                    autoBtn.type = 'button';
+                    autoBtn.className = 'selection-color-auto';
+                    autoBtn.textContent = 'Auto (default colour)';
+                    autoBtn.title = 'Remove the colour override and follow the colour mode';
+                    autoBtn.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        menu.hidden = true;
+                        const positions = getActiveSelection();
+                        if (positions) apply(positions, null);
+                        refresh();
+                    });
+                    autoRow.appendChild(autoBtn);
+                    menu.appendChild(autoRow);
+                }
+
+                const groups = (window.py2dmol_paletteColors
+                    ? window.py2dmol_paletteColors(!!selectionHost.renderer()?.colorblindMode)
+                    : []);
+                for (const group of groups) {
+                    const row = document.createElement('div');
+                    row.className = 'selection-color-row';
+                    for (const hex of group) {
+                        const cell = document.createElement('button');
+                        cell.type = 'button';
+                        cell.className = 'selection-color-cell';
+                        cell.style.background = hex;
+                        cell.addEventListener('click', (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            menu.hidden = true;
+                            const positions = getActiveSelection();
+                            if (positions) apply(positions, hex);
+                            refresh();
+                        });
+                        row.appendChild(cell);
+                    }
+                    menu.appendChild(row);
+                }
+            };
+            // THE SWATCH SHOWS THE SELECTION, not the last colour picked. A
+            // remembered colour is a statement about the tool; what you want to
+            // know when you click a residue is what colour THAT residue is. A
+            // mixed selection shows the first, since one square cannot show two.
+            const refresh = () => {
+                if (!swatch) return;
+                const positions = getActiveSelection();
+                const hex = positions && positions.length ? current(positions) : null;
+                swatch.style.background = hex || 'transparent';
+                swatch.classList.toggle('is-empty', !hex);
+            };
+            buildSwatches();
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                // rebuilt on open: the chain palette swaps with colourblind mode
+                buildSwatches();
+                const wasHidden = menu.hidden;
+                // only one grid open at a time - two overlapping popups in a
+                // 340px panel is unreadable
+                for (const other of (selectionHost.root || document)
+                    .querySelectorAll('.selection-color-menu')) {
+                    other.hidden = true;
+                }
+                menu.hidden = !wasHidden;
+            });
+            document.addEventListener('click', (e) => {
+                if (!menu.hidden && !menu.contains(e.target)
+                    && e.target !== btn && !btn.contains(e.target)) {
+                    menu.hidden = true;
+                }
+            });
+            colorPickers.push(refresh);
+            refresh();
+        };
+
+        // What colour a residue is RIGHT NOW, as the renderer resolves it -
+        // override, colour mode, palette and all - so the swatch matches the
+        // pixels rather than a setting.
+        const rgbToHex = (c) => (c && c.r !== undefined)
+            ? '#' + [c.r, c.g, c.b].map((v) => {
+                const n = Math.max(0, Math.min(255, Math.round(v > 1 ? v : v * 255)));
+                return n.toString(16).padStart(2, '0');
+            }).join('')
+            : null;
+        const mainChainColorOf = (positions) => {
+            const renderer = selectionHost.renderer();
+            if (!renderer || !renderer.getAtomColor) return null;
+            return rgbToHex(renderer.getAtomColor(positions[0]));
+        };
+
+        // THE OBJECT THAT OWNS A POSITION, AND THAT POSITION IN ITS NUMBERING.
+        // Every per-object map - color, sidechainColor - is keyed that way,
+        // and a selection arrives in MERGED indices, so reading one without
+        // this asks the wrong object about the wrong residue whenever more
+        // than one structure is on screen.
+        const ownerEntry = (position) => {
+            const renderer = selectionHost.renderer();
+            if (!renderer) return null;
+            const o = renderer.ownerOf ? renderer.ownerOf(position) : null;
+            const obj = renderer.objectsData?.[
+                o ? o.name : renderer.currentObjectName];
+            return obj ? { obj, at: o ? o.local : position } : null;
+        };
+        // ...and whether what is stored there is a MODE rather than a colour.
+        // Both maps take either, and only the picker needs to tell them apart:
+        // a mode has to come back as the dropdown's value while a hex has to
+        // come back as the swatch's.
+        const asMode = (value) => {
+            if (typeof value !== 'string' || value[0] === '#') return null;
+            const valid = (typeof window.py2dmol_colorModes === 'function')
+                ? window.py2dmol_colorModes() : null;
+            if (valid && !valid.includes(value)) return null;
+            return value;
+        };
+
+        wireColorPicker({
+            btnId: 'selColorButton', menuId: 'selColorMenu', swatchId: 'selColorSwatch',
+            apply: setSelectionColor, current: mainChainColorOf,
+            // A MODE AT POSITION LEVEL, which resolveColorHierarchy's applySpec
+            // has understood since it was written - a string naming a mode
+            // selects the mode and cancels any literal below it - and which
+            // nothing could write. setSelectionColor stores what it is given,
+            // so this needed no renderer change at all.
+            modes: true,
+            currentMode: (positions) => {
+                const e = ownerEntry(positions[0]);
+                const adv = e && e.obj.color && e.obj.color.type === 'advanced'
+                    ? e.obj.color.value : null;
+                return asMode(adv && adv.position && adv.position[e.at]);
+            },
+        });
+        wireColorPicker({
+            btnId: 'scColorButton', menuId: 'scColorMenu', swatchId: 'scColorSwatch',
+            // ON A LIGAND ROW THIS IS THE LIGAND'S COLOUR. A side-chain colour
+            // is stored against the OWNING residue, and a ligand atom has none
+            // - so the side-chain path silently does nothing there, which is
+            // what a swatch on that row would have looked like. The ordinary
+            // per-position colour is the one that means anything for a ligand.
+            apply: (positions, hex) => {
+                const lig = ligandRowPositions(positions);
+                if (lig) setSelectionColor(lig, hex);
+                else setSelectionSidechainColor(positions, hex);
+            },
+            // an unset side chain follows its residue, so that is what it shows
+            current: (positions) => {
+                const renderer = selectionHost.renderer();
+                const lig = ligandRowPositions(positions);
+                if (lig) return mainChainColorOf(lig);
+                const e = ownerEntry(positions[0]);
+                const own = e && e.obj.sidechainColor
+                    && e.obj.sidechainColor[e.at];
+                if (typeof own === 'string' && own[0] === '#') return own;
+                // ...A MODE IS RESOLVED, NOT SKIPPED. The swatch is meant to
+                // show what is on screen, and a side chain following
+                // hydropathy is not the colour its residue is - showing the
+                // residue's would say the mode had not taken.
+                const mode = asMode(own);
+                if (mode && renderer && renderer._colorForMode) {
+                    return rgbToHex(renderer._colorForMode(positions[0], mode));
+                }
+                return mainChainColorOf(positions);
+            },
+            modes: true,
+            currentMode: (positions) => {
+                if (ligandRowPositions(positions)) return null;
+                const e = ownerEntry(positions[0]);
+                return asMode(e && e.obj.sidechainColor
+                    && e.obj.sidechainColor[e.at]);
+            },
+        });
+        wireColorPicker({
+            btnId: 'contactColorButton', menuId: 'contactColorMenu',
+            swatchId: 'contactColorSwatch',
+            apply: setSelectionContactColor,
+            // a contact with no colour of its own draws in the default yellow,
+            // so that is what the swatch shows rather than nothing
+            current: (positions) => {
+                const found = findContact(positions);
+                if (!found) return null;
+                const c = found.obj.contacts[found.i];
+                const col = c && c[contactSlots(c).col];
+                return (col && col.r !== undefined)
+                    ? rgbToHex(col) : '#ffff00';
+            },
+        });
+        window.refreshSelectionSwatches = () => { for (const f of colorPickers) f(); };
+
+        const ssSelect = byId('selSsSelect');
+        if (ssSelect) {
+            ssSelect.addEventListener('change', withSelection((positions) => {
+                const v = ssSelect.value;
+                // DSSP is the one that UNFORCES: null takes the override off
+                // and the assignment decides again.
+                if (v) setSelectionSse(positions, v === 'dssp' ? null : v);
+                // ...and then the menu is read back off the structure, like
+                // every other control here, rather than reset to a placeholder
+                updateSelectionToolsState();
+            }));
+        }
+        const on = (id, fn) => {
+            const el = byId(id);
+            if (el) el.addEventListener('click', withSelection(fn));
+        };
+        // ONE visibility button. Which way it goes is read off the structure,
+        // not remembered: if any of the selection is currently hidden the press
+        // shows it, otherwise it hides it. That makes "show what I picked" the
+        // behaviour for a selection that is partly hidden, which is what a user
+        // reaching for this after a Hide actually wants.
+        {
+            const ws = byId('contactWidthSlider');
+            if (ws) {
+                // `input`, not `change`: the contact should follow the drag.
+                // Redrawing per event is affordable here - one contact is a
+                // handful of prims - where a residue-level control would not be.
+                ws.addEventListener('input', () => {
+                    const positions = getActiveSelection();
+                    if (positions) setSelectionContactWidth(positions, +ws.value);
+                });
+            }
+        }
+        // A TOGGLE CARRIES ITS OWN DIRECTION. `on` fires on click and the
+        // handler decided the direction; these fire on change and take it from
+        // the box, so the control and what it does cannot disagree.
+        //
+        // A MIXED selection - some of it has the thing, some does not - is
+        // shown indeterminate, and the browser's first click on an
+        // indeterminate box checks it. So the click resolves the mixture by
+        // turning everything ON, which is the useful direction: it is what
+        // "show what I picked" means when half of it already is.
+        const onToggle = (id, fn) => {
+            const el = byId(id);
+            if (!el) return;
+            el.addEventListener('change', withSelection((positions) => {
+                fn(positions, el.checked);
+                // ...and re-read the state from the structure, not from the
+                // box: an action can be refused (no side-chain atoms, base
+                // plates switched off globally) and the toggle must then go
+                // back to what is actually drawn rather than sit on a lie.
+                updateSelectionToolsState();
+            }));
+        };
+        // A PAIR IS TWO BUTTONS AND ONE QUESTION: each says which way it goes,
+        // rather than a switch that means "the other one from now". Pressing
+        // the button that is already filled is a no-op the same way asking for
+        // what you already have is - it runs, and the state comes back the
+        // same. The answer is re-read from the structure afterwards, like the
+        // switches: an action can be refused (no side-chain atoms, base plates
+        // off globally) and the buttons must then show what is drawn rather
+        // than what was asked for.
+        const onPair = (id, fn) => {
+            const pair = byId(id);
+            if (!pair) return;
+            const btns = pair.querySelectorAll('.selection-switch-btn');
+            btns.forEach((btn, k) => {
+                btn.addEventListener('click', withSelection((positions) => {
+                    fn(positions, k === 0);
+                    updateSelectionToolsState();
+                }));
+            });
+        };
+        onToggle('elementsShowToggle', (p2, v) => setSelectionElements(p2, v));
+        onPair('mainchainPair', (p2, v) => {
+            setSelectionBackbone(p2, v);
+            // SHOW MEANS SHOW, whatever was hiding it. The switch alone leaves
+            // a residue that the mask excludes - one inside a PAE box's
+            // shadow, say - exactly as invisible as it was, and the button
+            // then does nothing you can see. Hide is the other way round: the
+            // switch is all it needs, and syncSelectionVisibility takes the
+            // residue out of the mask only if nothing else of it is drawn.
+            if (v) setSelectionVisible(p2, true);
+            syncSelectionVisibility(p2);
+        });
+        // FIND INTERACTIONS: one button, no settings. 5 A side chain to side
+        // chain is the question people actually ask of a binding site, and the
+        // any-atom half of the pair it replaces was mostly backbone running
+        // past whatever it folds against.
+        const nearBtn = byId('selectNearby');
+        if (nearBtn) {
+            nearBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                selectNearby(INTERACTION_CUTOFF_A, true);
+            });
+        }
+        // ALIGN. The dropdown is a MENU OF ACTIONS, not a setting, so it snaps
+        // back to its own label as soon as one is chosen - leaving it reading
+        // "all to this" would claim a state the app does not hold, and pressing
+        // it again would then be a no-op that looks like a repeat.
+        const alignSel = byId('alignSelect');
+        if (alignSel) {
+            alignSel.addEventListener('change', () => {
+                const mode = alignSel.value;
+                alignSel.value = '';
+                if (mode) runAlign(mode);
+            });
+        }
+        // the protein form of the same control: two states, one switch - and on
+        // a ligand row the same switch draws the ligand itself, which is the
+        // visibility mask rather than a side chain nothing there owns
+        onPair('sidechainPair', (p2, v) => {
+            const lig = ligandRowPositions(p2);
+            if (lig) { setSelectionVisible(lig, v); return; }
+            // SHOW MEANS "DRAWN", AND THE MENU SAYS HOW. Switching on a
+            // nucleotide brings back whichever way it was last drawn - the
+            // plate unless the menu says otherwise - rather than jumping to the
+            // atoms, which is not what a plain Show should decide.
+            const r = selectionHost.renderer();
+            const plate = byId('plateShowToggle');
+            const nuc = !!(r && r.hasBasesFor && r.hasBasesFor(p2));
+            const style = nuc ? ((plate && !plate.checked) ? 'full' : 'plate') : 'full';
+            setSelectionSidechainMode(p2, v ? style : 'none');
+        });
+        // PLATE OR ATOMS, for a nucleotide that is being drawn at all. Show
+        // owns whether; this owns which.
+        onToggle('plateShowToggle', (p2, v) => {
+            setSelectionSidechainMode(p2, v ? 'plate' : 'full');
+        });
+        // ...and the two buttons that replace the pair, each with one job
+        const onPress = (id, fn) => {
+            const el = byId(id);
+            if (!el) return;
+            el.addEventListener('click', withSelection((positions) => {
+                fn(positions);
+                updateSelectionToolsState();
+            }));
+        };
+        onPress('contactAddButton', (p2) => addSelectionContact(p2));
+        onPress('contactDeleteButton', (p2) => removeSelectionContact(p2));
+
+        // Every surface that draws the selection listens here, so a change made
+        // on ANY of them shows on all the others. The sequence strip used to be
+        // missing: it redrew itself when IT cleared the selection, so clearing
+        // from the 3D canvas left its yellow box behind.
+        document.addEventListener('py2dmol-residue-selection-change', () => {
+            // 🔴 THIS BUS IS document-SCOPED, so every viewer on the page hears
+            // every viewer's selection change - and the capture hook above
+            // cannot help, because the event is dispatched on `document` rather
+            // than travelling through any container. Each listener claims its
+            // own panel before it syncs, so what gets rebuilt is the panel
+            // whose listener is running rather than whichever claimed last.
+            claim();
+            updateSelectionToolsState();
+            // the selection is outlined by the renderer's own ink pass, so the
+            // structure has to be redrawn when the selection changes
+            if (selectionHost.renderer()) selectionHost.renderer().render('selection outline');
+            // the strip draws the yellow box round the selected run
+            if (window.SEQ?.updateColors) window.SEQ.updateColors();
+            // the MSA dims to the selection, so it follows the same signal
+            selectionHost.afterChange();
+        });
+        updateSelectionToolsState();
+    }
+}

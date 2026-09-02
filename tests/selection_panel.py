@@ -58,8 +58,16 @@ window.addEventListener('load', () => {
   const rowFit = (id) => {
     const row = document.getElementById(id);
     if (!row || row.hidden) return null;
-    const kids = Array.from(row.children).filter((k) => !k.hidden
+    const all = Array.from(row.children).filter((k) => !k.hidden
       && k.getBoundingClientRect().width > 0);
+    // 🔴 THE LINE BREAK IS LAYOUT, NOT A CONTROL, and the row is MEANT to be
+    // two lines when one is showing. A nucleotide's row asks four questions -
+    // colour, Show/Hide, Plate, Elem - and 348px of them do not fit a 322px
+    // card, so parts/panel.js gives Plate and Elem a line of their own rather
+    // than letting Elem fall off the end by itself. `wrapped` has to mean "a
+    // line nobody asked for", or it fails against the fix for the thing it is
+    // watching.
+    const kids = all;
     const h = row.getBoundingClientRect().height;
     const tall = Math.max(...kids.map((k) => k.getBoundingClientRect().height));
     return {wrapped: h > tall * 1.5, height: Math.round(h),
@@ -109,14 +117,47 @@ window.addEventListener('load', () => {
       R.steps.push(st(r, 'added'));
       // ...AND THE BIN IS A BIN. An icon button whose glyph does not load is
       // an empty square that deletes things.
+      // 🔴 THIS PAGE'S PANEL IS A CARD, and that is the half of the skin the
+      // shared stylesheet does NOT ship. It has a column of its own beside the
+      // structure here, among other boxes that look the same - the PAE plot,
+      // the scatter - where a border and a ground are right. In the notebook's
+      // 180px control column and the embed's 190px one the same card was a
+      // bordered white box inside a bordered white box, so parts/panel.js ships
+      // the SECTION form at zero specificity and src/app/style.css puts the
+      // card back. Both halves are measured: this is the card, and
+      // tests/selection_shells.py is the section.
+      {
+        const p = document.getElementById('selectionPanel');
+        const cs = getComputedStyle(p);
+        R.card = {
+          width: Math.round(p.getBoundingClientRect().width),
+          border: cs.borderLeftWidth, radius: cs.borderTopLeftRadius,
+          shadow: cs.boxShadow !== 'none', ground: cs.backgroundColor,
+          padding: cs.paddingLeft, topBorder: cs.borderTopWidth,
+          parent: Math.round(p.parentElement.getBoundingClientRect().width),
+          stated: cs.width,
+        };
+      }
       {
         const bin = document.getElementById('contactDeleteButton');
-        const i = bin.querySelector('i');
         const box = bin.getBoundingClientRect();
+        // THE INK, NOT THE FONT. This read getComputedStyle(i, '::before') and
+        // asked for a Font Awesome glyph - which index.html loads and
+        // viewer.html and the embed's shell do not, so the one spelling of the
+        // rule that could not travel was the one it was written in. The panel
+        // carries inline SVG now; what is checked is that the button has a
+        // drawn mark of a usable size, whichever it is.
+        const svg = bin.querySelector('svg');
+        const i = bin.querySelector('i');
         const glyph = i ? getComputedStyle(i, '::before') : null;
+        const mark = svg || i;
+        const mb = mark ? mark.getBoundingClientRect() : null;
         R.bin = {
           width: Math.round(box.width), height: Math.round(box.height),
-          font: glyph ? glyph.fontFamily : null,
+          kind: svg ? 'svg' : (i ? 'font' : null),
+          inkW: mb ? Math.round(mb.width) : 0,
+          inkH: mb ? Math.round(mb.height) : 0,
+          strokes: svg ? svg.children.length : null,
           content: glyph ? glyph.content : null,
         };
       }
@@ -333,11 +374,48 @@ window.addEventListener('load', () => {
       await load('355D.cif'); await until(loaded); await settle();
       await select(r, [2, 3, 4]);
       await press('sidechainShowButton');
-      await settle();   // ...atoms exist now, so Elements joins the row too
+      await settle();
+      // 🔴 AND THE PLATE OFF, WHICH IS WHAT PUTS ELEM ON THE ROW. Show on a
+      // nucleotide draws the base as a PLATE, and Elem is offered only where
+      // there are real atoms to colour - so the note that used to sit here
+      // ("atoms exist now, so Elements joins the row too") was wrong, and the
+      // row was measured with four controls when the case that overflows has
+      // five. That is the state this panel was reported wrapping in.
+      {
+        const plate = document.getElementById('plateShowToggle');
+        if (plate && plate.checked) { plate.click(); await settle(); }
+      }
       // (defined above its second use so the protein row can be measured too)
       R.fit = {sidechain: rowFit('sidechainRow'), mainchain: rowFit('mainchainRow'),
                contact: rowFit('contactRow'),
                panelWidth: document.getElementById('selectionPanel').clientWidth};
+      // ...and WHERE the two of them landed. Both must be on one line, and it
+      // must start where the pair above it starts: Elem alone on a second line
+      // at x0 - under the caption, reading as the caption's - is the report.
+      {
+        const row = document.getElementById('sidechainRow');
+        const at = (id) => {
+          const el = document.getElementById(id);
+          const box = el && (el.closest('label') || el);
+          if (!box || box.hidden) return null;
+          const b = box.getBoundingClientRect();
+          const r0 = row.getBoundingClientRect();
+          // 🔴 AND THE VISIBLE FACE, NOT ONLY THE BOX. A toggle is a <label>
+          // whose face is the span inside it; padding on the label is space
+          // outside the button that still belongs to it, so the box can be
+          // 62px around a 42px face and the gap a reader SEES is nothing like
+          // the row's gap. That is what was reported, and measuring the box
+          // could not have found it.
+          const face = box.querySelector('span') || box;
+          const fb = face.getBoundingClientRect();
+          return {x: Math.round(b.left - r0.left), y: Math.round(b.top - r0.top),
+                  right: Math.round(b.right - r0.left),
+                  faceX: Math.round(fb.left - r0.left),
+                  faceRight: Math.round(fb.right - r0.left)};
+        };
+        R.which = {pair: at('sidechainPair'), plate: at('plateShowToggle'),
+                   elem: at('elementsShowToggle')};
+      }
       await select(r, [2, 3]);
       await press('sidechainHideButton');
 
@@ -466,14 +544,45 @@ if sse.get('forced helix', {}).get('text') != 'Helix':
 if sse.get('back to auto', {}).get('value') != 'dssp':
     bad.append("going back to DSSP did not stick")
 
+card = R.get("card") or {}
+print(f"  the card: {card.get('width')}px in a {card.get('parent')}px slot,"
+      f" stated {card.get('stated')}, border {card.get('border')},"
+      f" radius {card.get('radius')}, shadow {card.get('shadow')},"
+      f" ground {card.get('ground')}, padding {card.get('padding')}")
+if card.get("width") != 340:
+    bad.append(f"the panel is {card.get('width')}px, not this page's 340")
+if card.get("border") in (None, "0px") or not card.get("shadow"):
+    bad.append("the panel lost its card - border " + str(card.get("border"))
+               + ", shadow " + str(card.get("shadow")) + ". The shared skin is"
+               " the SECTION form; what puts the card back on this page is the"
+               " `container-box` class buildSelectionPanel emits, which only"
+               " index.html defines")
+if card.get("ground") != "rgb(255, 255, 255)":
+    bad.append(f"the panel has no white ground: {card.get('ground')}")
+# ...and the section form's hairline is OFF here, because a card's own edge
+# already says a new group starts - two lines a few pixels apart otherwise.
+if card.get("topBorder") != card.get("border"):
+    bad.append(f"the top border is {card.get('topBorder')} against"
+               f" {card.get('border')} on the side - the section form's"
+               " hairline is showing through the card")
+
 bin = R.get("bin") or {}
 print(f"  the bin: {bin.get('width')}x{bin.get('height')}px,"
-      f" glyph {bin.get('content')} in {bin.get('font')}")
+      f" {bin.get('kind')} mark {bin.get('inkW')}x{bin.get('inkH')}px"
+      f" ({bin.get('strokes')} strokes)")
 if not bin.get("width") or bin["width"] < 20 or bin["height"] < 20:
     bad.append(f"the bin button is {bin.get('width')}x{bin.get('height')}px")
-if not bin.get("content") or bin["content"] in ('none', 'normal', '""'):
-    bad.append("the bin has no glyph - an icon button with no icon is an empty"
-               " square that deletes things")
+# AN ICON BUTTON WITH NO ICON IS AN EMPTY SQUARE THAT DELETES THINGS. The mark
+# has to be DRAWN, not merely present: an <svg> with no children and a glyph
+# that did not load both measure as an element with a box.
+if bin.get("inkW", 0) < 8 or bin.get("inkH", 0) < 8:
+    bad.append(f"the bin's mark is {bin.get('inkW')}x{bin.get('inkH')}px - an"
+               " icon button with no icon is an empty square that deletes things")
+if bin.get("kind") == "svg" and not bin.get("strokes"):
+    bad.append("the bin's <svg> has nothing in it")
+if bin.get("kind") == "font" and (not bin.get("content")
+                                  or bin["content"] in ('none', 'normal', '""')):
+    bad.append("the bin's icon font did not load")
 
 # ---- THE COLOUR PICKER OFFERS SCHEMES, NOT ONLY COLOURS --------------------
 pick = R.get("pick") or {}
@@ -568,6 +677,60 @@ for row in ('sidechain', 'mainchain', 'contact'):
                    f" {f['tallest']}px, with {f['controls']} on it - {f['widths']}")
     if f['overflow'] > 1:
         bad.append(f"the {row} row overflows its panel by {f['overflow']}px")
+
+# 🔴 FIVE ORDINARY BUTTONS, ON ONE LINE.
+#
+# A nucleotide showing its real ATOMS carries a caption, a swatch, Show/Hide,
+# Plate and Elem. They did not fit a 322px row, and the fix is width found in
+# the caption (74px of box for 65px of text) and in the padding (7px and 8px,
+# which is what a control standing alone wants and two more each than this row
+# can give) - not in welding them together.
+#
+# THREE SHAPES WERE TRIED FIRST and this check is about POSITION because of it:
+# Elem alone falling to a second line at x0 was the report; giving Plate and
+# Elem a line of their own read as two answers to one question; making all
+# three one segmented strip read as PARTIAL BUTTONS, since a group with a
+# single border leaves its members flat and they stop looking like controls.
+which = R.get("which") or {}
+print("  nucleotide row: " + ", ".join(f"{k}={v}" for k, v in which.items()))
+pair, plate, elem = which.get('pair'), which.get('plate'), which.get('elem')
+if not plate or not elem:
+    bad.append("Plate and Elem are not both on the row, so their layout is not"
+               f" being measured: {which}")
+elif not pair:
+    bad.append("no Show/Hide pair to place them against")
+else:
+    if not (pair['y'] == plate['y'] == elem['y']):
+        bad.append(f"the three are on different lines: pair y{pair['y']},"
+                   f" Plate y{plate['y']}, Elem y{elem['y']} - five controls do"
+                   " not fit unless the caption and the padding give the room")
+    # 🔴 MINIMAL AND EQUAL SPACE, MEASURED BETWEEN THE FACES. The gap between
+    # two buttons is what a reader sees between the two coloured rectangles, not
+    # what the flex row was told - and those differed by 20px, because each
+    # toggle's label carried 10px a side outside its own face. Reported as a
+    # large gap between Hide and Plate, and a larger one between Plate and Elem
+    # (two paddings there rather than one).
+    # ...only when the three ARE on one line. Off it, an x is a distance to
+    # something on another row and the arithmetic reports nonsense beside the
+    # real failure - measured as `Elem:-251px` while the row was two lines high.
+    gaps = []
+    same_line = pair['y'] == plate['y'] == elem['y']
+    for name, a, b in ((('Plate', pair, plate), ('Elem', plate, elem))
+                       if same_line else ()):
+        if b['faceX'] < a['faceRight']:
+            bad.append(f"{name} overlaps the control before it:"
+                       f" x{b['faceX']} against {a['faceRight']}")
+        gaps.append((name, b['faceX'] - a['faceRight']))
+    print("  gaps between faces: "
+          + (", ".join(f"{n}:{g}px" for n, g in gaps) if same_line
+             else "(not on one line - see above)"))
+    if any(g > 6 for _, g in gaps):
+        bad.append(f"the buttons are {gaps} apart - the row asks for 4px, so"
+                   " the rest is padding on a label, which is space outside a"
+                   " button that still belongs to it")
+    if len({g for _, g in gaps}) > 1:
+        bad.append(f"the gaps are uneven: {gaps}. Even spacing is the whole"
+                   " tell that nothing is carrying padding of its own")
 
 for m in bad: print("FAIL:", m)
 sys.exit(1 if bad else 0)

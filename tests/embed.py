@@ -317,7 +317,10 @@ setTimeout(finish, 80000);
         const known = new Set(['animate', 'controls', 'play', 'style', 'color',
             'name', 'width', 'height', 'bg', 'box', 'orient', 'select',
             'biounit', 'positions', 'r', 'g', 'b', 'rendering', 'display',
-            'size']);
+            'size',
+            // ...and the panels, which the full bundle's sample turns on:
+            // `{pae: {enabled: true}}` is a config block, not a selector.
+            'pae', 'enabled', 'ortho']);
         const out = [];
         for (const k of SAMPLE_KEYS) {
             if (known.has(k)) continue;
@@ -1021,7 +1024,7 @@ setTimeout(finish, 80000);
     // SIDE CHAINS CAN CARRY THEIR OWN COLOUR, AND ONLY THE SIDE CHAINS.
     //
     // obj.sidechainColor has existed since the selection panel was written and
-    // src/app/selection.js was the only thing that could reach it - the embed
+    // src/parts/selectpanel.js was the only thing that could reach it - the embed
     // and the notebook had the storage and no door. setSidechainColor is the
     // renderer's verb, so all three get it, and it takes a colour MODE as
     // readily as a colour: 'hydrophobicity' over a backbone coloured by

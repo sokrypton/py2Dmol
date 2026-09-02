@@ -955,6 +955,16 @@ const DEFAULT_CONFIG = {
     },
     overlay: {
         enabled: false
+    },
+    // THE SELECTION PANEL, AND THE CLICK THAT FILLS IT - one key, because they
+    // are one decision. `selectionEnabled` is off in the constructor on the
+    // reasoning that a click which changes a selection nobody can see, act on
+    // or clear is worse than no click; that reasoning is about the PANEL, and
+    // the panel used to be markup in index.html so only the website could ever
+    // answer yes. It is parts/panel.js's now, so the question is a config key
+    // and every shell can ask it.
+    selection: {
+        enabled: false
     }
 };
 
@@ -1086,6 +1096,10 @@ function normalizeConfig(rawConfig = {}) {
         },
         overlay: {
             enabled: cfg.overlay?.enabled ?? cfg.overlay ?? DEFAULT_CONFIG.overlay.enabled
+        },
+        selection: {
+            enabled: cfg.selection?.enabled ?? cfg.selection
+                ?? DEFAULT_CONFIG.selection.enabled
         }
     };
 
@@ -1117,7 +1131,7 @@ function normalizeConfig(rawConfig = {}) {
     }
 
     // Carry over any additional top-level keys not explicitly normalized
-    const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "pae", "scatter", "overlay", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "ortho", "colorblind", "pae_size", "scatter_size", "cyclic", "style", "detail", "base_plates", "ss_palette", "preset", "gpu", "shade", ...PRESET_KEYS]);
+    const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "pae", "scatter", "overlay", "selection", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "ortho", "colorblind", "pae_size", "scatter_size", "cyclic", "style", "detail", "base_plates", "ss_palette", "preset", "gpu", "shade", ...PRESET_KEYS]);
     for (const [key, value] of Object.entries(cfg)) {
         if (!knownKeys.has(key)) {
             normalized[key] = value;
@@ -1602,8 +1616,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // done in Python by scripting, which does not go through the mouse.
             //
             // The web app turns it on when it wires the selection tools, so the
-            // switch is owned by whoever can actually show the result.
-            this.selectionEnabled = false;
+            // switch is owned by whoever can actually show the result - and
+            // that is now a config key rather than "whichever shell happens to
+            // have the markup", because parts/panel.js builds the panel for
+            // all three. parts/ui.js reads the SAME flag to decide whether to
+            // mount it, so the control and the gesture cannot disagree.
+            this.selectionEnabled = !!(this.config?.selection?.enabled);
             this.visibilityModel = {
                 positions: new Set(), // Position indices: 0, 1, 2, ... (one position per entry in frame data)
                 chains: new Set(),
@@ -9934,7 +9952,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // whole of what makes a cross-object contact possible. The two
             // forms below both add ONE object's offset to BOTH ends and refuse
             // anything past its slice, so a contact between two structures
-            // could not be written at all - app/selection.js says so out loud
+            // could not be written at all - parts/selectpanel.js says so out loud
             // when you try: "there is nowhere to store it".
             if ((contact[0] && typeof contact[0] === 'object' && !Array.isArray(contact[0]))
                 || (contact[1] && typeof contact[1] === 'object' && !Array.isArray(contact[1]))) {

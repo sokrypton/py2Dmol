@@ -19,6 +19,33 @@ let viewerApi = null;
 let pendingObjects = [];
 let scatterViewer = null;
 
+// THE SELECTION PANEL'S TWO COUPLINGS TO THIS PAGE, and the only two it has.
+// parts/selectpanel.js was the web app's own file and closed over exactly
+// these two names; it
+// is shared now, so the website hands them over rather than being the file's
+// only possible home. The renderer is a GETTER because `viewerApi` is replaced
+// when a viewer is rebuilt.
+if (typeof py2dmolSelectionHost === 'function') {
+    py2dmolSelectionHost({
+        renderer: () => viewerApi?.renderer,
+        setStatus: (m, err) => setStatus(m, err),
+        afterChange: () => applySelectionToMSA(),
+    });
+}
+
+/**
+ * What the status line says when there is nothing loaded.
+ *
+ * A PAGE EMBEDDING THIS APP LOADS THINGS ITS OWN WAY. "Upload a file or fetch
+ * an ID" names two controls this page happens to have; a page that swaps them
+ * for something else - folding a sequence, say - would be telling the reader to
+ * press a button that is not there. Read at call time rather than captured,
+ * because the message is set again on every clear.
+ */
+function readyStatus() {
+    return window.py2dmolReadyMessage || "Ready. Upload a file or fetch an ID.";
+}
+
 // Helper function to check if PAE data is valid
 function isValidPAE(pae) {
     return pae && ((Array.isArray(pae) && pae.length > 0) || (pae.buffer && pae.length > 0));
@@ -157,7 +184,7 @@ function initializeApp() {
     if (paeCanvas) {
         paeCanvas.style.display = 'none';
     }
-    setStatus("Ready. Upload a file or fetch an ID.");
+    setStatus(readyStatus());
 }
 
 function refreshEntropyColors() {
@@ -290,6 +317,12 @@ function initializeViewerConfig() {
 
     // Initialize global viewer config (nested structure matching Python)
     window.viewerConfig = {
+        // THE PANEL AND THE CLICK, one key. This page has always had both -
+        // main.js used to assign renderer.selectionEnabled = true by hand
+        // beside the tools it wired, because the markup was here and nowhere
+        // else. parts/panel.js builds the panel now and parts/ui.js mounts it
+        // on this flag, so the page asks rather than reaching in.
+        selection: { enabled: true },
         display: {
             size: [FIXED_WIDTH, FIXED_HEIGHT],
             rotate: false,
@@ -545,75 +578,9 @@ function setupEventListeners() {
     // opens the Save panel, which is now the ONE way to make a still or a
     // video. The separate record button it used to sit beside is gone.
 
-    // Copy selection button (moved to sequence actions)
-    const copySelectionButton = document.getElementById('copySelectionButton');
-    if (copySelectionButton) {
-        copySelectionButton.addEventListener('click', () => {
-            const r = viewerApi?.renderer;
-            if (!r || !r.extractSelection) {
-                console.warn("Copy selection feature not available");
-                return;
-            }
-            // A SELECTION CAN REACH SEVERAL OBJECTS, and Copy makes one new
-            // object per object it touched - so it says which, rather than
-            // leaving the user to find out that two appeared.
-            const made = r.extractSelection();
-            const names = Array.isArray(made) ? made : (made ? [made] : []);
-            if (names.length > 1) {
-                setStatus(`Copied into ${names.join(' and ')}`
-                    + ' - one object per structure the selection reached.');
-            }
-            applySelectionToMSA();
-        });
-    }
-
-    // CUT: the copy Copy makes, minus the residues from where they came. The
-    // renderer owns the order (see cutSelection - the two halves cannot simply
-    // be pressed in sequence); this reports what happened, because a cut that
-    // silently did nothing looks exactly like a copy that did.
-    const cutSelectionButton = document.getElementById('cutSelectionButton');
-    if (cutSelectionButton) {
-        cutSelectionButton.addEventListener('click', () => {
-            const r = viewerApi?.renderer;
-            if (!r || !r.cutSelection) return;
-            const made = r.cutSelection();
-            if (!made) {
-                setStatus('Select something first, then Cut moves it into a new object.');
-                return;
-            }
-            // ...one new object per structure the selection reached, named
-            setStatus(`Cut ${made.removed} residue${made.removed === 1 ? '' : 's'}`
-                + ` into ${made.name}. Reload the file to get them back.`);
-            if (window.SEQ?.buildViewDeferred || window.SEQ?.buildView) {
-                (window.SEQ.buildViewDeferred || window.SEQ.buildView)();
-            }
-            applySelectionToMSA();
-        });
-    }
-
-    // DELETE, beside Copy in the panel's corner. The renderer does the work;
-    // this only reports what happened, since a delete that silently did nothing
-    // (an empty selection, or one covering everything) is worse than a refusal.
-    const deleteSelectionButton = document.getElementById('deleteSelectionButton');
-    if (deleteSelectionButton) {
-        deleteSelectionButton.addEventListener('click', () => {
-            const r = viewerApi?.renderer;
-            if (!r || !r.deleteSelection) return;
-            const gone = r.residueSelection ? r.residueSelection.size : 0;
-            // ...from every object the selection reached, which the count
-            // already covers and the message says when it is more than one
-            const across = r.objectsInSelection ? r.objectsInSelection() : [];
-            if (r.deleteSelection()) {
-                setStatus(`Deleted ${gone} residue${gone === 1 ? '' : 's'}`
-                    + (across.length > 1 ? ` from ${across.join(' and ')}` : '')
-                    + '. Reload the file to get them back.');
-                if (window.SEQ?.buildViewDeferred || window.SEQ?.buildView) {
-                    (window.SEQ.buildViewDeferred || window.SEQ.buildView)();
-                }
-                applySelectionToMSA();
-            }
-        });
-    }
+    // ...the panel's own three actions, its rows and its listeners are
+    // wired by parts/selectpanel.js's wireSelectionPanel, called from
+    // parts/ui.js so the notebook and the embed get them too.
 
     // Navigation buttons
     const orientToggle = document.getElementById('orientToggle');
@@ -753,11 +720,10 @@ function setupEventListeners() {
     // visibility, so these hang off the same source of truth.
 
     //
-    // CLICK-SELECTION IS THE WEB APP'S. It is off in the renderer by default:
-    // the Python path loads core/mol.js and the cartoon plugin and nothing
-    // else, so a click there changed a selection with no strip to show it and
-    // no panel to act on it. Turned on here, where both exist.
-    if (viewerApi?.renderer) viewerApi.renderer.selectionEnabled = true;
+    // CLICK-SELECTION IS NOT ASSIGNED HERE ANY MORE. It came from
+    // `selection: {enabled: true}` in this page's own config, which is also
+    // what makes parts/ui.js mount the panel - one key for the gesture and the
+    // control it fills, so neither can arrive without the other.
     // A REFUSED STYLE SAYS SO. The cartoon build is refused before it can kill
     // the tab (see _cartoonWouldFit), and the renderer warns to the console and
     // puts the dropdown back - which from the outside is a menu that flicks
@@ -771,490 +737,6 @@ function setupEventListeners() {
     }
 
 
-    // Positions the tools act on. In 'default' mode getVisibility() reports
-    // every residue as selected, which is the right answer for visibility but
-    // the WRONG one here - "colour everything because you have not selected
-    // anything" is never what was meant. So an explicit selection is required.
-
-    {
-        const withSelection = (fn) => (e) => {
-            if (e) e.preventDefault();
-            const positions = getActiveSelection();
-            if (!positions) return;
-            fn(positions);
-        };
-
-        // COLOUR: a grid of PyMOL's named colours rather than an OS colour
-        // picker, so the choices are the ones a PyMOL user already knows by
-        // name. Built from the table core/mol.js exports.
-        //
-        // ONE implementation, two pickers - main chain and side chains colour
-        // independently, and a second copy of this would drift from the first.
-        // `apply` says where the colour goes; `current` says what the swatch
-        // should show.
-        const colorPickers = [];
-
-        // THE COLOUR MODES, FROM THE ONE LIST THAT ALREADY EXISTS.
-        //
-        // The Style panel's #colorSelect is built from parts/panel.js and is
-        // the project's list of colour modes; reading its options here means a
-        // mode added there appears in the picker too, and - the part that
-        // cannot be rewritten from a table - the picker inherits the panel's
-        // decision about which are HIDDEN UNTIL USEFUL. `object` means nothing
-        // with one structure on screen and `entropy` means nothing without an
-        // MSA, and both are hidden by the same code that hides them above.
-        //
-        // 'auto' is dropped because the select's own first entry is Auto and
-        // means something STRONGER: not "resolve the global mode here" but
-        // "have no opinion at all", which is a cleared override.
-        // 🔴 AND `ss:pymol` IS A COMPOSITE, WHICH THIS LIST MUST COLLAPSE.
-        // It is the only value the Style dropdown carries that says two
-        // things - the mode `ss` AND the viewer-wide `ssPalette` - and
-        // resolveColorHierarchy knows only the first: stored at a position it
-        // is not a mode name, so applySpec files it as a LITERAL and the
-        // residues draw from hexToRgb('ss:pymol'), which is grey. Splitting it
-        // the way parts/ui.js does is no better here, because the palette is
-        // the VIEWER's: picking Jmol for four residues would repaint every
-        // sheet on the page. The picker chooses the SCHEME and leaves the
-        // palette where it belongs, so both options collapse to one `ss`.
-        const colorModeOptions = () => {
-            const src = document.getElementById('colorSelect');
-            if (!src) return [];
-            const out = [];
-            const seen = new Set();
-            for (const o of src.options) {
-                if (o.hidden || !o.value || o.value === 'auto') continue;
-                const cut = o.value.indexOf(':');
-                const value = cut < 0 ? o.value : o.value.slice(0, cut);
-                if (seen.has(value)) continue;
-                seen.add(value);
-                out.push([value, cut < 0 ? o.textContent : 'SSE']);
-            }
-            return out;
-        };
-
-        const wireColorPicker = ({ btnId, menuId, swatchId, apply, current,
-            modes, currentMode }) => {
-            const btn = document.getElementById(btnId);
-            const menu = document.getElementById(menuId);
-            const swatch = document.getElementById(swatchId);
-            if (!btn || !menu) return;
-            // Rebuilt each time the menu opens: the palette is the CHAIN colour
-            // set, which swaps wholesale with colourblind mode.
-            const buildSwatches = () => {
-                menu.textContent = '';
-                // A MODE IS A COLOUR ANSWER, NOT A COLOUR, so it cannot be a
-                // swatch - and a selection can hold one. The hierarchy has
-                // taken a mode name at position level since it was written
-                // (applySpec in core/mol.js), and obj.sidechainColor takes one
-                // too; nothing could SAY one. Set the backbone to Chain and a
-                // pocket's side chains to Hydropathy and both answers are on
-                // one picture.
-                //
-                // AUTO IS THIS CONTROL'S FIRST ENTRY, not a button beside it.
-                // It used to be a row of its own, which was right while the
-                // menu held colours and nothing else; with a mode list in the
-                // same menu, two things reading Auto a few pixels apart is a
-                // coin toss over which one you want. Auto here is the same
-                // action it always was - CLEAR the override - which is what
-                // makes it stronger than the 'auto' MODE: that one resolves
-                // the global scheme at this position, this one leaves the
-                // position with no opinion, so an object-wide colour still
-                // reaches it.
-                const options = modes ? colorModeOptions() : [];
-                if (modes) {
-                    const modeRow = document.createElement('div');
-                    modeRow.className = 'selection-color-row';
-                    const sel = document.createElement('select');
-                    sel.className = 'selection-color-mode';
-                    sel.title = 'Colour these by a scheme rather than by one'
-                        + ' colour. Auto clears it and follows what is set'
-                        + ' above.';
-                    const add = (value, label) => {
-                        const o = document.createElement('option');
-                        o.value = value; o.textContent = label;
-                        sel.appendChild(o);
-                    };
-                    add('', 'Auto (default colour)');
-                    for (const [value, label] of options) add(value, label);
-                    // THE SELECTION IT IS ABOUT, AND IT MAY NOT BE THERE.
-                    // buildSwatches runs once at WIRE time, before anything is
-                    // selected - the first version called currentMode() with
-                    // no argument, which read positions[0] of undefined and
-                    // threw inside setupEventListeners, taking every control
-                    // wired after it with it. tests/selection_panel.py caught
-                    // it as a panel that never opened and rows measuring 0px.
-                    const held = getActiveSelection();
-                    const now = (currentMode && held && held.length)
-                        ? currentMode(held) : null;
-                    sel.value = (now && options.some((o) => o[0] === now)) ? now : '';
-                    sel.addEventListener('change', (e) => {
-                        e.stopPropagation();
-                        menu.hidden = true;
-                        const positions = getActiveSelection();
-                        if (positions) apply(positions, sel.value || null);
-                        refresh();
-                    });
-                    // ...a click inside the open menu must not close it, which
-                    // is what the document-level handler below would do to the
-                    // native dropdown the moment it opened.
-                    sel.addEventListener('click', (e) => e.stopPropagation());
-                    modeRow.appendChild(sel);
-                    menu.appendChild(modeRow);
-                } else {
-                    // AUTO: clears the override so the residues fall back to
-                    // whatever the colour mode says. Not a colour, so it gets
-                    // its own row rather than a swatch that would have to
-                    // pretend to be one. Kept for the pickers with no mode
-                    // list - a contact is one line between two residues, and
-                    // there is no scheme that says what colour it should be.
-                    const autoRow = document.createElement('div');
-                    autoRow.className = 'selection-color-row';
-                    const autoBtn = document.createElement('button');
-                    autoBtn.type = 'button';
-                    autoBtn.className = 'selection-color-auto';
-                    autoBtn.textContent = 'Auto (default colour)';
-                    autoBtn.title = 'Remove the colour override and follow the colour mode';
-                    autoBtn.addEventListener('click', (e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        menu.hidden = true;
-                        const positions = getActiveSelection();
-                        if (positions) apply(positions, null);
-                        refresh();
-                    });
-                    autoRow.appendChild(autoBtn);
-                    menu.appendChild(autoRow);
-                }
-
-                const groups = (window.py2dmol_paletteColors
-                    ? window.py2dmol_paletteColors(!!viewerApi?.renderer?.colorblindMode)
-                    : []);
-                for (const group of groups) {
-                    const row = document.createElement('div');
-                    row.className = 'selection-color-row';
-                    for (const hex of group) {
-                        const cell = document.createElement('button');
-                        cell.type = 'button';
-                        cell.className = 'selection-color-cell';
-                        cell.style.background = hex;
-                        cell.addEventListener('click', (e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            menu.hidden = true;
-                            const positions = getActiveSelection();
-                            if (positions) apply(positions, hex);
-                            refresh();
-                        });
-                        row.appendChild(cell);
-                    }
-                    menu.appendChild(row);
-                }
-            };
-            // THE SWATCH SHOWS THE SELECTION, not the last colour picked. A
-            // remembered colour is a statement about the tool; what you want to
-            // know when you click a residue is what colour THAT residue is. A
-            // mixed selection shows the first, since one square cannot show two.
-            const refresh = () => {
-                if (!swatch) return;
-                const positions = getActiveSelection();
-                const hex = positions && positions.length ? current(positions) : null;
-                swatch.style.background = hex || 'transparent';
-                swatch.classList.toggle('is-empty', !hex);
-            };
-            buildSwatches();
-            btn.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                // rebuilt on open: the chain palette swaps with colourblind mode
-                buildSwatches();
-                const wasHidden = menu.hidden;
-                // only one grid open at a time - two overlapping popups in a
-                // 340px panel is unreadable
-                for (const other of document.querySelectorAll('.selection-color-menu')) {
-                    other.hidden = true;
-                }
-                menu.hidden = !wasHidden;
-            });
-            document.addEventListener('click', (e) => {
-                if (!menu.hidden && !menu.contains(e.target)
-                    && e.target !== btn && !btn.contains(e.target)) {
-                    menu.hidden = true;
-                }
-            });
-            colorPickers.push(refresh);
-            refresh();
-        };
-
-        // What colour a residue is RIGHT NOW, as the renderer resolves it -
-        // override, colour mode, palette and all - so the swatch matches the
-        // pixels rather than a setting.
-        const rgbToHex = (c) => (c && c.r !== undefined)
-            ? '#' + [c.r, c.g, c.b].map((v) => {
-                const n = Math.max(0, Math.min(255, Math.round(v > 1 ? v : v * 255)));
-                return n.toString(16).padStart(2, '0');
-            }).join('')
-            : null;
-        const mainChainColorOf = (positions) => {
-            const renderer = viewerApi?.renderer;
-            if (!renderer || !renderer.getAtomColor) return null;
-            return rgbToHex(renderer.getAtomColor(positions[0]));
-        };
-
-        // THE OBJECT THAT OWNS A POSITION, AND THAT POSITION IN ITS NUMBERING.
-        // Every per-object map - color, sidechainColor - is keyed that way,
-        // and a selection arrives in MERGED indices, so reading one without
-        // this asks the wrong object about the wrong residue whenever more
-        // than one structure is on screen.
-        const ownerEntry = (position) => {
-            const renderer = viewerApi?.renderer;
-            if (!renderer) return null;
-            const o = renderer.ownerOf ? renderer.ownerOf(position) : null;
-            const obj = renderer.objectsData?.[
-                o ? o.name : renderer.currentObjectName];
-            return obj ? { obj, at: o ? o.local : position } : null;
-        };
-        // ...and whether what is stored there is a MODE rather than a colour.
-        // Both maps take either, and only the picker needs to tell them apart:
-        // a mode has to come back as the dropdown's value while a hex has to
-        // come back as the swatch's.
-        const asMode = (value) => {
-            if (typeof value !== 'string' || value[0] === '#') return null;
-            const valid = (typeof window.py2dmol_colorModes === 'function')
-                ? window.py2dmol_colorModes() : null;
-            if (valid && !valid.includes(value)) return null;
-            return value;
-        };
-
-        wireColorPicker({
-            btnId: 'selColorButton', menuId: 'selColorMenu', swatchId: 'selColorSwatch',
-            apply: setSelectionColor, current: mainChainColorOf,
-            // A MODE AT POSITION LEVEL, which resolveColorHierarchy's applySpec
-            // has understood since it was written - a string naming a mode
-            // selects the mode and cancels any literal below it - and which
-            // nothing could write. setSelectionColor stores what it is given,
-            // so this needed no renderer change at all.
-            modes: true,
-            currentMode: (positions) => {
-                const e = ownerEntry(positions[0]);
-                const adv = e && e.obj.color && e.obj.color.type === 'advanced'
-                    ? e.obj.color.value : null;
-                return asMode(adv && adv.position && adv.position[e.at]);
-            },
-        });
-        wireColorPicker({
-            btnId: 'scColorButton', menuId: 'scColorMenu', swatchId: 'scColorSwatch',
-            // ON A LIGAND ROW THIS IS THE LIGAND'S COLOUR. A side-chain colour
-            // is stored against the OWNING residue, and a ligand atom has none
-            // - so the side-chain path silently does nothing there, which is
-            // what a swatch on that row would have looked like. The ordinary
-            // per-position colour is the one that means anything for a ligand.
-            apply: (positions, hex) => {
-                const lig = ligandRowPositions(positions);
-                if (lig) setSelectionColor(lig, hex);
-                else setSelectionSidechainColor(positions, hex);
-            },
-            // an unset side chain follows its residue, so that is what it shows
-            current: (positions) => {
-                const renderer = viewerApi?.renderer;
-                const lig = ligandRowPositions(positions);
-                if (lig) return mainChainColorOf(lig);
-                const e = ownerEntry(positions[0]);
-                const own = e && e.obj.sidechainColor
-                    && e.obj.sidechainColor[e.at];
-                if (typeof own === 'string' && own[0] === '#') return own;
-                // ...A MODE IS RESOLVED, NOT SKIPPED. The swatch is meant to
-                // show what is on screen, and a side chain following
-                // hydropathy is not the colour its residue is - showing the
-                // residue's would say the mode had not taken.
-                const mode = asMode(own);
-                if (mode && renderer && renderer._colorForMode) {
-                    return rgbToHex(renderer._colorForMode(positions[0], mode));
-                }
-                return mainChainColorOf(positions);
-            },
-            modes: true,
-            currentMode: (positions) => {
-                if (ligandRowPositions(positions)) return null;
-                const e = ownerEntry(positions[0]);
-                return asMode(e && e.obj.sidechainColor
-                    && e.obj.sidechainColor[e.at]);
-            },
-        });
-        wireColorPicker({
-            btnId: 'contactColorButton', menuId: 'contactColorMenu',
-            swatchId: 'contactColorSwatch',
-            apply: setSelectionContactColor,
-            // a contact with no colour of its own draws in the default yellow,
-            // so that is what the swatch shows rather than nothing
-            current: (positions) => {
-                const found = findContact(positions);
-                if (!found) return null;
-                const c = found.obj.contacts[found.i];
-                const col = c && c[contactSlots(c).col];
-                return (col && col.r !== undefined)
-                    ? rgbToHex(col) : '#ffff00';
-            },
-        });
-        window.refreshSelectionSwatches = () => { for (const f of colorPickers) f(); };
-
-        const ssSelect = document.getElementById('selSsSelect');
-        if (ssSelect) {
-            ssSelect.addEventListener('change', withSelection((positions) => {
-                const v = ssSelect.value;
-                // DSSP is the one that UNFORCES: null takes the override off
-                // and the assignment decides again.
-                if (v) setSelectionSse(positions, v === 'dssp' ? null : v);
-                // ...and then the menu is read back off the structure, like
-                // every other control here, rather than reset to a placeholder
-                updateSelectionToolsState();
-            }));
-        }
-        const on = (id, fn) => {
-            const el = document.getElementById(id);
-            if (el) el.addEventListener('click', withSelection(fn));
-        };
-        // ONE visibility button. Which way it goes is read off the structure,
-        // not remembered: if any of the selection is currently hidden the press
-        // shows it, otherwise it hides it. That makes "show what I picked" the
-        // behaviour for a selection that is partly hidden, which is what a user
-        // reaching for this after a Hide actually wants.
-        {
-            const ws = document.getElementById('contactWidthSlider');
-            if (ws) {
-                // `input`, not `change`: the contact should follow the drag.
-                // Redrawing per event is affordable here - one contact is a
-                // handful of prims - where a residue-level control would not be.
-                ws.addEventListener('input', () => {
-                    const positions = getActiveSelection();
-                    if (positions) setSelectionContactWidth(positions, +ws.value);
-                });
-            }
-        }
-        // A TOGGLE CARRIES ITS OWN DIRECTION. `on` fires on click and the
-        // handler decided the direction; these fire on change and take it from
-        // the box, so the control and what it does cannot disagree.
-        //
-        // A MIXED selection - some of it has the thing, some does not - is
-        // shown indeterminate, and the browser's first click on an
-        // indeterminate box checks it. So the click resolves the mixture by
-        // turning everything ON, which is the useful direction: it is what
-        // "show what I picked" means when half of it already is.
-        const onToggle = (id, fn) => {
-            const el = document.getElementById(id);
-            if (!el) return;
-            el.addEventListener('change', withSelection((positions) => {
-                fn(positions, el.checked);
-                // ...and re-read the state from the structure, not from the
-                // box: an action can be refused (no side-chain atoms, base
-                // plates switched off globally) and the toggle must then go
-                // back to what is actually drawn rather than sit on a lie.
-                updateSelectionToolsState();
-            }));
-        };
-        // A PAIR IS TWO BUTTONS AND ONE QUESTION: each says which way it goes,
-        // rather than a switch that means "the other one from now". Pressing
-        // the button that is already filled is a no-op the same way asking for
-        // what you already have is - it runs, and the state comes back the
-        // same. The answer is re-read from the structure afterwards, like the
-        // switches: an action can be refused (no side-chain atoms, base plates
-        // off globally) and the buttons must then show what is drawn rather
-        // than what was asked for.
-        const onPair = (id, fn) => {
-            const pair = document.getElementById(id);
-            if (!pair) return;
-            const btns = pair.querySelectorAll('.selection-switch-btn');
-            btns.forEach((btn, k) => {
-                btn.addEventListener('click', withSelection((positions) => {
-                    fn(positions, k === 0);
-                    updateSelectionToolsState();
-                }));
-            });
-        };
-        onToggle('elementsShowToggle', (p2, v) => setSelectionElements(p2, v));
-        onPair('mainchainPair', (p2, v) => {
-            setSelectionBackbone(p2, v);
-            // SHOW MEANS SHOW, whatever was hiding it. The switch alone leaves
-            // a residue that the mask excludes - one inside a PAE box's
-            // shadow, say - exactly as invisible as it was, and the button
-            // then does nothing you can see. Hide is the other way round: the
-            // switch is all it needs, and syncSelectionVisibility takes the
-            // residue out of the mask only if nothing else of it is drawn.
-            if (v) setSelectionVisible(p2, true);
-            syncSelectionVisibility(p2);
-        });
-        // FIND INTERACTIONS: one button, no settings. 5 A side chain to side
-        // chain is the question people actually ask of a binding site, and the
-        // any-atom half of the pair it replaces was mostly backbone running
-        // past whatever it folds against.
-        const nearBtn = document.getElementById('selectNearby');
-        if (nearBtn) {
-            nearBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                selectNearby(INTERACTION_CUTOFF_A, true);
-            });
-        }
-        // ALIGN. The dropdown is a MENU OF ACTIONS, not a setting, so it snaps
-        // back to its own label as soon as one is chosen - leaving it reading
-        // "all to this" would claim a state the app does not hold, and pressing
-        // it again would then be a no-op that looks like a repeat.
-        const alignSel = document.getElementById('alignSelect');
-        if (alignSel) {
-            alignSel.addEventListener('change', () => {
-                const mode = alignSel.value;
-                alignSel.value = '';
-                if (mode) runAlign(mode);
-            });
-        }
-        // the protein form of the same control: two states, one switch - and on
-        // a ligand row the same switch draws the ligand itself, which is the
-        // visibility mask rather than a side chain nothing there owns
-        onPair('sidechainPair', (p2, v) => {
-            const lig = ligandRowPositions(p2);
-            if (lig) { setSelectionVisible(lig, v); return; }
-            // SHOW MEANS "DRAWN", AND THE MENU SAYS HOW. Switching on a
-            // nucleotide brings back whichever way it was last drawn - the
-            // plate unless the menu says otherwise - rather than jumping to the
-            // atoms, which is not what a plain Show should decide.
-            const r = viewerApi?.renderer;
-            const plate = document.getElementById('plateShowToggle');
-            const nuc = !!(r && r.hasBasesFor && r.hasBasesFor(p2));
-            const style = nuc ? ((plate && !plate.checked) ? 'full' : 'plate') : 'full';
-            setSelectionSidechainMode(p2, v ? style : 'none');
-        });
-        // PLATE OR ATOMS, for a nucleotide that is being drawn at all. Show
-        // owns whether; this owns which.
-        onToggle('plateShowToggle', (p2, v) => {
-            setSelectionSidechainMode(p2, v ? 'plate' : 'full');
-        });
-        // ...and the two buttons that replace the pair, each with one job
-        const onPress = (id, fn) => {
-            const el = document.getElementById(id);
-            if (!el) return;
-            el.addEventListener('click', withSelection((positions) => {
-                fn(positions);
-                updateSelectionToolsState();
-            }));
-        };
-        onPress('contactAddButton', (p2) => addSelectionContact(p2));
-        onPress('contactDeleteButton', (p2) => removeSelectionContact(p2));
-
-        // Every surface that draws the selection listens here, so a change made
-        // on ANY of them shows on all the others. The sequence strip used to be
-        // missing: it redrew itself when IT cleared the selection, so clearing
-        // from the 3D canvas left its yellow box behind.
-        document.addEventListener('py2dmol-residue-selection-change', () => {
-            updateSelectionToolsState();
-            // the selection is outlined by the renderer's own ink pass, so the
-            // structure has to be redrawn when the selection changes
-            if (viewerApi?.renderer) viewerApi.renderer.render('selection outline');
-            // the strip draws the yellow box round the selected run
-            if (window.SEQ?.updateColors) window.SEQ.updateColors();
-            // the MSA dims to the selection, so it follows the same signal
-            applySelectionToMSA();
-        });
-        updateSelectionToolsState();
-    }
 
     // Select all / Unselect act on the SELECTION, not on visibility. Visibility
     // is still reachable - Select all then Show - but it is no longer a
@@ -1970,8 +1452,8 @@ async function addMetadataToExistingObject({ msaFiles, jsonFiles, contactFiles, 
         }
 
         if (msaDataList.length > 0) {
-            const { chainToMSA, msaToChains } = matchMSAsToChains(msaDataList, chainSequences);
-            const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains);
+            const { chainToMSA, msaToChains, pairedMSAs } = matchMSAsToChains(msaDataList, chainSequences);
+            const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains, pairedMSAs);
 
             if (msaObj && msaObj.availableChains.length > 0) {
                 const defaultChainSeq = msaObj.chainToSequence[msaObj.defaultChain];
@@ -1980,6 +1462,20 @@ async function addMetadataToExistingObject({ msaFiles, jsonFiles, contactFiles, 
                     if (window.MSA) {
                         loadMSADataIntoViewer(msaData, msaObj.defaultChain, currentObjectName);
                         metadataAdded.push(`MSA for ${msaObj.availableChains.length} chain(s)`);
+                        // 🔴 AND THE SECTION HAS TO BE SHOWN, WHICH IS NOT WHAT
+                        // `showMSACanvasContainers` DOES. That one shows the
+                        // `.msa-canvas` boxes; `#msa-buttons` - the section
+                        // holding the header, the filters, the chain picker AND
+                        // those boxes - is `display: none` in the markup and is
+                        // only ever turned on by updateMSAContainerVisibility.
+                        // So an alignment added to an existing object built its
+                        // canvas, drew it, wired its interactions, and stayed
+                        // invisible. Never seen through the file input, which
+                        // reaches a different branch that does call it, and
+                        // always the case through `py2dmolLoadFiles` - the door
+                        // a host page adds an alignment through.
+                        if (window.updateMSAContainerVisibility) window.updateMSAContainerVisibility();
+                        if (window.updateMSAChainSelectorIndex) window.updateMSAChainSelectorIndex();
                     }
                 }
             }
@@ -2933,7 +2429,7 @@ function applyPendingObjects() {
 
     if (!viewerApi || pendingObjects.length === 0) {
         if (viewerContainer) viewerContainer.style.display = 'none';
-        setStatus("Ready. Upload a file or fetch an ID.");
+        setStatus(readyStatus());
         return;
     }
 
@@ -3184,7 +2680,7 @@ function clearAllObjects() {
         try {
             viewerApi.renderer.resetAll();
             // Reset status message
-            setStatus("Ready. Upload a file or fetch an ID.");
+            setStatus(readyStatus());
         } catch (e) {
             console.error("Failed to reset viewer:", e);
             setStatus("Error: Failed to reset viewer. See console.", true);
@@ -3194,14 +2690,14 @@ function clearAllObjects() {
         try {
             viewerApi.renderer.resetAll();
             // Reset status message
-            setStatus("Ready. Upload a file or fetch an ID.");
+            setStatus(readyStatus());
         } catch (e) {
             console.error("Failed to reset viewer:", e);
             setStatus("Error: Failed to reset viewer. See console.", true);
         }
     } else {
         // No viewer initialized yet, just reset status
-        setStatus("Ready. Upload a file or fetch an ID.");
+        setStatus(readyStatus());
     }
 }
 
@@ -3608,7 +3104,7 @@ function initializeMSAIndex() {
                     // Use msaToChains to group chains
                     for (const [querySeq, chains] of Object.entries(msaToChains)) {
                         if (chains && chains.length > 0) {
-                            const chainKey = chains.sort().join(''); // e.g., "AC" for chains A and C
+                            const chainKey = groupKeyFor(querySeq, chains);
                             chainGroups[chainKey] = {
                                 chains: chains.sort(),
                                 querySeq: querySeq
@@ -3625,7 +3121,7 @@ function initializeMSAIndex() {
                             }
                         }
                         if (chainsForMSA.length > 0) {
-                            const chainKey = chainsForMSA.sort().join('');
+                            const chainKey = groupKeyFor(querySeq, chainsForMSA);
                             chainGroups[chainKey] = {
                                 chains: chainsForMSA.sort(),
                                 querySeq: querySeq
@@ -3642,14 +3138,23 @@ function initializeMSAIndex() {
                     chainGroupKeys.forEach(chainKey => {
                         const option = document.createElement('option');
                         option.value = chainKey;
-                        const chains = chainGroups[chainKey].chains;
-                        option.textContent = chains.length > 1 ? chains.join('') : chains[0]; // "AC" or "A"
+                        const { chains, querySeq } = chainGroups[chainKey];
+                        const entry = obj.msa.msasBySequence[querySeq];
+                        const label = chains.length > 1 ? chains.join('') : chains[0]; // "AC" or "A"
+                        // A PAIRED ALIGNMENT SAYS SO, because it covers the same
+                        // chains as a per-chain one would and the letters alone
+                        // cannot tell them apart.
+                        option.textContent = entry?.paired ? `${chains.join('+')} paired` : label;
                         msaChainSelect.appendChild(option);
                     });
 
                     // Set default selection to first group or current chain's group
+                    const preferredKey = obj.msa.defaultQuery && chainGroupKeys.find(
+                        (key) => chainGroups[key].querySeq === obj.msa.defaultQuery);
                     const defaultChain = obj.msa.defaultChain || (obj.msa.availableChains && obj.msa.availableChains[0]);
-                    if (defaultChain) {
+                    if (preferredKey) {
+                        msaChainSelect.value = preferredKey;
+                    } else if (defaultChain) {
                         // Find which group contains this chain
                         const selectedGroup = chainGroupKeys.find(key => chainGroups[key].chains.includes(defaultChain));
                         if (selectedGroup) {
@@ -3673,7 +3178,7 @@ function initializeMSAIndex() {
 
         // Handle chain selection change
         msaChainSelect.addEventListener('change', (e) => {
-            const chainKey = e.target.value; // Can be "A", "AC", etc.
+            const chainKey = e.target.value;
             if (!chainKey) return;
 
             const objectName = viewerApi.renderer.currentObjectName;
@@ -3682,24 +3187,27 @@ function initializeMSAIndex() {
             const obj = viewerApi.renderer.objectsData[objectName];
             if (!obj || !obj.msa) return;
 
-            // New sequence-based structure: chain key represents one or more chains
-            if (obj.msa.msasBySequence && obj.msa.chainToSequence) {
-                // Get first chain from chain key (all chains in key share same MSA)
-                const firstChain = chainKey[0];
-                if (firstChain && obj.msa.chainToSequence[firstChain]) {
-                    const querySeq = obj.msa.chainToSequence[firstChain];
-                    const msaEntry = obj.msa.msasBySequence[querySeq];
-                    if (msaEntry) {
-                        const { msaData } = msaEntry;
-                        // Load MSA for first chain (all chains in key share same MSA)
-                        window.MSA.setMSAData(msaData, firstChain);
+            // 🔴 THE OPTION NAMES THE ALIGNMENT, NOT THE CHAINS IT COVERS.
+            // This read `chainKey[0]` and looked the chain up in
+            // `chainToSequence`, which holds ONE alignment per chain - so a
+            // chain with both its own alignment and a paired one could only
+            // ever reach whichever of them that map happened to hold, and
+            // picking the other entry in the dropdown silently reloaded the
+            // same MSA. The key resolves to the alignment directly.
+            if (obj.msa.msasBySequence) {
+                const querySeq = querySeqForGroupKey(obj.msa, chainKey);
+                const msaEntry = querySeq && obj.msa.msasBySequence[querySeq];
+                if (msaEntry) {
+                    const { msaData } = msaEntry;
+                    const firstChain = (msaEntry.chains && msaEntry.chains[0]) || chainKey[0];
+                    // Load the MSA. For a paired alignment the active chain is
+                    // only where its blocks start; the blocks name the rest.
+                    window.MSA.setMSAData(msaData, firstChain);
 
-                        // Update default chain to first chain in the key
-                        obj.msa.defaultChain = firstChain;
+                    obj.msa.defaultChain = firstChain;
 
-                        // Update renderer for selected chain key
-                        viewerApi.renderer.reloadDrawn();
-                    }
+                    // Update renderer for selected chain key
+                    viewerApi.renderer.reloadDrawn();
                 }
             }
         });
@@ -3746,7 +3254,14 @@ function initializeMSAIndex() {
             const targetChain = obj.msa.defaultChain ||
                 (obj.msa.availableChains.length > 0 ? obj.msa.availableChains[0] : null);
 
-            if (targetChain && obj.msa.chainToSequence[targetChain]) {
+            // A paired alignment opens first when there is one - see defaultQuery.
+            const preferred = obj.msa.defaultQuery
+                && obj.msa.msasBySequence[obj.msa.defaultQuery];
+            if (preferred) {
+                msaToLoad = preferred.msaData;
+                chainId = (preferred.chains && preferred.chains[0]) || targetChain;
+                hasMSA = !!msaToLoad;
+            } else if (targetChain && obj.msa.chainToSequence[targetChain]) {
                 const querySeq = obj.msa.chainToSequence[targetChain];
                 const msaEntry = obj.msa.msasBySequence[querySeq];
 
@@ -3840,6 +3355,151 @@ if (isIndexHTML) {
  * @param {string} pdbChainSequence - Sequence from PDB chain (no gaps)
  * @returns {boolean} - True if sequences match
  */
+/**
+ * Where each chain's residues sit inside a CONCATENATED query, or null.
+ *
+ * 🔴 A PAIRED MSA IS ONE ALIGNMENT WHOSE QUERY IS SEVERAL CHAINS. That is the
+ * whole of the difference, and it is why `sequencesMatch` cannot see one: it
+ * refuses anything more than 10% off a single chain's length, so an A+B query
+ * matched no chain, the alignment was dropped, and the only way to show it was
+ * to cut it back into per-chain pieces - which throws the pairing away, since
+ * row s means "one organism, both chains" and that statement lives ACROSS the
+ * boundary.
+ *
+ * Chains are anchored in order with indexOf from a moving cursor, rather than
+ * by adding up their lengths. Two things fall out of that and both matter: a
+ * homo-oligomer works (the cursor is past the first copy when the second is
+ * sought, so A and B anchor at their own offsets), and a structure missing its
+ * terminal residues still anchors, with the unmodelled columns left outside the
+ * anchor and mapping to no residue.
+ *
+ * The BLOCKS are contiguous and cover every column - a boundary is drawn at the
+ * first modelled residue of the chain that follows - while `seqStart`/`length`
+ * record the anchor itself, which is what a column-to-residue walk needs. A
+ * single chain is not a pairing and returns null.
+ *
+ * @param {string} query           the MSA's gap-free query sequence
+ * @param {Object} chainSequences  chainId -> sequence, in structure order
+ * @returns {{chain: string, start: number, end: number, seqStart: number,
+ *   length: number}[]|null}
+ */
+/**
+ * The MSA picker's option value: the chains, and which alignment over them.
+ *
+ * The chain letters alone were the key, and with a paired alignment they stop
+ * being unique - a homodimer's per-chain MSA and its paired MSA both cover A
+ * and B, so one silently overwrote the other in the group map and the dropdown
+ * offered a single option for two different pictures. The suffix is the whole
+ * fix; `querySeqForGroupKey` reads it back.
+ */
+function groupKeyFor(querySeq, chains) {
+    const letters = [...chains].sort().join('');
+    return `${letters}:${querySeq.length}`;
+}
+
+/** The alignment a picker option stands for. */
+function querySeqForGroupKey(msaObj, chainKey) {
+    if (!msaObj || !chainKey) return null;
+    const [letters, widthText] = chainKey.split(':');
+    const width = Number(widthText);
+    for (const [querySeq, entry] of Object.entries(msaObj.msasBySequence || {})) {
+        const chains = entry.chains || [];
+        if ([...chains].sort().join('') !== letters) continue;
+        if (Number.isFinite(width) && querySeq.length !== width) continue;
+        return querySeq;
+    }
+    // A key from before the suffix existed, or a group built from
+    // chainToSequence: fall back to the chain it names.
+    const first = letters[0];
+    return (first && msaObj.chainToSequence) ? msaObj.chainToSequence[first] : null;
+}
+
+/**
+ * Is this one of the AlphaFold 3 server's alignment files, and which half?
+ *
+ * A download names them `<job>_paired_msa_chains_a.a3m` and
+ * `<job>_unpaired_msa_chains_a.a3m`, one pair per chain. The `chains_x` suffix
+ * is NOT read: a file's chain is decided by matching its query against the
+ * structure, which is how every other alignment here finds its chain and
+ * cannot disagree with the letters the server chose.
+ */
+function af3ServerMSARole(filename) {
+    const match = /_(un)?paired_msa_chains?_[a-z0-9_]+\.a3m$/i.exec(filename || '');
+    if (!match) return null;
+    return match[1] ? 'unpaired' : 'paired';
+}
+
+/**
+ * The AF3 server's four files as ONE paired alignment, or null.
+ *
+ * 🔴 ITS PAIRED FILES ARE NOT ROW-ALIGNED, which is the whole reason this
+ * exists. `paired_msa_chains_a.a3m` and `..._b.a3m` are the raw all-seqs
+ * searches - on one real two-chain job, 1,849 rows and 933, with different
+ * species from the first row down - so row s of one is not row s of the other
+ * and they cannot simply be laid side by side. The pairing lives in the
+ * HEADERS, and `MSA.combinePairedAlignments` recovers it the way AlphaFold's
+ * own featuriser does. Reading them as two separate per-chain alignments, which
+ * is what happened before, loses it entirely.
+ *
+ * Only files named this way are combined. Two alignments a reader happens to
+ * upload for two chains are NOT paired on a guess: pairing rows that were never
+ * searched as a pair would invent a picture rather than show one.
+ */
+function af3ServerPairedMSA(msaDataList, chainSequences) {
+    if (!window.MSA?.combinePairedAlignments) return null;
+    const named = msaDataList
+        .map((entry) => ({ ...entry, role: af3ServerMSARole(entry.filename) }))
+        .filter((entry) => entry.role && entry.msaData?.querySequence);
+    if (named.length < 2) return null;
+
+    const perChain = [];
+    for (const [chainId, chainSequence] of Object.entries(chainSequences)) {
+        const forChain = named.filter((entry) =>
+            sequencesMatch(entry.msaData.querySequence.toUpperCase(), chainSequence));
+        if (forChain.length === 0) continue;
+        const of = (role) => forChain.find((entry) => entry.role === role)?.msaData || null;
+        perChain.push({ chain: chainId, paired: of('paired'), unpaired: of('unpaired') });
+    }
+    if (perChain.length < 2) return null;
+
+    const combined = window.MSA.combinePairedAlignments(perChain);
+    if (!combined) return null;
+    // THE PAIRED VIEW IS THE PAIRED ROWS. Each chain's own alignment is already
+    // registered from these same files, so the unpaired half is one entry away.
+    const paired = window.MSA.pairedRowsOnly(combined);
+    MSA.computeMSAProperties(paired);
+    return { msaData: paired, filename: 'paired', chainBlocks: paired.chainBlocks };
+}
+
+function splitQueryIntoChainBlocks(query, chainSequences) {
+    if (!query || !chainSequences) return null;
+    const entries = Object.entries(chainSequences)
+        .filter(([, seq]) => seq && seq.length > 0);
+    if (entries.length < 2) return null;
+
+    const upper = query.toUpperCase();
+    const anchors = [];
+    let cursor = 0;
+    for (const [chainId, chainSequence] of entries) {
+        const at = upper.indexOf(chainSequence.toUpperCase(), cursor);
+        if (at < 0) return null;
+        anchors.push({ chain: chainId, seqStart: at, length: chainSequence.length });
+        cursor = at + chainSequence.length;
+    }
+
+    // A query that is one chain's worth of columns is not a concatenation,
+    // however many chains happened to anchor inside it.
+    if (cursor > upper.length) return null;
+
+    return anchors.map((anchor, i) => ({
+        chain: anchor.chain,
+        start: i === 0 ? 0 : anchors[i].seqStart,
+        end: i === anchors.length - 1 ? upper.length : anchors[i + 1].seqStart,
+        seqStart: anchor.seqStart,
+        length: anchor.length
+    }));
+}
+
 function sequencesMatch(msaQuerySequence, pdbChainSequence) {
     if (!msaQuerySequence || !pdbChainSequence) return false;
 
@@ -3876,10 +3536,11 @@ function sequencesMatch(msaQuerySequence, pdbChainSequence) {
  * @param {Object} msaToChains - Map of querySequence -> [chainId, ...]
  * @returns {Object} - The msaObj structure that was created/updated
  */
-function storeMSADataInObject(object, chainToMSA, msaToChains) {
-    if (!object || !chainToMSA || Object.keys(chainToMSA).length === 0) {
+function storeMSADataInObject(object, chainToMSA, msaToChains, pairedMSAs = []) {
+    if (!object || ((!chainToMSA || Object.keys(chainToMSA).length === 0) && pairedMSAs.length === 0)) {
         return null;
     }
+    chainToMSA = chainToMSA || {};
 
     // Initialize MSA structure if it doesn't exist
     if (!object.msa) {
@@ -3918,6 +3579,30 @@ function storeMSADataInObject(object, chainToMSA, msaToChains) {
         if (!msaObj.availableChains.includes(chainId)) {
             msaObj.availableChains.push(chainId);
         }
+    }
+
+    // THE PAIRED ALIGNMENT IS A SECOND ENTRY OVER THE SAME CHAINS, and it is
+    // filed under its own query - the concatenation - so it can sit beside the
+    // per-chain ones rather than displacing them. `chainToSequence` is the map
+    // a chain is looked up through and holds ONE answer, so it points here only
+    // for chains that have nothing else; the picker offers both either way,
+    // because the picker is keyed by the alignment and not by the chain.
+    for (const { msaData, chainBlocks } of pairedMSAs) {
+        const querySeq = msaData.querySequence.toUpperCase();
+        const chains = chainBlocks.map(b => b.chain);
+        if (!msaObj.msasBySequence[querySeq]) {
+            msaObj.msasBySequence[querySeq] = { msaData, chains, paired: true };
+        }
+        msaObj.msaToChains[querySeq] = chains;
+        for (const chainId of chains) {
+            if (!msaObj.chainToSequence[chainId]) msaObj.chainToSequence[chainId] = querySeq;
+            if (!msaObj.availableChains.includes(chainId)) msaObj.availableChains.push(chainId);
+        }
+        // AND IT IS WHAT THE PANEL OPENS ON. `defaultChain` cannot say this -
+        // it names a CHAIN, and a chain with its own alignment resolves to that
+        // one through `chainToSequence`, so the paired view would sit in the
+        // picker unopened while the thing it was built for went unseen.
+        if (!msaObj.defaultQuery) msaObj.defaultQuery = querySeq;
     }
 
     // Set default chain (first available)
@@ -4061,6 +3746,13 @@ function matchMSAsToChains(msaDataList, chainSequences) {
     // First, collect all MSAs per chain (before merging)
     const chainToMSAList = {}; // chainId -> [{msaData, filename}, ...]
     const msaToChains = {}; // querySequence -> [chainId, ...]
+    const pairedMSAs = []; // [{msaData, filename, chainBlocks}, ...]
+
+    // The AF3 server's own layout first: four files that are ONE alignment
+    // between them. They are still matched per chain below, so the picker
+    // offers each chain's own view as well as the paired one.
+    const af3 = af3ServerPairedMSA(msaDataList, chainSequences);
+    if (af3) pairedMSAs.push(af3);
 
     for (const { msaData, filename } of msaDataList) {
         if (!msaData || !msaData.querySequence) continue;
@@ -4078,6 +3770,40 @@ function matchMSAsToChains(msaDataList, chainSequences) {
                 chainToMSAList[chainId].push({ msaData, filename });
                 matchedChains.push(chainId);
             }
+        }
+
+        // A QUERY THAT MATCHES NO CHAIN MAY MATCH ALL OF THEM AT ONCE. Asked
+        // only per chain, a paired alignment is silently dropped - it is too
+        // long for every chain by more than the tolerance allows. It is NOT
+        // merged with per-chain alignments and never enters chainToMSAList:
+        // they are different widths, and a paired MSA is a second way of
+        // looking at the same chains rather than more rows for one of them.
+        if (matchedChains.length === 0) {
+            const chainBlocks = splitQueryIntoChainBlocks(msaData.querySequence, chainSequences);
+            if (chainBlocks) {
+                msaData.chainBlocks = chainBlocks;
+                if (window.MSA?.annotateChainBlocks) window.MSA.annotateChainBlocks(msaData);
+                // 🔴 THE CHAINS' OWN ALIGNMENTS COME OUT OF IT FIRST. A single
+                // concatenated file is the ONLY thing this object has, so
+                // showing the paired rows alone would put the rest of the depth
+                // nowhere - and it is most of it: a complex search returns a
+                // few hundred paired rows over thousands of unpaired ones. Each
+                // block becomes an ordinary per-chain alignment, which is where
+                // that depth goes and what the conservation is measured on.
+                if (window.MSA?.splitByChainBlocks) {
+                    for (const part of window.MSA.splitByChainBlocks(msaData)) {
+                        if (!chainToMSAList[part.chain]) chainToMSAList[part.chain] = [];
+                        chainToMSAList[part.chain].push({
+                            msaData: part.msaData, filename: `${filename}:${part.chain}`
+                        });
+                    }
+                }
+                const paired = window.MSA?.pairedRowsOnly
+                    ? window.MSA.pairedRowsOnly(msaData) : msaData;
+                MSA.computeMSAProperties(paired);
+                pairedMSAs.push({ msaData: paired, filename, chainBlocks });
+            }
+            continue;
         }
 
         // Store which chains this MSA maps to (before merging)
@@ -4123,7 +3849,7 @@ function matchMSAsToChains(msaDataList, chainSequences) {
         }
     }
 
-    return { chainToMSA, msaToChains: mergedMsaToChains };
+    return { chainToMSA, msaToChains: mergedMsaToChains, pairedMSAs };
 }
 
 
@@ -4499,126 +4225,67 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
  * Apply current structure selection to MSA viewer
  * Maps structure positions to MSA positions and highlights them in the MSA viewer
  */
+/**
+ * THE MSA IS VIEW-ONLY, AND THIS IS WHAT MAKES IT SO.
+ *
+ * It used to dim to the structure's selection: pick a residue and every column
+ * of the alignment but that one greyed out. A hundred and fifty lines to do it,
+ * because the mapping is not simple - a paired alignment has one global column
+ * axis, so chain B's residue 3 is column `blockB.start + 3`, and the sets are
+ * filed per chain holding global columns. All of that existed to change some
+ * pixels' opacity.
+ *
+ * IT IS NOT WHAT AN ALIGNMENT IS FOR. The MSA answers "what does evolution say
+ * about this protein" - depth, coverage, conservation, the block-diagonal
+ * staircase of a paired search - and every one of those is a statement about
+ * the WHOLE alignment. Dimming most of it to whatever residue was last clicked
+ * takes the picture away at the moment you are reading it, and the reader had
+ * no way to say no: any click anywhere, on the canvas or the strip, redimmed it.
+ *
+ * WHAT IS NOT AFFECTED IS THE SELECTION ITSELF. It still marks the structure,
+ * still fills the selection panel, and is still what Copy, Cut and Delete act
+ * on - which is why every call site of this stays where it is: after a Cut the
+ * object's residues have renumbered and the MSA has to be told, and being told
+ * "nothing is dimmed" is the correct thing to tell it.
+ *
+ * `null` is the value that means NO DIMMING - not an empty set, which
+ * buildSelectionMask reads as "dim everything" (it was Hide All's answer).
+ */
 function applySelectionToMSA() {
     if (!viewerApi?.renderer || !window.MSA) return;
-
-    const renderer = viewerApi.renderer;
-    const objectName = renderer.currentObjectName;
+    const objectName = viewerApi.renderer.currentObjectName;
     if (!objectName) return;
+    const obj = viewerApi.renderer.objectsData[objectName];
+    if (!obj || !obj.msa) return;
 
-    const obj = renderer.objectsData[objectName];
-    if (!obj || !obj.frames || obj.frames.length === 0) return;
-    if (!obj.msa || !obj.msa.msasBySequence || !obj.msa.chainToSequence) return;
-
-    const frame = obj.frames[renderer.currentFrame >= 0 ? renderer.currentFrame : 0];
-    if (!frame || !frame.chains) return;
-
-    // Get selected positions
-    // The RESIDUE SELECTION, not visibility. This used to read the visibility
-    // set, which worked only while a drag in the sequence view still set what
-    // was visible. Now that selecting and showing are separate acts, sourcing
-    // from visibility meant the MSA dimmed to whatever happened to be on screen
-    // and ignored the selection entirely.
-    // ...and in THIS OBJECT'S numbering: the MSA maps its columns onto the
-    // object's own frame, while the selection is against whatever is loaded,
-    // which with several objects merged is not the same array.
-    const own = renderer.selectionForObject
-        ? renderer.selectionForObject(objectName) : renderer.residueSelection;
-    const selectedPositions = (own && own.size > 0) ? new Set(own) : new Set();
-
-    // Nothing selected means nothing to point at, so no dimming - NOT "dim
-    // everything", which is what an empty explicit visibility selection used to
-    // mean here (it stood for Hide All).
-    if (selectedPositions.size === 0) {
-        obj.msa.selectedPositions = null; // null means all selected (no dimming)
-        if (window.MSA && window.MSA.updateMSAViewSelectionState) {
-            window.MSA.updateMSAViewSelectionState();
-        }
-        return;
-    }
-
-    // Determine allowed chains: the ones the SELECTION touches.
-    //
-    // This read `selection.chains`, and there is no `selection` here - the
-    // variable went when this stopped sourcing from visibility (see the note
-    // above) and the line was left behind. It threw a ReferenceError every time
-    // a selection existed, which is every time this function has anything to
-    // do, so the MSA never dimmed to the selection at all.
-    let allowedChains = new Set();
-    for (const i of selectedPositions) {
-        const c = renderer.chains && renderer.chains[i];
-        if (c) allowedChains.add(c);
-    }
-    if (allowedChains.size === 0) allowedChains = new Set(renderer.chains);
-
-    // Map structure positions to MSA positions for each chain
-    const msaSelectedPositions = new Map(); // chainId -> Set of MSA position indices
-
-    for (const [chainId, querySeq] of Object.entries(obj.msa.chainToSequence)) {
-        if (!allowedChains.has(chainId)) continue;
-
-        const msaEntry = obj.msa.msasBySequence[querySeq];
-        if (!msaEntry || !msaEntry.msaData) continue;
-
-        const msaData = msaEntry.msaData;
-        const msaQuerySequence = msaData.querySequence; // Query sequence has no gaps (removed during parsing)
-
-        // Extract chain sequence from structure
-        const chainSequences = MSA.extractSequences(frame);
-        const chainSequence = chainSequences[chainId];
-        if (!chainSequence) continue;
-
-        // Find representative positions for this chain (position_types === 'P')
-        const chainPositions = []; // Array of position indices for this chain
-        const positionCount = frame.chains.length;
-
-        for (let i = 0; i < positionCount; i++) {
-            if (frame.chains[i] === chainId && frame.position_types && frame.position_types[i] === 'P') {
-                chainPositions.push(i);
-            }
-        }
-
-        if (chainPositions.length === 0) continue;
-
-        // Sort positions by residue number to match sequence order
-        chainPositions.sort((a, b) => {
-            const residueNumA = frame.residue_numbers ? frame.residue_numbers[a] : a;
-            const residueNumB = frame.residue_numbers ? frame.residue_numbers[b] : b;
-            return residueNumA - residueNumB;
-        });
-
-        // Map MSA positions to chain positions (one-to-one mapping)
-        // Query sequence has no gaps, so mapping is straightforward
-        const msaQueryUpper = msaQuerySequence.toUpperCase();
-        const chainSeqUpper = chainSequence.toUpperCase();
-        const minLength = Math.min(msaQueryUpper.length, chainSeqUpper.length, chainPositions.length);
-        const chainMSASelectedPositions = new Set();
-
-        for (let i = 0; i < minLength; i++) {
-            // Check if this MSA position matches the chain sequence position
-            if (msaQueryUpper[i] === chainSeqUpper[i]) {
-                // Match found - check if this structure position is selected
-                const positionIndex = chainPositions[i];
-                if (selectedPositions.has(positionIndex)) {
-                    chainMSASelectedPositions.add(i); // i is the MSA position index
-                }
-            }
-        }
-
-        if (chainMSASelectedPositions.size > 0) {
-            msaSelectedPositions.set(chainId, chainMSASelectedPositions);
-        }
-    }
-
-    // Store selected MSA positions in object's MSA state (per-object storage)
-    // Store even if empty to indicate no selection (for dimming all positions)
-    obj.msa.selectedPositions = msaSelectedPositions;
-
-    // Trigger MSA viewer update (only updates visual dimming, no filtering)
-    if (window.MSA && window.MSA.updateMSAViewSelectionState) {
+    obj.msa.selectedPositions = null;
+    if (window.MSA.updateMSAViewSelectionState) {
         window.MSA.updateMSAViewSelectionState();
     }
 }
+
+/**
+ * Load structures, PAE matrices, alignments and contacts into the app.
+ *
+ * THE INGESTION PATH, EXPOSED. processFiles already takes VIRTUAL files -
+ * `{ name, readAsync }` - rather than File objects, because a ZIP entry is not
+ * a File either. That makes it the natural entry for anything that produces a
+ * structure in memory: a page embedding this app can hand over a prediction it
+ * just computed without writing it to disk, wrapping it in a File, and
+ * replaying a change event on a hidden input to get back here.
+ *
+ * Extensions decide what a file IS - .pdb/.cif/.ent structure, .json a PAE
+ * matrix paired to one by basename, .a3m/.fasta/.sto an alignment, .cst
+ * contacts - so the caller names its files rather than declaring their kinds.
+ *
+ * @param {{name: string, readAsync: (type?: string) => Promise<string>}[]} files
+ * @param {boolean} loadAsFrames  several structures as frames of one object
+ * @param {string|null} [groupName]
+ * @returns {Promise<{objectsLoaded: number, framesAdded: number,
+ *   structureCount: number, paePairedCount: number, isTrajectory: boolean}>}
+ */
+window.py2dmolLoadFiles = (files, loadAsFrames = true, groupName = null) =>
+    processFiles(files, loadAsFrames, groupName);
 
 async function processFiles(files, loadAsFrames, groupName = null) {
     beginProgress();
@@ -4979,10 +4646,10 @@ async function processFiles(files, loadAsFrames, groupName = null) {
 
                     if (msaDataList.length > 0) {
                         // Match MSAs to chains by sequence
-                        const { chainToMSA, msaToChains } = matchMSAsToChains(msaDataList, chainSequences);
+                        const { chainToMSA, msaToChains, pairedMSAs } = matchMSAsToChains(msaDataList, chainSequences);
 
                         // Store MSA data in object (consolidated function)
-                        const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains);
+                        const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains, pairedMSAs);
 
                         if (msaObj && msaObj.availableChains.length > 0) {
                             // Load default chain's MSA
@@ -5212,10 +4879,10 @@ async function handleZipUpload(file, loadAsFrames) {
 
                             if (msaDataList.length > 0) {
                                 // Match MSAs to chains by sequence
-                                const { chainToMSA, msaToChains } = matchMSAsToChains(msaDataList, chainSequences);
+                                const { chainToMSA, msaToChains, pairedMSAs } = matchMSAsToChains(msaDataList, chainSequences);
 
                                 // Store MSA data in object (consolidated function)
-                                const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains);
+                                const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains, pairedMSAs);
 
                                 if (msaObj && msaObj.availableChains.length > 0) {
                                     // Load default chain's MSA

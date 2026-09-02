@@ -33,7 +33,7 @@ if [[ "$LANE" == "all" || "$LANE" == "node" ]]; then
   # error, a missing file - prints a stack trace containing no such line, and
   # was reported as passing. tests/interaction.js died on startup for a whole
   # commit that way, and the suite said ALL GREEN.
-  for f in interaction smoke sequence copy_selection sidechain_chain na_frame align paint_trace math config; do
+  for f in interaction smoke sequence copy_selection sidechain_chain na_frame align paint_trace math config msa_paired; do
     out=$(node tests/$f.js 2>&1); rc=$?
     if (( rc != 0 )); then
       fail=1; print "NODE $f: exit $rc"
@@ -151,7 +151,8 @@ run_probe () {   # name, then its arguments
 if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
   UI=(pick_empty selection_mark focus_mode hover_echo pae_objects pae_visibility hidden_reload cut_ligands
       sidechain_toggle nucleic_multi save_multi selection_panel minimal_input
-      object_reload python_page python_multi style_per_object align_objects embed panel)
+      object_reload python_page python_multi style_per_object align_objects embed panel
+      msa_paired_ui selection_shells)
   pids=(); names=()
   for t in $UI; do
     ( run_probe $t ) & pids+=($!); names+=($t)

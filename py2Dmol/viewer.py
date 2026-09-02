@@ -77,6 +77,14 @@ DEFAULT_CONFIG = {
     "overlay": {
         "enabled": False
     },
+    # THE SELECTION PANEL, AND THE CLICK THAT FILLS IT - one key, off by
+    # default. Both used to be the website's alone, because the panel was two
+    # hundred lines of markup in index.html; parts/panel.js builds it for every
+    # shell now, so a notebook can have it. Off unless asked, because turning
+    # it on changes what a click DOES in every existing notebook.
+    "selection": {
+        "enabled": False
+    },
     "cutoffs": {
         "protein_bond": 5.0,
         "nucleic_bond": 7.5,
@@ -180,6 +188,9 @@ def _nest_config(**flat):
 
     # Overlay
     if "overlay" in flat: config["overlay"]["enabled"] = flat["overlay"]
+
+    # Selection: the panel and the click, one key
+    if "selection" in flat: config["selection"]["enabled"] = flat["selection"]
 
     # ...AND SEVERAL OBJECTS, which is a different question. Carried as a plain
     # top-level flag and resolved to a list of names in _display_viewer, where
@@ -647,7 +658,7 @@ class view:
         shadow=True, shade=None, shadow_strength=0.5,
         outline=None, width=None, ortho=0.5, gpu=True, bg=None, rotate=False, autoplay=False,
         pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, multi=False, cyclic=True,
-        sidechains=False,
+        sidechains=False, selection=False,
         persistence=True, id=None, cutoffs=None,
     ):
         """
@@ -726,6 +737,25 @@ class view:
                 both on screen, the camera widened to take them both in. The
                 same thing the website's Multi button does. See show_objects()
                 for naming a subset.
+            selection (bool): Show the selection panel, and let a click on the
+                canvas pick a residue. Default False.
+
+                ONE KEY FOR BOTH, because they are one decision: the panel is
+                what shows, acts on and clears a selection, and a click that
+                makes one with none of those available is worse than no click -
+                which is why picking has always been off in a notebook.
+
+                What the panel gives you is the website's: colour (a PyMOL
+                palette, or a scheme, on the main chain and the side chains
+                separately), Show/Hide per part, element colours, base plates,
+                a secondary-structure override, contacts between a pair, Find
+                interactions, and Copy / Cut / Delete. Every one of those is a
+                verb the library already had; until now only index.html could
+                reach them.
+
+                It costs about 44 KB in the payload, which a notebook pays once
+                per document rather than once per viewer.
+
             sidechains (bool): Carry each residue's side-chain atoms, so they
                 can be drawn and so Focus can measure side chain to side chain
                 rather than trace to trace. Default False.
@@ -931,6 +961,7 @@ class view:
             scatter=scatter,
             scatter_size=scatter_size,
             overlay=overlay,
+            selection=selection,
             multi=multi,
             cyclic=cyclic,
             cutoffs=cutoffs,

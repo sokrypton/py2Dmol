@@ -153,6 +153,72 @@ if (!containerElement.querySelector('#stylePanel') && window.py2dmolPanel) {
     if (mount) mount.appendChild(window.py2dmolPanel.buildStylePanel());
 }
 
+// ...AND THE SELECTION PANEL, the same way and for the same reason. It was two
+// hundred lines of markup in index.html, so the verbs in parts/selectpanel.js -
+// colour, side chains, elements, bases, SSE, contacts, visibility, Find - were
+// in every download and reachable from one page.
+//
+// AFTER the style panel, not before: the colour picker's list of schemes is
+// read off #colorSelect, which the style panel builds, and wireSelectionPanel
+// runs it at wire time. Built first, the picker comes up with no schemes at all
+// and nothing says so.
+//
+// 🔴 AND IT IS ASKED FOR, WHERE THE STYLE PANEL IS NOT. Mounting it always
+// would put it in every existing notebook, where a click picks nothing - so
+// the panel would sit there, never opening, which is the "control the shared
+// panel shows and no shell wires" fault wearing a new coat. `selection.enabled`
+// is the one key: the renderer reads it for the CLICK and this reads it for the
+// PANEL, so the gesture and the thing that shows its result arrive together or
+// not at all.
+if (renderer.selectionEnabled
+    && !containerElement.querySelector('#selectionPanel') && window.py2dmolPanel
+    && window.py2dmolPanel.buildSelectionPanel) {
+    const mount = containerElement.querySelector('#selectionPanelMount');
+    if (mount) {
+        // THE SKIN TRAVELS WITH THE ROWS, and it is scoped to this container.
+        // Forty-six rules lived in src/app/style.css and nowhere else, so a
+        // notebook mounting this panel got working verbs under browser-default
+        // buttons. Scoping by the container's id is what stops them reaching a
+        // host page's own controls - the same reason SHELL_CSS does it - and
+        // two viewers sharing an id share one identical stylesheet, which is
+        // the right answer rather than a collision.
+        // 🔴 AND THE ID IS ESCAPED, BECAUSE A NOTEBOOK'S IS A UUID.
+        // viewer.py wraps each viewer in `<div id="{uuid4}">`, and a uuid4
+        // begins with a digit about six times in ten - `#3f2b1c...` is not a
+        // valid CSS selector at all, so EVERY rule under it is dropped and the
+        // panel comes up in browser defaults. Flaky by construction: the same
+        // code drew a correct panel or a bare one depending on a random id, and
+        // it took three runs of tests/selection_shells.py to see a second face.
+        const id = containerElement.id;
+        window.py2dmolPanel.installSelectionPanelCSS(
+            id ? '#' + (window.CSS && CSS.escape ? CSS.escape(id) : id) : '');
+        mount.appendChild(window.py2dmolPanel.buildSelectionPanel());
+    }
+}
+// The listeners, once the panel is somewhere - whether this built it or the
+// page shipped its own. A shell that mounted neither wires nothing.
+//
+// AND THIS IS WHERE THE HOST LEARNS WHICH VIEWER. py2dmolSelectionHost MERGES,
+// so naming the renderer here leaves a status bar or an afterChange the shell
+// set at load time alone - and being called once per viewer is exactly right:
+// the newest viewer is the one the panel edits. Without it the wiring's own
+// closing updateSelectionToolsState() runs against no renderer at all, which
+// is the throw-halfway-through-the-wiring that reads from outside as a panel
+// that never opens.
+if (typeof wireSelectionPanel === 'function'
+    && containerElement.querySelector('#selectionPanel')) {
+    if (typeof py2dmolSelectionHost === 'function') {
+        // ...AND WHICH PANEL IS THIS VIEWER'S. Two viewers with chrome on one
+        // page are two panels with the same ids, and getElementById answers
+        // with whichever is first in the document - so one viewer's click
+        // opened the other's panel while its own stayed shut. Named per
+        // viewer, and re-named here on every wire, which is what makes the
+        // last viewer to be built the one its own controls drive.
+        py2dmolSelectionHost({ renderer: () => renderer, root: containerElement });
+    }
+    wireSelectionPanel();
+}
+
 // 4. Setup PAE Renderer (if enabled)
 // 4. Setup PAE Renderer (if enabled)
 if (config.pae?.enabled) {

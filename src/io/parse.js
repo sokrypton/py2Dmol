@@ -44,11 +44,26 @@ function parsePDB(text) {
         }
 
         if (line.startsWith('CONECT')) {
-            // CONECT format: serial (columns 6-11), bonded atoms (columns 12-16, 17-21, 22-26, 27-31, etc.)
+            // CONECT is fixed-width: the record name in columns 1-6, this
+            // atom's serial in 7-11, and up to FOUR partners in 12-16, 17-21,
+            // 22-26 and 27-31. Zero-based that is 6..11, then 11..16 and every
+            // five after it.
+            //
+            // 🔴 THE PARTNERS STARTED AT 12, ONE COLUMN LATE, and `trim()` hid
+            // it for nine thousand nine hundred and ninety-nine atoms. A field
+            // is RIGHT-justified, so a serial of four digits or fewer sits at
+            // 12..16 with a space in front and reading 12..17 gives the same
+            // number with a space after it. At five digits there is no padding
+            // left: `12346` written at 11..16 is read as `23461` - the leading
+            // digit of the serial dropped and the first digit of the NEXT
+            // partner picked up. What comes back is a bond to an atom that is
+            // usually not there (dropped in silence) and occasionally is
+            // (drawn between the wrong two atoms). Every structure past 9,999
+            // atoms, which is most of the ones that carry CONECT at all.
             const serial = parseInt(line.substring(6, 11).trim());
             const bonded = [];
             for (let i = 0; i < 4; i++) {
-                const startCol = 12 + (i * 5);
+                const startCol = 11 + (i * 5);
                 const bondedSerial = parseInt(line.substring(startCol, startCol + 5).trim());
                 if (!isNaN(bondedSerial)) {
                     bonded.push(bondedSerial);

@@ -102,7 +102,12 @@ const CARTOON = ['src/cartoon/geom.js',
     'src/cartoon/paint2d.js'];
 // ...and the web app, split by what each part is for. A scan for a handler has
 // to read all of them; main.js first, because it declares the shared state.
-const APP = ['src/app/main.js', 'src/app/selection.js', 'src/app/objects.js',
+//
+// parts/selectpanel.js is in here even though it is no longer under src/app/:
+// it is the selection panel's verbs, which every test that scans for one has
+// always found through this list, and the panel is still one of the app's.
+// Being shared changed where it lives, not what a scan for a handler must read.
+const APP = ['src/app/main.js', 'src/parts/selectpanel.js', 'src/app/objects.js',
     'src/app/fetch.js', 'src/app/scatter.js', 'src/app/session.js'];
 // ...and the best-view search, which used to be six hundred lines inside
 // src/app/main.js and is a part now. Named here so the next move costs one line
@@ -245,7 +250,7 @@ function between(beginMark, endMark) {
  * parts/panel.js now, so they read the table - which is both the source of
  * truth and far easier to assert against than nested <div>s.
  */
-function panelRows() {
+function panelSandbox() {
     const sb = {
         window: {},
         document: { createElement: () => ({ setAttribute() {}, appendChild() {} }),
@@ -256,7 +261,14 @@ function panelRows() {
     vm.createContext(sb);
     vm.runInContext(fs.readFileSync(path.join(ROOT,
         'src/parts/panel.js'), 'utf8'), sb, { filename: 'panel' });
-    const rows = sb.window.py2dmolPanel && sb.window.py2dmolPanel.STYLE_PANEL_ROWS;
+    if (!sb.window.py2dmolPanel) {
+        throw new Error('parts/panel.js no longer publishes py2dmolPanel');
+    }
+    return sb.window.py2dmolPanel;
+}
+
+function panelRows() {
+    const rows = panelSandbox().STYLE_PANEL_ROWS;
     if (!rows || !rows.length) {
         throw new Error('parts/panel.js no longer publishes STYLE_PANEL_ROWS'
             + ' - the panel moved again and these assertions read nothing');
@@ -271,7 +283,65 @@ function panelItems() {
     return out;
 }
 
+/**
+ * ...and the SELECTION panel's rows, the same way and for the same reason.
+ * Those assertions scanned index.html, which is where that markup was until it
+ * became a table beside the Style panel's. A scan of the page now reads a
+ * mount point and nothing else.
+ */
+function selectionRows() {
+    const rows = panelSandbox().SELECTION_PANEL_ROWS;
+    if (!rows || !rows.length) {
+        throw new Error('parts/panel.js no longer publishes SELECTION_PANEL_ROWS'
+            + ' - the panel moved again and these assertions read nothing');
+    }
+    return rows;
+}
+
+/**
+ * Every control on the selection panel, keyed by id - including the ids a
+ * `color` item expands into (`scColor` is a Button, a Swatch and a Menu) and
+ * the two buttons of a `pair`, because that is what the DOM carries and what
+ * parts/selectpanel.js looks up.
+ */
+function selectionItems() {
+    const out = {};
+    for (const row of selectionRows()) {
+        for (const item of row.items || []) {
+            out[item.id] = item;
+            if (item.kind === 'color') {
+                for (const suffix of ['Button', 'Swatch', 'Menu']) {
+                    out[item.id + suffix] = item;
+                }
+            }
+            for (const b of item.buttons || []) out[b.id] = b;
+        }
+    }
+    return out;
+}
+
+/** The panel head's actions, in order - Copy, Cut, Delete. */
+function selectionActionIds() {
+    const panel = panelSandbox();
+    const acts = panel.SELECTION_ACTIONS
+        || (panel.buildSelectionPanel && null);
+    if (acts) return acts.map((a) => a.id);
+    throw new Error('parts/panel.js no longer publishes SELECTION_ACTIONS');
+}
+
+/** The selection panel's row ids, in the order they are built. */
+function selectionRowIds() {
+    return selectionRows().map((r) => r.divider || r.id);
+}
+
+/** The panel's stylesheet, as parts/panel.js hands it to a shell. */
+function selectionCSS() {
+    return panelSandbox().selectionPanelCSS('');
+}
+
 module.exports = { SOURCES, files, src, ROOT, UTILS, utils, CARTOON, cartoon, APP, app, ORIENT, orient, read,
     panelRows, panelItems,
+    selectionRows, selectionItems, selectionRowIds, selectionCSS,
+    selectionActionIds,
     method, staticGet, topFunction, klass, constLine, constExpr, between,
     matchBrace, matchParen };

@@ -339,6 +339,14 @@ optional.</p>
 <pre id="v15code" class="ran"></pre>
     <p class="note">Style, Capture and every slider, plus Orient and Rotate. Off by default:
    most embeds want a picture and nothing else.</p>
+    <p class="note"><strong>And the selection panel</strong>, which arrives with it: click a
+   residue and it slides in with the website's own controls &mdash; colour (a PyMOL palette
+   or a scheme, on the main chain and the side chains separately), Show/Hide per part,
+   element colours, base plates, a secondary-structure override, contacts between a pair,
+   Find interactions, and Copy / Cut / Delete. Pass <code>select: false</code> to keep the
+   chrome and turn picking and the panel off. <em>Align</em> is the one row that does not
+   travel: it needs <code>align/align.js</code>, which can never be bundled, so the row
+   hides itself here.</p>
     <p class="note">Its styling is scoped to your container, so it cannot reach your page's own
    dropdowns or buttons.</p>
     <p class="note">It stays inside the box you give it. On a fixed height the panel scrolls;
@@ -351,10 +359,10 @@ optional.</p>
 the same on either.</p>
 <table>
 <tr><th>file</th><th>size</th><th></th></tr>
-<tr><td>py2Dmol.embed.min.js</td><td>453 KB</td><td>WebGL2. What this page loads.
+<tr><td>py2Dmol.embed.min.js</td><td>512 KB</td><td>WebGL2. What this page loads.
     Turning and zooming cost one draw call, which is what makes a large
     structure usable.</td></tr>
-<tr><td>py2Dmol.embed.cpu.min.js</td><td>414 KB</td><td>The 2D painter. 46 KB smaller,
+<tr><td>py2Dmol.embed.cpu.min.js</td><td>467 KB</td><td>The 2D painter. 45 KB smaller,
     no WebGL2 needed, and it can export SVG &mdash; but a big structure repaints
     slowly.</td></tr>
 </table>
@@ -373,6 +381,44 @@ decides.
 On a 313,000-atom capsid the difference is 26&nbsp;ms a frame against 840. Below
 a few thousand residues you will not notice it, and the CPU build is the only one
 that can save an SVG.
+</div>
+
+
+<p class="sub"><code>bundles/py2Dmol.full.min.js</code> is a different animal: the
+<strong>whole website</strong> &mdash; its panels, its file ingestion, its sessions
+&mdash; with this embed API on top. Set for set it is the site's own bundle and one
+module more, so it is 755&nbsp;KB against 737 and 476: the embed half costs
+18&nbsp;KB, because the app had already paid for everything it needs.</p>
+<p class="note">The bundle is the code, not the layout &mdash; and here that means
+the app's layout, not just a panel's. Every panel finds its own markup and does
+nothing until it exists (the PAE wants a <code>#paeContainer</code> holding a
+<code>#paeCanvas</code>), and <code>src/app/</code> looks up the site's controls
+the same way. A page loading this is hosting <code>index.html</code>'s markup, or
+the parts of it whose features it wants. Panel markup goes <strong>beside</strong>
+the viewer, never inside &mdash; <code>show</code> replaces its container's
+children. Then ask for it:</p>
+<pre>py2Dmol.show('v', text, {controls: true, pae: {enabled: true}});</pre>
+<p class="note"><code>controls: true</code> is not optional here: it selects the
+shell that mounts the panels. The sequence strip and the MSA look their elements
+up on <code>document</code> rather than inside the viewer, so two viewers on one
+page would find each other's &mdash; the PAE plot scopes to the container and is
+the one to reach for first.</p>
+<p class="note">Two doors lead into the app itself.
+<code>py2dmolLoadFiles(files, loadAsFrames, groupName)</code> is the ingestion
+path: it takes <em>virtual</em> files, <code>{name, readAsync}</code> rather than
+<code>File</code> objects, so a page hands over a structure it computed in memory
+instead of faking an upload &mdash; and the extension decides what each one is
+(<code>.pdb</code>/<code>.cif</code> a structure, <code>.json</code> a PAE matrix
+paired by basename, <code>.a3m</code>/<code>.fasta</code> an alignment,
+<code>.cst</code> contacts). <code>py2dmolReadyMessage</code> replaces the idle
+status line, which otherwise names two controls your page may not have.</p>
+<div class="warn">
+<strong>This bundle needs two script tags.</strong> It carries the TM-align
+methods, and <code>align/align.js</code> can never be concatenated into any
+bundle: it starts its Worker by having the worker import <em>itself</em>, found
+through <code>document.currentScript.src</code>, so inlined it has no URL and the
+alignment silently runs on the main thread. Load it separately, exactly as
+<code>index.html</code> does, or every method it adds throws.
 </div>
 
 <h2>Reference</h2>

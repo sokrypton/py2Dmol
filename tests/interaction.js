@@ -19,6 +19,7 @@
 //     the settle was lost for good, stranding the viewer with no outline.
 
 const fs=require('fs');
+const vm=require('node:vm');
 // EVERY SCAN IN THIS FILE READS lift.js, and lift.js owns the file list. That is
 // what lets the renderer split into siblings without 123 lifts failing at once;
 // see its header for why the match is indent-agnostic.
@@ -599,6 +600,18 @@ const panelBody = (() => {
         // ...and the Align row, which the panel now syncs alongside Contact
         + '\n' + lift('syncAlignRow');
 })();
+// THE VERBS REACH THE VIEWER THROUGH A HOST, not through the app's own handle.
+// parts/selectpanel.js was src/app/'s and closed over `viewerApi`; shared, it
+// asks `selectionHost.renderer()` instead, so a lifted blob needs one. The
+// tests still inject a `viewerApi`-shaped object, and this is the adapter.
+const SEL_HOST = 'const selectionHost = { renderer: () => viewerApi && viewerApi.renderer,'
+    + ' setStatus: (m) => { if (typeof setStatus === "function") setStatus(m); },'
+    + ' root: null };\n'
+    // ...AND THE PANEL IS FOUND THROUGH ITS VIEWER'S ROOT NOW, not through the
+    // document. `byId` falls back to the document when no root was named, which
+    // is what these fixtures are: one panel, in a fake document of their own.
+    + 'const byId = (id) => document.getElementById(id);\n';
+
 // A SHOW/HIDE PAIR, as much of one as the panel touches: two buttons, and the
 // one that matches what is drawn carries the class. Read back the way a switch
 // was - checked when the first is filled, Mixed when neither is - because that
@@ -689,7 +702,7 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
     // asks it whether the pair already has a contact, to choose Add or Remove
     const f = new Function('document', 'getActiveSelection', 'viewerApi',
         'findContact', 'contactSlots',
-        panelBody + '; return updateSelectionToolsState;')(
+        SEL_HOST + panelBody + '; return updateSelectionToolsState;')(
         doc, () => selection,
         { renderer: {
             hasSidechainsFor: (p2) => p2.some((i) => sidechained.has(i)),
@@ -788,15 +801,20 @@ t('a line separates what the selection IS from what to do with it', () => {
     // instead: one changes the selection, the other adds an annotation. In one
     // undivided stack of labelled rows, Find read as another property with a
     // button beside it.
-    const html = fs.readFileSync('index.html', 'utf8');
-    const div = html.indexOf('id="selActionDivider"');
+    // READ OFF THE TABLE, not off index.html. This panel is built by
+    // parts/panel.js for every shell now, exactly as the Style panel is, so a
+    // scan of the page finds a mount point and nothing else.
+    const ids = L.selectionRowIds();
+    const div = ids.indexOf('selActionDivider');
     if (div < 0) throw new Error('the selection panel has no divider');
-    const mc = html.indexOf('id="mainchainRow"');
-    const find = html.indexOf('id="nearbyRow"');
+    const mc = ids.indexOf('mainchainRow');
+    const find = ids.indexOf('nearbyRow');
     if (!(mc < div && div < find)) {
-        throw new Error('the divider is not between the property rows and Find');
+        throw new Error('the divider is not between the property rows and Find:'
+            + ' ' + ids.join(', '));
     }
-    const css = fs.readFileSync('src/app/style.css', 'utf8');
+    // ...and the skin travels with the rows, so it is read from there too
+    const css = L.selectionCSS();
     if (!/\.selection-panel-divider\s*\{[^}]*background/.test(css)) {
         throw new Error('the divider has no line to draw');
     }
@@ -865,33 +883,27 @@ t('the selection panel appears with a selection and hides without one', () => {
     }
 });
 
-t('the panel says how big the selection is, and nothing more', () => {
-    // The count changes what the buttons do, so it is in the head. WHICH
-    // residues is not: the ranges that used to sit beside it ("A 11-13; B 5")
-    // were set small in a 340px head, ran past its edge and were cut short,
-    // and the tooltip holding the rest is not something anybody hovers a
-    // header for. The sequence strip shows the selection where there is room
-    // to show it.
-    if (panelRun([4]).selectionPanelCount.textContent !== '1 residue') {
-        throw new Error('singular count is wrong: '
-            + panelRun([4]).selectionPanelCount.textContent);
+t('the panel head says Selection and nothing about the selection', () => {
+    // 🔴 THE COUNT WENT THE WAY OF THE RANGES. This asked for "1 residue" /
+    // "3 residues" in the head, on the reasoning that the count changes what
+    // pressing a button does, so it earns its place - where "A 11-13; B 5" did
+    // not. The same argument finishes the job: the sequence strip below shows
+    // WHAT is selected, in the place made for showing it, and a number over the
+    // top of that is a second answer to a question nobody asked twice.
+    //
+    // The element stays - the head's flex layout uses it as the stretching
+    // middle between the title and the three actions - and it stays EMPTY.
+    for (const sel of [[4], [4, 5], [4, 5, 6], null]) {
+        const got = panelRun(sel).selectionPanelCount.textContent;
+        if (got !== '') {
+            throw new Error(`the head says "${got}" for `
+                + (sel ? sel.length + ' selected' : 'nothing selected'));
+        }
     }
-    if (panelRun([4, 5]).selectionPanelCount.textContent !== '2 residues') {
-        throw new Error('plural count is wrong');
+    if (panelRun([4, 5, 6]).selectionPanelCount.title) {
+        throw new Error('it moved into the tooltip instead');
     }
-    if (panelRun(null).selectionPanelCount.textContent !== '') {
-        throw new Error('a stale count survived the selection being cleared');
-    }
-    // ...and no residue detail creeps back in, on screen or in the tooltip
-    const three = panelRun([4, 5, 6]);
-    if (three.selectionPanelCount.textContent !== '3 residues') {
-        throw new Error('the head lists the residues again: '
-            + three.selectionPanelCount.textContent);
-    }
-    if (three.selectionPanelCount.title) {
-        throw new Error('the ranges moved into the tooltip: '
-            + three.selectionPanelCount.title);
-    }
+    // ...and the ranges did not come back either
     const app = L.app;
     if (app.includes('describeSelectionRanges')) {
         throw new Error('describeSelectionRanges is back');
@@ -899,12 +911,12 @@ t('the panel says how big the selection is, and nothing more', () => {
 });
 
 t('the panel keeps two matching part rows, with SSE and Copy below them', () => {
-    const html = fs.readFileSync('index.html', 'utf8');
+    const items = L.selectionItems();
     const need = ['plateShowToggle', 'sidechainPair', 'elementsShowToggle',
         'mainchainPair', 'contactAddButton', 'contactDeleteButton',
         'scColorButton', 'selColorButton', 'selSsSelect'];
     for (const id of need) {
-        if (!html.includes('id="' + id + '"')) throw new Error('missing control: ' + id);
+        if (!items[id]) throw new Error('missing control: ' + id);
     }
     // TWO BUTTONS PER PART, and the state on their faces. This test has now
     // said all three things in turn: a +/- pair (which showed nothing about
@@ -915,51 +927,40 @@ t('the panel keeps two matching part rows, with SSE and Copy below them', () => 
     // switch could only show as a grey smear.
     for (const id of ['sidechainShowButton', 'sidechainHideButton',
         'mainchainShowButton', 'mainchainHideButton']) {
-        if (!html.includes('id="' + id + '"')) {
+        if (!items[id]) {
             throw new Error(id + ' is missing - the parts are back to one switch');
         }
     }
     // ...and CONTACTS SAY ADD, because a contact does not exist until you make
     // one - and there is no Remove beside it, because the moment there is a
     // contact the Add goes and the bin at the end of the row takes over.
-    const addBlock = html.slice(html.indexOf('id="contactAddButton"'),
-        html.indexOf('</button>', html.indexOf('id="contactAddButton"')));
-    if (!/>Add$/.test(addBlock.trim())) {
+    if (items.contactAddButton.label !== 'Add') {
         throw new Error('the contact button does not read Add');
     }
-    if (html.includes('id="contactRemoveButton"')) {
-        throw new Error('the Remove button is back beside Add');
-    }
+    const rowIds = L.selectionRowIds();
     for (const gone of ['basesShowButton', 'basesHideButton',
         // ...and the two controls the mode select replaced, plus the row the
         // plate had to itself: three ways to say the same thing was the bug
         'basesShowToggle', 'basesRow', 'backboneShowToggle',
-        'elementsShowButton', 'elementsHideButton']) {
-        if (html.includes('id="' + gone + '"')) {
+        'elementsShowButton', 'elementsHideButton', 'contactRemoveButton',
+        'elementsRow']) {
+        if (items[gone] || rowIds.includes(gone)) {
             throw new Error(gone + ' is still there');
         }
     }
     // Elements rides on the SIDE CHAIN row rather than a row of its own: it is
     // a property of the atoms that row draws.
-    const scRow = html.indexOf('id="sidechainRow"');
-    const scEnd = html.indexOf('</div>', html.indexOf('id="elementsShowToggle"'));
-    if (!(html.indexOf('id="elementsShowToggle"') > scRow
-        && html.indexOf('id="elementsShowToggle"') < scEnd)) {
+    const scRow = L.selectionRows().find((r) => r.id === 'sidechainRow');
+    if (!scRow || !scRow.items.some((i) => i.id === 'elementsShowToggle')) {
         throw new Error('Elements is not on the side-chain row');
-    }
-    if (html.includes('id="elementsRow"')) {
-        throw new Error('the separate Elements row is still there');
     }
     // Each control must SAY what it is - the visible text is its accessible
     // name - and carry a title, since "Show" alone does not say show what.
     for (const id of ['elementsShowToggle', 'plateShowToggle']) {
-        const at2 = html.indexOf('id="' + id + '"');
-        const open = html.lastIndexOf('<label', at2);
-        const close = html.indexOf('</label>', at2);
-        const block = html.slice(open, close);
-        const text = (block.match(/<span>([^<]*)<\/span>/) || [, ''])[1].trim();
-        if (!text) throw new Error(id + ' has no visible label, so it has no name');
-        if (!/title="/.test(block.slice(0, block.indexOf('>')))) {
+        if (!items[id].label) {
+            throw new Error(id + ' has no visible label, so it has no name');
+        }
+        if (!items[id].title) {
             throw new Error(id + ' has no title - a word alone does not say of what');
         }
     }
@@ -968,19 +969,13 @@ t('the panel keeps two matching part rows, with SSE and Copy below them', () => 
     // something to say WHICH part they belong to.
     for (const id of ['sidechainShowButton', 'sidechainHideButton',
         'mainchainShowButton', 'mainchainHideButton', 'contactAddButton']) {
-        const at2 = html.indexOf('id="' + id + '"');
-        const tag = html.slice(html.lastIndexOf('<button', at2), html.indexOf('>', at2));
-        const text = html.slice(html.indexOf('>', at2) + 1,
-            html.indexOf('</button>', at2)).trim();
-        if (!text) throw new Error(id + ' has no visible label');
-        if (!/title="/.test(tag)) {
+        if (!items[id].label) throw new Error(id + ' has no visible label');
+        if (!items[id].title) {
             throw new Error(id + ' has no title - "Show" does not say show what');
         }
     }
     for (const id of ['sidechainPair', 'mainchainPair']) {
-        const at2 = html.indexOf('id="' + id + '"');
-        const tag = html.slice(html.lastIndexOf('<span', at2), html.indexOf('>', at2));
-        if (!/aria-label=/.test(tag) || !/role="group"/.test(tag)) {
+        if (!items[id].aria) {
             throw new Error(id + ' is not named as a group, so its two buttons'
                 + ' read as a bare Show and Hide');
         }
@@ -988,31 +983,35 @@ t('the panel keeps two matching part rows, with SSE and Copy below them', () => 
     // The colour buttons carry no text - the swatch is the label - so they
     // still need an explicit accessible name.
     for (const id of ['scColorButton', 'selColorButton', 'contactColorButton']) {
-        const at2 = html.indexOf('id="' + id + '"');
-        const tag = html.slice(html.lastIndexOf('<button', at2), html.indexOf('>', at2));
-        if (!/aria-label=/.test(tag)) {
-            throw new Error(id + ' has no accessible name');
-        }
+        if (!items[id].aria) throw new Error(id + ' has no accessible name');
     }
-    const scHide = html.indexOf('id="elementsShowToggle"');
-    const mcHide = html.indexOf('id="mainchainPair"');
-    const sse = html.indexOf('id="selSsSelect"');
-    const copy = html.indexOf('id="copySelectionButton"');
-    const del = html.indexOf('id="deleteSelectionButton"');
-    if (!(scHide < mcHide && mcHide < sse)) {
-        throw new Error('SSE is inside one of the part rows');
+    // ...and that the BUILDER turns `kind: 'pair'` into role="group" and a
+    // `color` into its three ids is measured on the real page, by
+    // tests/selection_panel.py. Reading the table alone would pass against a
+    // builder that dropped either.
+    // SSE IS THE MAIN CHAIN'S, at the end of that row - not a row of its own
+    // and not on the side-chain row, where it would be claiming a side chain
+    // has a secondary structure.
+    const mcRow = L.selectionRows().find((r) => r.id === 'mainchainRow');
+    if (!mcRow || mcRow.items[mcRow.items.length - 1].id !== 'selSsSelect') {
+        throw new Error('SSE is not the last control on the main-chain row');
+    }
+    if (scRow.items.some((i) => i.id === 'selSsSelect')) {
+        throw new Error('SSE is inside the side-chain row');
     }
     // COPY AND DELETE LIVE IN THE HEAD, above everything else in the panel.
     // Copy used to be a full-width button at the bottom, under the pointer
     // after every other control, and was pressed by accident - which makes a
-    // new object each time.
-    const head = html.indexOf('class="selection-panel-head"');
-    if (!(head >= 0 && head < copy && copy < scHide)) {
-        throw new Error('Copy is not in the panel head - at the bottom it sits '
-            + 'under the pointer after every other control');
+    // new object each time. They are the panel's ACTIONS, a separate list from
+    // its rows, which is what puts them there by construction.
+    const actions = L.selectionActionIds();
+    if (actions[0] !== 'copySelectionButton'
+        || !actions.includes('deleteSelectionButton')) {
+        throw new Error('Copy and Delete are not the panel head\'s actions:'
+            + ' ' + actions.join(', '));
     }
-    if (!(copy < del && del < scHide)) {
-        throw new Error('Delete is not beside Copy in the head');
+    for (const id of actions) {
+        if (items[id]) throw new Error(id + ' is on a row as well as in the head');
     }
 });
 
@@ -1137,17 +1136,20 @@ t('the SSE menu shows the state it is in, not the word SSE', () => {
     if (mixed.selSsSelect.value !== '') {
         throw new Error('a selection with two structures in it picked one');
     }
-    // the markup backs that: Mixed is a readout, and Auto is now DSSP
-    const html = fs.readFileSync('index.html', 'utf8');
-    const m = html.match(/<select id="selSsSelect"[\s\S]*?<\/select>/);
-    if (!m) throw new Error('the SSE select is gone from index.html');
-    if (/>SSE</.test(m[0])) {
+    // the TABLE backs that: Mixed is a readout, and Auto is now DSSP
+    const ss = L.selectionItems().selSsSelect;
+    if (!ss) throw new Error('the SSE select is gone from the panel');
+    const labels = ss.options.map(([, text]) => text);
+    const values = ss.options.map(([value]) => value);
+    if (labels.includes('SSE')) {
         throw new Error('the placeholder option is back - it is what made the'
             + ' menu say the same thing whatever was selected');
     }
-    if (/value="auto"/.test(m[0])) throw new Error('Auto was not renamed');
-    if (!/value="dssp"/.test(m[0])) throw new Error('there is no DSSP option');
-    if (!/<option value="" disabled hidden>Mixed<\/option>/.test(m[0])) {
+    if (values.includes('auto')) throw new Error('Auto was not renamed');
+    if (!values.includes('dssp')) throw new Error('there is no DSSP option');
+    const blank = ss.options.find(([value]) => value === '');
+    if (!blank || blank[1] !== 'Mixed' || !blank[2] || !blank[2].disabled
+        || !blank[2].hidden) {
         throw new Error('Mixed is missing, or is pickable - there is nothing to'
             + ' DO with mixed');
     }
@@ -1298,9 +1300,10 @@ t('a nucleotide is drawn as a plate or as its atoms, on one row', () => {
     // called "Side chains" that draws the real atoms - two controls for one
     // question, and no way to say "one or the other". Show answers whether;
     // Plate answers which, beside it, on the same row.
-    const html = fs.readFileSync('index.html', 'utf8');
-    if (html.indexOf('id="basesRow"') >= 0) throw new Error('the plate row is back');
-    if (html.indexOf('id="plateShowToggle"') < 0) throw new Error('no Plate switch');
+    if (L.selectionRowIds().includes('basesRow')) {
+        throw new Error('the plate row is back');
+    }
+    if (!L.selectionItems().plateShowToggle) throw new Error('no Plate switch');
     const app = L.app;
     if (!/onToggle\('plateShowToggle', \(p2, v\) => \{/.test(app)
         || !/setSelectionSidechainMode\(p2, v \? 'plate' : 'full'\)/.test(app)) {
@@ -1371,8 +1374,19 @@ t('Unselect still follows the selection, and lives outside the panel', () => {
     if (panelRun([1]).clearAllResidues.disabled !== false) {
         throw new Error('Unselect is disabled with a selection');
     }
+    // ...and the two live in different places, which is the point of the test:
+    // Select all / Unselect / Invert MAKE a selection and belong beside the
+    // sequence; the panel acts ON one and belongs beside the structure. The
+    // panel is built by parts/panel.js now, so the page carries only where it
+    // goes - and `clearAllResidues` is deliberately NOT one of the panel's
+    // rows, which is what a scan of the table can say that a scan of the page
+    // could not.
+    if (L.selectionItems().clearAllResidues) {
+        throw new Error('Unselect moved onto the selection panel - it makes a'
+            + ' selection rather than acting on one');
+    }
     const html = fs.readFileSync('index.html', 'utf8');
-    const panelAt = html.indexOf('id="selectionPanel"');
+    const panelAt = html.indexOf('id="selectionPanelMount"');
     const globalAt = html.indexOf('id="selectionGlobalTools"');
     const seqAt = html.indexOf('id="sequenceHeader"');
     if (panelAt < 0 || globalAt < 0 || seqAt < 0) throw new Error('markup not found');
@@ -1570,7 +1584,7 @@ t('a side chain follows its residue\'s colour until given one of its own', () =>
 // A side chain can be coloured apart from the residue it grows out of, which is
 // what lets a backbone say pLDDT while the side chains say hydrophobicity - two
 // questions on one picture. The storage was here from the day the selection
-// panel was written and src/app/selection.js was the only thing that could
+// panel was written and src/parts/selectpanel.js was the only thing that could
 // reach it; setSidechainColor is the verb every shell gets.
 
 t('hydropathy is five buckets by residue name, and grey for what it cannot say', () => {
@@ -2130,15 +2144,14 @@ t('Within finds neighbours atom to atom, and keeps the seed', () => {
     // Unselect / Invert make or clear a selection and take no setting, while
     // this one acts on the selection like every row of the panel - and what you
     // do with the answer is two rows up.
-    const html = fs.readFileSync('index.html', 'utf8');
-    if (html.indexOf('id="selectNearby"') < 0) throw new Error('no Find control');
-    const panelAt = html.indexOf('id="selectionPanel"');
-    const toolsAt = html.indexOf('id="selectionGlobalTools"');
-    const nearAt = html.indexOf('id="nearbyRow"');
-    if (nearAt < 0 || nearAt < panelAt || (toolsAt > 0 && nearAt > toolsAt)) {
-        throw new Error('the Within row is not in the selection panel');
+    if (!L.selectionItems().selectNearby) throw new Error('no Find control');
+    if (!L.selectionRowIds().includes('nearbyRow')) {
+        throw new Error('the Find row is not in the selection panel');
     }
-    if (html.slice(toolsAt, toolsAt + 900).includes('id="selectNearby"')) {
+    const html = fs.readFileSync('index.html', 'utf8');
+    const toolsAt = html.indexOf('id="selectionGlobalTools"');
+    if (toolsAt >= 0
+        && html.slice(toolsAt, toolsAt + 900).includes('id="selectNearby"')) {
         throw new Error('Find is still beside Select all');
     }
     const app = L.app;
@@ -2226,14 +2239,15 @@ t('side chain to side chain is the other question, and leaves the trace out', ()
     // choice between "any atom" and "side chain" - whose any-atom half is
     // mostly backbone running past - are both gone: Find interactions is 5 A,
     // side chain to side chain.
-    const html = fs.readFileSync('index.html', 'utf8');
-    const rowAt = html.indexOf('id="nearbyRow"');
-    const row = html.slice(rowAt, html.indexOf('</div>', rowAt));
-    if (!row.includes('id="selectNearby"')) throw new Error('the row has no button');
-    for (const gone of ['id="selectNearbyA"', 'id="selectNearbySc"', 'selection-row-rule']) {
-        if (row.includes(gone)) throw new Error(gone + ' is back - the row has settings again');
+    const row = L.selectionRows().find((r) => r.id === 'nearbyRow');
+    if (!row || !row.items.some((i) => i.id === 'selectNearby')) {
+        throw new Error('the row has no button');
     }
-    if (!/>interactions</.test(row) || !/selection-panel-label">Find</.test(row)) {
+    if (row.items.length !== 1) {
+        throw new Error('the Find row has settings again: '
+            + row.items.map((i) => i.id).join(', '));
+    }
+    if (row.label !== 'Find' || row.items[0].label !== 'interactions') {
         throw new Error('the row does not read "Find: interactions"');
     }
     const app = L.app;
@@ -3468,7 +3482,7 @@ t('the backbone hides per selection, and the side chains keep their CA', () => {
     // MAIN CHAIN'S "Show" IS THE BACKBONE. It used to hide the whole residue,
     // with a second toggle beside it for the chain alone - two controls where
     // one says "draw this part", which is what Show means on every other row.
-    if (html.indexOf('id="mainchainPair"') < 0) throw new Error('no Show toggle');
+    if (!L.selectionItems().mainchainPair) throw new Error('no Show toggle');
     if (html.indexOf('id="backboneCheckbox"') >= 0) {
         throw new Error('the global Backbone button is back');
     }
@@ -4317,7 +4331,7 @@ t('contacts still exchange no shadow with the structure', () => {
 // while a chain and residue number name the same pair whatever happens.
 const contactBody = (() => {
     // ...at either indent, for the same reason as panelBody above: these moved
-    // from inside setupEventListeners to the top of src/app/selection.js.
+    // from inside setupEventListeners to the top of src/parts/selectpanel.js.
     const find = (four) => {
         const flat = '\n' + four.replace(/^ {4}/, '');
         const i = appSrc.indexOf(flat);
@@ -4341,7 +4355,7 @@ function contactApi(objectsData) {
     };
     // eslint-disable-next-line no-new-func
     const f = new Function('viewerApi', 'window', 'setStatus',
-        contactBody + '; return { addSelectionContact, removeSelectionContact,'
+        SEL_HOST + contactBody + '; return { addSelectionContact, removeSelectionContact,'
         + ' setSelectionContactColor, setSelectionContactWidth, findContact,'
         + ' contactOwnerOf };'
     )({ renderer }, {}, (msg) => { renderer._status = msg; });
@@ -4620,28 +4634,27 @@ t('each contact carries its own width, and the panel follows it', () => {
 
 
 t('the contact row reads colour, Add, width, bin', () => {
-    const html = fs.readFileSync('index.html', 'utf8');
-    const at = (id) => {
-        const i = html.indexOf('id="' + id + '"');
-        if (i < 0) throw new Error('missing control: ' + id);
-        return i;
-    };
-    const order = ['contactColorButton', 'contactAddButton',
-        'contactWidthSlider', 'contactDeleteButton'].map(at);
-    for (let i = 1; i < order.length; i++) {
-        if (!(order[i] > order[i - 1])) {
-            throw new Error('the contact row is out of order - colour, Add,'
-                + ' the width, and the bin last');
-        }
+    const cRow = L.selectionRows().find((r) => r.id === 'contactRow');
+    if (!cRow) throw new Error('missing the contact row');
+    // the colour item expands into three ids at build time; the ROW's order is
+    // the item order, which is what this is about
+    const got = cRow.items.map((i) => (i.kind === 'color' ? i.id + 'Button' : i.id));
+    const want = ['contactColorButton', 'contactAddButton',
+        'contactWidthSlider', 'contactDeleteButton'];
+    for (const id of want) {
+        if (!got.includes(id)) throw new Error('missing control: ' + id);
     }
+    if (got.join(',') !== want.join(',')) {
+        throw new Error('the contact row is out of order - colour, Add,'
+            + ' the width, and the bin last: ' + got.join(', '));
+    }
+    const slider = cRow.items.find((i) => i.id === 'contactWidthSlider');
     // FULL WIDTH IS THE MAXIMUM: the slider takes a contact DOWN from the width
     // it is drawn at rather than letting it grow past it, so an annotation
     // cannot outweigh the structure it annotates.
-    const tag = html.slice(at('contactWidthSlider') - 200,
-        html.indexOf('>', at('contactWidthSlider')));
-    const max = /max="([0-9.]+)"/.exec(tag);
-    const min = /min="([0-9.]+)"/.exec(tag);
-    if (!max || +max[1] !== 1) {
+    const max = [null, String(slider.max)];
+    const min = [null, String(slider.min)];
+    if (!max[1] || +max[1] !== 1) {
         throw new Error('the width slider maxes at ' + (max && max[1])
             + ' - full width is the maximum, and 1 is full width');
     }
@@ -4847,14 +4860,42 @@ t('the saved config agrees with the live state rather than the starting one', ()
 
 
 t('click-selection is off unless something turns it on', () => {
-    // The Python path loads core/mol.js and the cartoon plugin and nothing
-    // else - no sequence strip, no selection panel - so a click there changed a
-    // selection with no way to see it, act on it, or clear it except by
-    // clicking the background again. Selection is done in Python by scripting,
-    // which does not go through the mouse.
+    // A click that changes a selection with no way to see it, act on it or
+    // clear it except by clicking the background again is worse than no click,
+    // so it is OFF by default and something has to ask.
+    //
+    // WHAT ASKS IS `selection.enabled`, ONE KEY FOR TWO THINGS. It used to be
+    // an assignment in src/app/main.js, because the panel was markup in
+    // index.html and no other shell could ever answer yes; parts/panel.js
+    // builds the panel for all three now, and parts/ui.js mounts it on this
+    // same flag - so the gesture and the control that shows its result cannot
+    // arrive one without the other.
     const src = L.src;
-    if (!/this\.selectionEnabled = false;/.test(src)) {
-        throw new Error('the renderer does not default click-selection to off');
+    if (!/this\.selectionEnabled = !!\(this\.config\?\.selection\?\.enabled\);/
+        .test(src)) {
+        throw new Error('click-selection no longer follows config.selection.enabled');
+    }
+    if (!/selection:\s*\{\s*enabled:\s*false\s*\}/.test(src)) {
+        throw new Error('DEFAULT_CONFIG does not default it to off');
+    }
+    // ...and normalizeConfig has to CARRY it. That function rebuilds its
+    // sections field by field, so a key it does not name is a key it throws
+    // away - which is how `gpu`, `shade` and `align` each shipped dead.
+    if (!/enabled: cfg\.selection\?\.enabled \?\? cfg\.selection/.test(src)) {
+        throw new Error('normalizeConfig drops selection.enabled');
+    }
+    if (!/"selection"/.test(src)) {
+        throw new Error('selection is not in normalizeConfig\'s knownKeys');
+    }
+    // ...and parts/ui.js mounts the panel on the SAME flag, not on its own
+    // question. Two flags is how a panel comes to be shown with the click that
+    // fills it switched off.
+    const ui = L.read('src/parts/ui.js');
+    const mount = ui.slice(ui.indexOf('#selectionPanelMount') - 900,
+        ui.indexOf('#selectionPanelMount'));
+    if (!/renderer\.selectionEnabled/.test(mount)) {
+        throw new Error('the selection panel is mounted without asking whether'
+            + ' a click can fill it');
     }
     // BOTH click entry points must be gated. Anchored on the code that
     // actually mutates the selection, not on the listener registration: there
@@ -4871,9 +4912,10 @@ t('click-selection is off unless something turns it on', () => {
     // the dblclick chain-select, and the mouseup pick and background-clear
     gated('for (let k = 0; k < this.chains.length; k++) {', 900);
     gated('// empty background: deselect, as in PyMOL', 900);
-    // and the web app is what turns it on
-    if (!/renderer\.selectionEnabled = true/.test(appSrc)) {
-        throw new Error('src/app/ never enables click-selection, so the panel'
+    // and the web app is what turns it on - through its config now, which is
+    // also what mounts its panel
+    if (!/selection: \{ enabled: true \}/.test(appSrc)) {
+        throw new Error('src/app/ never asks for click-selection, so the panel'
             + ' can only ever be reached from the sequence strip');
     }
     // the PYTHON page must not: it loads neither src/app/ nor the strip
@@ -5877,7 +5919,7 @@ t('the global Bases checkbox is gone from the style panel', () => {
     }
     // ...and the plate is offered where it belongs: as one of the side-chain
     // modes on the selection panel, not as a row of its own
-    if (!/id="plateShowToggle"/.test(html)) {
+    if (!L.selectionItems().plateShowToggle) {
         throw new Error('the selection tools cannot draw a base plate');
     }
 });
@@ -6284,7 +6326,7 @@ t('the colour picker is organised the way PyMOL organises colours', () => {
 });
 
 t('one verb for the side chains, not one per shell', () => {
-    // 🔴 THE FOURTH COPY WAS IN src/app/selection.js. Same writeGroups walk,
+    // 🔴 THE FOURTH COPY WAS IN src/parts/selectpanel.js. Same writeGroups walk,
     // same _invalidateSegmentCache, same reloadDrawn - written out there
     // because the website had the feature first, and left behind when the verb
     // became the renderer's (parts/sidechains.js) for the notebook and Python
@@ -6294,13 +6336,13 @@ t('one verb for the side chains, not one per shell', () => {
     //
     // The shells may DECIDE (the panel says it in the status bar, the verb
     // throws) but they may not write the set.
-    const sel = fs.readFileSync('src/app/selection.js', 'utf8');
+    const sel = fs.readFileSync('src/parts/selectpanel.js', 'utf8');
     if (!/_setSidechains\(/.test(sel)) {
-        throw new Error('src/app/selection.js does not call the renderer\'s'
+        throw new Error('src/parts/selectpanel.js does not call the renderer\'s'
             + ' _setSidechains - it has grown its own copy again');
     }
     if (/\bobj\.sidechains\s*=/.test(sel)) {
-        throw new Error('src/app/selection.js writes obj.sidechains directly;'
+        throw new Error('src/parts/selectpanel.js writes obj.sidechains directly;'
             + ' the set belongs to parts/sidechains.js');
     }
     // ...and the renderer's verb is the one place that writes it, plus focus,
@@ -6319,10 +6361,10 @@ t('one verb for the side chains, not one per shell', () => {
     // the embed and the notebook had the storage and no door to it - the
     // shape of fault this file already carries four instances of.
     if (!/setSidechainColor\(/.test(sel)) {
-        throw new Error('src/app/selection.js does not call the renderer\'s'
+        throw new Error('src/parts/selectpanel.js does not call the renderer\'s'
             + ' setSidechainColor - the colour walk is back in the shell');
     }
-    for (const f of ['src/app/selection.js', 'src/parts/embed.js',
+    for (const f of ['src/parts/selectpanel.js', 'src/parts/embed.js',
         'src/app/main.js', 'src/app/objects.js']) {
         const src3 = fs.readFileSync(f, 'utf8');
         if (/\bobj(ect)?\.sidechainColor\s*=/.test(src3)) {
@@ -6822,8 +6864,8 @@ t('the Elements row is offered where side chains are', () => {
     const v = elViewer([4]);
     if (!v.hasElementsFor([4])) throw new Error('not offered for a residue with a side chain');
     if (v.hasElementsFor([9])) throw new Error('offered where there is no side chain');
-    const html = fs.readFileSync('index.html', 'utf8');
-    if (!/id="elementsShowToggle"/.test(html)) {
+    const sc = L.selectionRows().find((r) => r.id === 'sidechainRow');
+    if (!sc || !sc.items.some((i) => i.id === 'elementsShowToggle')) {
         throw new Error('the side-chain row has no Elements toggle');
     }
 });
@@ -6862,7 +6904,7 @@ t('the selection toggles show all, none and mixed', () => {
     const run = (picked, shown) => {
         const f = new Function('document', 'getActiveSelection', 'viewerApi',
             'findContact', 'contactSlots',
-            panelBody + '; return updateSelectionToolsState;')(
+            SEL_HOST + panelBody + '; return updateSelectionToolsState;')(
             { getElementById: (id) => nodes[id] || null },
             () => picked,
             { renderer: {
@@ -6929,7 +6971,7 @@ t('the Elements toggle reads on until it is switched off', () => {
     const owners = new Set([1, 2]);
     const run = (objData) => {
         new Function('document', 'getActiveSelection', 'viewerApi', 'findContact',
-            'contactSlots', panelBody + '; return updateSelectionToolsState;')(
+            'contactSlots', SEL_HOST + panelBody + '; return updateSelectionToolsState;')(
             { getElementById: (id) => nodes[id] || null }, () => [1, 2],
             { renderer: {
                 hasSidechainsFor: () => true, hasElementsFor: () => true,
@@ -6979,7 +7021,7 @@ t('the toggles ignore a selected position that no longer exists', () => {
     };
     const run = (picked) => {
         new Function('document', 'getActiveSelection', 'viewerApi', 'findContact',
-            'contactSlots', panelBody + '; return updateSelectionToolsState;')(
+            'contactSlots', SEL_HOST + panelBody + '; return updateSelectionToolsState;')(
             { getElementById: (id) => nodes[id] || null }, () => picked,
             { renderer: {
                 hasSidechainsFor: () => true, hasElementsFor: () => true,
@@ -7033,7 +7075,7 @@ t('the show toggles are disabled along with the rest of the panel', () => {
         contactDeleteButton: { hidden: null },
     };
     const run = (picked) => new Function('document', 'getActiveSelection', 'viewerApi',
-        'findContact', 'contactSlots', panelBody + '; return updateSelectionToolsState;')(
+        'findContact', 'contactSlots', SEL_HOST + panelBody + '; return updateSelectionToolsState;')(
         { getElementById: (id) => nodes[id] || null }, () => picked,
         { renderer: {
             hasSidechainsFor: () => true, hasElementsFor: () => true,
@@ -7059,42 +7101,27 @@ t('the show toggles are disabled along with the rest of the panel', () => {
 // name of its own each is just "Show, checkbox" three times over. The +/- pair
 // carried aria-labels for the same reason and they went with the buttons.
 t('every selection toggle has a name of its own', () => {
-    const html = fs.readFileSync('index.html', 'utf8');
+    const items = L.selectionItems();
     const seen = new Set();
     // THE PAIRS, whose two buttons say only "Show" and "Hide" - three times
     // over on this panel - so the GROUP is what has to carry the name.
-    for (const id of ['sidechainPair', 'mainchainPair']) {
-        const at = html.indexOf('id="' + id + '"');
-        if (at < 0) throw new Error('no ' + id);
-        const tag = html.slice(html.lastIndexOf('<span', at), html.indexOf('>', at));
-        const label = (tag.match(/aria-label="([^"]+)"/) || [])[1];
-        if (!label) throw new Error(id + ' has no aria-label: its buttons are'
-            + ' announced by their visible text, and those repeat');
-        if (seen.has(label)) throw new Error('two pairs share the name "' + label + '"');
+    // ...and the switches, which say one word each and repeat it in the same
+    // way. Every one of them is announced by its aria, so every one must have
+    // one and no two may share it.
+    for (const id of ['sidechainPair', 'mainchainPair', 'elementsShowToggle',
+        'plateShowToggle']) {
+        if (!items[id]) throw new Error('no ' + id);
+        const label = items[id].aria;
+        if (!label) throw new Error(id + ' has no aria-label: it is announced by'
+            + ' its visible text, and those repeat across the panel');
+        if (seen.has(label)) {
+            throw new Error('two controls share the name "' + label + '"');
+        }
         seen.add(label);
     }
-    // ...and the switches that remain, which are announced the same way
-    for (const id of ['elementsShowToggle']) {
-        const m = html.match(new RegExp('<input[^>]*id="' + id + '"[^>]*>'));
-        if (!m) throw new Error('no input for ' + id);
-        const label = (m[0].match(/aria-label="([^"]+)"/) || [])[1];
-        if (!label) throw new Error(id + ' has no aria-label');
-        if (seen.has(label)) throw new Error('two controls share the name "' + label + '"');
-        seen.add(label);
-    }
-    // ...and the Plate switch, which is one of them and needs a name of its
-    // own: three of these say only "Show" or one word, so the visible text
-    // cannot be what announces them.
-    const plate = html.match(/<input[^>]*id="plateShowToggle"[^>]*>/);
-    if (!plate) throw new Error('no plateShowToggle');
-    const plateName = (plate[0].match(/aria-label="([^"]+)"/) || [])[1];
-    if (!plateName) throw new Error('the Plate switch has no aria-label');
-    if (seen.has(plateName)) throw new Error('the Plate switch shares a name');
     // A LIST OF STYLES WITH "NOT DRAWN" IN IT is what this row stopped being:
     // Show says whether, Plate says which.
-    if (/id="sidechainModeSelect"/.test(html)) {
-        throw new Error('the three-way menu is back');
-    }
+    if (items.sidechainModeSelect) throw new Error('the three-way menu is back');
 });
 
 // ---------------------------------------------------------------------------
@@ -9855,6 +9882,52 @@ t('the picker is only taken from the document when there is one of them', () => 
     }
     if (!/all\.length === 1 \? all\[0\] : null/.test(call)) {
         throw new Error('the fallback does not check that there is exactly one');
+    }
+});
+
+// ---------------------------------------------------------------------------
+// 🔴 CONECT IS FIXED-WIDTH, AND THE PARTNER FIELDS STARTED ONE COLUMN LATE.
+//
+// The record is `CONECT` in 1-6, this atom's serial in 7-11, and up to four
+// partners in 12-16, 17-21, 22-26, 27-31. The reader took the partners from
+// column 13 onward, and `trim()` covered for it up to 9,999 atoms: a field is
+// RIGHT-justified, so a four-digit serial sits at 12..16 with a space in front
+// and reading 12..17 returns the same number with a space after.
+//
+// At five digits there is no padding left to lose. `12346` written at 11..16
+// reads as `23461` - the leading digit gone and the first digit of the next
+// partner picked up. That is not a silent drop: on the fixture below, serial
+// 10000's partner comes back as 1, an atom that in a real structure EXISTS and
+// is somewhere else entirely, so a stick is drawn straight across the picture.
+//
+// Every structure past 9,999 atoms, which is most of the ones large enough to
+// carry CONECT records at all.
+t('CONECT partners are read from the columns the format puts them in', () => {
+    const ctx = vm.createContext({ console });
+    ctx.window = ctx; ctx.self = ctx;
+    vm.runInContext(L.utils, ctx, { filename: 'utils' });
+    const parsePDB = vm.runInContext('parsePDB', ctx);
+    const conect = (a, b) => 'CONECT' + String(a).padStart(5) + String(b).padStart(5);
+
+    // FOUR DIGITS AND FIVE. The four-digit case is what made this survive, so
+    // it is in here as the control: a fix that broke it would be no better.
+    for (const base of [1, 10000]) {
+        const map = parsePDB([conect(base, base + 1),
+                              conect(base + 1, base + 2), 'END'].join('\n')).conectMap;
+        const got = [...map].map(([k, v]) => k + '->' + v.join(',')).join(' ');
+        const want = `${base}->${base + 1} ${base + 1}->${base + 2}`;
+        if (got !== want) {
+            throw new Error(`serials from ${base} read as "${got}", expected "${want}"`);
+        }
+    }
+    // ...and all FOUR partner fields, on one line, which is what an atom with
+    // four bonds writes. A reader off by one column loses the fourth entirely,
+    // because its field would end past column 31.
+    const four = 'CONECT' + [500, 501, 502, 503, 504].map(
+        (n) => String(n).padStart(5)).join('');
+    const partners = parsePDB(four + '\nEND').conectMap.get(500) || [];
+    if (partners.join(',') !== '501,502,503,504') {
+        throw new Error('a four-partner CONECT read as ' + partners.join(','));
     }
 });
 

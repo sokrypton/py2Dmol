@@ -160,6 +160,26 @@ function show(target, text, options) {
             // for is settled below, by hiding the panel when they did not.
             controls: !!(opts.controls || wantsPlay),
         }),
+        // THE PANEL AND THE CLICK, one key, AND IT HAS TO BE IN THE CONFIG.
+        // `renderer.selectionEnabled = opts.select !== false` below is the same
+        // decision, but it runs AFTER the viewer is built - and parts/ui.js
+        // mounts the selection panel during that build, on this flag. Set only
+        // there, an embed with chrome came up with picking on and no panel to
+        // show what was picked.
+        //
+        // 🔴 `opts.controls`, NOT `wantsChrome`. The two differ for a PLAY-ONLY
+        // embed: `wantsChrome` is also true when `play` was asked for, because
+        // the play strip lives in the same shell - and the line below then
+        // HIDES the whole control column, which is where the panel goes. So a
+        // play-only embed mounted a selection panel into a hidden box, and
+        // being in the document was enough to do damage: the panel is looked up
+        // by id, so the FIRST one on the page is the one every click drove.
+        // Measured on embed.html, where clicking the controls example opened
+        // the play example's invisible panel five sections up.
+        //
+        // A bare canvas still PICKS - the halo paints on it and select() is on
+        // the API - and has nowhere to put a panel, which is the same split.
+        selection: { enabled: !!opts.controls && opts.select !== false },
     });
     delete config.width;
     delete config.height;
@@ -261,6 +281,7 @@ const SHELL = (id) => `
               title="Capture an image or a video">Capture</button>
     </div>
     <div id="stylePanelMount"></div>
+    <div id="selectionPanelMount"></div>
   </div>
 </div>`;
 
@@ -604,7 +625,7 @@ function attach(renderer) {
     // B" drew chain B alone.
     //
     // hide and show say what they do. This is the web app's own model -
-    // app/selection.js setSelectionVisible - which starts from what is visible
+    // parts/selectpanel.js setSelectionVisible - which starts from what is visible
     // now, adds or removes, DERIVES THE CHAIN SET from what survives, and
     // switches to the explicit mode. The chain derivation is not optional: an
     // empty chain set means "all chains" under the default mode and "no chains"

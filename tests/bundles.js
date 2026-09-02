@@ -226,6 +226,74 @@ for (const doc of ['README.md', 'embed.html', 'CHANGELOG.md']) {
         + ' (unstripped is 659 and 1042)');
 }
 
+// 🔴 A RAW BACKTICK IN parts/panel.js's CSS LITERAL, WHICH `node -c` CANNOT SEE.
+//
+// SELECTION_PANEL_CSS is a template literal holding forty-six commented CSS
+// rules, and a comment that quotes a class name in backticks - the way every
+// other comment in this project does - ENDS THE LITERAL. What follows parses as
+// JavaScript, so the file is still syntactically valid and `node -c` passes;
+// what it does at load time is throw `ReferenceError: box is not defined`, and
+// the panel then has no stylesheet at all. Three times now: twice while the
+// block was being written, once more when a comment was edited.
+//
+// Evaluating the module is the check. It costs a millisecond and it is the only
+// thing that distinguishes "parses" from "runs".
+{
+    const sandbox = {
+        window: {}, console,
+        document: {
+            createElement: () => ({ setAttribute() {}, appendChild() {} }),
+            createDocumentFragment: () => ({ appendChild() {} }),
+        },
+    };
+    // 🔴 THE BACKTICK CHECK COMES FIRST, and that ordering is the point. The
+    // evaluation below names the symptom - `Unexpected identifier 'flex'` - and
+    // this names the cause at the line, which is the difference between a
+    // puzzle and a one-line fix. Third time this has been hit.
+    {
+        const text = fs.readFileSync('src/parts/panel.js', 'utf8');
+        const at = text.indexOf('const SELECTION_PANEL_CSS = `');
+        const end = text.indexOf('\n`;', at);
+        if (at >= 0 && end > at) {
+            const body = text.slice(at + 'const SELECTION_PANEL_CSS = `'.length, end);
+            const stray = body.indexOf('`');
+            if (stray >= 0) {
+                const line = body.slice(0, stray).split('\n').length;
+                bad(`SELECTION_PANEL_CSS has a raw backtick ${line} lines in:`
+                    + ` "${body.slice(Math.max(0, stray - 40), stray + 20).split('\n').pop()}"`
+                    + ' - it ends the template literal, and what follows is read'
+                    + ' as JavaScript. Quote class names with \'\' in this block.');
+            }
+        }
+    }
+
+    sandbox.window.window = sandbox.window;
+    vm.createContext(sandbox);
+    try {
+        vm.runInContext(fs.readFileSync('src/parts/panel.js', 'utf8'),
+                        sandbox, { filename: 'panel' });
+    } catch (e) {
+        bad('src/parts/panel.js parses but does not RUN: ' + e.message
+            + ' - a raw backtick in SELECTION_PANEL_CSS ends the template'
+            + ' literal, and what follows is read as code');
+    }
+    const panel = sandbox.window.py2dmolPanel;
+    if (!panel || typeof panel.selectionPanelCSS !== 'function') {
+        bad('parts/panel.js published no selectionPanelCSS');
+    } else {
+        const css = panel.selectionPanelCSS('');
+        if (css.length < 5000) {
+            bad(`the selection panel's stylesheet is ${css.length} bytes - it was`
+                + ' cut short, which is what a stray backtick does to it');
+        }
+        // ...and the SCOPE token is substituted, not left in the output
+        if (/\bSCOPE\b/.test(css)) bad('selectionPanelCSS left its SCOPE token in');
+        if (!css.includes(':where(.selection-panel)')) {
+            bad('the section form is gone from the shared stylesheet');
+        }
+    }
+}
+
 if (!Object.keys(EXPECT).length) bad('nothing is checked - this would pass forever');
 console.log(fail ? `${fail} problems` : 'ok');
 process.exit(fail ? 1 : 0);

@@ -106,6 +106,10 @@ MODULES = [
     Mod('multi',      'src/parts/multi.js',     ['web']),
     # ...the style panel's rows, as data. Before ui.js, which mounts it.
     Mod('panel',      'src/parts/panel.js',     ['web']),
+    # ...the selection panel's verbs. They were under src/app/, so only the
+    # website could reach them; the DOM ids it looks up are panel.js's, so it
+    # works in whichever shell mounted the panel.
+    Mod('selpanel',   'src/parts/selectpanel.js', ['web']),
     # ...turning a structure to face the reader. Needs src/io/math.js, which is
     # why that file is no longer web-only.
     Mod('orient',     'src/parts/orient.js',    ['web']),
@@ -125,7 +129,6 @@ MODULES = [
     # everything here is a top-level function called after the page is up - but
     # main.js declares the shared state, so it goes first.
     Mod('app',        'src/app/main.js',                      ['web']),
-    Mod('app-select', 'src/app/selection.js',                 ['web']),
     Mod('app-objects','src/app/objects.js',                   ['web']),
     Mod('app-fetch',  'src/app/fetch.js',                     ['web']),
     Mod('app-scatter','src/app/scatter.js',                   ['web']),
@@ -151,8 +154,8 @@ BUNDLES = {
     # two artefacts and two entries in every list, to save five per cent of one
     # download, was not a trade worth keeping.
     # NO 'mol-align'. parts/align.js is the renderer's side of TM-align, and in
-    # a notebook it is dead twice over: the only caller is app/selection.js,
-    # which is web-only, and the engine it needs - align/align.js - cannot be
+    # a notebook it is dead twice over: its only caller is the Align row of
+    # parts/selectpanel.js, which hides itself when the aligner is absent, and the engine it needs - align/align.js - cannot be
     # concatenated into any bundle at all (see Mod.standalone). Every method it
     # adds throws "the aligner is not loaded" the moment it is reached.
     #
@@ -160,8 +163,8 @@ BUNDLES = {
     # INLINED INTO THE .ipynb, uncompressed, once per show() cell. Bytes here
     # are paid again for every viewer in the document.
     'notebook': ['math', 'sidechains', 'bonds', 'svg', 'objstate', 'viewport', 'shadow', 'clip', 'focus',
-                 'mol-sidechains', 'capture', 'savepanel', 'multi', 'panel', 'orient',
-                 'ui', 'mol', 'geom', 'paintgl', 'paint2d', 'pae', 'scatter'],
+                 'mol-sidechains', 'capture', 'savepanel', 'multi', 'panel', 'selpanel',
+                 'orient', 'ui', 'mol', 'geom', 'paintgl', 'paint2d', 'pae', 'scatter'],
     # ONE NOTEBOOK BUNDLE, WITH BOTH PAINTERS. There were three - GPU, 2D, and
     # a tube-only one without the cartoon geometry - and they existed for one
     # reason: this file is inlined into the .ipynb, uncompressed, ONCE PER
@@ -184,9 +187,9 @@ BUNDLES = {
     # and one gpu=False used to carry 429 + 384 KB of two different libraries,
     # neither of which could serve the other.
     'web': ['math', 'sidechains', 'bonds', 'parse', 'gif', 'svg', 'objstate', 'viewport', 'shadow', 'clip', 'focus',
-            'mol-sidechains', 'capture', 'savepanel', 'mol-align', 'multi', 'panel', 'orient', 'ui', 'mol',
+            'mol-sidechains', 'capture', 'savepanel', 'mol-align', 'multi', 'panel', 'selpanel', 'orient', 'ui', 'mol',
             'geom', 'paint2d', 'paintgl', 'pae', 'scatter', 'seq', 'msa',
-            'app', 'app-select', 'app-objects', 'app-fetch', 'app-scatter',
+            'app', 'app-objects', 'app-fetch', 'app-scatter',
             'app-session'],
     # ONE PAINTER PER BUNDLE, AND OUTSIDE THE WEBSITE IT IS THE GPU.
     #
@@ -226,8 +229,8 @@ BUNDLES = {
     # the notebook's own Style panel and is wired by wireViewerUI, rather than
     # growing a third set of controls to keep in step. 25 KB for exact parity.
     'embed': ['math', 'sidechains', 'bonds', 'parse', 'objstate', 'viewport', 'shadow', 'clip', 'focus',
-              'mol-sidechains', 'capture', 'savepanel', 'multi', 'panel', 'orient', 'ui', 'embed',
-              'mol', 'geom', 'paintgl'],
+              'mol-sidechains', 'capture', 'savepanel', 'multi', 'panel', 'selpanel',
+              'orient', 'ui', 'embed', 'mol', 'geom', 'paintgl'],
     # ...and the same embed drawn on the CPU. THE SECOND ARTEFACT THAT EARNS ITS
     # KEEP, where embed-tube did not: it draws the same picture from the same
     # geometry - one geometry, two painters - so nothing is given up but speed on
@@ -240,7 +243,52 @@ BUNDLES = {
     # which painter is present and refuses a request for the other one.
     'embed.cpu': ['math', 'sidechains', 'bonds', 'parse', 'objstate', 'svg', 'viewport', 'shadow',
                   'clip', 'focus', 'mol-sidechains', 'capture', 'savepanel', 'multi',
-                  'panel', 'orient', 'ui', 'embed', 'mol', 'geom', 'paint2d'],
+                  'panel', 'selpanel', 'orient', 'ui', 'embed', 'mol', 'geom', 'paint2d'],
+    # THE WEBSITE, PLUS THE EMBED API. Set-for-set this is exactly `web` plus
+    # ONE module - parts/embed.js - so a page gets the whole app (the panels,
+    # the sessions, the ingestion) AND can call py2Dmol.show / frameFromText /
+    # framesFromText / superpose directly. 755 KB against web's 737: the embed
+    # half costs 18 KB, because everything it needs was already there for the
+    # app. LocalFold wants both halves - the app to ingest a prediction as
+    # files, the embed helpers to morph one conformation into another
+    # (framesFromText parses the fourteen-model walk once, then replaceFrame
+    # steps it, which is the rule on animations against trajectories).
+    #
+    # 🔴 THE BUNDLE IS THE EASY HALF, AND HERE IT IS THE WHOLE APP'S MARKUP,
+    # NOT JUST A PANEL'S. Every panel finds its own DOM and does nothing until
+    # it exists - `#paeContainer` + `#paeCanvas`, `#scatterContainer` +
+    # `#scatterCanvas`, `#sequence-viewer-container` + `#sequenceView`, eight
+    # controls for the MSA - and src/app/ looks up the website's controls the
+    # same way. Loading this over a bare canvas buys a bigger download and the
+    # same picture; a host page is hosting index.html's markup, or the parts of
+    # it whose features it wants. The shell in parts/embed.js builds none of it.
+    #
+    # AND THE STRIP AND THE MSA LOOK THEIR ELEMENTS UP ON `document`, not
+    # inside the viewer's own container - so two of these on one page would
+    # find each other's. The PAE panel scopes to the container and falls back
+    # to document, which is the pattern the other two need before an embed can
+    # honestly have more than one.
+    #
+    # THE HOST'S TWO DOORS INTO THE APP, both in src/app/main.js:
+    # `py2dmolLoadFiles(files, loadAsFrames, groupName)` is processFiles, which
+    # already took VIRTUAL files - `{name, readAsync}` - so a page hands over a
+    # structure it computed in memory rather than faking a File and replaying a
+    # change event; and `py2dmolReadyMessage` replaces "Upload a file or fetch
+    # an ID", which names two controls a host page may not have.
+    #
+    # 🔴 AND IT CARRIES 'mol-align', SO THE PAGE MUST LOAD align/align.js
+    # ITSELF - exactly as index.html does, and for the reason no bundle may
+    # contain it: it starts its Worker by having the worker importScripts
+    # ITSELF, found through document.currentScript.src, so concatenated it has
+    # no URL of its own and TM-align silently runs on the main thread. Every
+    # method mol-align adds throws until that second script is loaded. This is
+    # the one bundle whose page needs two <script> tags, and it is the same two
+    # index.html has.
+    'full': ['math', 'sidechains', 'bonds', 'parse', 'gif', 'svg', 'objstate', 'viewport', 'shadow', 'clip', 'focus',
+             'mol-sidechains', 'capture', 'savepanel', 'mol-align', 'multi', 'panel', 'selpanel', 'orient', 'ui', 'embed', 'mol',
+             'geom', 'paint2d', 'paintgl', 'pae', 'scatter', 'seq', 'msa',
+             'app', 'app-objects', 'app-fetch', 'app-scatter',
+             'app-session'],
 }
 
 BUNDLE_DIR = 'py2Dmol/resources/bundles'
@@ -363,6 +411,14 @@ def bundle_paths(target):
 # one file. parts/embed.js also carries big template literals - its HTML shell
 # and the scoped stylesheet - and collapsing whitespace inside markup changes
 # what the text nodes say.
+# 🔴 A TEMPLATE LITERAL CAN CONTAIN AN ESCAPED BACKTICK, and `[^`]*` ends at
+# it. The panel's stylesheet is generated text and its comments quoted class
+# names in backticks; the naive pattern cut the literal in half there, so the
+# strip ran over the first fragment, left the rest, and the boundary it thought
+# it had was inside a string. Nothing throws - the bundle is still valid JS -
+# and the check that caught it was the shader one, counting indented lines.
+TEMPLATE_LITERAL = r'`(?:\\.|[^`\\])*`'
+
 GLSL_MARKS = ('#version', 'void main', 'gl_Position', 'gl_FragColor',
               'uniform ', 'varying ', 'attribute ', 'precision ')
 
@@ -379,12 +435,49 @@ def strip_glsl(src):
         t = re.sub(r' *\n *', '\n', t)
         t = re.sub(r'\n{2,}', '\n', t)
         return t
-    return re.sub(r'`[^`]*`', one, src, flags=re.S)
+    return re.sub(TEMPLATE_LITERAL, one, src, flags=re.S)
+
+
+# ...AND THE SELECTION PANEL'S STYLESHEET IS THE SAME PROBLEM, ONE FILE ALONG.
+#
+# parts/panel.js carries the panel's forty-six rules as a template literal -
+# they used to be src/app/style.css and could not travel from there - and they
+# are commented and indented like everything else here. 13.0 KB of text that
+# terser copies through byte for byte, and the NOTEBOOK bundle is inlined into
+# the .ipynb once per document, so those bytes are paid for real.
+#
+# Only a literal that announces itself as this stylesheet is touched: `SCOPE`
+# is the scoping token selectionPanelCSS() substitutes and appears nowhere
+# else in the tree. CSS is whitespace-insensitive throughout - there is no
+# preprocessor line rule as there is in GLSL - so the newlines go too.
+CSS_MARK = 'SCOPE .selection-panel'
+
+
+def strip_css(src):
+    """Comments and layout out of the panel stylesheet literal."""
+    def one(m):
+        t = m.group(0)
+        if len(t) < 400 or CSS_MARK not in t:
+            return t
+        t = re.sub(r'/\*.*?\*/', '', t, flags=re.S)
+        t = re.sub(r'\s+', ' ', t)
+        # 🔴 NOT AROUND `:`. `:where(.selection-panel) :where(.btn)` is a
+        # DESCENDANT selector, and closing the space before that second colon
+        # makes it a compound one - a different rule, silently, in the bundle
+        # only. The saving from a colon is a byte a rule; the cost is the whole
+        # panel's skin. Braces and semicolons have no such reading.
+        t = re.sub(r'\s*([{};,])\s*', r'\1', t)
+        return t
+    return re.sub(TEMPLATE_LITERAL, one, src, flags=re.S)
 
 
 def source_for_bundle(path):
     text = open(os.path.join(ROOT, path)).read()
-    return strip_glsl(text) if path.endswith('cartoon/paintgl.js') else text
+    if path.endswith('cartoon/paintgl.js'):
+        return strip_glsl(text)
+    if path.endswith('parts/panel.js'):
+        return strip_css(text)
+    return text
 
 
 def build(targets=None):
@@ -485,8 +578,7 @@ def check():
     # or is web-app-only. A file nobody ships is a file nobody notices rotting.
     bundled = {n for names in BUNDLES.values() for n in names}
     WEB_ONLY = {'gif', 'seq', 'msa', 'app', 'app-objects',
-                'app-fetch', 'app-scatter', 'app-session',
-                'app-select'}
+                'app-fetch', 'app-scatter', 'app-session'}
     for m in MODULES:
         if m.name in bundled or m.standalone or m.name in WEB_ONLY:
             continue

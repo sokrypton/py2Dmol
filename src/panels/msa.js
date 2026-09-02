@@ -694,6 +694,399 @@
         return total > 0 ? matches / total : 0;
     }
 
+    // ============================================================================
+    // PAIRED ALIGNMENTS: ONE QUERY, SEVERAL CHAINS
+    // ============================================================================
+    //
+    // A multimer alignment is the chains' queries concatenated, and row s is one
+    // organism ACROSS all of them - which is the statement the whole thing
+    // exists to make, and the one that dies the moment the alignment is cut
+    // into per-chain pieces. `msaData.chainBlocks` is where each chain's
+    // columns are: [{chain, start, end, seqStart, length}], half-open, in query
+    // columns. Absent means an ordinary single-chain alignment and every rule
+    // below is the arithmetic that was already here.
+    //
+    // 🔴 AND COVERAGE AND IDENTITY ARE MEASURED OVER THE BLOCKS A ROW OCCUPIES,
+    // NOT OVER THE WHOLE WIDTH. Half the rows of a paired MSA are UNPAIRED by
+    // construction - they are one chain's homolog with the other chain's
+    // columns all gaps - so on the full width a two-chain alignment scores
+    // every one of them at most 0.5, and the coverage filter's DEFAULT of 0.5
+    // deletes the entire unpaired block. The staircase that is the picture
+    // people come here for would be filtered away before it was drawn. Scored
+    // over its own blocks, a row scores exactly what it would have scored in
+    // that chain's own alignment, which is what keeps the filter meaning the
+    // same thing either side of the split.
+
+    /** Which blocks this row has any residue in. */
+    function blockOccupancy(sequence, blocks) {
+        const occupancy = [];
+        for (const block of blocks) {
+            let occupied = false;
+            const end = Math.min(block.end, sequence.length);
+            for (let i = block.start; i < end; i++) {
+                if (!isGapResidue(sequence[i])) { occupied = true; break; }
+            }
+            occupancy.push(occupied);
+        }
+        return occupancy;
+    }
+
+    /**
+     * The columns a row is scored over: its own blocks, ANDed with a selection.
+     *
+     * Cached by occupancy pattern, because a two-chain alignment has three of
+     * them and ten thousand rows - building an array per row per filter pass is
+     * the difference between a mask and a memory leak with a heartbeat.
+     */
+    const occupancyMaskCache = new WeakMap();
+    function occupancyMask(occupancy, blocks, queryLength) {
+        let cache = occupancyMaskCache.get(blocks);
+        if (!cache) { cache = new Map(); occupancyMaskCache.set(blocks, cache); }
+        const key = occupancy.map(o => (o ? '1' : '0')).join('');
+        let mask = cache.get(key);
+        if (mask) return mask;
+        mask = new Array(queryLength).fill(false);
+        blocks.forEach((block, i) => {
+            if (!occupancy[i]) return;
+            for (let c = block.start; c < block.end && c < queryLength; c++) mask[c] = true;
+        });
+        cache.set(key, mask);
+        return mask;
+    }
+
+    /** A row's scoring mask, or the selection mask unchanged when unpaired. */
+    function scoringMaskFor(seq, blocks, queryLength, selectionMask = null) {
+        if (!blocks || blocks.length < 2) return selectionMask;
+        const occupancy = seq.blockOccupancy || blockOccupancy(seq.sequence || '', blocks);
+        const mask = occupancyMask(occupancy, blocks, queryLength);
+        if (!selectionMask) return mask;
+        const combined = new Array(queryLength);
+        for (let i = 0; i < queryLength; i++) combined[i] = mask[i] && !!selectionMask[i];
+        return combined;
+    }
+
+    /**
+     * Record each row's blocks, and score it over them. Idempotent.
+     *
+     * Called on BOTH `sequences` and `sequencesOriginal`: sortByIdentity copies
+     * its records, so the two arrays hold different objects, and the filter
+     * pipeline reads the ORIGINAL one - annotating only what is on screen would
+     * be scored correctly until the first filter pass and wrongly after it.
+     */
+    function annotateChainBlocks(msaData) {
+        const blocks = msaData?.chainBlocks;
+        if (!blocks || blocks.length < 2) return msaData;
+        const queryLength = msaData.queryLength || msaData.querySequence?.length || 0;
+        const query = msaData.querySequence || '';
+        for (const list of [msaData.sequences, msaData.sequencesOriginal]) {
+            if (!Array.isArray(list)) continue;
+            for (const seq of list) {
+                const sequence = seq.sequence || '';
+                const occupancy = blockOccupancy(sequence, blocks);
+                seq.blockOccupancy = occupancy;
+                seq.pairedBlocks = occupancy.reduce((n, o) => n + (o ? 1 : 0), 0);
+                seq.isPaired = seq.pairedBlocks > 1;
+                const mask = scoringMaskFor(seq, blocks, queryLength);
+                seq.coverage = computeSequenceCoverage(sequence, queryLength, mask);
+                seq.identity = computeSequenceIdentity(sequence, query, mask);
+            }
+        }
+        return msaData;
+    }
+
+    /** The chains a paired alignment spans, or null. */
+    function chainsOfBlocks(msaData) {
+        const blocks = msaData?.chainBlocks;
+        return blocks && blocks.length > 1 ? blocks.map(b => b.chain) : null;
+    }
+
+    // ============================================================================
+    // PAIRING PER-CHAIN ALIGNMENTS BY SPECIES
+    // ============================================================================
+    //
+    // 🔴 THE ALPHAFOLD 3 SERVER SHIPS ITS PAIRING AS FOUR FILES, AND THEY ARE
+    // NOT ROW-ALIGNED. A download carries `*_paired_msa_chains_a.a3m` and
+    // `*_paired_msa_chains_b.a3m` beside the unpaired pair, and the obvious
+    // reading - row s of one is row s of the other - is wrong: measured on a
+    // two-chain job they are 1,849 and 933 rows and their species differ from
+    // the first row down. The pairing is expressed in the HEADERS, as the
+    // UniProt organism id, and it is recovered the way AlphaFold's own
+    // featuriser recovers it (`pair_msa_sequences` matches on species).
+    //
+    // What comes out is the same concatenated alignment a ColabFold complex
+    // search returns - query row, paired rows, then the unpaired ones block
+    // diagonally - so everything downstream (the boundaries, the paired-first
+    // ordering, the block-aware scores, the chain-aware selection) is the code
+    // that was already here.
+
+    /**
+     * The organism an alignment row belongs to, or null.
+     *
+     * 🔴 THE UNIPROT ENTRY NAME, NOT `OX=`, BECAUSE THAT IS WHAT ALPHAFOLD
+     * PAIRS ON. `msa_features.extract_species_ids` reads the mnemonic out of
+     * `sp|P56422|MOAE_HELPY` and gets `HELPY`; `OX=` is the numeric taxon and
+     * separates STRAINS - 85962, 102617 and 210 are three ids for Helicobacter
+     * pylori, and on one real two-chain download pairing by them found 514
+     * "species" where the model saw far fewer and paired more deeply. A viewer
+     * that pairs differently from the model shows a picture of an alignment
+     * nothing was folded from.
+     *
+     * `OX=`/`TaxID=` remains as a FALLBACK and only that: it is what a header
+     * with no UniProt entry name can still answer, and it is never consulted
+     * when the entry name is there.
+     */
+    const UNIPROT_ENTRY_NAME = /(?:tr|sp)\|(?:[A-Z0-9]{6,10})(?:_\d+)?\|(?:[A-Z0-9]{1,10}_)([A-Z0-9]{1,5})/;
+    function speciesOfRow(row) {
+        const header = typeof row === 'string' ? row : (row?.description || row?.name);
+        if (!header) return null;
+        const entry = UNIPROT_ENTRY_NAME.exec(header);
+        if (entry) return entry[1];
+        const taxon = /(?:^|[\s|])OX=(\d+)/.exec(header) || /TaxID=(\d+)/.exec(header);
+        return taxon ? taxon[1] : null;
+    }
+
+    /** Rows grouped by species, in file order - which is similarity order. */
+    function rowsBySpecies(rows) {
+        const bySpecies = new Map();
+        rows.forEach((row, rank) => {
+            const species = speciesOfRow(row);
+            if (species === null) return;
+            if (!bySpecies.has(species)) bySpecies.set(species, []);
+            bySpecies.get(species).push({ ...row, rank });
+        });
+        return bySpecies;
+    }
+
+    /** Every row of an alignment except the query. */
+    function rowsWithoutQuery(msaData) {
+        if (!msaData) return [];
+        const rows = msaData.sequencesOriginal || msaData.sequences || [];
+        const queryIndex = msaData.queryIndex || 0;
+        return rows.filter((row, i) => i !== queryIndex && !isQuerySequence(row.name));
+    }
+
+    /**
+     * A paired alignment with its unpaired rows taken out.
+     *
+     * 🔴 A PAIRED VIEW ANSWERS "WHICH ORGANISMS HAVE BOTH CHAINS", and the
+     * unpaired rows do not answer it. They are half a row each - one chain's
+     * homolog with the other chain's columns gapped - so in the coverage plot
+     * they are a block-diagonal staircase under the thing you came to look at,
+     * and in the conservation they are depth that says nothing about the
+     * interface.
+     *
+     * NOTHING IS LOST BY DROPPING THEM HERE, and that is the condition on this
+     * being right: every chain's own alignment is registered beside the paired
+     * one - supplied by the source, or sliced off the concatenation by
+     * splitByChainBlocks - so the full depth is one entry away in the picker.
+     * A row counts as paired when it occupies more than one block, which on
+     * three chains includes a row that has two of them.
+     */
+    function pairedRowsOnly(msaData) {
+        const blocks = msaData?.chainBlocks;
+        if (!blocks || blocks.length < 2) return msaData;
+        const keep = (rows) => (rows || []).filter((row, i) =>
+            i === (msaData.queryIndex || 0) || isQuerySequence(row.name) || row.pairedBlocks > 1);
+        const out = {
+            ...msaData,
+            sequences: keep(msaData.sequences),
+            sequencesOriginal: keep(msaData.sequencesOriginal || msaData.sequences)
+        };
+        // The properties were computed over every row; they are a different
+        // number over these.
+        out.frequencies = null;
+        out.entropy = null;
+        out.logOdds = null;
+        return out;
+    }
+
+    /**
+     * A concatenated alignment cut back into one alignment per chain.
+     *
+     * The columns of a block, with the rows that have nothing in them dropped -
+     * which for the unpaired block is most of them. It is what makes
+     * `pairedRowsOnly` safe: the rows it removes are still here, at their own
+     * chain's width, where they mean what they always meant.
+     */
+    function splitByChainBlocks(msaData) {
+        const blocks = msaData?.chainBlocks;
+        if (!blocks || blocks.length < 2) return [];
+        const rows = msaData.sequencesOriginal || msaData.sequences || [];
+        const queryIndex = msaData.queryIndex || 0;
+        return blocks.map((block) => {
+            const slice = (sequence) => (sequence || '').slice(block.start, block.end);
+            const query = slice(msaData.querySequence);
+            const sequences = [{ name: 'query', sequence: query }];
+            const seen = new Set([query]);
+            rows.forEach((row, i) => {
+                if (i === queryIndex || isQuerySequence(row.name)) return;
+                const sequence = slice(row.sequence);
+                if (!/[^-]/.test(sequence) || seen.has(sequence)) return;
+                seen.add(sequence);
+                sequences.push({ name: row.name, sequence });
+            });
+            return {
+                chain: block.chain,
+                msaData: {
+                    sequences,
+                    sequencesOriginal: sequences,
+                    querySequence: query,
+                    queryLength: query.length,
+                    queryIndex: 0
+                }
+            };
+        });
+    }
+
+    /**
+     * Per-chain alignments as ONE alignment over the concatenated query.
+     *
+     * @param {{chain: string, paired: Object|null, unpaired: Object|null}[]} perChain
+     *   in the order the chains appear in the structure
+     * @returns {Object|null} an msaData carrying chainBlocks, or null
+     */
+    function combinePairedAlignments(perChain) {
+        if (!Array.isArray(perChain) || perChain.length < 2) return null;
+        const parts = perChain.map((part) => ({
+            ...part, any: part.paired || part.unpaired
+        }));
+        if (parts.some((part) => !part.any || !part.any.querySequence)) return null;
+
+        const widths = parts.map((part) => part.any.queryLength || part.any.querySequence.length);
+        const gaps = widths.map((width) => '-'.repeat(width));
+        const querySequence = parts.map((part) => part.any.querySequence).join('');
+
+        let start = 0;
+        const chainBlocks = parts.map((part, i) => {
+            const block = {
+                chain: part.chain, start, end: start + widths[i],
+                seqStart: start, length: widths[i]
+            };
+            start += widths[i];
+            return block;
+        });
+
+        // ...one row per chain, in block order, with gaps for the chains this
+        // row says nothing about.
+        //
+        // 🔴 EXCEPT THAT COPIES OF ONE CHAIN ARE NOT SEPARATE CHAINS. A
+        // homo-oligomer is searched ONCE and every copy gets the same
+        // alignment, so row r already IS one organism across all of them -
+        // AlphaFold says the same thing by running _merge_homomers_dense_msa
+        // before it block-diagonalises anything. Spreading such a row into one
+        // block and gapping the others would claim the copies had different
+        // homologs, and would leave a homodimer with no paired rows at all
+        // (there is no pair search for a homomer - there is nothing to pair).
+        // Parts that share an alignment OBJECT are copies, and their rows fill
+        // every block of the group.
+        const groupOf = parts.map((part, i) => {
+            for (let j = 0; j < i; j++) {
+                // Identity, and BOTH-ABSENT COUNTS AS THE SAME. A homomer has
+                // no paired file - there is nothing to pair - so an equality
+                // that required two objects said "different chains" for exactly
+                // the case this rule exists for, and the copies came out block
+                // diagonal AND drawn twice.
+                if (part.unpaired === parts[j].unpaired && part.paired === parts[j].paired) return j;
+            }
+            return i;
+        });
+        const spread = (index, sequence) => parts
+            .map((_, i) => (groupOf[i] === groupOf[index] && widths[i] === sequence.length
+                ? sequence : gaps[i])).join('');
+
+        const sequences = [{ name: 'query', sequence: querySequence }];
+
+        // THE PAIRED BLOCK, built the way AlphaFold builds it
+        // (`model/msa_pairing.py: create_paired_features`). Four rules, and
+        // each of them changes the picture:
+        //
+        //  1. A species has to appear in AT LEAST TWO chains, not in all of
+        //     them - on three chains a species in two of them still pairs, and
+        //     the third gets a row of gaps.
+        //  2. Within a species, rows pair IN FILE ORDER - the first hit of a
+        //     species in one chain against the first in the other - and the
+        //     block is cropped to the smallest number of hits any chain that
+        //     HAS the species contributed, at most MAX_HITS_PER_SPECIES.
+        //  3. Species appearing in more chains rank first.
+        //  4. Inside that, rows rank by the PRODUCT of their positions in each
+        //     chain's own file, ascending, so a pair that is near the top of
+        //     both alignments comes before one that is near the top of one.
+        //     A chain with no hit for the species contributes 1.
+        const MAX_HITS_PER_SPECIES = 600;   // AlphaFold's own default
+        const perChainSpecies = parts.map((part) => rowsBySpecies(rowsWithoutQuery(part.paired)));
+        const pairedRows = new Set();
+        const speciesChains = new Map();
+        perChainSpecies.forEach((map, index) => {
+            for (const species of map.keys()) {
+                if (!speciesChains.has(species)) speciesChains.set(species, []);
+                speciesChains.get(species).push(index);
+            }
+        });
+
+        const pairable = [...speciesChains.entries()]
+            .filter(([, chains]) => chains.length > 1)
+            .map(([species, chains]) => {
+                const lists = chains.map((index) => perChainSpecies[index].get(species));
+                const depth = Math.min(MAX_HITS_PER_SPECIES,
+                    ...lists.map((list) => list.length));
+                // The best row this species has in each chain, as a rank
+                // product - absent chains contribute 1, as AlphaFold's own
+                // |prod| over its -1 padding does.
+                const product = lists.reduce((n, list) => n * (list[0].rank + 1), 1);
+                return { species, chains, lists, depth, product };
+            });
+        pairable.sort((a, b) => (b.chains.length - a.chains.length) || (a.product - b.product));
+
+        for (const entry of pairable) {
+            for (let k = 0; k < entry.depth; k++) {
+                const cells = gaps.slice();
+                let label = null;
+                entry.chains.forEach((chainIndex, i) => {
+                    const row = entry.lists[i][k];
+                    cells[chainIndex] = row.sequence;
+                    pairedRows.add(chainIndex + '|' + row.sequence);
+                    if (label === null) label = row.name;
+                });
+                sequences.push({ name: label, sequence: cells.join('') });
+            }
+        }
+
+        // THE UNPAIRED BLOCK, block diagonal, DEDUPLICATED AGAINST THE PAIRED
+        // ONE - AlphaFold's `deduplicate_unpaired_sequences`, and the reason
+        // it needs saying is that the two files are two searches and overlap.
+        // A row of a PAIRED file whose species pairs with nothing is an
+        // ordinary homolog and belongs here rather than nowhere: it was found
+        // by a real search, and dropping what a file contains is worse than a
+        // row appearing twice.
+        parts.forEach((part, index) => {
+            // A group's rows are emitted once, by the first copy: `spread` puts
+            // them in every block of the group, so a second pass would draw the
+            // same row again.
+            if (groupOf[index] !== index) return;
+            const seen = new Set();
+            const rows = [...rowsWithoutQuery(part.unpaired), ...rowsWithoutQuery(part.paired)];
+            for (const row of rows) {
+                const sequence = row.sequence || '';
+                if (sequence.length !== widths[index] || !/[^-]/.test(sequence)) continue;
+                if (pairedRows.has(index + '|' + sequence)) continue;
+                if (seen.has(sequence)) continue;
+                seen.add(sequence);
+                sequences.push({ name: row.name, sequence: spread(index, sequence) });
+            }
+        });
+
+        const combined = {
+            sequences,
+            sequencesOriginal: sequences,
+            querySequence,
+            queryLength: querySequence.length,
+            queryIndex: 0,
+            chainBlocks
+        };
+        annotateChainBlocks(combined);
+        return combined;
+    }
+
     const COVERAGE_COLOR_STOPS = [
         { value: 0.0, color: [239, 68, 68] },   // red
         { value: 0.5, color: [252, 211, 77] },  // yellow
@@ -746,10 +1139,15 @@
             return { positions: null, chains: null };
         }
 
-        // Get chains that map to this MSA
+        // Get chains that map to this MSA.
+        // A PAIRED ALIGNMENT ANSWERS FOR ITSELF. `chainToSequence` holds one
+        // entry per chain, so a chain that also has its own alignment resolves
+        // to that one - and the dimming would then be computed for a different
+        // MSA from the one on screen. The blocks name the chains directly.
+        const blockChains = chainsOfBlocks(sourceMSA);
         const querySeq = obj.msa.chainToSequence[activeChainId];
         const msaEntry = querySeq && obj.msa.msasBySequence[querySeq];
-        const chains = msaEntry?.chains || [activeChainId];
+        const chains = blockChains || msaEntry?.chains || [activeChainId];
 
         // Get selection positions from object's MSA state (per-object storage)
         const positions = obj.msa.selectedPositions !== undefined
@@ -785,6 +1183,14 @@
             queryLength: sourceData.queryLength,
             queryIndex: sourceData.queryIndex || 0
         };
+        // 🔴 `chainBlocks` TRAVELS WITH THE ALIGNMENT, and the return below is
+        // rebuilt field by field - so a key not named there is a key thrown
+        // away, and the filtered copy that reaches every view would be a
+        // paired MSA that has forgotten it is one: no boundaries drawn, no
+        // block-aware scores, and the unpaired rows deleted by the very next
+        // pass. It is a local rather than a field of baseMSAData because the
+        // three filter calls take it as an argument; one reader, one writer.
+        const blocks = sourceData.chainBlocks || null;
         if (sourceData.residueNumbers) {
             baseMSAData.residueNumbers = [...sourceData.residueNumbers];
         }
@@ -797,16 +1203,16 @@
 
         // 2. Filter by coverage (removes low-coverage sequences)
         // Note: Pass null for mask so filtering is based on all positions, not just selected ones
-        let filtered = filterByCoverage(selectionProcessed.sequences, minCoverage, null);
+        let filtered = filterByCoverage(selectionProcessed.sequences, minCoverage, null, blocks);
 
         // 3. Filter by identity (removes low-identity sequences)
         // Note: Pass null for mask so filtering is based on all positions, not just selected ones
-        filtered = filterByIdentity(filtered, selectionProcessed.querySequence, minIdentity, null);
+        filtered = filterByIdentity(filtered, selectionProcessed.querySequence, minIdentity, null, blocks);
 
         // 4. Sort if enabled
         // Note: Pass null for mask so sorting is based on all positions, not just selected ones
         if (shouldSort) {
-            filtered = sortByIdentity(filtered, selectionProcessed.querySequence, selectionProcessed.queryLength, null);
+            filtered = sortByIdentity(filtered, selectionProcessed.querySequence, selectionProcessed.queryLength, null, blocks);
         }
 
         return {
@@ -815,11 +1221,12 @@
             queryLength: selectionProcessed.queryLength,
             queryIndex: selectionProcessed.queryIndex || 0,
             residueNumbers: selectionProcessed.residueNumbers,
+            chainBlocks: blocks,
             selectionMask: selectionProcessed.selectionMask // Include selection mask for dimming
         };
     }
 
-    function filterByCoverage(sequences, minCoverage = 0.5, selectionMask = null) {
+    function filterByCoverage(sequences, minCoverage = 0.5, selectionMask = null, blocks = null) {
         if (!sequences || sequences.length === 0) return [];
         const queryLength = sequences[0]?.sequence?.length || 0;
         return sequences.filter(seq => {
@@ -834,36 +1241,59 @@
             // question and is measured fresh.
             const coverage = (!selectionMask && typeof seq.coverage === 'number')
                 ? seq.coverage
-                : computeSequenceCoverage(seq.sequence, queryLength, selectionMask);
+                : computeSequenceCoverage(seq.sequence, queryLength,
+                    scoringMaskFor(seq, blocks, queryLength, selectionMask));
             return coverage >= minCoverage;
         });
     }
 
-    function filterByIdentity(sequences, querySequence, minIdentity = 0.15, selectionMask = null) {
+    function filterByIdentity(sequences, querySequence, minIdentity = 0.15, selectionMask = null, blocks = null) {
         if (!sequences || sequences.length === 0 || !querySequence) return sequences;
+        const queryLength = querySequence.length;
         return sequences.filter(seq => {
             if (isQuerySequence(seq.name)) return true;
             // Use pre-calculated identity if available, otherwise calculate it
             if (seq.identity !== undefined) {
                 return seq.identity >= minIdentity;
             }
-            const identity = computeSequenceIdentity(seq.sequence, querySequence, selectionMask);
+            const identity = computeSequenceIdentity(seq.sequence, querySequence,
+                scoringMaskFor(seq, blocks, queryLength, selectionMask));
             return identity >= minIdentity;
         });
     }
 
-    function sortByIdentity(sequences, querySequence, queryLength, selectionMask = null) {
+    /**
+     * By identity, query first - and in a paired alignment, PAIRED first.
+     *
+     * 🔴 THE BLOCK STRUCTURE IS THE PICTURE, AND AN IDENTITY SORT SHUFFLES IT
+     * AWAY. A paired alignment arrives as the paired rows stacked above the
+     * unpaired ones, and that stacking is what makes the coverage view read as
+     * a solid slab over a block-diagonal staircase. Sorted on identity alone,
+     * a well-conserved single-chain homolog outranks a distant paired one and
+     * the two groups interleave into a speckle that says nothing about
+     * pairing. So pairing is the FIRST key and identity the second, which
+     * leaves the ordering inside each group exactly what it always was.
+     */
+    function sortByIdentity(sequences, querySequence, queryLength, selectionMask = null, blocks = null) {
         if (!sequences || sequences.length === 0 || !querySequence) return sequences;
 
-        const sequencesWithIdentity = sequences.map(seq => ({
-            ...seq,
-            identity: computeSequenceIdentity(seq.sequence, querySequence, selectionMask),
-            coverage: computeSequenceCoverage(seq.sequence, queryLength, selectionMask)
-        }));
+        const sequencesWithIdentity = sequences.map(seq => {
+            const mask = scoringMaskFor(seq, blocks, queryLength, selectionMask);
+            return {
+                ...seq,
+                identity: computeSequenceIdentity(seq.sequence, querySequence, mask),
+                coverage: computeSequenceCoverage(seq.sequence, queryLength, mask)
+            };
+        });
 
+        const paired = blocks && blocks.length > 1;
         sequencesWithIdentity.sort((a, b) => {
             if (isQuerySequence(a.name)) return -1;
             if (isQuerySequence(b.name)) return 1;
+            if (paired) {
+                const rank = (b.pairedBlocks || 0) - (a.pairedBlocks || 0);
+                if (rank !== 0) return rank;
+            }
             return b.identity - a.identity;
         });
 
@@ -886,20 +1316,31 @@
         const lines = fileContent.split('\n');
         const sequences = [];
         let currentHeader = null;
+        let currentDescription = null;
         let currentSequence = '';
         const flush = () => {
             if (!currentHeader || !currentSequence) return;
-            sequences.push({
-                name: currentHeader,           // the full name, not truncated
+            const record = {
+                name: currentHeader,           // the identifier, cut at the first space
                 sequence: clean(currentSequence),
-            });
+            };
+            // 🔴 AND THE REST OF THE HEADER, WHICH IS WHERE THE ORGANISM IS.
+            // The name is cut at the first space - which is right for a label,
+            // and threw away `OS=Helicobacter pylori ... OX=85962`, the only
+            // thing that says which rows of two chains belong together. Pairing
+            // per-chain alignments needs it (see combinePairedAlignments), and
+            // it is kept only when there IS more than the identifier, so an
+            // ordinary a3m carries not one extra byte.
+            if (currentDescription !== currentHeader) record.description = currentDescription;
+            sequences.push(record);
         };
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i].trim();
             if (!line) continue;
             if (line.startsWith('>')) {
                 flush();
-                currentHeader = line.substring(1).split(/[\s\t]/)[0];
+                currentDescription = line.substring(1);
+                currentHeader = currentDescription.split(/[\s\t]/)[0];
                 currentSequence = '';
             } else {
                 currentSequence += line;
@@ -1267,6 +1708,101 @@
         return { start: start, end: endSequenceIndex };
     }
 
+    // ============================================================================
+    // WHERE ONE CHAIN ENDS AND THE NEXT BEGINS
+    // ============================================================================
+    //
+    // 🔴 A BOUNDARY IS DRAWN IN COLUMNS, AND EVERYTHING ELSE HERE IS TOO -
+    // which is the one thing that keeps this honest. `panels/pae.js` has the
+    // same drawing and learned it the hard way: it held its boxes in RESIDUES
+    // and drew them in CELLS, and the same rectangle came out 1.2x off in one
+    // of the two places it was drawn. Blocks are columns of the alignment, the
+    // canvases lay out columns, and there is no second unit to convert to.
+
+    const CHAIN_RULE_COLOR = '#3d6fb5';
+    const CHAIN_LABEL_COLOR = '#1a4d8f';
+
+    /**
+     * A rule at each internal chain boundary, and each chain's letter.
+     *
+     * The label is placed at the leftmost VISIBLE column of its block rather
+     * than at the block's centre, so a chain scrolled half off the canvas is
+     * still named - the centre of a long block is off screen most of the time.
+     *
+     * @param {Object} opts
+     * @param {function(number): number} opts.xOf  column -> canvas x
+     */
+    const CHAIN_LABEL_FONT = 'bold 10px monospace';
+    // The clear space a chain letter keeps around itself. It shares the tick
+    // row with the residue numbers, and 3px of lead put the letter on top of a
+    // digit whenever a tick fell near a boundary - which is most boundaries,
+    // since a block starts at a round number about as often as anywhere else.
+    const CHAIN_LABEL_PAD = 5;
+
+    /**
+     * Where each visible chain letter goes, as boxes.
+     *
+     * 🔴 ONE ANSWER, READ TWICE: the tick row asks so it can leave the space,
+     * and the label pass asks so it can draw in it. Two copies of this
+     * arithmetic would drift by a pixel and the gap would close again.
+     */
+    function chainLabelPlacements(ctx, { blocks, xOf, minX, maxX }) {
+        if (!blocks || blocks.length < 2) return [];
+        const placements = [];
+        ctx.save();
+        ctx.font = CHAIN_LABEL_FONT;
+        for (const block of blocks) {
+            const blockStart = xOf(block.start);
+            const blockEnd = xOf(block.end);
+            if (blockEnd < minX || blockStart > maxX) continue;
+            const text = String(block.chain);
+            const width = ctx.measureText(text).width;
+            const x = Math.max(blockStart, minX) + CHAIN_LABEL_PAD;
+            if (x + width > maxX) continue;
+            placements.push({
+                text, x,
+                left: x - CHAIN_LABEL_PAD,
+                right: x + width + CHAIN_LABEL_PAD
+            });
+        }
+        ctx.restore();
+        return placements;
+    }
+
+    function drawChainBoundaries(ctx, { blocks, xOf, top, bottom, minX, maxX,
+                                        labelY = null, ruleWidth = 1 }) {
+        if (!blocks || blocks.length < 2) return;
+
+        ctx.save();
+        ctx.strokeStyle = CHAIN_RULE_COLOR;
+        ctx.lineWidth = ruleWidth;
+        for (let i = 1; i < blocks.length; i++) {
+            const x = Math.round(xOf(blocks[i].start)) + 0.5;
+            if (x < minX || x > maxX) continue;
+            ctx.beginPath();
+            ctx.moveTo(x, top);
+            ctx.lineTo(x, bottom);
+            ctx.stroke();
+        }
+
+        if (labelY !== null) {
+            ctx.fillStyle = CHAIN_LABEL_COLOR;
+            ctx.font = CHAIN_LABEL_FONT;
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            for (const placement of chainLabelPlacements(ctx, { blocks, xOf, minX, maxX })) {
+                ctx.fillText(placement.text, placement.x, labelY);
+            }
+        }
+        ctx.restore();
+    }
+
+    /** The blocks the view is currently drawing, or null. */
+    function activeChainBlocks() {
+        const blocks = displayedMSA?.chainBlocks;
+        return blocks && blocks.length > 1 ? blocks : null;
+    }
+
     function drawTickMarks(ctx, logicalWidth, scrollLeft, charWidth, scrollableAreaX, minX, maxX, tickY = 0) {
         if (!displayedMSA) return;
         const tickRowHeight = TICK_ROW_HEIGHT;
@@ -1278,6 +1814,17 @@
 
         // Use filtered residueNumbers from displayedMSA if available, otherwise fall back to global positionToResidueMap
         const residueNumbers = displayedMSA.residueNumbers || positionToResidueMap;
+
+        // THE CHAIN LETTERS COME FIRST, as boxes, because they and the
+        // residue numbers share this one 15px row and the letter is the thing
+        // that must stay legible: a number can be inferred from its
+        // neighbours, and "which chain am I looking at" cannot.
+        const tickBlocks = activeChainBlocks();
+        const labelBoxes = tickBlocks ? chainLabelPlacements(ctx, {
+            blocks: tickBlocks,
+            xOf: (col) => scrollableAreaX - scrollLeft + col * charWidth,
+            minX, maxX
+        }) : [];
 
         let xOffset = scrollableAreaX - (scrollLeft % charWidth);
         for (let pos = visibleStartPos; pos < visibleEndPos && pos < displayedMSA.queryLength; pos++) {
@@ -1299,14 +1846,37 @@
                     const drawX = Math.max(minX, tickX);
                     const drawWidth = Math.min(charWidth, maxX - drawX);
                     const centerX = drawX + drawWidth / 2;
-                    ctx.fillStyle = '#333';
                     ctx.font = '10px monospace';
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'middle';
-                    ctx.fillText(tickValue.toString(), centerX, tickY + tickRowHeight / 2);
+                    const half = ctx.measureText(tickValue.toString()).width / 2;
+                    // ...and a number that would land in a chain letter's clear
+                    // space is not drawn. Dimming or shifting it would put two
+                    // things in one place by another name.
+                    const clash = labelBoxes.some((box) =>
+                        centerX + half > box.left && centerX - half < box.right);
+                    if (!clash) {
+                        ctx.fillStyle = '#333';
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText(tickValue.toString(), centerX, tickY + tickRowHeight / 2);
+                    }
                 }
             }
             xOffset += charWidth;
+        }
+
+        // ...and the chains, in every view that draws a tick row: the MSA, the
+        // PSSM, the logo and both of their exports. One call, because the tick
+        // row is the one piece of furniture all four share.
+        const blocks = activeChainBlocks();
+        if (blocks) {
+            drawChainBoundaries(ctx, {
+                blocks,
+                xOf: (col) => scrollableAreaX - scrollLeft + col * charWidth,
+                top: tickY,
+                bottom: tickY + tickRowHeight,
+                minX, maxX,
+                labelY: tickY + tickRowHeight / 2
+            });
         }
     }
 
@@ -1327,6 +1897,12 @@
 
         const frame = obj.frames[renderer.currentFrame >= 0 ? renderer.currentFrame : 0];
         if (!frame || !frame.chains || !frame.residue_numbers) return null;
+
+        // A PAIRED ALIGNMENT IS NOT ONE CHAIN'S, so the ticks are not one
+        // chain's either: every block carries its own chain's numbering, and
+        // the column map is what knows which is which.
+        const columnMap = computeColumnMap(sourceMSA, frame);
+        if (columnMap) return columnMap.map(entry => (entry ? entry.residueNumber : null));
 
         const querySeq = obj.msa.chainToSequence[chainId];
         if (!querySeq) return null;
@@ -1382,6 +1958,63 @@
         }
 
         return residueNumbersMap;
+    }
+
+    /**
+     * The structure position each column of a PAIRED alignment stands for.
+     *
+     * 🔴 ONE WALK, AND THERE WERE ALREADY TWO COPIES OF IT.
+     * `computePositionToResidueMapping` above turns columns into residue
+     * NUMBERS for the ticks, and `applySelectionToMSA` in src/app/main.js walks
+     * the same columns against the same chain to turn a structure selection
+     * into MSA columns - the same loop, the same match test, in two files. This
+     * is that walk done once, per chain, offset into the concatenated query by
+     * the chain's own block, and both of the others read it.
+     *
+     * A column outside every anchor - a leading residue the structure does not
+     * model - is null, which is what it means.
+     *
+     * @returns {{chain: string, position: number, residueNumber: number|null}[]|null}
+     *   indexed by column, or null when the frame cannot answer
+     */
+    function computeColumnMap(msaData, frame) {
+        const blocks = msaData?.chainBlocks;
+        if (!blocks || blocks.length < 2 || !frame || !frame.chains) return null;
+        const query = (msaData.querySequence || '').toUpperCase();
+        const chainSequences = extractSequences(frame);
+        const columns = new Array(query.length).fill(null);
+
+        for (const block of blocks) {
+            const chainSequence = chainSequences[block.chain];
+            if (!chainSequence) continue;
+
+            const chainPositions = [];
+            for (let i = 0; i < frame.chains.length; i++) {
+                if (frame.chains[i] === block.chain && frame.position_types
+                    && frame.position_types[i] === 'P') chainPositions.push(i);
+            }
+            if (chainPositions.length === 0) continue;
+            chainPositions.sort((a, b) => {
+                const numA = frame.residue_numbers ? frame.residue_numbers[a] : a;
+                const numB = frame.residue_numbers ? frame.residue_numbers[b] : b;
+                return numA - numB;
+            });
+
+            const chainSeqUpper = chainSequence.toUpperCase();
+            const count = Math.min(block.length, chainSeqUpper.length, chainPositions.length);
+            for (let i = 0; i < count; i++) {
+                const column = block.seqStart + i;
+                if (column >= query.length) break;
+                if (query[column] !== chainSeqUpper[i]) continue;
+                const position = chainPositions[i];
+                columns[column] = {
+                    chain: block.chain,
+                    position,
+                    residueNumber: frame.residue_numbers ? frame.residue_numbers[position] : null
+                };
+            }
+        }
+        return columns;
     }
 
     // ============================================================================
@@ -1835,6 +2468,21 @@
             ctx.moveTo(0, queryY + queryRowHeight);
             ctx.lineTo(logicalWidth, queryY + queryRowHeight);
             ctx.stroke();
+        }
+
+        // The chain boundaries, full height over the rows - drawn after the
+        // residues so the rule is not painted over by the cell it falls on,
+        // and before the scrollbars so it does not cross them.
+        const chainBlocks = activeChainBlocks();
+        if (chainBlocks) {
+            drawChainBoundaries(ctx, {
+                blocks: chainBlocks,
+                xOf: (col) => scrollableAreaX - scrollLeft + col * MSA_CHAR_WIDTH,
+                top: queryY,
+                bottom: scrollableAreaY + scrollableAreaHeight,
+                minX: scrollableAreaX,
+                maxX: logicalWidth - SCROLLBAR_WIDTH
+            });
         }
 
         // Draw custom scrollbars on canvas
@@ -3041,7 +3689,7 @@
             }
         });
 
-        // Create canvas container - ensure minimum width of 974px (default from CSS)
+        // Create canvas container - ensure minimum width of 948px, the layout width
         const minWidth = MIN_CANVAS_WIDTH;
         const finalWidth = clampMin(canvasWidth > 0 ? canvasWidth : minWidth, minWidth);
         const container = createCanvasContainer(finalWidth, canvasHeight);
@@ -3442,9 +4090,13 @@
 
         const selectionMask = displayedMSA.selectionMask;
 
+        const blocks = displayedMSA.chainBlocks || null;
+        const paired = !!(blocks && blocks.length > 1);
+
         const sequencesWithIdentity = displayedMSA.sequences.map((seq, index) => {
             const normalizedSequence = padOrTruncateSequence(seq.sequence || '', queryLength);
-            const identity = computeSequenceIdentity(normalizedSequence, normalizedQuery, selectionMask);
+            const identity = computeSequenceIdentity(normalizedSequence, normalizedQuery,
+                scoringMaskFor(seq, blocks, queryLength, selectionMask));
             return {
                 ...seq,
                 sequence: normalizedSequence,
@@ -3453,11 +4105,17 @@
             };
         });
 
+        // Paired rows above unpaired ones, so the block-diagonal staircase is
+        // a shape rather than a speckle - see sortByIdentity, which says why.
         sequencesWithIdentity.sort((a, b) => {
             const aIsQuery = a.name && isQuerySequence(a.name);
             const bIsQuery = b.name && isQuerySequence(b.name);
             if (aIsQuery && !bIsQuery) return -1;
             if (!aIsQuery && bIsQuery) return 1;
+            if (paired) {
+                const rank = (b.pairedBlocks || 0) - (a.pairedBlocks || 0);
+                if (rank !== 0) return rank;
+            }
             if (b.identity === a.identity) {
                 return (a._originalIndex ?? 0) - (b._originalIndex ?? 0);
             }
@@ -3717,6 +4375,25 @@
             heatmapHeight
         );
         ctx.restore();
+
+        // 🔴 THE CHAIN BOUNDARIES BELONG HERE MOST OF ALL. This is the view
+        // where a paired alignment is legible as a shape: the paired rows are
+        // a solid slab across every block, and the unpaired ones are a
+        // staircase, one tread per chain. Without a rule between the blocks the
+        // reader is looking at a staircase with nothing to say where the steps
+        // are - and the count curve above it steps at the same columns.
+        const coverageBlocks = displayedMSA.chainBlocks;
+        if (coverageBlocks && coverageBlocks.length > 1) {
+            drawChainBoundaries(ctx, {
+                blocks: coverageBlocks,
+                xOf: (col) => plotX + col * charWidth,
+                top: plotY,
+                bottom: plotY + heatmapHeight,
+                minX: plotX,
+                maxX: plotX + plotWidth,
+                labelY: plotY - 8
+            });
+        }
 
         const maxCoverage = Math.max(numSequences, 1);
         const normalizeCount = (value) => value / maxCoverage;
@@ -4432,6 +5109,17 @@
 
     // Export module
     window.MSA = {
+        // PAIRED ALIGNMENTS. The app detects the concatenation (it is the side
+        // that knows the structure's chains) and hands the blocks over; the
+        // panel is what knows how a row is scored and drawn against them.
+        annotateChainBlocks: annotateChainBlocks,
+        chainsOfBlocks: chainsOfBlocks,
+        combinePairedAlignments: combinePairedAlignments,
+        pairedRowsOnly: pairedRowsOnly,
+        splitByChainBlocks: splitByChainBlocks,
+        speciesOfRow: speciesOfRow,
+        computeColumnMap: computeColumnMap,
+
         setCallbacks: function (cb) {
             callbacks = Object.assign({}, callbacks, cb);
         },
@@ -4457,14 +5145,16 @@
                 return null;
             }
 
+            const blocks = displayedMSAToFilter.chainBlocks || null;
             const sequencesToFilter = displayedMSAToFilter.sequencesOriginal || displayedMSAToFilter.sequences;
-            let filtered = filterByCoverage(sequencesToFilter, minCoverageThreshold);
-            filtered = filterByIdentity(filtered, displayedMSAToFilter.querySequence, minIdentityThreshold);
+            let filtered = filterByCoverage(sequencesToFilter, minCoverageThreshold, null, blocks);
+            filtered = filterByIdentity(filtered, displayedMSAToFilter.querySequence, minIdentityThreshold, null, blocks);
 
             return {
                 querySequence: displayedMSAToFilter.querySequence,
                 queryLength: displayedMSAToFilter.queryLength,
                 sequences: filtered,
+                chainBlocks: blocks,
                 sequencesOriginal: displayedMSAToFilter.sequencesOriginal || displayedMSAToFilter.sequences
             };
         },
@@ -5226,6 +5916,11 @@
                 }
             }
 
+            // NO `chainBlocks` HERE, AND THAT IS THE ANSWER RATHER THAN AN
+            // OMISSION. An extract keeps the columns of ONE chain's selection,
+            // so the concatenation it was cut from is not a fact about it any
+            // more - it is an ordinary single-chain alignment, and scoring it
+            // over the whole of its own width is correct.
             const extractedMSAData = {
                 sequences: extractedSequences,
                 querySequence: extractedQuerySeq,

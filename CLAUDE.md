@@ -29,7 +29,8 @@ same list with load order and targets.
 | `parts/savepanel.js` | the Save panel's DOM. Built fresh on every open. |
 | `parts/clip.js` | the camera-space slab. |
 | `parts/orient.js` | the best-view search and the flight to it. Was 611 lines inside `src/app/main.js`; needs `src/io/math.js`. |
-| `parts/panel.js` | the Style panel's rows, as data — `buildStylePanel` builds the DOM. **One copy**; both pages mount it and skin it with their own CSS. |
+| `parts/panel.js` | the Style panel's rows AND the Selection panel's, as data — `buildStylePanel` / `buildSelectionPanel` build the DOM. **One copy**, mounted by all three shells. The Style panel is skinned per page; the Selection panel carries its own stylesheet (`selectionPanelCSS`), because forty-six rules could not be written out three times. |
+| `parts/selectpanel.js` | what the Selection panel DOES: colour, secondary structure, side chains, elements, bases, contacts, visibility, Find interactions, Align — plus the state readers it syncs from, and `wireSelectionPanel`. Was the web app's own file. Reaches its shell through `py2dmolSelectionHost({renderer, setStatus, afterChange})`. |
 | `parts/viewport.js` | `setupViewport` — find the canvas, size it for the display, keep it sized. The one thing both entry points share. |
 | `parts/embed.js` | the selector (`positionsFor`), `window.py2Dmol.show` and `wireEmbedUI` — a viewer on a bare canvas, and the JS API on top of it. `core/mol.js` picks between the two wirers on `config.embed`, which `show` sets from whether `controls`/`play` were asked for: with them it is `wireViewerUI` and the notebook's own panel in a scoped shell, without them a canvas and nothing else. |
 | `parts/sidechains.js` | which residues show theirs — `showSidechains`/`hideSidechains`, the relative pair. Was written out in `parts/embed.js`, so only the embed's JS API could reach it. And what colour they are: `setSidechainColor`. |
@@ -61,6 +62,56 @@ same list with load order and targets.
 | `src/io/bonds.js` | what counts as a bond, by element pair. Read by `parse.js` and by `core/mol.js`'s distance fallback — one answer to one question. |
 | `src/io/gif.js` | GIF89a, for the capture sink. |
 | `src/app/` | the browser UI. Not used by the notebook. |
+
+### A fifth bundle: `full`
+
+`bundles/py2Dmol.full.min.js` is **the website plus the embed API** - set for
+set it is `web` and ONE module more, `parts/embed.js`. 755 KB against web's
+737, so the embed half costs 18 KB: everything it needs was already in the page
+for the app. For a host that wants the app's own ingestion and panels AND to
+call `py2Dmol.show` / `frameFromText` / `framesFromText` / `superpose` itself -
+LocalFold hands a prediction to the first and morphs conformations with the
+second (`framesFromText` parses the walk once, then `replaceFrame` steps it,
+which is the rule on animations against trajectories).
+
+🔴 **THE BUNDLE IS THE EASY HALF, AND HERE IT IS THE WHOLE APP'S MARKUP.** Each
+panel finds its own DOM and does nothing at all until it exists:
+`#paeContainer` + `#paeCanvas`, `#scatterContainer` + `#scatterCanvas`,
+`#sequence-viewer-container` + `#sequenceView`, and eight controls for the MSA -
+and `src/app/` looks the website's controls up the same way. Loading this over a
+bare canvas buys a bigger download and the same picture; the host is hosting
+`index.html`'s markup, or the parts of it whose features it wants. Panel markup
+sits BESIDE the viewer, never inside it - `show()` replaces its container's
+children, which is how the first attempt at this threw `getContext of null`.
+
+**`controls: true` IS WHAT MOUNTS THEM** on the embed path. `parts/ui.js` calls
+`window.PAE.initialize` when `config.pae.enabled`, and the embed only reaches
+`wireViewerUI` when chrome was asked for; with `embed: true` it takes
+`wireEmbedUI`, which mounts nothing. Measured working:
+`py2Dmol.show(el, text, {controls: true, pae: {enabled: true}})` against
+AF-Q5VSL9's 837x837 matrix gives `renderer.paeRenderer` and a drawn plot.
+
+🔴 **AND THE STRIP AND THE MSA ARE `document`-SCOPED** - `getElementById`, not
+`container.querySelector` - so two of them on one page find each other's. The
+PAE panel scopes to the container and falls back to document, which is the
+pattern the other two need before an embed can honestly have more than one.
+
+**THE HOST'S TWO DOORS INTO THE APP**, both in `src/app/main.js`:
+`py2dmolLoadFiles(files, loadAsFrames, groupName)` IS `processFiles`, which
+already took VIRTUAL files - `{name, readAsync}`, because a ZIP entry is not a
+File either - so a page hands over a structure it computed in memory rather
+than wrapping it in a File and replaying a change event on a hidden input. The
+extension decides what a file IS, so the caller names its files rather than
+declaring their kinds. And `py2dmolReadyMessage` replaces "Ready. Upload a file
+or fetch an ID", which names two controls a host page may not have; it is read
+at call time, because the message is set again on every clear.
+
+🔴 **AND IT CARRIES `mol-align`, SO THE PAGE LOADS `align/align.js` ITSELF** -
+exactly as `index.html` does, and for the reason no bundle may contain it: it
+finds its own URL through `document.currentScript.src` to start its Worker, so
+concatenated it has none and TM-align silently runs on the main thread. Every
+method `mol-align` adds throws until that second script is loaded. This is the
+one bundle whose page needs two `<script>` tags, and they are `index.html`'s two.
 
 ### The two pages
 
@@ -544,7 +595,7 @@ public downloads is exercised on every run.
   and dead for the gesture a reader makes.
   **The side chains need a table**, which a notebook has only with
   `view(sidechains=True)` — see the rule below.
-- 🔴 **AND THE FOURTH COPY WAS IN `src/app/selection.js`.** Moving the verb to
+- 🔴 **AND THE FOURTH COPY WAS IN `src/parts/selectpanel.js`.** Moving the verb to
   the renderer removed the embed's copy and gave the notebook and Python one;
   the website's own - the same `writeGroups` walk, the same
   `_invalidateSegmentCache`, the same `reloadDrawn` - was left where it was
@@ -681,7 +732,7 @@ public downloads is exercised on every run.
   SO.** `obj.sidechainColor` — keyed by RESIDUE, because a side-chain atom is a
   position only while it is drawn and its index is reissued whenever the set
   changes — has been read by `core/mol.js` since the selection panel was
-  written, and `src/app/selection.js` was the only thing that could write it.
+  written, and `src/parts/selectpanel.js` was the only thing that could write it.
   The storage, the resolution and the merge remapping were all there; the
   embed and the notebook had no door. `setSidechainColor(colour, sel)` in
   `parts/sidechains.js` is the verb, beside `showSidechains`, and the website's
@@ -728,6 +779,203 @@ public downloads is exercised on every run.
   with the viewer beside it — and it is a GETTER, because `parts/embed.js`
   loads BEFORE `core/mol.js` and a `const` in its temporal dead zone makes even
   `typeof` throw.
+- 🔴 **THE SELECTION PANEL WAS THE LARGEST CAPABILITY ONE PAGE COULD REACH.**
+  Two hundred lines of markup in `index.html`, forty-six rules in
+  `src/app/style.css`, a thousand lines of verbs under `src/app/` and
+  five hundred of wiring inside `src/app/main.js` — and every one of those
+  verbs was already in the notebook and the embed's download. Same shape as
+  clip, orient, focus, the side-chain set and its colour, five sizes larger.
+  It is `parts/panel.js`'s rows and `parts/selectpanel.js`'s verbs now, mounted
+  by `parts/ui.js`, and `py2Dmol.view(selection=True)` /
+  `py2Dmol.show(el, text, {controls: true})` are the two new doors. **44 KB**
+  on the notebook bundle, which a document pays once.
+  **ONE KEY FOR THE PANEL AND THE CLICK.** `selection.enabled` is read twice —
+  by the constructor for `selectionEnabled`, and by `parts/ui.js` for whether
+  to mount — because they are one decision: a click that changes a selection
+  with nothing to show, act on or clear it is worse than no click, which is why
+  picking was off in a notebook at all, and a panel that can never open is the
+  "control the shared panel shows and no shell wires" fault by another route.
+  Two flags is how those come apart. **Off by default**, because turning it on
+  changes what a click does in every notebook that exists.
+  🔴 **AND THE SKIN HAD TO TRAVEL WITH IT, WHICH THE STYLE PANEL'S DID NOT.**
+  That panel is "one panel, two skins" and it works because it is a handful of
+  rules per shell. This one is forty-six, and left in `src/app/style.css` a
+  notebook got correct markup, working verbs and a column of browser-default
+  buttons. `SELECTION_PANEL_CSS` carries them with a `SCOPE` token every
+  selector sits under, so the embed can confine them to its container the way
+  `SHELL_CSS` does and a page that owns its document passes nothing.
+  Three things that were invisible until measured in the shells themselves:
+  - 🔴 **EVERY `var()` NEEDS ITS FALLBACK.** `--btn-radius`, `--color-gray-300`
+    and six others are declared on `:root` in `src/app/style.css`, a hundred
+    lines above the rules that used them; the other two shells declare none, and
+    an unresolved `var()` is not a default — it is an INVALID declaration,
+    dropped. The Show/Hide switch came out with no border, no radius and
+    `height: auto`: a browser-default button wearing the right class.
+  - 🔴 **AND THE PANEL STATES ITS OWN `line-height`.** `viewer.py` wraps every
+    notebook viewer in `line-height: 0` — right for a div holding a canvas,
+    since an inline-block leaves a text gap under it — and it INHERITS. Every
+    row caption came out 74px wide and ZERO high: controls with no names, in
+    the notebook only, while the width said the stylesheet had arrived.
+  - 🔴 **AND THE SCOPE IS `CSS.escape`d, BECAUSE A NOTEBOOK'S ID IS A UUID.**
+    `#3f2b1c…` is not a valid selector, so every rule under it is dropped — and
+    a uuid4 begins with a digit about six times in ten, so the same code drew a
+    correct panel or a bare one at random. `tests/selection_shells.py` passed
+    twice and failed on the third run against unchanged code; it pins an id
+    beginning with a digit now, so the hard case is the only case.
+  🔴 **AND THE ICONS ARE INLINE SVG.** Copy, Cut and Delete were
+  `<i class="fa-solid …">`, and `index.html` is the only shell that loads Font
+  Awesome — an icon button whose glyph does not load is an empty square that
+  deletes things. `tests/selection_panel.py` already had that rule and checked
+  it as a FONT FAMILY, which is the one spelling of it that cannot travel; it
+  measures the drawn mark now.
+  **What does NOT travel: `runAlign`**, which needs `align/align.js`, and that
+  file can never be in a bundle. The row is built everywhere and `syncAlignRow`
+  hides it when `window.Align` is absent — the same shape as `needs2d` dropping
+  Draw from a GPU-only build.
+  `tests/selection_shells.py` drives the two shells that never had it — the
+  page `_display_viewer` writes, and a bare host page calling `show()` with
+  `controls: true` — and mutating away the stylesheet, the fallbacks, the
+  line-height, the escape, the icons' contents, the width ceiling, the mount
+  gate and the wiring call each fail it.
+  🔴 **AND IT IS A SECTION, NOT A CARD, IN EVERY SHELL BUT THE WEBSITE.**
+  Reported as *"it still appears as a separate panel"*. On `index.html` it has a
+  ~340px column of its own beside the structure, among other boxes that look the
+  same — the PAE plot, the scatter — so a card is right. In the notebook's 180px
+  control column and the embed's 190px one the same card was a bordered white
+  box INSIDE a bordered white box: two frames around one stack of controls. The
+  shared skin is the COLUMN form — full width, no border, no ground, and a
+  hairline above to say a new group starts, which is the device the panel
+  already uses between its properties and its actions — and it is at **zero
+  specificity**, so `.container-box` (0,1,0) wins. **What puts the card back is
+  that class**, which `buildSelectionPanel` has always emitted and only
+  `index.html` defines; a `.selection-panel` rule was written in
+  `src/app/style.css` for it and **measured as a no-op**, so it is not there.
+  Dropping padding also gave the rows their width back: the notebook's main-chain
+  row went 88px to 58.
+  🔴 **AND IT WAS STILL WEARING THE CARD'S METRICS IN A CONTROL COLUMN.**
+  Reported as *"the buttons are not on the same row, and the style differs from
+  the others"* — one cause, two symptoms. The panel is sized for its 340px card;
+  `viewer.html`'s column is **180px** and the embed's **190**, and beside their
+  own controls it was wrong on every count:
+
+  | | the shell's | the panel's |
+  |---|---|---|
+  | row caption | 52px | 74px |
+  | select / button | 24px high | 26px |
+  | toggle face | 22px high | 26px |
+
+  So a row could not fit and broke wherever it happened to — a caption and a
+  lone swatch on one line with the switch on the next, and the main-chain row on
+  **three**. **A 180px column cannot hold a caption, a swatch, a Show/Hide pair
+  and a select side by side; that is arithmetic, not styling.** The caption takes
+  the whole first line and the controls share the second, which uses the width
+  and reads as a labelled group: every row is now **45px, one line of controls**,
+  at the shell's own 24px.
+  **A CONTAINER QUERY, NOT A PER-SHELL COPY.** The constraint is the panel's own
+  width, so that is what is asked — one rule, no numbers duplicated into
+  `viewer.html` and `parts/embed.js` to fall out of step, and it is right for a
+  shell nobody has written yet. The website's 322px content is over the 260px
+  breakpoint, so its card is untouched, measured.
+  🔴 **AND THE BLOCK MUST BE LAST IN THE STYLESHEET.** Its declarations are the
+  same specificity as the ones they replace, so ORDER is the only thing deciding
+  them. Written where it first went — above those rules — the heights took
+  (nothing else set those) and the caption width and switch height did not: half
+  a restyle, looking exactly like a container query that was not matching.
+  **What is load-bearing is the padding and the swatch width, measured.** A
+  `flex: 0 1 auto` on the pair was written first on the reasoning that a control
+  which would rather wrap than lose four pixels is the problem; **removing it
+  again changed nothing**, because with the caption on its own line the controls
+  already fit. It is not there. Mutating the button padding or the swatch width
+  back to the card's values does break the main-chain row, which is what keeps
+  those two honest.
+  🔴 **AND THE PROBE'S OWN `labelWidth == 74` ASSERTION FAILED AGAINST THE FIX.**
+  It was there to prove the stylesheet had arrived; 74 is the CARD's number, and
+  in a column the caption is full width by design. It asks for full width now,
+  which proves the same thing — an unstyled span sizes to its text, about 59px.
+  🔴 **AND THE HEAD SAYS NOTHING ABOUT THE SELECTION NOW.** The count ("3
+  residues") was the last thing left there after the residue ranges came out,
+  and it went for the same reason: the sequence strip below already shows what
+  is selected, in the place made for showing it, and a number over the top of
+  that is a second answer to a question nobody asked twice. The element stays
+  and is left EMPTY — the head's flex layout uses it as the stretching middle
+  between the title and the three actions.
+  🔴 **AND THE SIDE-CHAIN ROW SPENT FOUR ROUNDS ON A GAP THAT WAS NOT A GAP.**
+  A nucleotide showing its real ATOMS carries five things — caption, swatch,
+  Show/Hide, Plate, Elem — and the row wrapped. Three fixes came and went: Elem
+  alone falling to a second line was the report; giving Plate and Elem a line of
+  their own read as two answers to one question; welding all three into one
+  segmented strip read as **partial buttons**, because a group with a single
+  border leaves its members flat and they stop looking like controls.
+  **THE ROW WAS 46px WIDER THAN IT LOOKED.** A toggle is a `<label>` whose
+  visible face is the `span` inside it — the checkbox is invisible — and the
+  label carried `padding: 0 10px`, which is space OUTSIDE the button that still
+  belongs to it. Two of those plus the row's gap is **25px of air between two
+  buttons 46 and 45 wide**, and the box measures 66 while the thing you can see
+  measures 46. A `min-width: 54px` did the same on the other side, padding a
+  46px button out with nothing in the extra 8. With both gone the row has 46px
+  to spare, every gap is the row's own 4px, and **the caption and the paddings
+  went back to what they were** — all three had been trimmed to buy pixels the
+  row never actually needed.
+  🔴 **AND THE PANEL IS 152px WHERE IT WAS 193, from the same discovery.** The
+  caption had been given a line of its own on every row in a narrow column,
+  because a caption, a swatch and a Show/Hide pair did not fit 170px — and they
+  did not fit only because of that phantom padding. Inline again, at a fixed
+  66px (what the widest caption needs: "Side chains" is 59px in `viewer.html`'s
+  font and 65 in the embed's), every two-control row is ONE line of 24px.
+  **The last pixel comes from the row gap, 4 to 3**: 66 + 3 + 24 + 3 + 73 = 169
+  in a 170px row, and at a 4px gap it is 171 and wraps. Rows with THREE controls
+  beside the caption — the main chain's SSE menu, a nucleotide's Plate — still
+  take two lines, and no styling changes that at 180px.
+  🔴 **AND A CONTAINER QUERY CANNOT STYLE ITS OWN CONTAINER.** The panel's `gap`
+  and `padding` were written into that block to save another 4px and measured as
+  no change at all: `container-type` on `.selection-panel` makes it a container
+  for its DESCENDANTS, so a rule for `.selection-panel` inside `@container`
+  matches nothing. Every rule around it took, which is what made it look like a
+  value being overridden rather than a selector matching nothing.
+  🔴 **AND NO TEST COULD HAVE FOUND IT, because they all measured the BOX.**
+  The gap a reader sees is between the coloured rectangles, and those differed
+  from the flex row's gap by 20px. `tests/selection_panel.py` measures the FACE
+  now — `faceX`/`faceRight` — and requires the gaps to be small AND equal:
+  equality is the tell that nothing is carrying padding of its own. It is
+  guarded on the three being on one line, because off it an x is a distance to
+  something on another row and reports `-251px` beside the real failure.
+  🔴 **AND FORTY-TWO LOOKUPS WERE `document`-SCOPED, which is the third time.**
+  The strip and the MSA already are. `embed.html` holds two viewers with chrome,
+  and `getElementById` answers with the first in document order — so a click in
+  the controls example opened the PLAY example's panel five sections up the page
+  while its own stayed shut. From the reader's seat, **clicking did nothing**.
+  `byId` scopes to the viewer's container and falls back to the document.
+  **A ROOT NAMED AT WIRE TIME IS NOT THE FIX** — it only changes which viewer
+  wins, the last built instead of the first in the document, and neither is the
+  one that was clicked. Each panel CLAIMS the host from a **capturing** listener
+  on its own container, so by the time a control's handler runs the host answers
+  for the viewer being touched; capture also covers controls built later, which
+  the colour cells are. The `-residue-selection-change` bus is dispatched on
+  `document` and travels through no container, so its listener claims explicitly.
+  🔴 **AND THE PLAY-ONLY EMBED WAS MOUNTING ONE INTO A HIDDEN COLUMN.**
+  `selection.enabled` was `wantsChrome`, which is true when `play` was asked for
+  — and `parts/embed.js` then HIDES the control column, because the play strip
+  is in the same shell. The panel was invisible and still first in the document,
+  which is the whole of the damage above. It follows `opts.controls` now, the
+  same thing that decides whether the Style panel is visible.
+  🔴 **AND A RAW BACKTICK IN `SELECTION_PANEL_CSS` PARSES.** The literal holds
+  forty-six commented rules, and a comment quoting a class name in backticks —
+  the way every comment in this project does — ENDS the template literal; what
+  follows is read as JavaScript, so the file is valid and `node -c` passes,
+  while loading it throws `ReferenceError: box is not defined` and the panel has
+  no stylesheet at all. **Three times.** `tests/bundles.js` now EVALUATES
+  `parts/panel.js` and asks its stylesheet for a length, a substituted scope and
+  the section rule — the bundle-level "threw while loading" check already caught
+  it, but said only `box is not defined`.
+  🔴 **AND THE PROBE'S FIRST LAYOUT ASSERTIONS WERE MEASURING THE CONTAINER.**
+  It asked whether the rows wrapped, and both new shells fail that while being
+  perfectly right: the panel has its own ~340px column in `index.html` and gets
+  180px in `viewer.html`, 190 in the embed, where every row of those shells'
+  own controls wraps too. What was actually lost is a COMPUTED STYLE — a
+  fixed-width caption, a rounded switch, a swatch with a size — and none of
+  those depends on how wide the column is. The panel does need a ceiling
+  (`max-width: 100%`) or its stated 340px hangs out of both.
+
 - **A capability in the bundle that no interface reaches is not shipped.**
   `parts/clip.js` is in every build and only `index.html` could get to it: the
   website had a Clip panel, the embed had `v.clip(sel)`, the notebook had
@@ -1511,6 +1759,190 @@ public downloads is exercised on every run.
   kinds cannot be served by one lookup; those chains are remembered and fall
   back to the scan. A subset would have been a silently wrong colour on one
   label.
+- 🔴 **THE MSA IS VIEW-ONLY, AND THE DIMMING WAS A HUNDRED AND FIFTY-SEVEN
+  LINES.** It followed the structure's selection: pick one residue and every
+  column but that one greyed out. `applySelectionToMSA` did the mapping —
+  per chain, and global columns for a paired alignment, because chain B's
+  residue 3 is column `blockB.start + 3` — and all of it existed to change some
+  pixels' opacity. **That is not what an alignment is for**: depth, coverage,
+  conservation and the block-diagonal staircase are statements about the WHOLE
+  alignment, and dimming most of it to whatever was last clicked takes the
+  picture away at the moment you are reading it, with no way to say no — any
+  click anywhere, canvas or strip, redimmed it. The function now writes `null`
+  and nothing else. **`null`, NOT an empty Map**: `buildSelectionMask` reads the
+  first as "no dimming" and the second as "dim everything", which was Hide All's
+  answer.
+  **WHAT DOES NOT CHANGE IS WHAT THE SELECTION IS FOR.** It still marks the
+  structure, still fills the selection panel, and Copy / Cut / Delete still act
+  on it — including `MSA.extractSubset`, which carries a cut alignment into the
+  object a Copy makes and is driven by `selectedIndices` from `core/mol.js`, not
+  by any of this. Every call site stays: after a Cut the residues have
+  renumbered and the MSA has to be told, and "nothing is dimmed" is the right
+  thing to tell it. `computeColumnMap` stays too — the tick row still needs it,
+  and `tests/msa_paired.js` still checks the arithmetic.
+  🔴 **AND THE PIXEL CONTROL WRITTEN FOR THIS CANNOT FAIL.**
+  `tests/msa_paired_ui.py` measures the COVERAGE view, deliberately — it is the
+  only one that shows the whole alignment at rest — and the coverage view never
+  read the selection mask, so it did not dim before the change either. Forcing
+  the "dim everything" state moves it by ZERO pixels. The stored field is the
+  whole check; the ink pair is printed as context and asserts nothing, which is
+  said out loud there rather than left looking like a control.
+
+- 🔴 **A PAIRED MSA IS ONE ALIGNMENT WHOSE QUERY IS SEVERAL CHAINS, AND THE
+  MATCHER COULD NOT SEE ONE.** `matchMSAsToChains` asks whether an alignment's
+  query is a chain, and `sequencesMatch` refuses anything more than 10% off that
+  chain's length - so a multimer alignment, whose query is A+B concatenated,
+  matched nothing and was dropped without a word. The only way to show one was
+  to cut it into per-chain pieces, which throws away the whole statement it
+  makes: row *s* is one organism ACROSS the chains, and that lives on the
+  boundary. `splitQueryIntoChainBlocks` (`src/app/main.js`) is the second
+  question, asked only when the first finds nothing, and it anchors each chain
+  with `indexOf` **from a moving cursor** - a homodimer's two identical chains
+  both anchor at column zero without it, and the second block comes out empty.
+  The blocks travel ON the alignment as `msaData.chainBlocks`, so every view
+  that is handed a `displayedMSA` knows, and nothing has to ask the object.
+  🔴 **AND COVERAGE AND IDENTITY ARE MEASURED OVER THE BLOCKS A ROW OCCUPIES.**
+  Half a paired alignment's rows are UNPAIRED by construction - one chain's
+  homolog with the other chain's columns all gaps - so measured over the whole
+  width every one of them scores at most 0.5 on a two-chain query, and the
+  website's coverage slider **defaults to 0.75**. The block-diagonal staircase
+  that is the entire reason to look at a paired MSA would be filtered away
+  before it was drawn. Scored over its own blocks a row scores what it would
+  have scored in that chain's own alignment, which is what makes the filter mean
+  the same thing either side of the split. `scoringMaskFor` is the one funnel,
+  and the masks are cached by occupancy PATTERN - three of them for two chains,
+  against ten thousand rows.
+  **AND PAIRING IS THE FIRST SORT KEY, IDENTITY THE SECOND.** The two rules pull
+  against each other: score an unpaired row over its own chain and it can beat
+  every paired row on identity, which interleaves the groups into a speckle. The
+  slab has to stay above the staircase or the picture says nothing.
+  🔴 **AND A FILTERED COPY IS REBUILT FIELD BY FIELD**, so `computeFilteredMSA`
+  and `applyFiltersToMSA` each had to be told about `chainBlocks` - the same
+  shape of fault as `normalizeConfig` and `light_frame`. A copy that forgets is
+  a paired MSA with no boundaries drawn, full-width scores, and its unpaired
+  rows deleted on the very next pass.
+  🔴 **AND THE SELECTED COLUMNS ARE GLOBAL, FILED PER CHAIN.**
+  `applySelectionToMSA` turns a structure position into column *i* of that
+  chain's alignment; a paired alignment has ONE column axis, so chain B's
+  residue 3 is column `blockB.start + 3`. The sets are still keyed by chain -
+  which is what lets `buildSelectionMask` consume them with the `has(pos)` it
+  always used - but they hold global columns. Block-local numbers under a chain
+  key light up the FIRST chain's columns: the same integers meaning two
+  different places. `MSA.computeColumnMap` is that walk, and it is the THIRD
+  copy of it in the tree and the first one shared - the other two are
+  `computePositionToResidueMapping` (the tick row) and the per-chain loop this
+  sits in front of.
+  **AND THE PICKER NAMES THE ALIGNMENT, NOT THE CHAINS.** Its option value was
+  the chain letters, which stop being unique the moment a paired alignment
+  exists: a homodimer's per-chain MSA and its paired one both cover A and B, so
+  one silently replaced the other in the group map and the dropdown offered a
+  single option for two different pictures.
+  🔴 **AND `showMSACanvasContainers` IS NOT WHAT SHOWS THE MSA.** It shows the
+  `.msa-canvas` boxes; `#msa-buttons` - the section holding the header, the
+  filters, the picker AND those boxes - is `display: none` in the markup, and
+  only `updateMSAContainerVisibility` turns it on. `addMetadataToExistingObject`
+  never called it, so an alignment added to an existing object was parsed,
+  stored, built, drawn and invisible. Never seen through the file input, which
+  reaches a different branch that does call it - and always the case through
+  `py2dmolLoadFiles`, which is the door a host page adds one through.
+  `tests/msa_paired.js` has the arithmetic against fixtures in node (the split,
+  the block-aware scores, the column map, six mutations); `tests/msa_paired_ui.py`
+  builds an alignment IN THE PAGE from 1TIM's own chain sequences - a homodimer,
+  the hard case for the anchor - and measures the boundary as **pixels of the
+  rule's own colour in the coverage view**, which is the one view that always
+  shows the whole alignment: the MSA view is 10px a column and scrolled, so on
+  247+247 the boundary sits a thousand pixels off the right edge at rest.
+
+- 🔴 **A PAIRED VIEW IS THE PAIRED ROWS, AND THE REST HAS TO GO SOMEWHERE
+  FIRST.** An unpaired row of a two-chain alignment is half a row - one chain's
+  homolog with the other chain's columns gapped - so in the coverage plot it is
+  a block-diagonal staircase under the thing the reader came to look at, and in
+  the conservation it is depth that says nothing about the interface. The view
+  answers "which organisms have both chains"; those rows do not answer it.
+  `pairedRowsOnly` drops them, and a row counts as paired when it occupies more
+  than ONE block, which on three chains includes a row that has two of them.
+  **THE CONDITION ON DROPPING THEM IS THAT THEY ARE STILL REACHABLE.** For an
+  AF3 download they are: the same four files register each chain's own
+  alignment beside the paired one. A single CONCATENATED file - what a ColabFold
+  complex search returns, and what LocalFold hands over - is the only thing its
+  object has, so showing the paired rows alone would put the rest of the depth
+  nowhere, and it is most of it: a few hundred paired rows over thousands of
+  unpaired ones. `splitByChainBlocks` cuts each block back into an ordinary
+  per-chain alignment, which is where that depth goes and what the conservation
+  is measured on. Measured on a real AF3 job: 3,227 combined rows become **929
+  in the paired view**, with 2,792 and 1,026 in the two per-chain views.
+  **A HOMO-OLIGOMER LOSES NOTHING**, because its merge is dense - every row is
+  already paired. The real 8,076-row search for one is 8,076 rows in the paired
+  view.
+- 🔴 **THE CHAIN LETTER AND THE RESIDUE NUMBERS SHARE ONE 15px ROW.** The letter
+  was drawn 3px past the boundary and landed on whatever tick fell there, which
+  is most boundaries - a block starts on a round number about as often as
+  anywhere else, and the FIRST block's letter sits at column 0, where tick "1"
+  always is. `chainLabelPlacements` measures the letters' boxes and
+  `drawTickMarks` skips a number whose text would fall inside one. Dimming or
+  nudging the number would be two things in one place by another name; the
+  letter wins because a number can be inferred from its neighbours and "which
+  chain am I looking at" cannot. One answer, read twice - the tick row asks so
+  it can leave the space, the label pass asks so it can draw in it - because two
+  copies of that arithmetic drift by a pixel and the gap closes again.
+  Measured in `tests/msa_paired_ui.py` as pixels of number ink inside the
+  letter's clear box: **39 before, 0 after**, with the ink elsewhere in the row
+  as the control so "none" cannot mean "no ticks were drawn".
+
+- 🔴 **THE ALPHAFOLD 3 SERVER SHIPS ITS PAIRING AS FOUR FILES AND THEY ARE NOT
+  ROW-ALIGNED.** A download carries `<job>_paired_msa_chains_a.a3m` and
+  `..._unpaired_msa_chains_a.a3m`, one pair per chain, and the obvious reading -
+  row *s* of one chain's paired file is row *s* of the other's - is wrong:
+  measured on a real two-chain job they are **1,849 and 933 rows** and their
+  species differ from the first row down. They are the raw all-seqs searches;
+  the pairing is in the HEADERS and is done at featurisation. Read as four
+  ordinary alignments, which is what happened before, a download comes up as two
+  per-chain MSAs and the pairing it carries is simply lost.
+  `MSA.combinePairedAlignments` builds the concatenated alignment the way
+  `alphafold3/model/msa_pairing.py: create_paired_features` builds its features,
+  and **four of its rules each change the picture**: a species needs to appear in
+  at least TWO chains, not all of them (on three chains the third gets gap
+  columns); within a species rows pair in file order, cropped to the smallest
+  number of hits any chain that has it contributed, at most **600**
+  (AlphaFold's `max_paired_sequence_per_species`); species in more chains rank
+  first; and inside that, rows rank by the **product** of their positions in
+  each chain's own file, so a pair near the top of both beats one near the top of
+  a single alignment.
+  🔴 **AND THE SPECIES IS THE UNIPROT ENTRY NAME, NOT `OX=`.**
+  `msa_features.extract_species_ids` reads the mnemonic out of
+  `sp|P56422|MOAE_HELPY` and gets `HELPY`; `OX=` is the numeric taxon and splits
+  STRAINS - 85962, 102617 and 210 are three ids for one Helicobacter pylori - so
+  pairing on it found 514 "species" and 910 pairs where the entry name finds
+  fewer species and **928** deeper pairs. A viewer that pairs differently from
+  the model draws an alignment nothing was folded from. `OX=`/`TaxID=` stays as
+  a fallback for headers with no entry name and is never consulted when one is
+  there.
+  **AND THE UNPAIRED BLOCK IS DEDUPLICATED AGAINST THE PAIRED ONE**
+  (`deduplicate_unpaired_sequences`), because the two files are two searches and
+  they overlap: 539 rows of that job are in both. A row of a PAIRED file whose
+  species pairs with nothing is kept, in the unpaired block - it was found by a
+  real search, and dropping what a file contains is worse than a row appearing
+  twice.
+  🔴 **AND COPIES OF ONE CHAIN ARE NOT SEPARATE CHAINS.** A homo-oligomer has no
+  pair search - there is nothing to pair - so the four files are two, and
+  spreading their rows into one block with gaps in the other would claim the
+  copies had different homologs and leave the alignment with no paired rows at
+  all. Parts that share an alignment OBJECT are copies and their rows fill every
+  block of the group, which is `_merge_homomers_dense_msa` by another name. The
+  identity test has to count BOTH-ABSENT as the same, or the case it exists for
+  - no paired file - is exactly the case it misses.
+  **Only files named the server's way are combined.** Two alignments a reader
+  happens to upload for two chains are not paired on a guess: pairing rows that
+  were never searched as a pair invents a picture rather than showing one. The
+  chain of a file is decided by matching its query against the structure, not by
+  the `chains_x` in its name - the same way every other alignment here finds its
+  chain, so the two cannot disagree.
+  🔴 **AND `defaultChain` CANNOT SAY WHICH VIEW OPENS.** It names a CHAIN, and a
+  chain with its own alignment resolves through `chainToSequence` to that one -
+  so the paired view sat in the dropdown while the per-chain view opened, which
+  is a view nobody sees. `msa.defaultQuery` names the ALIGNMENT, and the initial
+  load and the picker both prefer it.
+
 - **Subsystems are optional and guarded.** `if (window.PAE)`, `if (window.MSA)`,
   `typeof C2S === 'undefined'`. A build without one loses a feature, not a page.
 - **Prove a move changed nothing.** `node tests/paint_trace.js` digests every
@@ -1908,6 +2340,22 @@ public downloads is exercised on every run.
   directions: S-S at 2.05 (a bond the flat rule misses) and O-O at 1.9 (a
   contact it draws). Pinning the default back flips the answer to exactly its
   inverse - the O pair bonded, the disulfide two lone dots.
+- 🔴 **CONECT IS FIXED-WIDTH AND THE PARTNER FIELDS WERE READ ONE COLUMN LATE.**
+  The record is the name in 1-6, this atom's serial in 7-11, then up to four
+  partners in 12-16, 17-21, 22-26, 27-31. `src/io/parse.js` took the partners
+  from column 13, and `trim()` covered for it up to 9,999 atoms: a field is
+  RIGHT-justified, so a four-digit serial sits with a space in front and reading
+  one column late gives the same number with a space after. At five digits there
+  is no padding left - `12346` written at 11..16 reads as `23461`, the leading
+  digit dropped and the first digit of the next partner picked up.
+  **Not a silent drop.** Measured: serial 10000's partner comes back as **1**,
+  which in a real structure is an atom that EXISTS and is somewhere else, so a
+  stick is drawn across the picture. Every structure past 9,999 atoms, which is
+  most of the ones large enough to carry CONECT at all. Nothing covered CONECT
+  before; `tests/interaction.js` now reads it at four digits (the case that
+  masked it, as the control), at five, and with all four partner fields on one
+  line - the fourth of which a one-column slip pushes past column 31 entirely.
+  Found from the other side: LocalFold's AF3 ligands.
 - 🔴 **THE ATOM NAME IS GONE FROM THE WIRE; THE ELEMENT STAYS.**
   `position_atoms` was produced by both parsers, copied through the merge, the
   extract, the session save and the side-chain append, stored by

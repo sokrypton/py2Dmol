@@ -13,7 +13,7 @@
         // WHICH RESIDUES SHOW THEIR SIDE CHAINS
         //
         // This was written out in parts/embed.js and reachable from the embed's
-        // JS API alone: the website turns them on through app/selection.js and
+        // JS API alone: the website turns them on through parts/selectpanel.js and
         // the notebook could not turn them on AT ALL - view(sidechains=True)
         // carried the atoms and nothing could ask for them to be drawn. Same
         // shape as clipTo and orientTo before it, and the same rule: a
@@ -76,7 +76,7 @@
         // The storage has been here since the selection panel was written -
         // `obj.sidechainColor`, keyed by RESIDUE because a side-chain atom is
         // a position only while it is drawn and its index is reissued whenever
-        // the set changes - and `src/app/selection.js` was the only thing that
+        // the set changes - and `src/parts/selectpanel.js` was the only thing that
         // could reach it. Same rule as _setSidechains above, one layer along:
         // a capability in the bundle that no interface reaches is not shipped.
         //
