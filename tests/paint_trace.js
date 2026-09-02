@@ -147,18 +147,36 @@ function helix(n) {
     }
     return out;
 }
-function strand(n) {
-    const out = [];
-    for (let i = 0; i < n; i++) out.push([3.3 * i, (i % 2) * 0.9, 0]);
-    return out;
-}
-function hairpin(n) {
-    // two strands and a turn: the sheet-frame and ladder code
-    const out = [];
-    for (let i = 0; i < n; i++) out.push([3.3 * i, (i % 2) * 0.9, 0]);
-    for (let i = 0; i < n; i++) out.push([3.3 * (n - 1 - i), (i % 2) * 0.9 + 4.8, 1.0]);
-    return out;
-}
+// 🔴 A REAL BETA HAIRPIN, BECAUSE AN IDEAL ONE IS NOT ONE.
+//
+// The synthetic hairpin here was two rows of points 4.8 A apart with no turn
+// between them, and it was assigned CCCCCCCCCCCCCCCCCCCCCCCC - all coil. So was
+// `strand`, which is correct and unavoidable: DSSP calls an isolated extended
+// strand a coil, because a strand is only a strand when something is paired
+// with it. Between them, `E`, `E-rich` and `hairpin` covered the sheet frames,
+// the ladder pairing and the arrowhead exactly as much as the coil fixtures
+// did - which is to say not at all.
+//
+// The duplex below already learned this the hard way ("an ideal duplex was
+// tried first, over four radii and seven groove offsets, and NONE of them
+// produced a single plate"). These are ubiquitin's first 34 CA atoms from
+// 1UBQ, rounded to two decimals: residues 1-17 are CEEEEEECCCEEEEEEC, the
+// textbook beta hairpin, and 1-34 adds the first helix so one fixture carries
+// a sheet, a turn and a helix in one run.
+const UBQ_CA = [
+    [26.27, 25.41, 2.84], [26.85, 29.02, 3.90], [26.23, 30.06, 7.50],
+    [26.77, 33.44, 9.20], [28.61, 33.97, 12.50], [27.69, 37.31, 14.14],
+    [30.23, 38.64, 16.66], [29.61, 41.18, 19.47], [31.42, 43.94, 17.55],
+    [28.98, 43.96, 14.68], [31.19, 42.01, 12.33], [29.54, 39.02, 10.65],
+    [31.72, 36.29, 9.18], [30.50, 33.88, 6.51], [31.68, 30.27, 6.64],
+    [31.22, 27.34, 4.28], [30.29, 24.25, 6.19], [28.47, 20.94, 5.98],
+    [25.83, 19.82, 8.49], [28.05, 16.84, 9.21], [30.80, 19.08, 10.57],
+    [31.40, 19.06, 14.29], [31.29, 22.20, 16.42], [35.03, 21.72, 17.07],
+    [35.59, 21.95, 13.30], [33.53, 25.10, 12.98], [35.60, 26.71, 15.74],
+    [38.79, 25.76, 13.88], [37.47, 27.39, 10.67], [36.73, 30.57, 12.64],
+    [40.27, 30.51, 14.12], [41.72, 30.02, 10.64], [39.81, 32.99, 9.23],
+    [39.68, 35.55, 12.07]];
+function hairpin(n) { return UBQ_CA.slice(0, n); }
 // A REAL B-DNA DUPLEX, because none of the fixtures above is nucleic and the
 // comment at the top of this block has always claimed otherwise. The rails, the
 // pairing and the base plates are five hundred lines of render() that a helix,
@@ -225,12 +243,25 @@ function segsOf(coords) {
 function mkRenderer(coords, segments, opts) {
     const n = coords.length;
     const r = {
-        coords,
-        // ...AS Vec3, NOT AS ARRAYS. render() reads `rotated[i].x`, so a plain
-        // [x, y, z] gives undefined, every projection comes out NaN and the
-        // painter draws a full frame of moveTo(NaN, NaN). It draws the same
-        // number of them whatever the coordinates were, which is exactly how a
-        // trace over arrays produced one digest for four different fixtures.
+        // 🔴 ...AS Vec3, NOT AS ARRAYS - AND `coords` IS THE OTHER HALF OF THAT.
+        // render() reads `rotated[i].x`, so a plain [x, y, z] gives undefined,
+        // every projection comes out NaN and the painter draws a full frame of
+        // moveTo(NaN, NaN). It draws the same number of them whatever the
+        // coordinates were, which is exactly how a trace over arrays produced
+        // one digest for four different fixtures.
+        //
+        // ONLY `rotatedCoords` WAS FIXED, AND THAT IS NOT THE ARRAY THE
+        // SECONDARY STRUCTURE IS READ FROM. `assignSecondary` is handed
+        // `renderer.coords`, and `predictBackbone` reads `p0.x` off it - so
+        // with arrays every distance was NaN, no backbone was predicted, no
+        // hydrogen bond was found, and every fixture came back ALL COIL.
+        // Measured: the helix fixture's `_cartoonSec` was 'CCCCCC...' and is
+        // now 'CCHHHHHHHHHHHHHHHHHHHHCC', and its rib count goes 50 -> 86. The
+        // fixtures named H, E, hairpin and E-rich were drawing loops, so the
+        // helix path, the sheet frames, the ladder pairing and the arrowhead
+        // were not covered by the trace at all. `ssHas` below is what stops
+        // that being silent a second time.
+        coords: coords.map(([x, y, z]) => ({ x, y, z })),
         rotatedCoords: coords.map(([x, y, z]) => ({ x, y, z })),
         segmentIndices: segments,
         positionTypes: new Array(n).fill('P'),
@@ -271,10 +302,14 @@ const FIXTURES = {
     // ...and as a flat ribbon, which takes the other preset's numbers
     'H-ribbon': () => { const c = helix(24);
         return [c, segsOf(c), { cartoonRichardson: false, cartoonThickness: 0 }]; },
-    // an extended strand: the sheet path rather than the coil path
-    E: () => { const c = strand(20); return [c, segsOf(c), {}]; },
-    // two strands and a turn: sheet frames and the ladder pairing
-    hairpin: () => { const c = hairpin(12); return [c, segsOf(c), {}]; },
+    // A REAL BETA HAIRPIN: the sheet path, the ladder pairing and the arrow.
+    // `strand(20)` stood here and is assigned all coil - an isolated extended
+    // strand IS a coil - so this fixture drew the same geometry as the loop
+    // one for as long as it existed.
+    E: () => { const c = hairpin(17); return [c, segsOf(c), {}]; },
+    // ...and the same sheet with the first helix after it, so one fixture
+    // carries a sheet, a turn and a helix together
+    hairpin: () => { const c = hairpin(34); return [c, segsOf(c), {}]; },
     // no outline: the ink pass is the larger half of the paint, and skipping it
     // must not disturb the fills
     'H-noink': () => { const c = helix(24);
@@ -297,7 +332,7 @@ const FIXTURES = {
     'H-rich': () => { const c = helix(24);
         return [c, segsOf(c), { cartoonRichardson: true, cartoonThickness: 1.2 }]; },
     // ...and a sheet under Richardson, which is where the arrow is built
-    'E-rich': () => { const c = strand(20);
+    'E-rich': () => { const c = hairpin(17);
         return [c, segsOf(c), { cartoonRichardson: true, cartoonThickness: 1.2,
             cartoonArrows: true }]; },
     // A DUPLEX, which is the only fixture that reaches the nucleic half of
@@ -309,13 +344,44 @@ const FIXTURES = {
         Object.assign({}, DUPLEX_OPTS, { cartoonBasePlates: false })],
 };
 
+const lastSec = {};
 function traceOf(name) {
     const [coords, segs, opts] = FIXTURES[name]();
     const { ctx, ops } = recorder();
     _t = 0;
     const r = mkRenderer(coords, segs, opts);
     cartoon.render(r, ctx, 600, 600, segs.map(() => COL));
+    // what the assignment actually made of this fixture - see ssHas below
+    lastSec[name] = Array.isArray(r._cartoonSec)
+        ? r._cartoonSec.join('') : String(r._cartoonSec || '');
     return ops;
+}
+
+// 🔴 A FIXTURE NAMED FOR A SECONDARY STRUCTURE MUST CONTAIN ONE.
+//
+// Every one of these drew as coil for as long as `coords` was an array of
+// arrays, and nothing said so: the digests were stable, distinct from each
+// other and reproducible, so all three of the guards below passed. A trace
+// cannot tell you it is watching the wrong geometry - only the geometry can.
+const SS_WANTED = { H: 'H', 'H-ribbon': 'H', 'H-noink': 'H', 'H-thick': 'H',
+    'H-wide': 'H', 'H-rich': 'H', E: 'E', 'E-rich': 'E', hairpin: 'E' };
+function checkSs() {
+    let bad = 0;
+    for (const [name, want] of Object.entries(SS_WANTED)) {
+        if (!FIXTURES[name]) continue;
+        const sec = lastSec[name] || '';
+        if (!sec.includes(want)) {
+            console.log(`FAIL: fixture ${name} contains no '${want}' - it is`
+                + ` assigned ${sec || '(nothing)'}, so it exercises the coil`
+                + ' path and not the one it is named for');
+            bad++;
+        }
+    }
+    if (!bad) {
+        const shown = Object.keys(SS_WANTED).filter((k) => FIXTURES[k]).length;
+        console.log(`secondary structure: ${shown} fixtures carry the class they are named for`);
+    }
+    return bad;
 }
 
 // THE GPU HARVEST, WHICH AN OP STREAM CANNOT WATCH.
@@ -432,6 +498,7 @@ for (const name of Object.keys(was)) {
     if (!FIXTURES[name]) { console.log(`FAIL: fixture ${name} was removed from the trace`); bad++; }
 }
 if (!bad) {
+    bad += checkSs();
     bad += checkFrameProbe();
     console.log(`paint trace: ${Object.keys(FIXTURES).length} fixtures unchanged`
         + ` (${Object.values(now).reduce((s, v) => s + v.ops, 0)} ops)`);

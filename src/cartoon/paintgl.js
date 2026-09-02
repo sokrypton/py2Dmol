@@ -2466,6 +2466,17 @@ const apply = (m, v) => [
     m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
     m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
     m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2]];
+// ...and the same into a caller's array. `apply` returns a fresh three-element
+// array, which is right where the answer is kept and pure garbage where it is
+// read once and dropped - and in a mesh build it is read once and dropped
+// several times per face.
+const applyInto = (out, m, v) => {
+    const x = v[0]; const y = v[1]; const z = v[2];
+    out[0] = m[0][0] * x + m[0][1] * y + m[0][2] * z;
+    out[1] = m[1][0] * x + m[1][1] * y + m[1][2] * z;
+    out[2] = m[2][0] * x + m[2][1] * y + m[2][2] * z;
+    return out;
+};
 const rotYawPitch = (yawDeg, pitchDeg) => {
     const t = yawDeg * Math.PI / 180, p = pitchDeg * Math.PI / 180;
     const Ry = [[Math.cos(t), 0, -Math.sin(t)], [0, 1, 0], [Math.sin(t), 0, Math.cos(t)]];
@@ -2854,6 +2865,12 @@ function setZoom(z) { viewZoom = Math.max(0.15, Math.min(12, z)); }
 function setZoomExact(z) { viewZoom = (typeof z === 'number' && z > 0) ? z : 1; }
 function zoomBy(f) { setZoom(viewZoom * f); }
 
+// THE KEY LIGHT, used to decide which way a stick's Newell normal should point.
+// It was written out inside buildMeshPart's per-face loop, so the array and its
+// length were built again for every face in the build.
+const LIT_L = [-0.45, 0.6, 0.75];
+const LIT_LM = Math.hypot(LIT_L[0], LIT_L[1], LIT_L[2]);
+
 // Build the resident buffer once: model-space corners, a model-space face
 // normal, and the face's base colour. Shading happens in the shader from then on.
 
@@ -2912,6 +2929,8 @@ function buildMeshPart(faces, scale, prm, lines) {
                 c: [ln.c.r, ln.c.g, ln.c.b], wA });
         }
     }
+    const wSigned = (fr, sgn) => (fr && fr.w
+        ? [sgn * fr.w[0], sgn * fr.w[1], sgn * fr.w[2]] : null);
     const normv = (v) => {
         const l = Math.hypot(v[0], v[1], v[2]) || 1;
         return [v[0] / l, v[1] / l, v[2] / l];
@@ -2939,9 +2958,20 @@ function buildMeshPart(faces, scale, prm, lines) {
      */
     const M = new Float64Array(faces.length * 12);
     const hasM = new Uint8Array(faces.length);
+    // THE NEWELL LENGTH, FLAT, because the edge pass asks the same question of
+    // the same four corners a second time. As a property on the face it read
+    // just as well and cost 3-7 MB of peak live heap on a nucleosome - a
+    // hidden-class transition and a properties slot per face against eight
+    // bytes here, and this file's ceiling is a capsid.
+    const nLenOf = new Float64Array(faces.length);
     // ...and four scratch corners, so the passes that consumed `f._m` keep the
     // shape they were written for.
     const CS = [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    // ...and three more for values that are read inside one face's turn of the
+    // loop and never kept: the rotated normal the stick rule tests, and the two
+    // halves of the tangent's own unprojection.
+    const RN = [0, 0, 0]; const TS = [0, 0, 0]; const TV = [0, 0, 0];
+    const TX = [1, 0, 0];
     const loadM = (fi) => {
         const b = fi * 12;
         for (let k = 0; k < 4; k++) {
@@ -2957,6 +2987,40 @@ function buildMeshPart(faces, scale, prm, lines) {
             M[o] = c[0]; M[o + 1] = c[1]; M[o + 2] = c[2];
         }
         hasM[fi] = 1;
+    };
+    /**
+     * `apply(inv, unproject(p, scale))` WITH NOTHING ALLOCATED, straight into
+     * the flat store.
+     *
+     * Every stick face reached the second pass without corners of its own -
+     * only surf-0 rib faces are filled in by the rails pass - so it ran
+     * `f.q.map((p) => apply(inv, unproject(p, scale)))`: four closures' worth
+     * of intermediate, two arrays a corner plus the map's own, about nine
+     * allocations per face and 70,362 stick faces on a nucleosome with its
+     * side chains out. The arithmetic is the two functions' bodies in their
+     * own order, so it is bit-identical; what goes is the garbage.
+     */
+    const unprojInto = (out, p) => {
+        const z = p[2];
+        const fl = focalLength();
+        const pe = isPersp() ? fl / Math.max(0.1, fl - z) : 1;
+        const k = scale * pe;
+        const x = (p[0] - capW / 2) / k;
+        const y = (capH / 2 - p[1]) / k;
+        out[0] = inv[0][0] * x + inv[0][1] * y + inv[0][2] * z;
+        out[1] = inv[1][0] * x + inv[1][1] * y + inv[1][2] * z;
+        out[2] = inv[2][0] * x + inv[2][1] * y + inv[2][2] * z;
+    };
+    // ...and the same, landing in the flat store as well as in the scratch.
+    const cornersInto = (fi, q) => {
+        const b = fi * 12;
+        for (let k = 0; k < 4; k++) {
+            const c = CS[k]; unprojInto(c, q[k]);
+            const o = b + k * 3;
+            M[o] = c[0]; M[o + 1] = c[1]; M[o + 2] = c[2];
+        }
+        hasM[fi] = 1;
+        return CS;
     };
     let o = 0;
     let zMin = Infinity, zMax = -Infinity;
@@ -2985,7 +3049,13 @@ function buildMeshPart(faces, scale, prm, lines) {
         // the same space and used to unproject them a second time. It goes into
         // the flat store rather than onto the face: the rails read it here and
         // now, and holding it per face is what cost 76 MB on a ribosome.
-        const m = f.q.map((q2) => apply(inv, unproject(q2, scale)));
+        // THE FOUR ARRAYS ARE KEPT - the rails hold them until the piece's
+        // frames are built - so they are allocated, but the two intermediates
+        // per corner that `apply(inv, unproject(...))` built on the way are
+        // not: `unprojInto` writes the answer straight into the one that
+        // survives.
+        const m = [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]];
+        for (let k = 0; k < 4; k++) unprojInto(m[k], f.q[k]);
         storeM(fi, m);
         let e = pieceRails.get(f.pieceId);
         if (!e) { e = { L: [], R: [], oB: f.oB, kAvg: f.kAvg }; pieceRails.set(f.pieceId, e); }
@@ -3086,23 +3156,22 @@ function buildMeshPart(faces, scale, prm, lines) {
     // agree to floating point, and the quantisation is only insurance.
     const edgeMap = new Map();
 
-    // ...and a NUMERIC version of the same thing, cached on the point. The edge
-    // pass asks for a corner's identity about eight times (four edges, two ends
-    // each), and on a structure the size of 9FOG that was half a million
-    // template literals built out of three Math.rounds apiece. The hash is
-    // arithmetic, and stashing it on the array means each corner is hashed
-    // once however often it is looked at.
-    const hashPt = (q2) => {
-        let h = Math.round(q2[0] * 1000) * 73856093
-            ^ Math.round(q2[1] * 1000) * 19349663
-            ^ Math.round(q2[2] * 1000) * 83492791;
+    // ...and a NUMERIC version of the same thing, READ OFF THE FLAT STORE BY
+    // OFFSET. The edge pass asks for a corner's identity about eight times
+    // (four edges, two ends each), and on a structure the size of 9FOG that was
+    // half a million template literals built out of three Math.rounds apiece.
+    //
+    // NOTHING IS CACHED ON THE POINT, and nothing can be: the corners handed
+    // around here are a REUSED scratch, so a hash stashed on the array would be
+    // the previous face's. Taking the offset rather than an array is what saved
+    // the copy INTO that scratch - the twelve doubles of a face were loaded so
+    // that six of them could be hashed.
+    const hashAt = (o) => {
+        const h = Math.round(M[o] * 1000) * 73856093
+            ^ Math.round(M[o + 1] * 1000) * 19349663
+            ^ Math.round(M[o + 2] * 1000) * 83492791;
         return h >>> 0;
     };
-    // NO CACHE ON THE ARRAY ANY MORE. The four corners handed around here are
-    // a REUSED scratch now - the model corners live in one flat array - so a
-    // hash stashed on the array would be the previous face's. The hash is
-    // three multiplies and two xors; caching it saved one repeat per corner.
-    const ptH = (q) => hashPt(q);
     // ONE MAP AND A LINKED LIST, not a Map of Maps. An edge is identified by
     // its two endpoint hashes; a single packed number would need 64 bits and
     // collide past 2^53, so the first hash picks a GROUP and the second is
@@ -3175,9 +3244,13 @@ function buildMeshPart(faces, scale, prm, lines) {
     };
     const eSc = window.__scProbe ? {} : null;
     const eOther = window.__scProbe ? {} : null;
-    const addEdge = (a2, b2, nrm, isStick, pal, ghost, two, noInk, col, full, seam, outer, sc) => {
-        const ha = ptH(a2);
-        const hb = ptH(b2);
+    // TWO OFFSETS AND THEIR HASHES, not two corner arrays. The caller has both
+    // hashes already - it builds the per-face duplicate key out of them a line
+    // above the call - and this recomputed them, six multiplies and three
+    // rounds twice over on every edge of every face; and the corners live in
+    // the flat store, so an offset is all the endpoint needs to be.
+    const addEdge = (oa, ob, ha, hb, nrm, isStick, pal, ghost, two, noInk, col,
+        full, seam, outer, sc) => {
         if (ha === hb) return;      // the repeated corner of a fan-padded quad
         const lo = ha < hb ? ha : hb;
         const other = ha < hb ? hb : ha;
@@ -3199,8 +3272,8 @@ function buildMeshPart(faces, scale, prm, lines) {
             e = eN++;
             if (eN > eCap) eGrow();
             const f0 = e * E_F;
-            eF[f0] = a2[0]; eF[f0 + 1] = a2[1]; eF[f0 + 2] = a2[2];
-            eF[f0 + 3] = b2[0]; eF[f0 + 4] = b2[1]; eF[f0 + 5] = b2[2];
+            eF[f0] = M[oa]; eF[f0 + 1] = M[oa + 1]; eF[f0 + 2] = M[oa + 2];
+            eF[f0 + 3] = M[ob]; eF[f0 + 4] = M[ob + 1]; eF[f0 + 5] = M[ob + 2];
             const i0 = e * E_I;
             eIn[i0] = 0; eIn[i0 + 1] = 0; eIn[i0 + 2] = 0;
             eIn[i0 + 3] = -1; eIn[i0 + 4] = 0;
@@ -3215,7 +3288,10 @@ function buildMeshPart(faces, scale, prm, lines) {
         if (two && !ghost) bits |= EB_TWO;
         if (noInk) bits |= EB_NOINK;      // any face may veto the whole edge
         if (isStick) bits |= EB_STICK;   // so show/hide can drop its outline too
-        if (window.__scProbe) { if (sc) eSc[e] = 1; else eOther[e] = 1; }
+        // `eSc` IS THE PROBE FLAG, ALREADY READ. Asking `window.__scProbe` here
+        // is a global property lookup in the innermost loop of the build - once
+        // per incident face per edge, about 280,000 times on a nucleosome.
+        if (eSc) { if (sc) eSc[e] = 1; else eOther[e] = 1; }
         if (full && !ghost) bits |= EB_FULL;   // a fully-outlined surface
         // A SEAM CROSS EDGE IS VETOED ON THE EDGE, NOT ON THE FACE, and that is
         // the whole reason this works. The arrow's step is its own two-station
@@ -3234,7 +3310,7 @@ function buildMeshPart(faces, scale, prm, lines) {
         // ...and its colour, for when there is no slot to look up
         if (!(bits & EB_COL) && col && !ghost) {
             bits |= EB_COL;
-            eF[ef + 12] = col[0]; eF[ef + 13] = col[1]; eF[ef + 14] = col[2];
+            eF[ef + 12] = col.r; eF[ef + 13] = col.g; eF[ef + 14] = col.b;
         }
         // and WHICH faces they are, for the ID test
         // COUNT EVERY incident face, keep the first two normals. The count is
@@ -3270,7 +3346,14 @@ function buildMeshPart(faces, scale, prm, lines) {
         const f = faces[fi];
         // the rails pass above already did this for every surf-0 rib face
         let m;
-        if (hasM[fi]) { m = loadM(fi); } else {
+        if (hasM[fi]) {
+            m = loadM(fi);
+        } else if (f.q.length === 4) {
+            m = cornersInto(fi, f.q);
+        } else {
+            // the scratch is four corners wide and `m.length` is read below, so
+            // anything else keeps the allocating path rather than being
+            // silently truncated to a quad
             m = f.q.map((p) => apply(inv, unproject(p, scale)));
             storeM(fi, m);
         }
@@ -3288,7 +3371,12 @@ function buildMeshPart(faces, scale, prm, lines) {
             n[1] += (a2[2] - b2[2]) * (a2[0] + b2[0]);
             n[2] += (a2[0] - b2[0]) * (a2[1] + b2[1]);
         }
-        const nl = Math.hypot(n[0], n[1], n[2]) || 1;
+        // KEPT FOR THE EDGE PASS, which asked the same question of the same
+        // four corners a second time - a four-corner Newell walk and a hypot
+        // per face, purely to find out whether the quad has any area.
+        const nLen = Math.hypot(n[0], n[1], n[2]);
+        nLenOf[fi] = nLen;
+        const nl = nLen || 1;
         let nn = [n[0] / nl, n[1] / nl, n[2] / nl];
         // ORIENT IT LIKE ub, and for a rib face use the PIECE's mean frame -
         // the renderer's tone is one value for the whole strip.
@@ -3309,26 +3397,28 @@ function buildMeshPart(faces, scale, prm, lines) {
         // the ALREADY-ORIENTED outward normal, not a normal plus a flag.
         const sideSign = f.surf === 2 ? -1 : 1;   // see the frame comment: L is at +wa = -w
         const isRibSide = (f.surf === 2 || f.surf === 3);
-        const wOf = (fr) => (fr && fr.w
-            ? [sideSign * fr.w[0], sideSign * fr.w[1], sideSign * fr.w[2]] : null);
+        // THE SIGN TRAVELS AS AN ARGUMENT. This was a closure declared inside
+        // the loop, so it was allocated once per face in the build - and a
+        // stick face never calls it, every use being guarded on `isRibSide`.
         // flat: the piece mean, matching what the reference quantises
         const wFlat = (pf && pf.wMean)
             ? [sideSign * pf.wMean[0], sideSign * pf.wMean[1], sideSign * pf.wMean[2]] : null;
         if (frA && (f.surf === 0 || f.surf === 1)) {
             nn = frA.n;
-        } else if (isRibSide && wOf(frA)) {
-            nn = wOf(frA);
+        } else if (isRibSide && wSigned(frA, sideSign)) {
+            nn = wSigned(frA, sideSign);
         } else if ((f.stick || f.cap) && f.nl !== undefined) {
             // orient it so n.L reproduces the prim's own nl
-            const rn = apply(VR, nn);
-            const vdF = viewVecAt(apply(VR, m[0]));
+            const rn = applyInto(RN, VR, nn);
             if (f.cap) {
-                // for a cap the carried number is its FACING, so orient by z
+                // for a cap the carried number is its FACING, so orient by z.
+                // THE VIEW VECTOR IS THE CAP'S ALONE and was computed above the
+                // branch, so every one of a nucleosome's 70,362 stick faces
+                // paid for a rotation and a normalise it never read.
+                const vdF = viewVecAt(apply(VR, m[0]));
                 if ((dotv(rn, vdF) < 0) !== (f.nl < 0)) nn = [-nn[0], -nn[1], -nn[2]];
             } else {
-                const L = [-0.45, 0.6, 0.75];
-                const lm = Math.hypot(L[0], L[1], L[2]);
-                const dot = (rn[0] * L[0] + rn[1] * L[1] + rn[2] * L[2]) / lm;
+                const dot = (rn[0] * LIT_L[0] + rn[1] * LIT_L[1] + rn[2] * LIT_L[2]) / LIT_LM;
                 if ((dot < 0) !== (f.nl < 0)) nn = [-nn[0], -nn[1], -nn[2]];
             }
         } else if (f.oB !== undefined && f.oB !== 0) {
@@ -3370,8 +3460,15 @@ function buildMeshPart(faces, scale, prm, lines) {
         f._inkN = f._outN;
         const c = f.c;
         // the strip tangent, unprojected and unrotated the same way
-        const tv = (frA && (f.surf === 0 || f.surf === 1 || isRibSide)) ? frA.t
-            : (f.tan ? apply(inv, [f.tan[0] / scale, -f.tan[1] / scale, f.tan[2]]) : [1, 0, 0]);
+        let tv;
+        if (frA && (f.surf === 0 || f.surf === 1 || isRibSide)) {
+            tv = frA.t;
+        } else if (f.tan) {
+            TS[0] = f.tan[0] / scale; TS[1] = -f.tan[1] / scale; TS[2] = f.tan[2];
+            tv = applyInto(TV, inv, TS);
+        } else {
+            tv = TX;
+        }
         const tl = Math.hypot(tv[0], tv[1], tv[2]) || 1;
         const tt = [tv[0] / tl, tv[1] / tl, tv[2] / tl];
         // PER-STATION NORMALS. A quad spans two stations - corners 0,1 are the
@@ -3401,11 +3498,11 @@ function buildMeshPart(faces, scale, prm, lines) {
         // reference quantises. That difference is why this could not just be
         // dropped in the shader.
         const isRibFace = (f.surf === 0 || f.surf === 1);
-        const nA = isRibFace ? (frA ? frA.n : nn) : (isRibSide ? (wOf(frA) || nn) : nn);
+        const nA = isRibFace ? (frA ? frA.n : nn) : (isRibSide ? (wSigned(frA, sideSign) || nn) : nn);
         const nB = isRibFace ? (frB ? frB.n : nA)
-            : (isRibSide ? (wOf(frB) || nA) : nA);
+            : (isRibSide ? (wSigned(frB, sideSign) || nA) : nA);
         const nFlat = isRibFace ? ((pf && pf.nMean) || nA)
-            : (isRibSide ? ((wFlat || wOf(frA)) || nn) : nn);
+            : (isRibSide ? ((wFlat || wSigned(frA, sideSign)) || nn) : nn);
         const tA = (frA && (isRibFace || isRibSide)) ? frA.t : tt;
         const tB = (frB && (isRibFace || isRibSide)) ? frB.t : tA;
         f._nA = nA; f._nB = nB; f._nFlat = nFlat; f._tA = tA; f._tB = tB;
@@ -3435,7 +3532,9 @@ function buildMeshPart(faces, scale, prm, lines) {
     for (let fi = 0; fi < faces.length; fi++) {
         const f = faces[fi];
         if (!f._emitOK) continue;
-        const m = loadM(fi);
+        // STRAIGHT OUT OF THE FLAT STORE, the only reader of the corners here
+        // being the twelve floats copied into the instance row below.
+        const mb = fi * 12;
         const c = f.c;
         const nA = f._nA; const nB = f._nB;
         const tA = f._tA; const tB = f._tB;
@@ -3453,7 +3552,8 @@ function buildMeshPart(faces, scale, prm, lines) {
         const fo = f._outN || nA;              // outward normal, for culling
         const nf = f._nFlat || nA;             // flat shading normal
         for (let i = 0; i < 4; i++) {          // the quad's corners
-            data[o++] = m[i][0]; data[o++] = m[i][1]; data[o++] = m[i][2];
+            const q = mb + i * 3;
+            data[o++] = M[q]; data[o++] = M[q + 1]; data[o++] = M[q + 2];
         }
         data[o++] = nA[0]; data[o++] = nA[1]; data[o++] = nA[2];
         data[o++] = nB[0]; data[o++] = nB[1]; data[o++] = nB[2];
@@ -3539,10 +3639,17 @@ function buildMeshPart(faces, scale, prm, lines) {
         // hashes - so two quads on the same four corners agree however their
         // windings differ, which is what the weld is asking.
         const flatPair = (f) => !!(f.sheetA && f.sheetB);
-        const faceKey = (m) => {
+        // STRAIGHT OUT OF THE FLAT STORE. It took `loadM(fi)`, which copies
+        // twelve doubles into the scratch so that four of them can be read
+        // back one at a time - once per face, on every face in the build.
+        const faceKeyAt = (fi) => {
             let a = 0;
             let b = 1;
-            for (const q2 of m) { const h = hashPt(q2); a = (a + h) >>> 0; b = (b ^ h) >>> 0; }
+            const base = fi * 12;
+            for (let k = 0; k < 4; k++) {
+                const h = hashAt(base + k * 3);
+                a = (a + h) >>> 0; b = (b ^ h) >>> 0;
+            }
             return a * 4294967296 + b;     // sum AND xor: order-free, collision-shy
         };
         // A STEP FACE BORROWS ITS NEIGHBOUR'S NORMAL. The arrow's step quad has
@@ -3567,16 +3674,29 @@ function buildMeshPart(faces, scale, prm, lines) {
             const d = normDonor.get(f.pieceId + ':' + f.surf);
             if (d) f._inkN = d;
         }
+        // ONE PASS AND ONE LOOKUP. It was a count per key and then a second walk
+        // of every face asking the map again - two `Map.get` and a `Map.set` per
+        // face on a key that is always past 2^32, so every one of them boxes a
+        // double. What the weld actually asks is "has anything else claimed
+        // these four corners", and the first claimant's index answers it: the
+        // second face to arrive marks them both.
+        //
+        // Four string keys, an array sort and a join, per face, is what this
+        // was before that. The key only has to be order-independent, so the
+        // corner hashes are added: addition commutes, which is the whole
+        // requirement.
+        let nInterior = 0;
         const faceSeen = new Map();
         for (let fi = 0; wantOutline && fi < faces.length; fi++) {
             const f = faces[fi];
             if (!hasM[fi] || flatPair(f)) continue;
-            // Four string keys, an array sort and a join, per face. The key only
-            // has to be order-independent, so add the corner keys' hashes instead:
-            // addition commutes, which is the whole requirement.
-            const k = faceKey(loadM(fi));
-            faceSeen.set(k, (faceSeen.get(k) || 0) + 1);
+            const k = faceKeyAt(fi);
             f._fkey = k;
+            const prev = faceSeen.get(k);
+            if (prev === undefined) { faceSeen.set(k, fi); continue; }
+            const p = faces[prev];
+            if (!p._interior) { p._interior = 1; nInterior++; }
+            if (!f._interior) { f._interior = 1; nInterior++; }
         }
         if (window.__scProbe) {
             // THE SAME QUESTION THE RIBBON/STICK SPLIT HAD TO ANSWER, asked of
@@ -3603,13 +3723,6 @@ function buildMeshPart(faces, scale, prm, lines) {
             P.faces = (P.faces || 0) + faces.length;
         }
         const ownKeys = [0, 0, 0, 0, 0, 0, 0, 0];
-        let nInterior = 0;
-        for (let fi = 0; wantOutline && fi < faces.length; fi++) {
-            const f = faces[fi];
-            if (!hasM[fi] || flatPair(f) || faceSeen.get(f._fkey) < 2) continue;
-            f._interior = 1;
-            nInterior++;
-        }
         for (let fi = 0; wantOutline && fi < faces.length; fi++) {
             const f = faces[fi];
             if (!hasM[fi] || f._interior) continue;
@@ -3639,7 +3752,7 @@ function buildMeshPart(faces, scale, prm, lines) {
             // decide. Forcing them drew the underside pair too, which is the
             // stray line beneath the arrowhead.
             const stepQuad = !!(f.gA && f.gB);
-            const m = loadM(fi);
+            const mBase = fi * 12;
             // A DEGENERATE FACE BOUNDS NOTHING. At zero thickness the two width
             // faces collapse to a line: their quad is [P, P, Q, Q], so the two
             // surviving sides are BOTH the rail P-Q and one face registers the same
@@ -3647,15 +3760,7 @@ function buildMeshPart(faces, scale, prm, lines) {
             // incident faces, and the non-manifold rule then dropped it - the
             // helices lost their outline to the fix for the junction triangle
             // rather than to the weld.
-            const nv = [0, 0, 0];
-            for (let i2 = 0; i2 < m.length; i2++) {
-                const a2 = m[i2];
-                const b2 = m[(i2 + 1) % m.length];
-                nv[0] += (a2[1] - b2[1]) * (a2[2] + b2[2]);
-                nv[1] += (a2[2] - b2[2]) * (a2[0] + b2[0]);
-                nv[2] += (a2[0] - b2[0]) * (a2[1] + b2[1]);
-            }
-            if (Math.hypot(nv[0], nv[1], nv[2]) < 1e-6) continue;   // zero area
+            if (nLenOf[fi] < 1e-6) continue;   // zero area, measured above
             // ...and belt and braces: one face may not count one edge twice.
             // FOUR SLOTS, NOT A SET. A quad registers at most four edges, and
             // one Set per face is one allocation per face - a couple of million
@@ -3684,7 +3789,7 @@ function buildMeshPart(faces, scale, prm, lines) {
             // rails. So a base plate there is two silhouette lines, no box and
             // no crease. Matching that is what parity means.
             const alongOnly = f.surf !== undefined && f.surf < 4 && !f.fullOutline;
-            for (let i2 = 0; i2 < m.length; i2++) {
+            for (let i2 = 0; i2 < 4; i2++) {
                 // the cross-strip pair is registered as a GHOST rather than
                 // skipped: it must not ink, but the cap that shares it needs a
                 // second normal to be testable at all
@@ -3693,15 +3798,21 @@ function buildMeshPart(faces, scale, prm, lines) {
                 if (stepQuad && (i2 === 0 || i2 === 2)) continue;   // its cross-sections
                 const seamCross = (i2 === 0 && f.gA) || (i2 === 2 && f.gB);
                 const ghost = alongOnly && (i2 === 0 || i2 === 2);
-                const ka = ptH(m[i2]);
-                const kb = ptH(m[(i2 + 1) % m.length]);
+                const oa = mBase + i2 * 3;
+                const ob = mBase + ((i2 + 1) & 3) * 3;
+                const ka = hashAt(oa);
+                const kb = hashAt(ob);
                 const ek = ka < kb ? ka * 4294967296 + kb : kb * 4294967296 + ka;
                 let dup = false;
                 for (let k2 = 0; k2 < ownN; k2++) if (ownKeys[k2] === ek) { dup = true; break; }
                 if (dup) continue;
                 if (ownN < ownKeys.length) ownKeys[ownN++] = ek;
-                addEdge(m[i2], m[(i2 + 1) % m.length], f._inkN, !!f.stick, f.pal, ghost,
-                    !!f.two, !!f.noInk, f.c ? [f.c.r, f.c.g, f.c.b] : null,
+                // THE COLOUR TRAVELS AS THE FACE'S OWN OBJECT. Only the first
+                // face to claim an edge ever reads it, so packing it into a
+                // fresh three-element array at every call built about 280,000
+                // arrays a build to use a few thousand of them.
+                addEdge(oa, ob, ka, kb, f._inkN, !!f.stick, f.pal, ghost,
+                    !!f.two, !!f.noInk, f.c || null,
                     !!f.fullOutline, seamCross, !!f.outerOnly, !!f.sc);
             }
         }
@@ -3910,6 +4021,8 @@ function buildMeshPart(faces, scale, prm, lines) {
         }
         cen[ci2++] = ax * 0.25; cen[ci2++] = ay * 0.25; cen[ci2++] = az * 0.25;
     }
+    // the last stage needs an end as much as the others need a start
+    mark('end');
     return { count: faces.length, rad, scale, centroids: cen,
         fill: data, edges: edUp, edgeCount: partEdges, hasContacts,
         bytes: data.byteLength + (edUp ? edUp.byteLength : 0) };

@@ -6636,7 +6636,37 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
         }
         prims.length = k;
     }
-    prims.sort((a, b) => a.z - b.z);
+    // 🔴 THE DEPTH SORT IS THE PAINTER'S, AND THE GPU IS NOT A PAINTER.
+    //
+    // Sorting back-to-front is what makes a 2D canvas draw a solid: it has no
+    // depth buffer, so the order IS the occlusion. The GPU has one, and the
+    // order it draws in is not this one anyway - `installParts` concatenates
+    // the mesh as ribbon, then other sticks, then side chains, which throws
+    // this ordering away before anything reaches the card.
+    //
+    // It is the most expensive line in a build. Measured on 1AOI with every
+    // side chain out: the sort's own line is 32 ms, and REMOVING it saves 99.5
+    // of 388 - 26%. The difference is locality. `sort` permutes an array of
+    // pointers to objects that were allocated in emission order, so every pass
+    // after it (facesOf, and the weld inside buildMeshPart) walks the heap at
+    // random instead of forwards; two thirds of the cost is paid by the code
+    // downstream, which is why the line profile understates it by 3x.
+    //
+    // WHAT IT COSTS IS 0.48% OF PIXELS, AND THEY ARE TIE-BREAKS. The face and
+    // edge counts are IDENTICAL either way (87,920 and 95,936) - the geometry
+    // is the same, and what moves is which of two coincident surfaces claimed
+    // a welded edge first. 2,401 of 498,436 pixels, max channel delta 57, a
+    // diffuse speckle rather than anything structural, and the two pictures
+    // are indistinguishable side by side. That is the same trade, and the same
+    // magnitude, as the three-part mesh split already documented in CLAUDE.md
+    // (260 of 357,604, max delta 57) - and the tie-winner was arbitrary there
+    // too.
+    //
+    // GATED ON `_probeOnly`, which is what `captureFrom` sets to harvest
+    // geometry rather than paint a frame. The 2D painter still sorts, so
+    // paint2d, the SVG export (which `_gpuWillTake` refuses, sending it down
+    // the 2D path) and every digest in tests/paint_trace.json are untouched.
+    if (!renderer._probeOnly) prims.sort((a, b) => a.z - b.z);
     if (renderer._phase) { renderer._phase.prims = prims.length;
         renderer._phase.sorted = (typeof performance !== 'undefined' ? performance.now() : 0); }
     // GEOMETRY ONLY. A consumer that wants the primitives and not the

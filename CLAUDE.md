@@ -1697,6 +1697,126 @@ public downloads is exercised on every run.
   a build on purpose: a tube IS the straight lines between its residues.
   `tests/selection_mark.py` measures the stroked path against the chords -
   1.11x on a helix, exactly 1.00 on a tube, and again after a Cyclic toggle.
+- 🔴 **THE DEPTH SORT IS THE PAINTER'S, AND THE GPU IS NOT A PAINTER.**
+  `prims.sort((a, b) => a.z - b.z)` is what makes a 2D canvas draw a solid - no
+  depth buffer, so the order IS the occlusion - and it is the single hottest
+  line in a build. The GPU has a depth buffer, and `installParts` concatenates
+  the mesh as ribbon, then other sticks, then side chains, so the order is
+  thrown away before anything reaches the card anyway. Skipped when
+  `_probeOnly` is set, which is what `captureFrom` sets to harvest geometry
+  rather than paint: **11-13%** off a build (1AOI with every side chain out,
+  295.8 ms to 256.5 on the minimum of twelve; 1TIM 61.5 to 54.5).
+  **TWO THIRDS OF THE COST IS PAID BY THE CODE DOWNSTREAM.** The line's own
+  profile is 32 ms of 450; removing it saves more than that, because `sort`
+  permutes an array of POINTERS to objects allocated in emission order, so
+  `facesOf` and the weld then walk the heap at random instead of forwards.
+  A line profile cannot show that, and a faster sort would not recover it.
+  **WHAT IT COSTS IS TIE-BREAKS.** Face and edge counts are IDENTICAL either
+  way (87,920 and 95,936) - the geometry is the same, and what moves is which
+  of two coincident surfaces claimed a welded edge first: 2,401 of 498,436
+  pixels, max channel delta 57, a diffuse speckle and nothing structural, the
+  two pictures indistinguishable side by side. Same trade and same magnitude as
+  the three-part mesh split above (260 of 357,604, max delta 57), where the
+  tie-winner was already arbitrary too. `paint_trace` is unchanged, because the
+  2D painter still sorts.
+  🔴 **AND THE MEASUREMENT WAS WRONG THREE TIMES BEFORE IT WAS RIGHT.** Each
+  failure is a different trap and all three are cheap to repeat:
+  - **A NODE PROFILE IS NOT A CHROME PROFILE.** Node put `hashPt` at 18.2%
+    self, the hottest function in the build, and `focalLength` - recomputed per
+    corner by `unproject`, 350,000 times, genuinely invariant - at 5.4%. Both
+    were fixed (Math.imul, and a cached focal length), both verified
+    bit-identical through `__meshDigest` under three cameras, and both measured
+    as NOTHING in Chrome: inside a +/-8% run-to-run band, one paired run
+    slower. In a Chrome profile `hashPt` is **1.8%**. Reverted. The engine that
+    draws the picture is the only one whose profile is evidence.
+  - **AN A/B THAT ALWAYS RUNS A FIRST IS NOT AN A/B.** The harness did
+    `sorted` then `unsorted` in every pair, so `sorted` always paid the
+    collection for the previous iteration's garbage: it reported **25.7%**.
+    Alternating the order and it reported **-2.5%**. Neither is the answer.
+  - **AND THE MEDIAN IS THE WRONG STATISTIC HERE.** Noise only ever makes a
+    build slower, so the cheapest run is the one paying for the work alone -
+    the rule `_lastInkedMs` already uses. On the minimum of twelve
+    counterbalanced runs the answer is 11-13%, and it holds at p25 and the
+    median too (331 -> 273, 373 -> 290).
+  **THE COST MODEL SAID THERE WAS NOTHING ELSE OF THIS KIND LEFT, AND IT WAS
+  WRONG.** A build is a flat ~3 microseconds per face at every size measured -
+  17,558 faces at 3.06, 87,920 at 3.09, 21,630 at 2.70 - so there is no hot
+  spot and no quadratic term, and I concluded from that that every remaining
+  win was fewer faces or fewer rebuilds rather than faster code. A flat cost
+  per face says the work SCALES linearly; it says nothing about how much work
+  each face is doing. The entry below took a quarter off it. `tools`: the
+  Chrome profiler is reachable over CDP with `tests/cdp.py`, and
+  `positionTicks` is what gives the line-level view.
+
+- 🔴 **A MESH BUILD SPENT A QUARTER OF ITSELF ON GARBAGE AND ON ANSWERS IT
+  ALREADY HAD.** `cartoon/paintgl.js`'s `buildMeshPart` is **25-34% faster**
+  with the picture bit-for-bit unchanged - measured counterbalanced, minimum of
+  nine or twelve builds, against `git show HEAD:` of the same file:
+
+  | | mesh build | whole rebuild |
+  |---|---|---|
+  | 1AOI + every side chain (87,920 faces) | 138.2 -> 101.7 ms | 222.0 -> 189.8 |
+  | 4HHB + side chains | 42.0 -> 31.2 | 70.4 -> 59.0 |
+  | 1EHZ + side chains (RNA) | 20.4 -> 13.7 | 37.0 -> 28.0 |
+  | 1TIM, ribbon only | 11.1 -> 7.3 | 16.8 -> 11.3 |
+
+  Nothing here is a new idea. Every one of them is the file doing something
+  twice, or building an object to throw it away, and they are worth naming
+  because each looked like nothing:
+  - 🔴 **THE FLAT STORE HAD ONE ENTRANCE AND FOUR EXITS.** The model corners
+    live in `M`, a `Float64Array`, and everything that wanted them called
+    `loadM(fi)` - twelve doubles copied into a scratch so that three or four of
+    them could be read back. The fill emit, the weld key and the whole edge
+    pass do that once per face. They take an OFFSET now; `addEdge` takes two,
+    rather than two corner arrays. **Only the rails pass still gets arrays**,
+    because it keeps them.
+  - 🔴 **AND ONLY SURF-0 RIB FACES WERE PUT IN IT BY THE RAILS PASS**, so every
+    stick face arrived at the frames loop with nothing and ran
+    `f.q.map((p) => apply(inv, unproject(p, scale)))` - a closure, four map
+    slots and two arrays a corner, about nine allocations, on 70,362 faces.
+    `unprojInto` is those two functions' bodies in their own order writing
+    straight into `M`: bit-identical, no garbage.
+  - 🔴 **A VIEW VECTOR THAT ONLY A CAP READS WAS COMPUTED ABOVE THE BRANCH.**
+    `viewVecAt(apply(VR, m[0]))` sat one line above `if (f.cap)` and every
+    stick face in the build paid for a rotation and a normalise it never
+    looked at.
+  - 🔴 **THE WELD ASKED THE MAP TWICE.** A count per key, then a second walk of
+    every face asking `faceSeen.get(f._fkey) < 2` - two gets and a set per
+    face, on a key that is always past 2^32 and so boxes a double every time.
+    What the weld asks is "has anything else claimed these four corners", and
+    the first claimant's INDEX answers it: the second face to arrive marks them
+    both. One pass, one lookup, and the second walk is gone.
+  - 🔴 **THE EDGE PASS RECOMPUTED THE NEWELL NORMAL TO ASK IF IT WAS ZERO** -
+    the frames loop had already computed it from the same four corners - and
+    `addEdge` recomputed both endpoint hashes that its caller had just built
+    the duplicate key from.
+  - **And four things allocated per face to be dropped in the same iteration**:
+    the key light `[-0.45, 0.6, 0.75]` and its length, written out INSIDE the
+    loop; a `wOf` closure that captures the side sign and that a stick face
+    never calls; `apply(VR, nn)`; and the tangent's own unprojection. Constants
+    hoisted, sign passed as an argument, scratches for the two transients.
+  🔴 **AND THE ONE THAT LOOKED BEST MEASURED AS NOTHING, AGAIN.** The edge
+  hashes are `h >>> 0` and half are past 2^31, so as map keys and as
+  `Uint32Array` reads every one is a boxed double; `x | 0` is a bijection on 32
+  bits, so signing both the stored value and the query changes no identity and
+  makes them all Smis. Digest identical, **104.8 ms against 105.5** - inside
+  the noise. Reverted, because it reintroduces exactly the trap the array's own
+  comment warns about (store signed, look up unsigned, and no edge ever
+  matches) for nothing. Same answer as the open-addressed group table already
+  recorded above: the boxing is real and it costs nothing here.
+  🔴 **AND A FLAT ARRAY BEAT A PROPERTY, MEASURED ON THE HEAP.** The Newell
+  length kept for the edge pass went on the face first. It read identically and
+  cost **3-7 MB of peak live heap** on 1AOI - a hidden-class transition and a
+  properties slot per face - against eight bytes in a `Float64Array`, which
+  brings the peak back to within a megabyte of where it was (95-96 -> 96-97).
+  This file's ceiling is a capsid; see the entry above on which peak to read
+  and why `window.gc` needs `--js-flags=--expose-gc`.
+  **PROVED BY `__meshDigest`, NOT BY PIXELS.** Twelve digests - four structures
+  x three cameras - identical before and after, at every step; GPU pixels are
+  not comparable across page loads. The suite is green, and the two node
+  harnesses do not load this file at all, which is exactly why the digest is
+  the check.
+
 - **THE LIGANDS ARE NOT WORTH CACHING, MEASURED.** The mesh stopped rebuilding
   them (three parts, above) and the obvious next step is to stop the CAPTURE
   rebuilding their prims too. It buys **about 3 ms of a 27 ms click**: same
