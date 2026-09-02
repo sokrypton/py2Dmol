@@ -1802,7 +1802,7 @@ function buildSequenceView() {
     }
 
     // ========================================================================
-    // HOW TALL THE STRIP MAY GET, and 🔴 A LINE COUNT IS THE WRONG CEILING.
+    // HOW MANY LINES THE STRIP SHOWS, and 🔴 A FIXED COUNT IS THE WRONG CEILING.
     //
     // 32 lines is width-independent, and the number of lines a sequence needs
     // is not: narrow the box and each line holds fewer residues, so it takes
@@ -1811,22 +1811,24 @@ function buildSequenceView() {
     // the viewport) and 544px on a 390px phone (64%), pinned at the 32-line
     // ceiling the whole way down.
     //
-    // The ceiling is a share of the VIEWPORT as well, so it shrinks with the
-    // thing it has to fit in. It is a Math.min of the two: the line count still
-    // caps a huge structure on a tall window, and the viewport share caps a
-    // phone. The floor keeps it usable - below about eight lines a strip is
-    // not worth the room it takes - and the custom scrollbar already handles
-    // whatever does not fit, so this costs scrolling and nothing else.
+    // The count is now whatever fits a quarter of the VIEWPORT, capped at 32
+    // and floored at 8, so it shrinks with the thing it has to fit in. A phone
+    // shows about 14 lines, a tall window still shows its 32, and the desktop
+    // is untouched for anything that never reached the old ceiling - 4HHB needs
+    // 17 lines and gets them. The custom scrollbar already handles whatever
+    // does not fit, so this costs scrolling and nothing else.
     // ========================================================================
-    const maxVisibleLines = 32;
-    const VIEWPORT_SHARE = 0.35;
-    const MIN_VISIBLE_LINES = 8;
+    // HOW MANY LINES WE SHOW is the setting; the height follows from it.
+    const MAX_VISIBLE_LINES = 32;   // the ceiling on a tall window
+    const MIN_VISIBLE_LINES = 8;    // ...below this a strip is not worth its room
+    const VIEWPORT_SHARE = 0.25;
     const viewportH = (typeof window !== 'undefined' && window.innerHeight) || 0;
-    const byLines = maxVisibleLines * charHeight + spacing;
-    const byViewport = viewportH
-        ? Math.max(MIN_VISIBLE_LINES * charHeight + spacing, viewportH * VIEWPORT_SHARE)
-        : byLines;
-    const maxVisibleHeight = Math.min(byLines, byViewport);
+    const linesThatFit = viewportH
+        ? Math.floor((viewportH * VIEWPORT_SHARE - spacing) / charHeight)
+        : MAX_VISIBLE_LINES;
+    const maxVisibleLines = Math.max(MIN_VISIBLE_LINES,
+        Math.min(MAX_VISIBLE_LINES, linesThatFit));
+    const maxVisibleHeight = maxVisibleLines * charHeight + spacing;
     const fullContentHeight = currentY; // Full content height (actual total)
 
     // Store fullContentHeight in layout for later use

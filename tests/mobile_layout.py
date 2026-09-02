@@ -315,7 +315,10 @@ for name in ("320px", "360px", "390px"):
     if sa and sa["over"] > 1:
         bad.append("%s: 'Select all' overflows its own button by %dpx - the label"
                    " wrapped inside it" % (name, sa["over"]))
-    if R["strip"] and R["strip"]["share"] > 0.5:
+    # 0.4, not 0.5: the strip shows ~14 lines at a quarter of the viewport, so
+    # 36% including its header is what it measures. A ceiling of 0.5 would let
+    # the line cap drift a long way back toward the 64% this started at.
+    if R["strip"] and R["strip"]["share"] > 0.4:
         bad.append("%s: the sequence strip is %dpx, %d%% of the viewport - the structure"
                    " it belongs to is what the reader came for"
                    % (name, R["strip"]["boxH"], round(R["strip"]["share"] * 100)))
