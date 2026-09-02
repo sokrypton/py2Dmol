@@ -4,8 +4,8 @@
 
 THE VERBS WERE IN EVERY BUNDLE AND ONE PAGE COULD REACH THEM. `setSelectionColor`,
 the side-chain modes, the element toggle, the base plates, the SSE override, the
-contacts, Find interactions - all of it was `src/app/selection.js` with two
-hundred lines of markup in `index.html`, so the notebook and the embed carried
+contacts, Find interactions - all of it was the web app's own `selection.js`
+with two hundred lines of markup in `index.html`, so the notebook and the embed carried
 the machinery and had no control that touched it. The panel is data in
 `parts/panel.js` now, mounted by `parts/ui.js`, and this measures it where it
 has never run: on the page `_display_viewer` writes, and on a bare host page

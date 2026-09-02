@@ -282,6 +282,27 @@ for (const doc of ['README.md', 'embed.html', 'CHANGELOG.md']) {
         bad('parts/panel.js published no selectionPanelCSS');
     } else {
         const css = panel.selectionPanelCSS('');
+        // 🔴 THE COMMENTS MUST BALANCE, AND NOTHING ELSE NOTICES WHEN THEY DO
+        // NOT. An edit that cut a block out of this stylesheet took the opening
+        // `/*` of the NEXT comment with it, leaving two lines of prose and a
+        // stray `*/` sitting in the CSS. `node -c` passes - it is inside a
+        // template literal - and so does the load check above, because the file
+        // is valid JavaScript. The browser error-recovers by skipping to the
+        // next `}`, which eats the rule that followed.
+        let depth = 0;
+        let orphan = -1;
+        for (const m of css.matchAll(/\/\*|\*\//g)) {
+            depth += m[0] === '/*' ? 1 : -1;
+            if (depth < 0) { orphan = m.index; break; }
+        }
+        if (orphan >= 0) {
+            bad(`SELECTION_PANEL_CSS has a stray "*/" at ${orphan}:`
+                + ` "...${css.slice(Math.max(0, orphan - 70), orphan + 2)}"`
+                + ' - a comment lost its opener, and the browser drops the rule'
+                + ' after it');
+        } else if (depth !== 0) {
+            bad(`SELECTION_PANEL_CSS has ${depth} unclosed comment(s)`);
+        }
         if (css.length < 5000) {
             bad(`the selection panel's stylesheet is ${css.length} bytes - it was`
                 + ' cut short, which is what a stray backtick does to it');

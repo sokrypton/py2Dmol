@@ -402,6 +402,7 @@ SCOPE .selection-panel-row[hidden] { display: none; }
    They are ordinary buttons again. What buys the width instead is padding and
    a shorter caption, both of which are just numbers - and the row still comes
    out on one line, which is the whole requirement. */
+/* PROPERTIES ABOVE, ACTIONS BELOW. A hairline the full width of the panel:
    the rows are already small and closely stacked, so anything heavier reads as
    two panels rather than as a break in one list. */
 SCOPE .selection-panel-divider {
