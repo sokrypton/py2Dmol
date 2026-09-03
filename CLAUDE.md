@@ -2089,6 +2089,63 @@ public downloads is exercised on every run.
   outright, which reads exactly like a renderer bug. Both of those cost a round
   and both were caught by a control arm, not by inspection.
 
+- 🔴 **A STICK THINNER THAN TWO PIXELS HAS NO INTERIOR TO SHOW, AND IT WAS
+  BEING DRAWN AS A SIX-FACE SOLID ANYWAY.** Every measurement in this file
+  before it is a way of doing the SAME work faster, and they are all now inside
+  a ~5% harness floor. This one does less work: `cartoon/geom.js` draws a box
+  whose projected thickness is under `STICK_FLAT_PX` as ONE double-sided quad -
+  `STICK_FACES_FLAT`, the path plain cartoon has taken since thickness zero
+  existed - and on a nucleosome with every side chain out that is **87,920
+  faces to 30,431** and the whole rebuild **146.2 ms to 77.3 (-47%)**, mesh
+  build -59%. Four counterbalanced rounds, min of nine.
+
+  | | faces | rebuild |
+  |---|---|---|
+  | 1AOI + every side chain, 3.4 px/A | 87,920 -> 30,431 | 151.8 -> 73.9 ms |
+  | 4HHB, 1TIM, 1EHZ at 6-10 px/A | unchanged | unchanged (+2.1 / -1.6 / -3.8%) |
+
+  **THE THRESHOLD IS IN PIXELS AND IT WAS SET BY LOOKING**, which is the only
+  instrument for it: at 3.9 px/A (4HHB at zoom 0.4, a 2.0px stick) the two
+  pictures are indistinguishable; at 6.1 the flat one is visibly lighter; at
+  9.8 they are plainly different - solid rounded side chains against flat
+  blades. So it cannot be a thickness in Angstrom, and it fires on exactly the
+  structures where the renderer is slowest. `paint_trace` reports eleven
+  fixtures unchanged and that is NOT evidence here: **it has no stick fixture**.
+  The 2D painter was checked by rendering it.
+  🔴 **AND THE DECISION IS BAKED INTO A RESIDENT MESH, WHICH THE ZOOM THAT
+  MOVES IT DOES NOT OTHERWISE REBUILD.** The capture is taken at the live zoom
+  and the draw divides it out again, so zooming is a REDRAW - which is the
+  whole reason the sampling rule two hundred lines up refuses to depend on
+  scale at all ("a ribosome built while small stayed faceted when you zoomed
+  in"). The answer is not to drop the rule but to put its ANSWER - one
+  boolean, never the zoom - into `signatureOf`. A crossing then costs exactly
+  one rebuild and zooming inside a regime costs nothing: measured 1.7px flat,
+  2.04px one rebuild to 87,920 faces, 3.4 and 6.8px no rebuild at all, and
+  back. Mutating that one term out and the nucleosome stays flat all the way
+  in. `stickLodFlat` is exported from `window.py2dmolCartoon` for it, beside
+  `thicknessAsked` and for the same reason: two files must agree about a rule,
+  so there is one of it.
+  🔴 **AND A ROUND SECTION IS EXCLUDED.** `STICK_FACES_FLAT` names corners 0,
+  1, 5 and 4, which are the BOX's; on a contact's 24-sided tube those four
+  indices are an arbitrary quad through the middle of it. The 1% test this
+  generalises never reached that case - a contact sets `hw === ht`, so it is
+  never within 1% of flat - and a pixel test reaches it immediately.
+  🔴 **AND THREE COUNTERBALANCED ROUNDS ARE NOT ENOUGH AT 20 ms.** The
+  structures where the rule does NOT fire have to be a no-op, and at three
+  rounds 1EHZ read **-12.8%** three times running, with identical face counts -
+  so I went hunting for a per-bond cost that could not physically be 2.6 ms and
+  rewrote the expression twice. At six rounds it is **-1.6%**. The tell was
+  there and I missed it: an identical-code control on the same structure read
+  -0.9%, and the arms' minima simply had not converged. **When a change cannot
+  explain its own measurement, the measurement is the thing to fix.**
+  🔴 **AND `bFlat` IS PER BOND WHILE `stickIsFlat` IS PER RENDER, AND BOTH HAD
+  TO LEARN THE RULE.** The first attempt changed only `stickIsFlat` - which
+  governs the JOINTS in `mergeBondRuns` - and the face count moved by 1,719 of
+  70,362: the faces are emitted from `stickBox`, off `bFlat`, which is derived
+  from the BOND's own section. A measurement that says "nearly nothing
+  happened" after a change meant to halve the work is not a weak result, it is
+  a wrong wire.
+
 - **AND THE SUITE'S FLAKES WERE ALL ONE THING: A CAP THAT FIRES DURING SETUP.**
   Three probes crossed a threshold on load rather than on a fault, and each
   reported the half-built page as a broken one. `tests/mobile_layout.py` loads

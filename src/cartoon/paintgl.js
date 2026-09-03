@@ -4942,6 +4942,20 @@ function signatureOf(r, w, h, colors) {
         // scale is built from it
         ((r.drawnStats && r.drawnStats()) || o || {}).maxExtent, w, h,
         r.cartoonThickness, r.cartoonSheetFlat, r.cartoonDetail,
+        // 🔴 THE STICK LEVEL OF DETAIL, AND IT IS THE ANSWER IN HERE, NOT THE
+        // ZOOM. cartoon/geom.js draws a stick thinner than two pixels as one
+        // double-sided quad instead of a six-face box, and that decision is
+        // baked into the resident mesh - while the zoom that moves it is a
+        // REDRAW and rebuilds nothing (the capture is taken at the live zoom
+        // and the draw divides it out again). Left out, a nucleosome built
+        // while small stayed flat all the way in, which is the fault the
+        // sampling rule in geom.js already refuses by name. A boolean, so a
+        // crossing costs exactly one rebuild and zooming inside a regime
+        // costs nothing.
+        (window.py2dmolCartoon && window.py2dmolCartoon.stickLodFlat
+            && typeof r._viewportScale === 'function')
+            ? window.py2dmolCartoon.stickLodFlat(r, r._viewportScale(w, h, o))
+            : false,
         r.cartoonArrows, r.cartoonRichardson, r.cartoonStyle,
         // NOT colorMode. Colour is a texture: three texels per segment against
         // a mesh that never moves, and putting the mode in here made every

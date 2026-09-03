@@ -8739,6 +8739,80 @@ function drawRun(runIdx, ctx) {
 // The thirteen module-scope names it also uses - LIGAND_*, CONTACT_*, LIGHT,
 // SS, SC_FLUSH_EPS, loneAtomRadiusA, mergeBondRuns, ringTables - need no
 // passing, because this function sits beside them.
+// THE STICK SECTION - its half-width, its half-thickness, and whether it is
+// drawn flat, the last two being functions of the renderer alone.
+//
+// LEVEL OF DETAIL, AND THE THRESHOLD IS IN PIXELS BECAUSE THAT IS WHERE THE
+// DIFFERENCE LIVES. A box thinner than about two pixels has no interior to
+// show: its four side facets are sub-pixel bands and what reaches the screen
+// is the one quad facing the eye. Drawing it as a solid spends six faces on
+// that quad, and the mesh build, the edge pass and the face hash all pay for
+// the five nobody sees - on a nucleosome with every side chain out, 70,362
+// of the 87,920 faces, and half the rebuild.
+//
+// Measured by rendering both and looking, which is the only instrument for
+// this: at 3.9 px/A (4HHB, a 2.0px stick) the two pictures are
+// indistinguishable; at 6.1 the flat one is visibly lighter, and at 9.8 they
+// are plainly different - solid rounded side chains against flat blades. So
+// the rule cannot be a thickness in Angstrom.
+//
+// 🔴 AND THE DECISION IS BAKED INTO A RESIDENT MESH, WHICH THE ZOOM THAT
+// MOVES IT DOES NOT OTHERWISE REBUILD. That is exactly the trap the sampling
+// rule refuses ("a ribosome built while small stayed faceted when you zoomed
+// in"), and the answer is not to drop the rule but to put its ANSWER - one
+// boolean, not the zoom - into cartoon/paintgl.js's rebuild signature. A
+// crossing then costs one rebuild and zooming inside a regime costs nothing.
+// This function is exported for that second caller: two files must agree
+// about it, so there is one of it.
+const STICK_FLAT_PX = 2.0;
+// The half-width is a module constant and stays one - it multiplies every
+// section corner of every bond, so there is no reason to hand it back through
+// a call. (An earlier version returned the pair as `{hw, ht}` and appeared to
+// cost 2.6 ms of 18.4 on 1EHZ; six counterbalanced rounds instead of three
+// put that at -1.6%, which is the harness floor. The pair of shapes is a
+// matter of taste and the measurement said nothing - recorded because three
+// rounds at this size will say it again.)
+const STICK_HW = LIGAND_STICK_H * (LIGAND_WIDTH / 3);
+// HALF-THICKNESS FOLLOWS THE THICKNESS CONTROL, and the control is a
+// thickness in ANGSTROM - the value is the total, so the half is half of it,
+// the same expression the ribbon uses. One number means one distance
+// everywhere.
+//
+// A LIGAND KEEPS ITS OWN SECTION, the way it keeps its own width: a preset
+// does not get to reshape it just because it reshaped the ribbon. So
+// richardson's 0.7 and 3d's 0.5 both leave the stick at its own
+// LIGAND_TH_DEFAULT, and a ligand looks the same under either.
+//
+// THE ONE EXCEPTION IS A PRESET THAT ASKS FOR FLAT. Ribbon (plain cartoon)
+// sets thickness 0 because flatness IS the look it means, not as a side
+// effect, and a solid stick sitting in flat ribbons reads wrong. So a preset
+// 0 does reach the ligand; every other preset value does not.
+//
+// And the reader outranks all of it: once the Thickness control has been
+// touched it owns the section, 0 included, which is the flat single-face
+// path - the same path the level of detail above takes for a different
+// reason.
+const stickHalfThickness = (renderer) => {
+    // THE PRESET'S NUMBER OR THE READER'S. See thicknessAsked: the GPU floors
+    // cartoonThickness before geom.js reads it, and this rule asks whether the
+    // value is EXACTLY zero - plain cartoon saying "flat is the look".
+    const thPreset = thicknessAsked(renderer);
+    const thLig = Math.min(LIGAND_TH_MAX,
+        (thicknessIsChosen(renderer) && thPreset !== undefined)
+            ? thPreset
+            : (thPreset === 0 ? 0 : LIGAND_TH_DEFAULT));
+    return Math.max(0, thLig / 2);
+};
+// AT ZERO THE BOX HAS NO INTERIOR: the +u and -u faces land on each other and
+// the other four have no area, so drawing it as a solid costs six faces, four
+// of them degenerate, to paint one quad. FLAT draws that quad once,
+// double-sided. That was always the point of taking the thickness to zero on
+// a preset; the pixel term below reaches the same path from the other side.
+const sectionIsFlat = (hw, ht, scale) => ht <= 0.5 * hw * 0.02
+    || ht < STICK_FLAT_PX / (2 * Math.max(1e-6, scale));
+const stickLodFlat = (renderer, scale) =>
+    sectionIsFlat(STICK_HW, stickHalfThickness(renderer), scale);
+
 function drawSticks(ctx) {
     const {
         at, baseInk, baseLineWidthPixels, colors, displayHeight,
@@ -8927,12 +9001,11 @@ function drawSticks(ctx) {
     // made that false, giving every side chain the ligand's own 0.5: fat 3D
     // side chains in flat ribbons. One helper, so the two stick rules cannot
     // read different numbers.
-    const thPreset = thicknessAsked(renderer);
-    const thLig = Math.min(LIGAND_TH_MAX,
-        (thicknessIsChosen(renderer) && thPreset !== undefined)
-            ? thPreset
-            : (thPreset === 0 ? 0 : LIGAND_TH_DEFAULT));
-    const stickHT = Math.max(0, thLig / 2);
+    // ...and the half-width beside it. Both come from module scope, where
+    // cartoon/paintgl.js can ask the same question: it has to know when the
+    // flat decision below changes under a zoom.
+    const stickHW = STICK_HW;
+    const stickHT = stickHalfThickness(renderer);
     // THE CONTACT'S OWN SECTION. Its width is CONTACT_WIDTH, in Angstrom,
     // and that is the FULL width - the same number the flat stroke used, so
     // switching to a box does not change how heavy a contact reads. Its
@@ -9425,43 +9498,19 @@ function drawSticks(ctx) {
     // neighbour, so bonds sharing a plane come out sharing their face
     // planes exactly (measured: 0.0 degrees around an aromatic ring).
     // It is built from the molecule, so it turns with it.
-    // HALF-WIDTH is fixed to the ligand's own width, independent of the
-    // Line Width control; HALF-THICKNESS follows the Thickness control.
-    // The section is a rectangle: v spans the width, u the thickness - u
-    // being the axis a mitre rolls onto its junction plane, which is what
-    // makes it the thickness direction everywhere below.
-    const stickHW = LIGAND_STICK_H * (LIGAND_WIDTH / 3);
-    // THE CONTROL IS A THICKNESS IN ANGSTROM - the value is the TOTAL
-    // thickness, so the half is thickness/2, the same as the ribbon's own
-    // expression. One number means one distance everywhere.
-    //
-    // A LIGAND KEEPS ITS OWN SECTION, the way it keeps its own width: a
-    // preset does not get to reshape it just because it reshaped the
-    // ribbon. So richardson's 0.7 and 3d's 0.5 both leave the stick at its
-    // own LIGAND_TH_DEFAULT, and a ligand looks the same under either.
-    //
-    // THE ONE EXCEPTION IS A PRESET THAT ASKS FOR FLAT. Ribbon (plain
-    // cartoon) sets thickness 0 because flatness IS the look it means, not
-    // as a side effect, and a solid stick sitting in flat ribbons reads
-    // wrong. So a preset 0 does reach the ligand; every other preset value
-    // does not.
-    //
-    // And the user outranks all of it: once the Thickness control has been
-    // touched it owns the section, 0 included, which is the flat
-    // single-face path.
-    //
-    // thPreset / thLig / stickHT are resolved ABOVE the generic segment
-    // loop, not here: the side-chain cut needs the stick's half-thickness
-    // to know how far its corners will travel, and a `const` read before
-    // its declaration is a dead viewer rather than a wrong number.
-    //
-    // At zero the box has no interior: the +u and -u faces land on each
-    // other and the other four have no area. Drawing it as a solid then
-    // costs six faces, four of them degenerate, to paint one quad. FLAT
-    // draws that quad once, double-sided - which is the whole point of
-    // taking the thickness to zero on a preset: fewer faces.
-    const stickFlatEps = 0.5 * stickHW * 0.02;
-    const stickIsFlat = stickHT <= stickFlatEps;
+    // WHAT THE SECTION IS: v spans the width, u the thickness - u being the
+    // axis a mitre rolls onto its junction plane, which is what makes it the
+    // thickness direction everywhere below. The numbers, the preset rule and
+    // the flat test are all `stickHalfThickness` / `sectionIsFlat` at module
+    // scope, because cartoon/paintgl.js has to ask the same question; the
+    // pair is destructured at the top of this function, ABOVE the generic
+    // segment loop, since the side-chain cut needs the half-thickness to know
+    // how far its corners will travel.
+    const stickIsFlat = sectionIsFlat(stickHW, stickHT, scale);
+    // ...and the same threshold as a half-thickness, for the per-bond test
+    // below: that one runs once for every bond in the structure, so it reads
+    // a number rather than calling anything.
+    const flatBelowHT = STICK_FLAT_PX / (2 * Math.max(1e-6, scale));
     // A face is kept while it still looks at the eye, plus a margin: a
     // projected quad undercovers its own outline at grazing, so culling
     // exactly at zero leaves a hairline of paper along the silhouette.
@@ -9642,8 +9691,19 @@ function drawSticks(ctx) {
         // and the reverse is right too.
         const bHW = bd.hw !== undefined ? bd.hw : stickHW;
         const bHT = bd.ht !== undefined ? bd.ht : stickHT;
-        const bFlat = bHT <= 0.5 * bHW * 0.02;
         const bSides = (bd.sides && bd.sides >= 3) ? (bd.sides | 0) : 4;
+        // A ROUND SECTION IS EXCLUDED FROM THE LEVEL OF DETAIL, and that
+        // is what `bSides === 4` is doing: `STICK_FACES_FLAT` names corners
+        // 0, 1, 5 and 4, which are the BOX's, and on a contact's 24-sided
+        // tube those four indices are an arbitrary quad through the middle
+        // of it. The 1% test on the left never reached that case - a contact
+        // sets hw === ht - and this one must not either.
+        //
+        // Written out rather than calling `sectionIsFlat`: this runs once
+        // for every bond in the structure, and `flatBelowHT` is the same
+        // threshold already divided out.
+        const bFlat = bHT <= 0.5 * bHW * 0.02
+            || (bSides === 4 && bHT < flatBelowHT);
         const va = bd.va;
         const vb = bd.vb;
         const tx = fr.t[0]; const ty = fr.t[1]; const tz = fr.t[2];
@@ -10525,6 +10585,10 @@ window.py2dmolCartoon = { render, makeSec, smoothSec, extendSec, SS_PARAMS: SS,
     // the cases that matter (a floored value, a look switch, a preset's own
     // number) are cheaper to state than to render. See tests/smoke.js.
     thicknessIsChosen, thicknessAsked,
+    // ...and the stick level of detail, for cartoon/paintgl.js's rebuild
+    // signature: the answer is baked into a resident mesh and the zoom
+    // that moves it rebuilds nothing on its own.
+    stickLodFlat,
     predictBackbone, predictBaseFrames, assignSecondary, assignSecondaryOpen,
     smoothNucleicTrace, loneAtomRadiusA,
     ringsOf, buildSheetFrames, localFrame,
