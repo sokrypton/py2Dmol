@@ -3040,7 +3040,7 @@ function buildBasePlates(S) {
     const { renderer, prims, colors, n, vis,
             project, persp, fl, naPos, naFrames, rbfP,
             pairOf, bbSeg, frameProbe, naHalfT, naSlabHalfT, naWidthA,
-            naPlateWA, widthScale, inkWanted, selInk, emitSlabInk,
+            naPlateWA, widthScale, inkKept, selInk, emitSlabInk,
             hasColorOverrides } = S;
 
 // WHICH RESIDUES SHOW A BASE. `cartoonBasePlates` is still the master
@@ -3565,7 +3565,7 @@ if (renderer.cartoonBasePlates !== false) {
                 z: zSum / Lp.length,
                 poly: pickPoly,
             });
-            if (inkWanted) {
+            if (inkKept) {
                 // THE LOOP RULE, so the rung carries no INNER line.
                 // The hull test finds every silhouette corner, and on a
                 // section with real depth the interior crease - where
@@ -5472,6 +5472,30 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
     // explicitly, for anyone who wants the frame rate on a huge complex.
     const perfectInk = renderer._quality !== 'fast';
 
+    // 🔴 AN INK CURVE IS THE PAINTER'S, AND THE HARVEST THROWS EVERY ONE AWAY.
+    // `captureFrom` sets `_probeOnly` and returns at the geometry seam with
+    // the prims; `inkCurves` is read PAST that seam, by paintPrims - so the
+    // whole silhouette pass was being built for a frame nobody paints. It is
+    // not a small pass: every stick takes the convex hull of its eight
+    // projected corners and tests both ends of every candidate edge against
+    // it, and the ribbon and the base plates each emit a slab outline.
+    // Measured on 1AOI with every side chain out, 87,920 faces: a rebuild
+    // goes 190.1 ms -> 172.1, which is 19% off the CAPTURE half (86.9 -> 70.5)
+    // and nothing at all off the mesh, whose digest is unchanged under three
+    // cameras on four structures.
+    //
+    // THREE THINGS STILL READ THE CURVES BEFORE THE SEAM, and each keeps
+    // them: the FAST ink path, which turns them into `ribStroke` prims
+    // (reachable through renderer._quality = 'fast', which is what
+    // `perfectInk` is false for); `_dumpCand`; and `_stickProbe`, which
+    // tests/smoke.js fills from the ink block itself.
+    //
+    // `inkWanted` stays what it always was - what the READER asked for, which
+    // is what `_inkRan` reports and what paintPrims is handed. This is the
+    // narrower question of whether anything will ever look at the answer.
+    const inkKept = inkWanted && !(renderer._probeOnly && perfectInk
+        && !renderer._stickProbe && !renderer._dumpCand);
+
     // Contiguous runs of backbone. bbSeg[i] connects i to i+1, so a run
     // that stops having segments at i still INCLUDES residue i.
     const runs = [];
@@ -6388,7 +6412,7 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
     const runCtx = {
         arrowsOn, at, baseFramesRot, bbSeg, colors,
         cullSeg, emitSlabInk, fl, frameProbe, hasColorOverrides,
-        inkWanted, loopCont, loopSquare, n, naFrames,
+        inkKept, loopCont, loopSquare, n, naFrames,
         naHalfT, naPos, naWidthA, pairOf, persp,
         positionTypes, prims, project, protHalfT, protHalfW,
         protSide, q0, registerJoint, renderer, rich,
@@ -6408,7 +6432,7 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
     drawSticks({
         at, baseInk, baseLineWidthPixels, colors, displayHeight,
         displayWidth, fl, frameProbe, genericSegs, inkCurves,
-        inkWanted, mask, noViewCull, outlineW, persp,
+        inkKept, mask, noViewCull, outlineW, persp,
         prims, project, protHalfT, protHalfW, protSide,
         registerJoint, renderer, rotated, scale, segments,
         selInk, vs,
@@ -6501,7 +6525,7 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
         renderer, prims, colors, n, vis,
         project, persp, fl, naPos, naFrames,
         rbfP, pairOf, bbSeg, frameProbe, naHalfT,
-        naSlabHalfT, naWidthA, naPlateWA, widthScale, inkWanted,
+        naSlabHalfT, naWidthA, naPlateWA, widthScale, inkKept,
         selInk, emitSlabInk, hasColorOverrides,
     });
     // which is exactly why masking the grain FIRST protects the paper
@@ -6731,7 +6755,7 @@ function drawRun(runIdx, ctx) {
     const {
         arrowsOn, at, baseFramesRot, bbSeg, colors,
         cullSeg, emitSlabInk, fl, frameProbe, hasColorOverrides,
-        inkWanted, loopCont, loopSquare, n, naFrames,
+        inkKept, loopCont, loopSquare, n, naFrames,
         naHalfT, naPos, naWidthA, pairOf, persp,
         positionTypes, prims, project, protHalfT, protHalfW,
         protSide, q0, registerJoint, renderer, rich,
@@ -8568,7 +8592,7 @@ function drawRun(runIdx, ctx) {
                 // corner curves exactly where they project to the same
                 // point; interior crease corners are never extreme, so
                 // no inner line.
-            if (inkWanted) {
+            if (inkKept) {
                 emitSlabInk(Lp, Lm, Rp, Rm, oN, oB, oK, col,
                     !!(selInk && (selInk.has(i) || selInk.has(iN))), i,
                     squareLoop || !rich, true);
@@ -8653,7 +8677,7 @@ function drawRun(runIdx, ctx) {
 // them: seven of the projection (project, persp, scale, at, fl, vs, rotated),
 // five of the style (baseLineWidthPixels, outlineW, protHalfW, protHalfT,
 // protSide), four it writes into (prims, inkCurves, genericSegs,
-// registerJoint), five flags (inkWanted, baseInk, selInk, noViewCull,
+// registerJoint), five flags (inkKept, baseInk, selInk, noViewCull,
 // frameProbe), and render()'s own parameters. The arrays are mutated in
 // place, which is why passing them by value is safe; nothing here rebinds a
 // name, which was checked before the cut rather than assumed.
@@ -8665,7 +8689,7 @@ function drawSticks(ctx) {
     const {
         at, baseInk, baseLineWidthPixels, colors, displayHeight,
         displayWidth, fl, frameProbe, genericSegs, inkCurves,
-        inkWanted, mask, noViewCull, outlineW, persp,
+        inkKept, mask, noViewCull, outlineW, persp,
         prims, project, protHalfT, protHalfW, protSide,
         registerJoint, renderer, rotated, scale, segments,
         selInk, vs,
@@ -9606,10 +9630,19 @@ function drawSticks(ctx) {
         // without cutting the solid: no second box, no abutting caps, no
         // seam to ink, and nothing added to any graph. It is the machinery
         // that was already here.
+        // THE SECTION TABLES ARE THE BOND'S, not the segment's - bSides
+        // does not change between a bond's pieces - so they are looked up
+        // once here rather than once per emitSeg call.
+        const RT = ringTables(bSides);
+        const SF = bFlat ? STICK_FACES_FLAT : RT.faces;
         const emitSeg = (secA, secB, firstSeg, lastSeg, segC) => {
         const V = [];
         const W = [];                       // the same eight, in Angstroms
-        for (const sec of [secA, secB]) {
+        // TWO NAMED SECTIONS, not an array of two. `for (const sec of
+        // [secA, secB])` built a fresh pair and its iterator on every call,
+        // and this is called once per SEGMENT of every bond in the build.
+        for (let e2 = 0; e2 < 2; e2++) {
+            const sec = e2 === 0 ? secA : secB;
             for (let k = 0; k < sec.length; k++) {
                 const w = sec[k];
                 const q = project(w[0], w[1], w[2]);
@@ -9632,8 +9665,16 @@ function drawSticks(ctx) {
         // Faces that plainly face the viewer then test as back-facing and
         // are culled - whole sides of a stick go missing, but only under
         // perspective, because ortho never evaluates this branch.
-        let smx = 0; let smy = 0; let smz = 0;
-        for (const w of W) { smx += w[0]; smy += w[1]; smz += w[2]; }
+        // ONE SUM, TWO DIVISORS. This mean and the solid's centre below
+        // walked the same corners in two passes - and they are NOT the same
+        // point: one divides by a literal 8 and the other by W.length, which
+        // part company the moment a bond is a TUBE rather than a box. So the
+        // sum is shared and the two divisions are not.
+        let swx = 0; let swy = 0; let swz = 0;
+        for (let i2 = 0; i2 < W.length; i2++) {
+            const w = W[i2]; swx += w[0]; swy += w[1]; swz += w[2];
+        }
+        let smx = swx; let smy = swy; let smz = swz;
         smx /= 8; smy /= 8; smz /= 8;
         if (!project(smx, smy, smz)) return false;  // behind the camera?
         let ex = 0; let ey = 0; let ez = 1;
@@ -9653,31 +9694,38 @@ function drawSticks(ctx) {
         // midpoint of two opposite corners is not, once an end is cut
         // obliquely, and a centre outside the box flips some of its
         // normals inward
-        let cx3 = 0; let cy3 = 0; let cz3 = 0;
-        for (const w of W) { cx3 += w[0]; cy3 += w[1]; cz3 += w[2]; }
-        cx3 /= W.length; cy3 /= W.length; cz3 /= W.length;
-        const o = [];
-        const l = [];
-        const RT = ringTables(bSides);
-        const SF = bFlat ? STICK_FACES_FLAT : RT.faces;
-        for (const f of SF) {
+        const cx3 = swx / W.length;
+        const cy3 = swy / W.length;
+        const cz3 = swz / W.length;
+        // ...and the two per-face results, written by index rather than
+        // pushed: the length is known before the loop starts.
+        const o = new Float64Array(SF.length);
+        const l = new Float64Array(SF.length);
+        for (let fj = 0; fj < SF.length; fj++) {
+            const f = SF[fj];
             // NEWELL, over however many corners the face has. A tube's
             // caps are n-gons, and the two-diagonal cross product is only
             // the quad's special case of this - it reads f.q[3] and there
             // may not be one. Newell is also the right answer for a
             // non-planar face, which a twisted side facet is.
-            const fw = f.q.map((vi) => W[vi]);
-            const p0 = fw[0]; const p1 = fw[1];
+            // THE FACE'S CORNERS ARE INDICES INTO W, so they are read
+            // through f.q rather than gathered into an array of their own:
+            // `f.q.map((vi) => W[vi])` built a closure and a four-slot array
+            // for every face of every segment, and the three loops below are
+            // the only readers. (`p0`/`p1` stood here, declared and never
+            // used.)
+            const fq2 = f.q;
+            const FL = fq2.length;
             let nx2 = 0; let ny2 = 0; let nz2 = 0;
-            for (let i2 = 0; i2 < fw.length; i2++) {
-                const a2 = fw[i2];
-                const b2 = fw[(i2 + 1) % fw.length];
+            for (let i2 = 0; i2 < FL; i2++) {
+                const a2 = W[fq2[i2]];
+                const b2 = W[fq2[(i2 + 1) % FL]];
                 nx2 += (a2[1] - b2[1]) * (a2[2] + b2[2]);
                 ny2 += (a2[2] - b2[2]) * (a2[0] + b2[0]);
                 nz2 += (a2[0] - b2[0]) * (a2[1] + b2[1]);
             }
             const nl2 = Math.hypot(nx2, ny2, nz2);
-            if (nl2 < 1e-9) { o.push(0); l.push(0); continue; }
+            if (nl2 < 1e-9) { o[fj] = 0; l[fj] = 0; continue; }
             nx2 /= nl2; ny2 /= nl2; nz2 /= nl2;
             // point it away from the box's middle - except on a sheet,
             // where the face centroid IS the middle and that difference is
@@ -9690,10 +9738,12 @@ function drawSticks(ctx) {
                 }
             } else {
                 let gx = 0; let gy = 0; let gz = 0;
-                for (const q of fw) { gx += q[0]; gy += q[1]; gz += q[2]; }
-                gx = gx / fw.length - cx3;
-                gy = gy / fw.length - cy3;
-                gz = gz / fw.length - cz3;
+                for (let i2 = 0; i2 < FL; i2++) {
+                    const q = W[fq2[i2]]; gx += q[0]; gy += q[1]; gz += q[2];
+                }
+                gx = gx / FL - cx3;
+                gy = gy / FL - cy3;
+                gz = gz / FL - cz3;
                 if (nx2 * gx + ny2 * gy + nz2 * gz < 0) {
                     nx2 = -nx2; ny2 = -ny2; nz2 = -nz2;
                 }
@@ -9708,16 +9758,22 @@ function drawSticks(ctx) {
             // normal - which is what the surface does on the whole - still
             // decides how the face is lit and how squarely it reads.
             let best = nx2 * ex + ny2 * ey + nz2 * ez;
-            const tris = [];
-            for (let i2 = 1; i2 + 1 < fw.length; i2++) {
-                tris.push([fw[0], fw[i2], fw[i2 + 1]]);
-            }
-            for (const [A, B, C] of tris) {
-                const e1 = [B[0] - A[0], B[1] - A[1], B[2] - A[2]];
-                const e2 = [C[0] - A[0], C[1] - A[1], C[2] - A[2]];
-                let X = e1[1] * e2[2] - e1[2] * e2[1];
-                let Y = e1[2] * e2[0] - e1[0] * e2[2];
-                let Z = e1[0] * e2[1] - e1[1] * e2[0];
+            // THE FAN, WALKED RATHER THAN BUILT. This was a list of
+            // three-corner arrays, destructured back apart one line later,
+            // and two more arrays for the edge vectors - six allocations per
+            // triangle, of which a quad has two, all dead by the end of the
+            // iteration that made them.
+            const A = W[fq2[0]];
+            for (let i2 = 1; i2 + 1 < FL; i2++) {
+                const B = W[fq2[i2]];
+                const C = W[fq2[i2 + 1]];
+                const e1x = B[0] - A[0]; const e1y = B[1] - A[1];
+                const e1z = B[2] - A[2];
+                const e2x = C[0] - A[0]; const e2y = C[1] - A[1];
+                const e2z = C[2] - A[2];
+                let X = e1y * e2z - e1z * e2y;
+                let Y = e1z * e2x - e1x * e2z;
+                let Z = e1x * e2y - e1y * e2x;
                 const m = Math.hypot(X, Y, Z);
                 if (m < 1e-9) continue;
                 X /= m; Y /= m; Z /= m;
@@ -9725,8 +9781,8 @@ function drawSticks(ctx) {
                 const ot = X * ex + Y * ey + Z * ez;
                 if (ot > best) best = ot;
             }
-            o.push(best);
-            l.push(nx2 * LIGHT[0] + ny2 * LIGHT[1] + nz2 * LIGHT[2]);
+            o[fj] = best;
+            l[fj] = nx2 * LIGHT[0] + ny2 * LIGHT[1] + nz2 * LIGHT[2];
         }
         const prim = {
             // only the bond's OWN ends can be free; a cut made inside the
@@ -9748,6 +9804,10 @@ function drawSticks(ctx) {
         // not painted, but they belong in the occluder sets: the cap faces
         // at a shared atom are what hides the neighbouring box's buried
         // edges.
+        // ASKED OF THE BOND, ONCE. It reads bd.a and bd.b, which do not
+        // change between the faces of one segment, and it was called for
+        // every one of them.
+        const bondSc = bondTouchesSidechain(scMap, bd.a, bd.b);
         for (let fi = 0; fi < SF.length; fi++) {
             const f = SF[fi];
             // A CAP IS INTERIOR EXACTLY WHEN ITS END WAS CUT. An interior
@@ -9829,7 +9889,7 @@ function drawSticks(ctx) {
                 // doubled lines the weld exists to remove, at every
                 // attachment. Only the drawing knows which bonds it drew for a
                 // side chain, so it says so here.
-                sc: bondTouchesSidechain(scMap, bd.a, bd.b),
+                sc: bondSc,
                 // painted as one flat colour - see rgbCss in the fill
                 unlit: !!bd.unlit,
                 c: segC || bd.c,
@@ -9877,7 +9937,7 @@ function drawSticks(ctx) {
         // there the ring is inside the neighbouring box, and inking it is
         // exactly the line ruled across the stick that this whole rewrite
         // is about.
-        if (inkWanted) {
+        if (inkKept) {
             const front = SF.map((f, fi) => o[fi] > 0);
             // Set renderer._stickProbe = [] before a render to collect each
             // box and the edges it inked. The property worth testing is

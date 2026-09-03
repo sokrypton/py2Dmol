@@ -1817,6 +1817,92 @@ public downloads is exercised on every run.
   harnesses do not load this file at all, which is exactly why the digest is
   the check.
 
+- 🔴 **THE CAPTURE WAS BUILDING AN OUTLINE FOR A FRAME NOBODY PAINTS.** The
+  mesh build got 25-34% faster (the entry above) and that made `captureFrom`
+  the larger half of a rebuild - so the profile moved to `cartoon/geom.js`,
+  where it had never been looked at. The capture is **23-31% faster** with the
+  mesh digest unchanged under three cameras on four structures:
+
+  | | capture | whole rebuild |
+  |---|---|---|
+  | 1AOI + every side chain (87,920 faces) | 74.3 -> 51.1 ms | 191.3 -> 171.0 |
+  | 4HHB + side chains | 22.8 -> 17.6 | 62.7 -> 55.0 |
+  | 1EHZ + side chains (RNA) | 11.4 -> 8.2 | 27.9 -> 23.3 |
+  | 1TIM, ribbon only | 3.0 -> 2.1 | 11.8 -> 10.7 |
+
+  🔴 **AN INK CURVE IS THE PAINTER'S, AND THE HARVEST THROWS EVERY ONE AWAY.**
+  `captureFrom` sets `_probeOnly` and returns at the geometry seam with the
+  prims; `inkCurves` is read PAST that seam, by `paintPrims`. The GPU builds
+  its own outline from the faces' edges (`addEdge`), so not one of those curves
+  had a reader - and building them is not cheap: every stick takes the convex
+  hull of its eight projected corners and tests both ends of every candidate
+  edge against it, and the ribbon and the base plates each emit a slab
+  outline. `hullPts` and `insideBy` alone were 9.9 ms/build on 1AOI.
+  **`inkKept` is the narrower question** - will anything ever look at the
+  answer - and `inkWanted` stays what it always was, what the READER asked
+  for, which is what `_inkRan` reports and what `paintPrims` is handed.
+  **THREE THINGS STILL READ THE CURVES BEFORE THE SEAM** and each keeps them:
+  the FAST ink path, which turns them into `ribStroke` prims (reachable
+  through `renderer._quality = 'fast'`, which is what `perfectInk` is false
+  for) - miss that one and a fast-mode GPU frame silently loses its outline;
+  `_dumpCand`; and `_stickProbe`, which `tests/smoke.js` fills from inside the
+  ink block itself. Worth **23%** of the capture on 1AOI, on its own.
+  🔴 **AND `emitSeg` ALLOCATED SIX ARRAYS PER TRIANGLE.** It is called once per
+  SEGMENT of every bond, and per face it built `f.q.map((vi) => W[vi])` (a
+  closure and a four-slot array) to read four corners it could have indexed;
+  then a list of three-corner arrays destructured back apart one line later,
+  plus two more for the edge vectors. The face's corners are INDICES into `W`,
+  so the three loops read them through `f.q`. The eye-ray middle and the
+  solid's centre also summed the same eight corners in two separate passes -
+  and they are **not the same point**, one dividing by a literal 8 and the
+  other by `W.length`, which part company the moment a bond is a TUBE rather
+  than a box, so the sum is shared and the two divisions are not. Plus the
+  section tables looked up per segment rather than per bond, the side-chain
+  question asked once per FACE when it reads only `bd.a`/`bd.b`, and a `p0`,
+  `p1` pair declared and never used. Worth **5-6%** of the capture on
+  proteins and **23%** on 1EHZ, where base plates and nucleotide sticks make
+  this the dominant loop.
+  🔴 **AND THE TWO HAD TO BE MEASURED APART, because the first A/B could not
+  tell them apart.** `total - mesh` carries BOTH halves' noise, and it reported
+  the second change as +2.2% on one structure and +15% on another while the
+  MESH column - which `geom.js` cannot touch and whose digest was proven
+  identical - moved 2.5% and 6.0%. A control that is supposed to read zero and
+  reads 6% is the measurement telling you it is not evidence. `RB.capture` was
+  already recorded and is the half being changed: timed directly, the mesh
+  control comes back at -1.0 / 0.0 / +2.2 / +1.3% and the capture deltas are
+  real. **Measure the thing you changed, not the difference of two things you
+  did not.**
+  Proved by `__meshDigest` (12 digests, four structures x three cameras,
+  identical at every step), by `paint_trace` (11 fixtures, 20,619 ops
+  unchanged - though note it has **no stick fixture**, so it says nothing about
+  `emitSeg`; the digests are what cover that) and by `tests/smoke.js`, which
+  drives the stick geometry through `_stickProbe`. Peak live heap 96-97 -> 95-96 MB.
+
+- **AND THE SUITE'S FLAKES WERE ALL ONE THING: A CAP THAT FIRES DURING SETUP.**
+  Three probes crossed a threshold on load rather than on a fault, and each
+  reported the half-built page as a broken one. `tests/mobile_layout.py` loads
+  `index.html` at FIVE viewport widths and resizes at three more - 6.7 s alone,
+  killed at thirty in a lane running six browsers - and said the sequence strip
+  was "924 logical px in a 0px box", which is a measurement taken before the
+  layout settled. It has its own `probe_cap` entry now, the third after
+  `embed`, `colab` and `focus_mode`, and the note there says what the three
+  share. `tests/multi_object.py` compared the GPU ink count against the CPU
+  one at **5%** when the two painters legitimately differ by 4.8%: three runs
+  of the UNCHANGED tree gave 4.89 / 4.99 / **5.01%**, so it failed about one
+  run in three on nothing at all. 10% now, and the sibling tube check has
+  always allowed 20%. **A bound 0.2% above the measured value is a bound that
+  fails on noise** - and the way to tell that from a regression is to run the
+  old tree, which is what turned "my change moved the picture" into "the mean
+  moved 0.1% inside a 0.2% spread".
+  🔴 **`tests/cut_ligands.py` HAS THE SAME SHAPE AND IS NOT FIXED.** Its
+  `moving` sample polls `_focusAnim` on a 40 ms `setTimeout` against a ~330 ms
+  flight, so a stalled tab hands control back after the flight has LANDED and
+  the probe reports "it jumped". Its own comment records this having been
+  tuned once already, from frame-counting to polling. The race-free form is to
+  sample from **rAF**, because the flight is itself driven by rAF - starve one
+  and you starve the other, so every frame the camera actually drew is seen.
+  Not done here.
+
 - **THE LIGANDS ARE NOT WORTH CACHING, MEASURED.** The mesh stopped rebuilding
   them (three parts, above) and the obvious next step is to stop the CAPTURE
   rebuilding their prims too. It buys **about 3 ms of a 27 ms click**: same

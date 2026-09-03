@@ -119,11 +119,19 @@ CAP="${CAP:-60}"
 # lane doubles it. Killed at thirty it reported "no result posted", which is
 # what an unfinished page looks like and nothing to do with the page - the same
 # disguise the note above describes.
+# ...and tests/mobile_layout.py loads the page at FIVE viewport widths and then
+# resizes it at three more, each a full reload of index.html's 34 scripts. It is
+# 6.7 s alone and was killed at thirty in the parallel lane, where six browsers
+# are up at once - reported once as a strip "924 logical px in a 0px box", which
+# is a measurement taken before the layout settled rather than a broken layout.
+# The same disguise a third time: what these three share is that the cap fires
+# during setup and the probe reports whatever the half-built page said.
 probe_cap () {
   case $1 in
     (embed) print 240 ;;
     (colab) print 160 ;;
     (focus_mode) print 120 ;;
+    (mobile_layout) print 120 ;;
     (*) print $CAP ;;
   esac
 }

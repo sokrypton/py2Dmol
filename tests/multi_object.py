@@ -1347,7 +1347,18 @@ def main():
         bad.append("the GPU tube picture is not the CPU one")
     if R["gpuInk"] <= 0:
         bad.append("the GPU path drew nothing")
-    if abs(R["gpuInk"] - R.get("cpuBeforeGpu", 1)) > 0.05 * R.get("cpuBeforeGpu", 1):
+    # 🔴 A BOUND 0.2% ABOVE THE MEASURED VALUE IS A BOUND THAT FAILS ON NOISE.
+    # The two painters legitimately disagree here by about 4.8% - they are
+    # different rasterisers over the same geometry - and this asked for 5%. The
+    # ink count moves 30-50 pixels between runs of IDENTICAL code, so the
+    # assertion crossed its own threshold about one run in three: measured on
+    # 1BBH+1EHZ, three runs of the unchanged tree gave 25872 / 25842 / 25839
+    # against a CPU 27201, which is 4.89 / 4.99 / 5.01% - the last of them a
+    # failure. Widened to 10%, which still catches a GPU drawing something
+    # structurally different while leaving room for the rasteriser's own
+    # scatter; "it drew nothing at all" is the separate check above.
+    # The sibling tube comparison two lines up has always allowed 20%.
+    if abs(R["gpuInk"] - R.get("cpuBeforeGpu", 1)) > 0.10 * R.get("cpuBeforeGpu", 1):
         bad.append(f"the GPU picture ({R['gpuInk']} ink) is not the CPU one"
                    f" ({R.get('cpuBeforeGpu')})")
     if R.get("beforeSave") != R.get("afterLoad"):
