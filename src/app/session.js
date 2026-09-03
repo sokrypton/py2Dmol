@@ -114,6 +114,41 @@ function saveViewerState() {
                     }
                 }
 
+                // 🔴 AND EVERY OTHER MAP, AND THE RESIDUE COUNT. This
+                // builder names each frame field one by one, so a field it
+                // does not name is a field it throws away - the same shape
+                // of fault as viewer.py's light_frame and parts/ui.js's
+                // static loader, both of which dropped `align` this way.
+                // Without this a saved session came back with the PAE alone
+                // and every other map gone, and `pae_n` missing turned a
+                // resampled matrix's residue count into its CELL count, so
+                // a box dragged on the reloaded plot selected the wrong
+                // residues.
+                if (frame.pae_n) frameData.pae_n = frame.pae_n;
+                if (frame.maps && typeof frame.maps === 'object') {
+                    const savedMaps = {};
+                    for (const key of Object.keys(frame.maps)) {
+                        const m = frame.maps[key];
+                        const raw = (m && m.data !== undefined) ? m.data : m;
+                        // base64 stays a string - it is already the compact
+                        // form and re-expanding it would triple the file.
+                        let data = null;
+                        if (typeof raw === 'string') data = raw;
+                        else if (raw instanceof Uint8Array) data = Array.from(raw);
+                        else if (Array.isArray(raw)) data = raw;
+                        if (!data) continue;
+                        const entry = { data };
+                        for (const f of ['n', 'vmin', 'vmax', 'colors',
+                                         'xlabel', 'ylabel', 'per_unit']) {
+                            if (m && m[f] !== undefined && m[f] !== null) {
+                                entry[f] = m[f];
+                            }
+                        }
+                        savedMaps[key] = entry;
+                    }
+                    if (Object.keys(savedMaps).length) frameData.maps = savedMaps;
+                }
+
                 // SIDE CHAINS - the WHOLE table, so a reloaded session can turn
                 // one on that was not showing when it was saved. Trimmed rather
                 // than cut down: see trimSidechainTable.
@@ -329,7 +364,9 @@ function saveViewerState() {
                 selectionsByObject[objectName] = {
                     positions: Array.from(objectData.visibilityState.positions),
                     chains: Array.from(objectData.visibilityState.chains),
-                    pae_boxes: objectData.visibilityState.paeBoxes.map(box => ({ ...box })),
+                    // The saved key stays `pae_boxes`: it is the session FILE FORMAT,
+                    // and a reader with sessions on disk must keep loading them.
+                    pae_boxes: objectData.visibilityState.heatmapBoxes.map(box => ({ ...box })),
                     selection_mode: objectData.visibilityState.visibilityMode
                 };
             }
@@ -482,6 +519,11 @@ async function loadViewerState(stateData) {
                         position_types: frameData.position_types || objPositionTypes,  // undefined if both missing
                         plddts: frameData.plddts,  // undefined if missing (will use inheritance or default)
                         pae: frameData.pae,  // undefined if missing (will use inheritance or default)
+                        // ...and its residue count, and every other map. See
+                        // the save side: a field this rebuild does not name
+                        // is a field the reload throws away.
+                        pae_n: frameData.pae_n,
+                        maps: frameData.maps,
                         scatter: frameData.scatter,  // undefined if missing (will use inheritance or default)
                         position_names: frameData.position_names,  // undefined if missing (will default)
                         position_elements: frameData.position_elements,
@@ -614,10 +656,14 @@ async function loadViewerState(stateData) {
                     ylim: stateData.config.scatter.ylim || null
                 };
             }
-            if (stateData.config.pae) {
-                window.viewerConfig.pae = {
-                    enabled: stateData.config.pae.enabled !== false,
-                    size: stateData.config.pae.size || 300
+            // Either spelling: a session saved before the rename says
+            // `pae`, and one saved after says `heatmap`. Restored under the
+            // name the app's own config uses.
+            const savedHeatmap = stateData.config.heatmap || stateData.config.pae;
+            if (savedHeatmap) {
+                window.viewerConfig.heatmap = {
+                    enabled: savedHeatmap.enabled !== false,
+                    size: savedHeatmap.size || 300
                 };
             }
             // Other config sections can be restored here if needed
@@ -960,7 +1006,7 @@ async function loadViewerState(stateData) {
                         renderer.objectsData[objectName].visibilityState = {
                             positions: new Set(),
                             chains: new Set(),
-                            paeBoxes: [],
+                            heatmapBoxes: [],
                             visibilityMode: 'default'
                         };
                     }
@@ -974,7 +1020,7 @@ async function loadViewerState(stateData) {
                     renderer.objectsData[objectName].visibilityState = {
                         positions: positions,
                         chains: new Set(ss.chains || []),
-                        paeBoxes: ss.pae_boxes || [],
+                        heatmapBoxes: ss.pae_boxes || [],
                         visibilityMode: ss.selection_mode || 'default'
                     };
                 }
@@ -1057,8 +1103,8 @@ async function loadViewerState(stateData) {
                         // it off the object this loop happens to have ended on
                         // put another object's matrix in the panel the moment
                         // a restored session drew more than one.
-                        if (window.PAE && window.PAE.syncToDrawn) {
-                            window.PAE.syncToDrawn(renderer);
+                        if (window.Heatmap && window.Heatmap.syncToDrawn) {
+                            window.Heatmap.syncToDrawn(renderer);
                         }
 
                         // Update scatter visibility for current object

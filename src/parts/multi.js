@@ -66,8 +66,8 @@
          * Outside Multi it is what it has always been: the object on screen,
          * when that object has a matrix.
          */
-        paeObjectName() {
-            const P = (typeof window !== 'undefined') ? window.PAE : null;
+        heatmapObjectName() {
+            const P = (typeof window !== 'undefined') ? window.Heatmap : null;
             if (!P) return null;
             // the shown set is a Set in Multi and null in the ordinary mode -
             // see setShownObjects
@@ -461,9 +461,9 @@
             this._applyMergedVisibility(merged, skipRender);
         },
 
-        /** Hand the PAE panel the matrix of whatever paeObjectName() names. */
+        /** Hand the heatmap panel the matrix of whatever heatmapObjectName() names. */
         _syncPaeToDrawn() {
-            if (window.PAE && window.PAE.syncToDrawn) window.PAE.syncToDrawn(this);
+            if (window.Heatmap && window.Heatmap.syncToDrawn) window.Heatmap.syncToDrawn(this);
         },
 
         /**
@@ -473,7 +473,7 @@
          * they have existed. It is exactly the moment the panel needs asking
          * again, so it is the sync.
          */
-        updatePAEContainerVisibility() {
+        updateHeatmapPanelVisibility() {
             this._syncPaeToDrawn();
         },
 
@@ -675,7 +675,7 @@
          * describe the new array, and this is where it is brought up to date.
          *
          * IT USED TO GO THE OTHER WAY. The rebuild composed a mask from the
-         * records and pushed it back through setVisibility with `paeBoxes: []`
+         * records and pushed it back through setVisibility with `heatmapBoxes: []`
          * - which saved it into every object's record, wiping the boxes and
          * dropping the mode to default. A box drawn on a prediction survived
          * exactly until the next eye click.
@@ -691,9 +691,9 @@
             // object and the mask spans several
             vm.chains = new Set();
             // ...and the BOXES stay the current object's own, because that is
-            // whose matrix the panel is showing (see paeObjectName).
+            // whose matrix the panel is showing (see heatmapObjectName).
             const own = this.objectsData && this.objectsData[this.currentObjectName];
-            vm.paeBoxes = ((own && own.visibilityState && own.visibilityState.paeBoxes) || [])
+            vm.heatmapBoxes = ((own && own.visibilityState && own.visibilityState.heatmapBoxes) || [])
                 .map((b) => ({ ...b }));
             vm.visibilityMode = (this.visiblePositions === null) ? 'default' : 'explicit';
         },
@@ -808,9 +808,9 @@
                         // of a merged mask means nothing per object - it is
                         // resolved into positions when the merge is built
                         chains: new Set(),
-                        paeBoxes: (nm === this.currentObjectName)
-                            ? vm.paeBoxes.map((b) => ({ ...b }))
-                            : ((o.visibilityState && o.visibilityState.paeBoxes) || []),
+                        heatmapBoxes: (nm === this.currentObjectName)
+                            ? vm.heatmapBoxes.map((b) => ({ ...b }))
+                            : ((o.visibilityState && o.visibilityState.heatmapBoxes) || []),
                         visibilityMode: vm.visibilityMode
                     };
                 }
@@ -820,7 +820,7 @@
                 this.objectsData[this.currentObjectName].visibilityState = {
                     positions: new Set(vm.positions),
                     chains: new Set(vm.chains),
-                    paeBoxes: vm.paeBoxes.map((box) => ({ ...box })),
+                    heatmapBoxes: vm.heatmapBoxes.map((box) => ({ ...box })),
                     visibilityMode: vm.visibilityMode
                 };
             }

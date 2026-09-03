@@ -7624,13 +7624,13 @@ function shownViewer() {
         this.visibilityModel = {
             positions: new Set(patch.positions || []),
             chains: new Set(patch.chains || []),
-            paeBoxes: (patch.paeBoxes || []).map((b) => ({ ...b })),
+            heatmapBoxes: (patch.heatmapBoxes || []).map((b) => ({ ...b })),
             visibilityMode: patch.visibilityMode || 'default'
         };
         this._saveVisibilityToObjects();
         this._composeAndApplyMask(true);
     };
-    v.visibilityModel = { positions: new Set(), chains: new Set(), paeBoxes: [],
+    v.visibilityModel = { positions: new Set(), chains: new Set(), heatmapBoxes: [],
         visibilityMode: 'default' };
     // ...and what the tests read: the composed answer, with null spelled out
     // as "everything", which is what null means.
@@ -7640,7 +7640,7 @@ function shownViewer() {
             let pos = this.visiblePositions;
             if (!pos) { pos = new Set(); for (let i = 0; i < total; i++) pos.add(i); }
             return { positions: pos, chains: new Set(),
-                paeBoxes: (this.visibilityModel || {}).paeBoxes || [],
+                heatmapBoxes: (this.visibilityModel || {}).heatmapBoxes || [],
                 visibilityMode: this.visiblePositions ? 'explicit' : 'default' };
         },
         set() { /* the composed mask is derived; nothing writes it */ },
@@ -7711,7 +7711,7 @@ t('an object that has something hidden keeps it hidden in the merge', () => {
     const v = shownViewer();
     // B has one of its two positions hidden; A has nothing hidden at all
     v.objectsData.B.visibilityState = { positions: new Set([1]), chains: new Set(),
-        paeBoxes: [], visibilityMode: 'explicit' };
+        heatmapBoxes: [], visibilityMode: 'explicit' };
     v.setShownObjects(['A', 'B']);
     eq(Array.from(v.mask.positions).sort((x, y) => x - y).join(','), '0,1,2,4',
         "A whole, and B's second position only");
@@ -8188,7 +8188,7 @@ t('rebuilding the merge keeps what was hidden and what was selected', () => {
     v.currentFrame = 1;
     // hide the last position and select another, both in merged indices
     v.visibilityModel = { positions: new Set([0, 1, 2, 3]), chains: new Set(),
-        paeBoxes: [], visibilityMode: 'explicit' };
+        heatmapBoxes: [], visibilityMode: 'explicit' };
     v._saveVisibilityToObjects();
     v.residueSelection = new Set([4]);
     v.setVisibility = function (patch) { this.mask = patch; };
@@ -8220,7 +8220,7 @@ t('a hidden residue of the second object is not read as the first object\'s', ()
     v.currentFrame = 1;
     // B is positions 3 and 4; hide 4, so the live mask is {0,1,2,3}
     v.visibilityModel = { positions: new Set([0, 1, 2, 3]), chains: new Set(),
-        paeBoxes: [], visibilityMode: 'explicit' };
+        heatmapBoxes: [], visibilityMode: 'explicit' };
     v._saveVisibilityToObjects();
     v._applyShownObjects();
     // Read as B's OWN numbering, the live mask {0,1,2,3} says B's residues 0
@@ -8320,7 +8320,7 @@ t('Hide all survives a rebuild - an empty mask is an answer', () => {
     v.currentFrame = 1;
     // what Hide all leaves: a mask that names nothing, in explicit mode
     v.visibilityModel = { positions: new Set(), chains: new Set(),
-        paeBoxes: [], visibilityMode: 'explicit' };
+        heatmapBoxes: [], visibilityMode: 'explicit' };
     v._saveVisibilityToObjects();
     v._applyShownObjects();
     eq(v.mask.positions.size, 0,
@@ -8348,7 +8348,7 @@ t('switching the edited object leaves a merged picture alone', () => {
         ['the camera', /this\.viewerState = merged \?/],
         ['the clip', /if \(!merged\) \{[\s\S]*?this\.clipNear =/],
         ['the style', /if \(!merged && saved\.style/],
-        ['the visibility mask', /if \(mergedMask\) \{[\s\S]*?paeBoxes/],
+        ['the visibility mask', /if \(mergedMask\) \{[\s\S]*?heatmapBoxes/],
     ]) {
         if (!probe.test(body)) {
             throw new Error(what + ' is restored from the new object even when'
@@ -8381,7 +8381,7 @@ t('each object is filed with its own share of the mask', () => {
     v.currentFrame = 1;
     // everything visible except B's second position
     v.visibilityModel = { positions: new Set([0, 1, 2, 3]), chains: new Set(),
-        paeBoxes: [], visibilityMode: 'explicit' };
+        heatmapBoxes: [], visibilityMode: 'explicit' };
     v._saveVisibilityToObjects();
     eq(Array.from(v.objectsData.A.visibilityState.positions).join(','), '0,1,2',
         "A's three positions, in A's numbering");
@@ -8394,7 +8394,7 @@ t('an object nobody has touched is drawn whole, an emptied one is not', () => {
     // A: no record at all. B: a record that names nothing, explicitly.
     delete v.objectsData.A.visibilityState;
     v.objectsData.B.visibilityState = { positions: new Set(), chains: new Set(),
-        paeBoxes: [], visibilityMode: 'explicit' };
+        heatmapBoxes: [], visibilityMode: 'explicit' };
     v.currentFrame = 1;
     v._applyShownObjects();
     eq(Array.from(v.mask.positions).sort((a, b) => a - b).join(','), '0,1,2',
@@ -8833,7 +8833,7 @@ t('ligand groups follow the frames rather than being stored and refreshed', () =
     for (const [file, src2] of [
         ['core/mol.js', src],
         ['panels/seq.js', fs.readFileSync('src/panels/seq.js', 'utf8')],
-        ['panels/pae.js', fs.readFileSync('src/panels/pae.js', 'utf8')],
+        ['panels/heatmap.js', fs.readFileSync('src/panels/heatmap.js', 'utf8')],
     ]) {
         // ...the OBJECT's field. `section.ligandGroups` is the strip's own
         // per-section copy, already offset into merged indices, and has
@@ -9390,7 +9390,7 @@ t('asking for nothing and asking with a stale name are different', () => {
 t('chain identity carries the object through every path that compares it', () => {
     const mol = L.src;
     const seq = fs.readFileSync('src/panels/seq.js', 'utf8');
-    const pae = fs.readFileSync('src/panels/pae.js', 'utf8');
+    const pae = fs.readFileSync('src/panels/heatmap.js', 'utf8');
     const app = L.app;
 
     // THE MASK, and there is one place in it that compares a chain now: the
@@ -9687,26 +9687,26 @@ t('nothing fills the entropy vector from a single object', () => {
 // The mask speaks merged indices, so a box drawn on the second object's matrix
 // hid the FIRST object's residues, and the chain set it wrote was bare ids.
 t('a PAE box lands on the object whose matrix it was drawn on', () => {
-    const pae = fs.readFileSync('src/panels/pae.js', 'utf8');
+    const pae = fs.readFileSync('src/panels/heatmap.js', 'utf8');
     // in - and the offset is the PANEL'S object, which is not the object
-    // being edited once several are on screen (see paeObjectName)
-    if (!/sourceOffsetOf\(PAE\.paeObject\(this\.mainRenderer\)\)/.test(pae)) {
+    // being edited once several are on screen (see heatmapObjectName)
+    if (!/sourceOffsetOf\(Heatmap\.heatmapObject\(this\.mainRenderer\)\)/.test(pae)) {
         throw new Error('a PAE box is turned into positions without the'
             + " offset of the object whose matrix it was drawn on");
     }
     // BOTH loops - a box has an i range and a j range, and offsetting one of
     // them puts half the selection on the wrong object
-    if ((pae.match(/newPositions\.add\(r \+ paeOff\)/g) || []).length !== 2) {
+    if ((pae.match(/newPositions\.add\(r \+ srcOff\)/g) || []).length !== 2) {
         throw new Error('a box row is turned into a position without the'
             + " object's offset");
     }
     // out
-    const at = pae.indexOf('getSequenceSelectedPAEPositions()');
+    const at = pae.indexOf('getSequenceSelectedPositions()');
     const back = pae.slice(at, at + 2200).replace(/\s+/g, ' ');
     if (!/chainKeyAt\(r \+ off\)/.test(back) || !/positions\.has\(r \+ off\)/.test(back)) {
         throw new Error('the reverse mapping reads the mask at raw PAE rows');
     }
-    if (!/sourceOffsetOf\(PAE\.paeObject\(renderer\)\)/.test(back)) {
+    if (!/sourceOffsetOf\(Heatmap\.heatmapObject\(renderer\)\)/.test(back)) {
         throw new Error('the reverse mapping offsets by the edited object'
             + " rather than the one the matrix belongs to");
     }

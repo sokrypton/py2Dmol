@@ -439,7 +439,7 @@ else:
                    " and the two chains of a homodimer are the same length - so"
                    " the boundary belongs at the middle of the plot. A rule"
                    " somewhere else is a column-to-pixel conversion gone wrong,"
-                   " which is the fault panels/pae.js had twice")
+                   " which is the fault panels/heatmap.js had twice")
 if R.get("residueAtBlockStart") is None:
     bad.append("the first column of the second block maps to no residue, so"
                " the tick row cannot number the second chain")

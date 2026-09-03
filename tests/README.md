@@ -346,9 +346,9 @@ repaint of the same state: the load used to paint before the selection had
 been carried across, so the highlight went missing until something else
 redrew.
 
-`tests/pae_objects.py` checks that **the PAE panel belongs to one object**:
+`tests/heatmap_objects.py` checks that **the PAE panel belongs to one object**:
 
-    python3 tests/pae_objects.py
+    python3 tests/heatmap_objects.py
 
 A PAE matrix is a square over one structure's residues - there is no such
 thing across two - but the panel was wired to whichever object was last LOADED

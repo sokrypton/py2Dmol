@@ -341,8 +341,8 @@ function handleObjectChange() {
         }
     }
 
-    if (viewerApi?.renderer && typeof viewerApi.renderer.updatePAEContainerVisibility === 'function') {
-        viewerApi.renderer.updatePAEContainerVisibility();
+    if (viewerApi?.renderer && typeof viewerApi.renderer.updateHeatmapPanelVisibility === 'function') {
+        viewerApi.renderer.updateHeatmapPanelVisibility();
     }
 
     // Clear preview selection when switching objects

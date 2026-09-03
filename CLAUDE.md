@@ -50,7 +50,8 @@ same list with load order and targets.
 
 ### Panels, all optional
 
-`panels/pae.js` (`window.PAE`) · `panels/seq.js` (`window.SEQ`) ·
+`panels/heatmap.js` (`window.Heatmap`, aliased `window.PAE`) ·
+`panels/seq.js` (`window.SEQ`) ·
 `panels/msa.js` (`window.MSA`) · `panels/scatter.js` (`window.ScatterPlotViewer`)
 
 ### Parsing and the web app
@@ -85,7 +86,7 @@ sits BESIDE the viewer, never inside it - `show()` replaces its container's
 children, which is how the first attempt at this threw `getContext of null`.
 
 **`controls: true` IS WHAT MOUNTS THEM** on the embed path. `parts/ui.js` calls
-`window.PAE.initialize` when `config.pae.enabled`, and the embed only reaches
+`window.Heatmap.initialize` when `config.pae.enabled`, and the embed only reaches
 `wireViewerUI` when chrome was asked for; with `embed: true` it takes
 `wireEmbedUI`, which mounts nothing. Measured working:
 `py2Dmol.show(el, text, {controls: true, pae: {enabled: true}})` against
@@ -178,7 +179,7 @@ public downloads is exercised on every run.
 - **Two kinds of file, and the difference is load-bearing.**
 
   *Wrapped* files are an IIFE with `'use strict'`, publishing one global
-  (`window.py2dmolCartoon`, `window.PAE`, a push onto `py2dmolMolParts`).
+  (`window.py2dmolCartoon`, `window.Heatmap`, a push onto `py2dmolMolParts`).
   Everything inside is private. Their body sits at column zero — the wrapper is
   a boundary, not an indent level.
 
@@ -1043,6 +1044,380 @@ public downloads is exercised on every run.
   a descendant selector misses the element itself** — `.py2dmol-viewer-instance
   *` left the instance, the header and the sequence strip as content-box, so
   three blocks with the same stated width had three different right edges.
+- 🔴 **AND SO IT IS `src/panels/heatmap.js` NOW, WITH A LINE THROUGH IT THAT
+  IS NOT NEGOTIABLE.** Keeping the PAE name on a panel that draws contact maps
+  is how the next reader spends an hour looking for the prediction that a
+  `paeBox` on a contact plot came from. What renamed is what only this tree
+  reads; what did NOT is anything another party already holds, and each of
+  those would fail SILENTLY rather than loudly:
+
+  | stayed | who holds it | what a rename costs |
+  |---|---|---|
+  | `#paeContainer`, `#paeCanvas` | every host page's markup | the panel finds nothing and never mounts |
+  | `frame.pae`, `frame.pae_n` | every `.ipynb` ever saved | an old notebook draws no matrix |
+  | `config.pae.enabled`, `view(pae=True)`, `pae_size` | the Python API | the panel never turns on |
+  | `pae_boxes` | the session FILE format | saved selections stop loading |
+  | `getPAEColor`, `extractPaeFromJSON`, `filterPAEForLigands` | nobody - they really are PAE | it would be wrong |
+
+  Renamed: the file, `window.PAE` -> `window.Heatmap`, `PAERenderer` ->
+  `HeatmapRenderer`, `renderer.paeRenderer` / `.paeContainer`, `paeObjectName`
+  / `paeObject`, `this.paeData` -> `this.bytes`, `getSequenceSelectedPAEPositions`,
+  the `py2dmol_pae_loaded` event, `tests/pae_*.py` -> `tests/heatmap_*.py`, and
+  **`visibilityModel.paeBoxes` -> `heatmapBoxes`**, which was the worst of them.
+  🔴 **THE ALIASES ARE NOT POLITENESS.** `window.PAE` and `window.PAERenderer`
+  are still assigned, `py2dmol_pae_loaded` is still dispatched beside the new
+  event, and `setVisibility` still accepts a `paeBoxes:` patch key - because
+  this project has no modules, so a global IS the interface, and an unknown
+  key on a patch object is dropped without a word. Three lines against three
+  silent breaks.
+  🔴 **AND A RENAME LEAVES THE HALVES DISAGREEING WHILE IT IS HALF DONE.**
+  `heatmapBoxes` in the panel and `paeBoxes` in `core/mol.js` is not a
+  compile error in this project - it is a selection that stops working - and
+  `paeBoxes` lives in **five** files (`core/mol.js`, `parts/multi.js`,
+  `parts/orient.js`, `app/session.js` and the panel). Same for
+  `heatmapObjectName`, which the panel calls **guarded** -
+  `renderer.heatmapObjectName ? ... : renderer.currentObjectName` - so
+  renaming the call and not the definition in `parts/multi.js` degrades to the
+  fallback in silence, which is the exact bug `tests/heatmap_objects.py`
+  exists for. `updateHeatmapPanelVisibility` is the same shape from the other
+  side: **all three** of its call sites test `typeof ... === 'function'`
+  first, so renaming the definition alone would have stopped the panel
+  hiding, with nothing thrown anywhere. **Grep for the definition and the
+  calls as one edit; a guarded call is a rename that cannot fail loudly.**
+  🔴 **AND `src/app/session.js` IS THE FOURTH FIELD-BY-FIELD FRAME BUILDER,
+  SO IT DROPPED `maps` AND `pae_n` TOO.** Both ENDS of it name each frame
+  field one by one - the save at `frameData` and the reload at
+  `resolvedFrame` - and a field neither names is a field the save throws away
+  and the reload never sees. So a saved session came back with the PAE alone
+  and every other map gone; `pae_n` went with it, which turns a resampled
+  matrix's residue count into its CELL count, and a box dragged on the
+  reloaded plot then selects the wrong residues. Same shape as `viewer.py`'s
+  `light_frame` and `parts/ui.js`'s static loader, both of which dropped
+  `align` this way. **Base64 stays a string on the way out** - it is already
+  the compact form and expanding it would triple the file. Checked in
+  `tests/heatmap_names.py`, which already drove a real save/load: the map it
+  saves states a vmax, colours and captions that are NOT the registry's
+  defaults, so a reload that lost them cannot pass by falling back.
+  🔴 **AND THE SESSION ROUND TRIP HAD NO TEST AT ALL**, which is where the
+  riskiest three lines of the rename were. `saveViewerState` reads
+  `visibilityState.heatmapBoxes.map(...)` **unguarded**, and **six** places
+  construct that object (`app/session.js` x2, `core/mol.js` x2,
+  `parts/multi.js` x2) - so one writer left saying `paeBoxes` is
+  `Cannot read properties of undefined (reading 'map')` and the whole save
+  goes with it. Measured: mutating exactly that one line in `parts/multi.js`
+  throws before the page has even finished loading a structure.
+  `tests/heatmap_names.py` is that check, and it is the compat surface's too -
+  the aliases, both load events, the `paeBoxes:` patch key, the two DOM ids,
+  and a save/load that asserts the file still says `pae_boxes` AND that it
+  comes back into `heatmapBoxes`. Six mutations, all caught.
+  🔴 **AND THE LOAD EVENT CANNOT BE HEARD FROM THE END OF THE BODY.** The
+  panel dispatches `py2dmol_heatmap_loaded` while its own script is being
+  evaluated, so a listener attached by a probe's trailing `<script>` is
+  minutes late in machine terms and hears nothing. That probe injects its
+  listener into `<head>`, before any of `dev.html`'s tags - the same shape as
+  `embed.html` keeping `window.__pageErrors` from its first statement.
+  🔴 **AND `tests/paths.py` READS TRACKED FILES, SO A BRAND-NEW FILE'S DEAD
+  POINTERS ARE INVISIBLE UNTIL THE COMMIT THAT ADDS IT** - by which point the
+  suite has already gone green on it. `tests/heatmap_names.py` named the old
+  path in its own docstring, passed `paths.py` and a full suite run while
+  untracked, and failed the moment it was committed. **Run `paths.py` again
+  after `git add`, not before.**
+  **`tests/paths.py` IS WHAT MAKES A FILE RENAME SAFE**, and it earned it
+  again: it named `tests/README.md` twice and a line of my own new header
+  that said "the file was" and then spelled the old path out - **the rule
+  catching the sentence explaining the rule.** `tools/bundle.py` is the other
+  half
+  - the manifest names the path once and the module key `pae` appears in
+  **three** bundle lists beside it, so `bundle.py check` failed with
+  `bundle 'notebook' names modules that do not exist: ['pae']` rather than
+  building something short a panel.
+  🔴 **AND ONE ASSERTION IN `tests/interaction.js` READS THE SOURCE AS TEXT.**
+  It greps for `sourceOffsetOf(PAE.paeObject(this.mainRenderer))`, so the
+  rename broke it - correctly, and it is the one check that would have caught
+  the offset being dropped. A text-scanning test is a pointer like any other.
+
+- 🔴 **THE PAE PANEL WAS NEVER ABOUT PAE. IT IS AN N x N MAP OVER RESIDUES
+  WITH A DRAG ON IT, AND ONLY TWO THINGS IN IT KNEW WHAT THE NUMBERS MEANT.**
+  The drag, the cells/residues crossings, the chain rules, the dim mask, the
+  selection outlines, the base-image cache - none of them ever asked. What did
+  was **how a value becomes a byte** and **what colour a byte is**, and both
+  were written into the file as constants: `Math.round(v * 8)` in `setData`,
+  `np.round(self._pae * 8)` in `viewer.py`, and two ramps clamping at 30 A.
+  A map is those two now (`MAP_SCALES` in `panels/heatmap.js`): `perUnit`, where
+  `byte = round(value * perUnit)` so the storage domain is `0 .. 255/perUnit`
+  - PAE is 8 a **Angstrom**, which is 0-31.875 and clamped at 30 by its own
+  ramps, exactly the behaviour there always was - and a `ramp` taking the
+  DECODED value in the map's own units, which is what let `getPAEColor` move
+  verbatim. `contact` is the second: a probability, so `perUnit` 255, and
+  **white is zero and the ink is the signal**, which is the opposite reading
+  from PAE's - there low is the good news and the plot is blue where the model
+  is sure; a contact map has nowhere it is sure, it has somewhere it says yes.
+  **THE VIEWER'S COLOUR MODE IS PAE'S RAMP TO READ AND NO OTHER MAP'S.**
+  `_generateBaseImage` picks the DeepMind green when the structure is coloured
+  DeepMind-style. That is a statement about predicted aligned error; a
+  probability inherits none of it, so the mode is passed to the ramp and only
+  one ramp looks at it.
+  **A FRAME CARRIES `maps`, AND `pae`/`pae_n` STILL MEAN WHAT THEY MEANT.**
+  `mapsOfFrame` READS both and normalises; nothing rewrites the old pair, so
+  `FRAME_ALWAYS`, `STATIC_FRAME_FIELDS` and the live path all keep the shape
+  they had - `maps` is one name added to each of the two lists `tests/config.js`
+  compares. **Each map resolves BACKWARDS ON ITS OWN**, because a trajectory
+  can carry a contact map every frame and a PAE once - through ONE generic
+  walk, with **no special case for `pae`**.
+  🔴 **THERE WAS ONE, AND IT SHIPPED.** That key delegated to `resolveFrame`,
+  which reads the legacy `frame.pae` field and knows nothing about
+  `frame.maps` - so the moment Python stopped diverting `maps={'pae': ...}`
+  into `self._pae`, a PAE handed over as a map entry resolved to null on
+  EVERY frame and never appeared, while every other key worked.
+  `mapsOfFrame` already folds the legacy field in under that key, so one walk
+  is correct for both and there is nothing to keep in step. The frame-by-frame
+  leg of `tests/heatmap_maps.py` exists because of it: frame 0's pae comes
+  through the legacy field and frame 1's through `maps` with bounds of its
+  own, and the walk steps 0 -> 1 -> 0 requiring 31.875 -> 30 -> 31.875.
+  🔴 **AND THE EARLY-OUT COMPARED A DECODED ARRAY WITH A BASE64 STRING.**
+  Python sends a map as base64 and `_loadMatrix` decodes it into a NEW
+  Uint8Array every call, so `this.bytes === bytes` could never hold - every
+  frame of a trajectory re-decoded and re-drew n^2 pixels for a map it had
+  inherited unchanged. It compares the RAW SOURCE now. Measured on a
+  four-frame fixture: two base-image builds per frame step became one.
+  🔴 **AND A MAP DESCRIBES ITSELF: `vmin`, `vmax`, `colors`,
+  `xlabel`/`ylabel`, ALL BEATING THE REGISTRY.** The built-in scales were the only ones there were,
+  so `pae` was blue-white-red over 0-30 and `contact` white-to-indigo over
+  0-1 *because those two are written into the file*. A map now states its own
+  and what it states wins - which is what lets a caller restyle `pae` without
+  touching the panel, and gives a key the panel has never heard of a scale of
+  its own rather than the generic grey.
+  **`vmin`/`vmax`, NOT `domain`/`range`.** In d3 - the one convention with
+  both words - `domain` is the input and **`range` is the output colours**,
+  so `range: [0, 30]` beside `colors:` would put the input under the name
+  reserved for the output. matplotlib's pair has no such collision and is the
+  vocabulary this library's readers already have. *Chosen by the reader after
+  I argued for `domain`; the collision argument is what made `range` wrong,
+  and `vmin`/`vmax` sidesteps it entirely.*
+  **A RAMP HAS TO BE DATA.** It comes from Python through JSON, so `colors`
+  is a list of stops - `['#fff', '#253494']` evenly spaced, or
+  `[[0, '#00f'], [0.5, '#fff'], [1, '#f00']]` with positions - interpolated
+  on the byte's fraction between vmin and vmax. The two built-ins stay
+  FUNCTIONS, because PAE's is HSV-based and not a lerp.
+  🔴 **AND THE CHROME IS DOM AROUND AN INSET CANVAS, NEVER MARGINS INSIDE
+  IT.** A tab band at the top and `xlabel`/`ylabel` captions left and below;
+  the canvas is made SMALLER and centred in what is left, and stays **100%
+  plot**. Reserving margins inside the canvas would put a third coordinate
+  space beside residues and cells and would have to be threaded through
+  `getCellIndices`, `render`'s mask, `_drawSelectionBoxes` and
+  `_drawChainBoundaries` - and every worst bug in this panel has been a
+  crossing that one drawing was not told about. `updateSize` is the only
+  thing that knows the margins exist; it overrides the shells' `top: 0;
+  left: 0; 100% x 100%` INLINE, so no stylesheet learns about them either.
+  `pae` captions itself **Scored position** / **Aligned position**, which is
+  what its two indices mean - the value at (x, y) is the error at residue x
+  when the prediction is superposed on residue y.
+  🔴 **AND THE TAB SHOWS FOR ONE MAP NOW**, which is the whole of how a lone
+  PAE gets a name: `title` has exactly one reader and it is the strip. It was
+  hidden below two maps, on the reasoning that a viewer with only a PAE
+  should look exactly as it did - right until a title existed to show. With
+  it permanent the strip stopped being an OVERLAY on the plot's corner and
+  took a reserved band instead: a chip that appears sometimes can sit on the
+  data, a chip that is always there is a permanent hole in it.
+  🔴 **AND THE STRIP'S VISIBILITY IS A LAYOUT INPUT, WHICH NOTHING TOLD THE
+  LAYOUT.** `_selectMap` relayouts through `_syncAxes`, and `_syncTabs` runs
+  AFTER that - so the first map turned the strip on with nobody left to
+  re-measure, and the plot was sized as though there were no tab bar: it
+  overflowed the container by exactly the strip's height, with the tab bar's
+  hairline cutting across the top of the data. `_syncTabs` relayouts when the
+  display value CHANGES, and only then, because it runs every frame and
+  resizing the canvas throws away the cached base image.
+  **Found by looking at the picture**, not by a test - the panel reported a
+  sensible-looking canvas and every assertion passed.
+  🔴 **AND EVERY PIECE OF CHROME IS MEASURED FROM THE PLOT'S CORNER, NOT THE
+  CONTAINER'S.** The plot is square and inset, so it is 27px from one edge
+  and 10 from the other - and the first version pinned the tab strip to the
+  container's full width and the y caption to its left edge, which put the
+  caption 11px away from the axis it names and floated the tabs above
+  nothing. Both now take the plot's own left and width, so the tab sits on
+  the plot's top-left corner the way a browser tab sits on its content, and
+  the captions hug the axes. **Reported by the reader twice** - once as the
+  tab, once as "the text on the left still not aligned" - and both are the
+  same mistake: aligning to the box that contains the picture rather than to
+  the picture.
+  🔴 **AND THE TAB BAR'S HAIRLINE WENT.** It existed for the active tab to
+  merge into, which is the browser device - but across a plot it is a rule
+  drawn over the data for no reason, and the tab's own outline already says
+  which one is active. Reported as *"the tab above, I think can exist just on
+  its own, no need for extra border over that"*. With the line gone the
+  active tab's `margin-bottom: -1px` went too: it existed only to cover that
+  line, and left behind it would overlap the plot by a pixel.
+  🔴 **AND TWO CAPTIONS ARE ONLY LEVEL IF BOTH ARE CENTRED THE SAME WAY.**
+  The y one was centred in its 15px column - 2.5px of clearance for 10px
+  text - and the x one was pinned at `bottom: 1px`, so the pair sat at
+  different distances from their edges and read as lopsided. Both are flex
+  boxes of the band's thickness now, centred, which is stated identically for
+  each rather than one offset being computed from the other: measured 1px and
+  1px, against 1 and 2.5. *Reported by the reader, who could see it; the
+  numbers only confirmed it afterwards.*
+  🔴 **AND A DRAG PROBE CANNOT ADDRESS A CELL SMALLER THAN A PIXEL.**
+  `clientX` is an INTEGER per spec, so a float pixel is truncated - and once
+  the captions shrank the plot to 263px for 300 cells, a cell is 0.877px and
+  that half-pixel is a cell and a half. `tests/heatmap_maps.py` measured it:
+  the drag asks for 26.74px and the panel receives 26. Two things came out of
+  that - the two maps being compared are given the SAME captions so they are
+  the same size (comparing drags across two canvas sizes slips a cell), and
+  the absolute check has a +/-2 residue tolerance, which is not slop: what it
+  exists to catch is a crossing that stopped converting, and that reports the
+  CELLS, six and twelve residues out.
+  🔴 **AND THERE IS NO `title`. THE TAB IS NAMED BY THE KEY.** It existed
+  for one round and was removed: the key already names the map, so a second
+  name is a way for the two to disagree - and it cost a whole per-frame
+  mutation path of its own, because a title can change between frames where
+  a key cannot. The strip is rebuilt only when the key SET changes (a rebuild
+  destroys the button under the pointer), so a retitled map needed its text
+  patched in place on every frame. *Removed at the reader's suggestion -
+  "seems we over doing it" - and they were right: the feature was generating
+  its own complications.* `MAP_SCALES` still carries a `label` for the keys
+  the panel knows (`pae` -> PAE), which is one field and no input.
+  🔴 **AND `maps={'pae': ...}` IS A FULL ENTRY NOW, NOT A SHORTCUT TO
+  `pae=`.** Python used to divert that key into `self._pae` so the two
+  spellings could not disagree - which threw away the vmin/vmax/colors/title
+  that came with it, i.e. exactly the reason to write it that way. Both may
+  be set; `mapsOfFrame` gives `maps.pae` precedence, so which wins is stated
+  in one place.
+  **PROVED AS A NO-OP FIRST**: the whole conversion from `perUnit` to
+  `vmin`/`vmax` is byte-identical on the PAE path - 768 colour values across
+  three colour modes plus the encode path - because `perUnit: 8` IS
+  `vmin: 0, vmax: 255/8`.
+  🔴 **AND THAT HARNESS HAD SILENTLY STOPPED MEASURING.** It read
+  `r2.paeData`, which the rename made `r2.bytes`, so it threw before printing
+  anything and BOTH arms came back empty - which `diff` calls identical. The
+  same trap as the first run of it, where both arms crashed on a TDZ error.
+  **A comparison harness needs its own "did I measure anything" check**, and
+  this one has had to learn it twice.
+  🔴 **AND THE COLOUR ASSERTION HAD TO BE A RATIO.** The selection wash is 70%
+  white over everything outside the box, so a pure red cell arrives as
+  (255, 179, 179) and every "is it red enough" bound calls that a failure.
+  Clearing the boxes does not help - the wash is also on while the visibility
+  mode is explicit. What survives the wash is what separates the candidates:
+  red-minus-blue is positive for the stated ramp and negative for the
+  built-in indigo, whatever is laid on top.
+  🔴 **AND THE CODEC TRAVELS WITH THE DATA.** `viewer.py` has the same table
+  because it must encode, and two tables that must agree are two tables that
+  can disagree - so `per_unit` is SENT and the browser's own is the fallback
+  for a host page that wrote bytes into `frame.maps` itself. A caller may name
+  its own (`maps={'rmsd': {'data': m, 'per_unit': 10}}`, a 0-25.5 A quantity),
+  which nothing could guess. **Measured as PIXELS, not as a field that
+  arrived**: a 0-1 matrix decoded at 8 bytes per unit is every cell inside the
+  first eighth of the ramp, which still draws - a plausible picture of
+  nothing - and every "is there a matrix" check passes against it.
+  🔴 **AND THE MARKUP IDS MOVED TOO, WHICH AT FIRST I SAID THEY COULD NOT.**
+  `#paeContainer` / `#paeCanvas` are `#heatmapContainer` / `#heatmapCanvas`,
+  with the old spellings still accepted (`PANEL_IDS`, `CANVAS_IDS`, new
+  first). Keeping them was inconsistent: the JS globals and the `paeBoxes:`
+  patch key were both aliased for exactly this reason, and the id is the
+  **most visible** of the old names because it is the one a host page author
+  types. The fallback is what makes the move safe, and it is the only part
+  that can fail silently, so `tests/heatmap_names.py` BUILDS a container with
+  the old ids and requires `initialize` to claim it - a page using them, not
+  a line in the source.
+  🔴 **AND SO DID THE CONFIG KEY: `heatmap` IS THE SWITCH, `pae` IS THE SAME
+  OBJECT.** `normalizeConfig` emits `heatmap` and then assigns
+  `normalized.pae = normalized.heatmap` - **the same object, never a copy**,
+  because two fields that must agree are two fields that can disagree, which
+  this file already has half a dozen scars from. Python takes `heatmap=` /
+  `heatmap_size=` and folds `pae=` / `pae_size=` into them ONCE, at the top of
+  `view()`; both old parameters default to **None** rather than False/300, so
+  "not passed" can be told from "passed" - without that, `pae=False` would
+  silently switch off a panel `heatmap=True` had just asked for.
+  🔴 **AND THE WEBSITE'S OWN CONFIG NEVER GOES THROUGH `normalizeConfig`, so
+  the alias does not exist there.** `window.viewerConfig` in `src/app/main.js`
+  is a raw literal, and `src/app/fetch.js` reads it to decide whether to fetch
+  a matrix from AlphaFold at all - so pointing that read at the new key alone
+  would have stopped the website fetching PAEs, with nothing thrown. It asks
+  for both. `src/app/session.js` restores from either, because a session saved
+  before the rename says `pae`.
+  🔴 **AND `tests/embed.py` READS THE CODE SAMPLES OUT OF `embed.html` AND
+  CHECKS EVERY KEY**, so the renamed switch failed the suite as *"a selector
+  key the grammar does not have - a rename left it behind in the prose"*.
+  Correct, and the reason that check exists: `embed.html` IS the embed's
+  specification, so a config block in a sample has to be exempted BY NAME.
+  The exemption list is where a config key that looks like a selector lives.
+  Checked in `tests/config.js`, which already evaluates `normalizeConfig` out
+  of the shipped file: four spellings of the switch, four of the size, the
+  identity of the alias, and that it is still off by default. Four mutations,
+  all caught - including making the alias a **copy**.
+  🔴 **AND A GENERIC RAMP MUST SPAN THE DOMAIN THE MAP DECLARED.**
+  `GENERIC_SCALE` clamped the DECODED VALUE at 1, which assumes a
+  probability - and `perUnit` is precisely the declaration that it is not
+  one, since the domain is `0 .. 255/perUnit`. A distance map at
+  `per_unit: 2` (0-127 A) drew its top 99% as flat black. **The shade-count
+  check passed against it**, because the bottom 1% of the domain still
+  ramped: 45 distinct colours out of a map that was telling you nothing. The
+  ramp takes the byte's own fraction now, and the test compares two CELLS at
+  known values (6 A against 25 A) rather than counting colours.
+  🔴 **AND IT WAS THE EXAMPLE THAT FOUND IT, NOT THE SUITE.**
+  `examples/two-heatmaps.html` computes both maps from the structure it
+  draws - a contact map and a distogram off the same CA coordinates - and the
+  distogram came out black. Building something a reader would actually look
+  at is a different test from asserting a field arrived.
+  🔴 **AND A MAP THE PANEL HAS NEVER HEARD OF IS NOT A PAE.** The first
+  fallback was `MAP_SCALES[DEFAULT_MAP_KEY]`, which handed an unknown map
+  PAE's ramp and PAE's codec. `GENERIC_SCALE` is a probability in **grey**,
+  and grey is the point: the mutation that reverts this draws **150 distinct
+  shades of blue**, so every colour-count check passes and the assertion has
+  to be `r === g === b`.
+  🔴 **THE TAB STRIP IS BUILT, NOT MARKED UP, AND IT IS AN OVERLAY.** Built,
+  because `#paeContainer` + `#paeCanvas` is what three shells and every host
+  page provide, so a strip in markup is three copies to keep in step - the
+  Style panel drifted three times that way before `parts/panel.js` made it
+  data. An overlay, because in BOTH shipped shells the container is a fixed
+  square with `overflow: hidden` and the canvas is absolutely positioned to
+  fill it, so an in-flow strip is laid out under the canvas and clipped. The
+  corner it takes is **the cheapest on the plot**: the diagonal, where PAE(i,i)
+  is zero by definition. Below two maps it is `display: none` and a viewer
+  with only a PAE is what it always was.
+  **A TAB SAYS `aria-selected`**, the way a latch says `aria-pressed` and a
+  panel button says `aria-expanded` - and that attribute IS the dirty flag,
+  so there is no second field beside it saying the same thing. The first
+  version kept a `dataset.on` of `'on'`/`'off'` fed by two module constants
+  used once each; collapsing it to a bare boolean changed what
+  `tests/heatmap_maps.py` reads, which is the tell that **a cleanup which
+  moves an observable is not a cleanup** - the probe reads the attribute a
+  screen reader would now.
+  🔴 **AND THE BUTTONS ARE MUTATED, NEVER REBUILT, unless the SET of maps
+  changed.** `_syncTabs` is reached from `_show`, which runs on every frame -
+  so a strip rebuilt per tick destroys the button the pointer went down on and
+  swallows the click. That is the play button's bug in a smaller control, and
+  it is one `sig !== this._tabKeys` away.
+  🔴 **AND THE READER'S CHOICE OUTLIVES A FRAME THAT CANNOT HONOUR IT.**
+  `mapKey` is what is on screen; `_wantKey` is what they CLICKED. Without the
+  second, scrubbing to a frame before the contact map starts drops you to PAE
+  and stepping forward leaves you there, with nothing on screen to say why.
+  🔴 **AND THE EARLY-OUT NEEDED `!this.baseCanvas` IN THE QUESTION.** A JS
+  host can hand the same `Uint8Array` to two keys - the same numbers under two
+  scales - and "same data, same residues" is TRUE, so the switch returned with
+  the first map's colours still up. Covered because the notebook path CANNOT
+  reach it: Python encodes each map into its own base64 and the identity test
+  never fires there.
+  **WHAT DOES NOT CHANGE IS THE SELECTION, and that is the whole of the
+  design.** A box is stored in RESIDUES, so one dragged on the contact map is
+  the same box on the PAE, and `tests/heatmap_maps.py` drags the same cells on both
+  and requires the same residues out **and the absolute answer** - cells 30-60
+  of 300 over 360 residues are residues 36..72. Agreement alone is not enough:
+  the two maps run the same code, so a cells/residues slip moves both.
+  **AND `add_pdb` TAKES IT TOO, PER MODEL THE WAY `paes` DOES.** Leaving it
+  off meant "maps works everywhere except the file loader", which is the
+  asymmetry that bites later. A value that is a list as long as the model
+  count is one matrix per model; anything else is shared - and a **dict** is a
+  map naming its own domain, not a per-model list. Measured on 1UBQ (one
+  model, two maps, one of them self-describing) and 1YNE (20 models, 20
+  matrices, first bytes 0/13/26/38 = `round(i/20*255)`).
+  What does NOT generalise: the drag, the chain rules and the mask all assume
+  row index = column index = residue. An asymmetric map, or a distogram
+  (residue x residue x bin), wants a bin picker and not a tab.
+  🔴 **AND THE FIRST RUN OF THE PROBE SCORED THE BUNDLE.** `_display_viewer`
+  INLINES `bundles/py2Dmol.notebook.min.js`, so it reported `PAE.mapKeysOf is
+  not a function` against a source file that had it. Same lesson the play-stop
+  probe learnt from `index.html`, one door along: a notebook probe measures
+  the last build until `bundle.py build` has run.
+
 - 🔴 **A STORED PAE BOX IS IN RESIDUES; EVERYTHING ON THAT CANVAS IS DRAWN IN
   CELLS - AND THERE ARE FIVE CROSSINGS, NOT THREE.** The entry below found
   three and fixed the drawing that was reported; the same box is drawn TWICE
@@ -1073,7 +1448,7 @@ public downloads is exercised on every run.
   CANVAS now — two renders and the pixels that did not change — because every
   arithmetic check agrees with the bug.
 - **`n` WAS THE MATRIX SIDE AND THE RESIDUE COUNT, and a resampled PAE makes
-  them different numbers.** `panels/pae.js` used `this.n` for the cell grid,
+  them different numbers.** `panels/heatmap.js` used `this.n` for the cell grid,
   for the hit-test, AND as the residue index handed to `setVisibility` — fine
   while the matrix was one cell per residue. `viewer.py` now resamples anything
   wider than `pae.size` (the panel is an n×n image scaled into that many
@@ -1464,7 +1839,7 @@ public downloads is exercised on every run.
   (3,048 KB as a JSON list of scaled ints against 912 as base64 of the same
   bytes; compact `json.dumps` separators took the file 4.32 MB → 2.03). The
   decoder went into `setData`, and the panel still came up empty: EVERY read of
-  `frame.pae` in `panels/pae.js` goes through `isValid`, which knew an Array, a
+  `frame.pae` in `panels/heatmap.js` goes through `isValid`, which knew an Array, a
   typed array and an index-keyed object, and answered false for a string. The
   payload carried the matrix and nothing said a word. Checked in
   `tests/minimal_input.py` as VALUES from an ASYMMETRIC matrix, not as a
@@ -2236,6 +2611,20 @@ public downloads is exercised on every run.
   refused for the same reason it always was: the resident mesh has to survive
   a rotation, so the cull is per frame in the shader.
 
+- 🔴 **AND A SUITE RUN SHARING THE MACHINE IS NOT A SUITE RUN.** Four times
+  in one session a parallel run reported failures that vanished when the same
+  probes were run serially - once twelve of them, including
+  `window.Heatmap is None`, which reads exactly like a broken bundle. Every
+  time the cause was mine: another browser alive from an ad-hoc probe, or a
+  screenshot script launched in the SAME shell command as `tests/run.sh`.
+  The ui lane already runs six browsers; a seventh starves them and the
+  symptom is `no result posted`, which the notes below correctly describe as
+  what an unfinished page looks like. **`pkill -f "Google Chrome --headless"`
+  before any run whose result you are going to act on, and never put another
+  browser in the same command.** The tell that it is contention and not the
+  code: the failures are spread across probes that have nothing to do with
+  what changed, and they pass one at a time. It is NOT the suite leaking
+  browsers - measured, a clean run leaves none of its own.
 - **AND THE SUITE'S FLAKES WERE ALL ONE THING: A CAP THAT FIRES DURING SETUP.**
   Three probes crossed a threshold on load rather than on a fault, and each
   reported the half-built page as a broken one. `tests/mobile_layout.py` loads
@@ -2507,7 +2896,7 @@ public downloads is exercised on every run.
   is a view nobody sees. `msa.defaultQuery` names the ALIGNMENT, and the initial
   load and the picker both prefer it.
 
-- **Subsystems are optional and guarded.** `if (window.PAE)`, `if (window.MSA)`,
+- **Subsystems are optional and guarded.** `if (window.Heatmap)`, `if (window.MSA)`,
   `typeof C2S === 'undefined'`. A build without one loses a feature, not a page.
 - **Prove a move changed nothing.** `node tests/paint_trace.js` digests every
   call the painter makes. Run it before and after; `--show NAME` diffs a stream.

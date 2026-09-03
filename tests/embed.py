@@ -319,8 +319,10 @@ setTimeout(finish, 80000);
             'biounit', 'positions', 'r', 'g', 'b', 'rendering', 'display',
             'size',
             // ...and the panels, which the full bundle's sample turns on:
-            // `{pae: {enabled: true}}` is a config block, not a selector.
-            'pae', 'enabled', 'ortho']);
+            // `{heatmap: {enabled: true}}` is a config block, not a selector.
+            // `pae` is that switch's old name and still works, so it stays
+            // here too - the page may show either.
+            'heatmap', 'pae', 'enabled', 'ortho']);
         const out = [];
         for (const k of SAMPLE_KEYS) {
             if (known.has(k)) continue;

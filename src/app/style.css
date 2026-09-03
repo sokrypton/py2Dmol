@@ -112,7 +112,7 @@
 
 .py2dmol-viewer-instance #canvasContainer.container-box,
 .py2dmol-viewer-instance #scatterContainer.container-box,
-.py2dmol-viewer-instance #paeContainer.container-box {
+.py2dmol-viewer-instance #heatmapContainer.container-box {
     padding: 0;
 }
 
@@ -983,22 +983,27 @@
 /* ============================================================================
    PAE CONTAINER
    ============================================================================ */
-.py2dmol-viewer-instance #paeContainer {
+.py2dmol-viewer-instance #heatmapContainer {
     display: none;
     width: 340px;
     aspect-ratio: 1;
     position: relative;
-    overflow: hidden;
+    /* 🔴 VISIBLE, BECAUSE THE TAB STRIP HANGS ABOVE THE BOX. The tabs used to
+       sit in a reserved white band INSIDE the card, which reads as part of the
+       plot rather than as a control over it - and a clipped container cut them
+       off the moment they moved outside. The canvas is absolutely positioned
+       and sized to fit by updateSize, so nothing else here overflows. */
+    overflow: visible;
     flex-shrink: 0;
 }
 
-.py2dmol-viewer-instance #paeContainer.container-box {
+.py2dmol-viewer-instance #heatmapContainer.container-box {
     /* Inherits all container-box styles */
     padding: 0;
     /* PAE canvas needs no padding */
 }
 
-.py2dmol-viewer-instance #paeCanvas {
+.py2dmol-viewer-instance #heatmapCanvas {
     width: 100%;
     height: 100%;
     display: block;

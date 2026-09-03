@@ -1,6 +1,6 @@
 """A PAE box is a selection like any other, and survives like one.
 
-    python3 tests/pae_visibility.py
+    python3 tests/heatmap_visibility.py
 
 There were two schemes deciding what is drawn, and they disagreed.
 
@@ -11,7 +11,7 @@ There were two schemes deciding what is drawn, and they disagreed.
   * The PER-OBJECT RECORDS, added when several objects could be drawn at once,
     knew about positions and chains and nothing else. Every rebuild of the
     coordinate array composed the mask from them and pushed the result back
-    through setVisibility with `paeBoxes: []` - so a box drawn on a prediction
+    through setVisibility with `heatmapBoxes: []` - so a box drawn on a prediction
     survived exactly until the next eye click, side chain or frame step.
     Measured before the fix: 7 residues visible, then all 144 the moment a
     second object was switched on, with the record rewritten to
@@ -54,7 +54,7 @@ window.addEventListener('load', () => {
         m[i * n + j] = Math.min(255, Math.abs(i - j) * 4);
       }
       o.frames[0].pae = m; o._lastPaeFrame = 0;
-      window.PAE.syncToDrawn(r); await settle();
+      window.Heatmap.syncToDrawn(r); await settle();
       const mask = () => {
         const v = r.visiblePositions;
         if (!v) return {all: true, n: r.coords.length};
@@ -64,13 +64,13 @@ window.addEventListener('load', () => {
       const record = (nm) => {
         const st = r.objectsData[nm].visibilityState;
         return st ? {positions: st.positions ? st.positions.size : 0,
-                     boxes: (st.paeBoxes || []).length,
+                     boxes: (st.heatmapBoxes || []).length,
                      mode: st.visibilityMode} : null;
       };
       // DRAW A BOX on rows 2..8 of the matrix
-      const pc = r.paeRenderer.canvas;
+      const pc = r.heatmapRenderer.canvas;
       const pr = pc.getBoundingClientRect();
-      const cell = (k) => (k + 0.5) * pr.width / r.paeRenderer.n;
+      const cell = (k) => (k + 0.5) * pr.width / r.heatmapRenderer.n;
       const at = (k) => ({clientX: pr.left + cell(k), clientY: pr.top + cell(k),
                           bubbles: true, button: 0});
       pc.dispatchEvent(new MouseEvent('mousedown', at(2)));
@@ -95,7 +95,7 @@ window.addEventListener('load', () => {
       // ...AND BACK to the prediction alone
       r.setShownObjects([withPae]); await settle();
       R.aloneAgain = mask();
-      R.boxesStill = (r.visibilityModel.paeBoxes || []).length;
+      R.boxesStill = (r.visibilityModel.heatmapBoxes || []).length;
 
       // ...AND THE PANEL AGREES WITH THE PICTURE. A residue outside the box
       // is not drawn, so Main chain must read Hide - it used to read Show,
@@ -126,7 +126,7 @@ window.addEventListener('load', () => {
                    switchSaysHiddenOutside: !!(hidBB && hidBB.has(40))};
       }
       // ...and clearing it shows everything again
-      r.setVisibility({paeBoxes: [], positions: new Set(), chains: new Set(),
+      r.setVisibility({heatmapBoxes: [], positions: new Set(), chains: new Set(),
                        visibilityMode: 'default'});
       await settle();
       R.cleared = mask();

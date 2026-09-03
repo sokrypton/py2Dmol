@@ -71,7 +71,13 @@ async function handleFetch() {
         name = `${fetchId}.cif`;
         structUrl = `https://alphafold.ebi.ac.uk/files/AF-${fetchId}-F1-model_v6.cif`;
         paeUrl = `https://alphafold.ebi.ac.uk/files/AF-${fetchId}-F1-predicted_aligned_error_v6.json`;
-        paeEnabled = window.viewerConfig.pae?.enabled && loadPAE;
+        // 🔴 THE RAW LITERAL, NOT A NORMALISED CONFIG. window.viewerConfig
+        // never goes through normalizeConfig, so the alias that makes the two
+        // spellings one object does not exist here - this has to ask for both
+        // itself, or a page whose config still says `pae` stops fetching the
+        // matrix with nothing thrown.
+        paeEnabled = (window.viewerConfig.heatmap?.enabled
+            ?? window.viewerConfig.pae?.enabled) && loadPAE;
     } else {
         // keep the selection in the object name so 1TIM and 1TIM_A can sit side
         // by side in the object list

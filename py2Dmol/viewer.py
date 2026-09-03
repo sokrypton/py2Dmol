@@ -66,7 +66,10 @@ DEFAULT_CONFIG = {
         "mode": "auto",
         "colorblind": False
     },
-    "pae": {
+    # The residue x residue heatmap panel. It draws the PAE and whatever
+    # else a frame's `maps` carries; `pae=True` is the same switch under its
+    # old name, and normalizeConfig in core/mol.js accepts either.
+    "heatmap": {
         "enabled": False,
         "size": 300
     },
@@ -169,9 +172,15 @@ def _nest_config(**flat):
     if flat.get("ss_palette") is not None:
         config["color"]["ss_palette"] = flat["ss_palette"]
     
-    # PAE
-    if "pae" in flat: config["pae"]["enabled"] = flat["pae"]
-    if "pae_size" in flat: config["pae"]["size"] = flat["pae_size"]
+    # The heatmap panel, under either name. `pae=` came first and is what
+    # every notebook that exists passes, so it is accepted and NOT warned
+    # about - a rename whose old spelling still works is the whole point.
+    if "pae" in flat: config["heatmap"]["enabled"] = flat["pae"]
+    if "pae_size" in flat: config["heatmap"]["size"] = flat["pae_size"]
+    if flat.get("heatmap") is not None:
+        config["heatmap"]["enabled"] = flat["heatmap"]
+    if flat.get("heatmap_size") is not None:
+        config["heatmap"]["size"] = flat["heatmap_size"]
 
     # Scatter
     if "scatter" in flat:
@@ -566,7 +575,49 @@ FRAME_INHERITED = (
 FRAME_SEND_NONE = frozenset({"plddts"})
 # ALWAYS: a property of the frame itself, sent whenever it is set. `align` is
 # the REQUEST to superpose, which the browser acts on - see addFrame.
-FRAME_ALWAYS = ("pae", "pae_n", "color", "align", "allow_reflection")
+FRAME_ALWAYS = ("pae", "pae_n", "maps", "color", "align", "allow_reflection")
+
+# ============================================================================
+# RESIDUE x RESIDUE MAPS
+# ============================================================================
+# The panel draws an N x N matrix over residues, one BYTE per cell, and PAE is
+# one of them. `per_unit` is the codec - `byte = round(value * per_unit)`,
+# clamped to 0-255 - so a map's storage domain is `0 .. 255 / per_unit`: PAE
+# is 8 bytes an Angstrom (0-31.875 A) and a probability is 255, which is 0-1
+# exactly.
+#
+# 🔴 AND THE LIMITS TRAVEL WITH THE DATA. panels/heatmap.js has this table too,
+# because it also holds the ramp and the label - but the CODEC is the one part
+# the two ends must agree on to the bit, and two tables that must agree are
+# two tables that can disagree. The browser uses the vmin/vmax that ARRIVED
+# and falls back to its own only for a map some other caller wrote by hand.
+MAP_LIMITS = {"pae": (0.0, 255.0 / 8.0), "contact": (0.0, 1.0)}
+MAP_LIMITS_DEFAULT = (0.0, 1.0)   # a probability, which most of them are
+
+
+def _map_cap(config):
+    box = config.get("heatmap") or config.get("pae") or {}
+    return max(int(box.get("size") or 300), 256)
+
+
+def _encode_map(matrix, vmin, vmax, cap):
+    """One matrix as (base64 of its bytes, how many RESIDUES it covers).
+
+    Scaled and base64'd for the reason spelled out at the PAE call site, and
+    resampled to `cap` for the reason spelled out beside it - the panel draws
+    an n x n image into a box of `pae.size` pixels, so past that the browser
+    was discarding the detail on every frame anyway. The residue count is the
+    size BEFORE the resample, because a box dragged on the plot is a range of
+    residues and the two stop being the same number.
+    """
+    arr = np.asarray(matrix, dtype=float)
+    span = (vmax - vmin) or 1.0
+    scaled = np.clip(np.round((arr - vmin) / span * 255.0),
+                     0, 255).astype(np.uint8)
+    n = int(scaled.shape[0])
+    if n > cap:
+        scaled = _downsample_square(scaled, cap)
+    return base64.b64encode(scaled.flatten().tobytes()).decode('ascii'), n
 
 
 _SIDECHAIN_BACKBONE = frozenset(('N', 'CA', 'C', 'O', 'OXT'))
@@ -657,7 +708,8 @@ class view:
         color="auto", colorblind=False, ss_palette=None, style="tube", preset=None, smooth=None, thickness=None, sheet_flat=None, pencil=None, arrows=True, base_plates=None, detail=4, fade=0, highlight=None, outline_tint=None,
         shadow=True, shade=None, shadow_strength=0.5,
         outline=None, width=None, ortho=0.5, gpu=True, bg=None, rotate=False, autoplay=False,
-        pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, multi=False, cyclic=True,
+        heatmap=False, heatmap_size=300, pae=None, pae_size=None,
+        scatter=None, scatter_size=300, overlay=False, multi=False, cyclic=True,
         sidechains=False, selection=False,
         persistence=True, id=None, cutoffs=None,
     ):
@@ -726,8 +778,11 @@ class view:
             ortho (float): Orthographic projection strength 0-1. Default 0.5.
             rotate (bool): Auto-rotate the structure. Default False.
             autoplay (bool): Auto-play animation on load. Default False.
-            pae (bool): Enable PAE (Predicted Aligned Error) visualization. Default False.
-            pae_size (int): PAE plot size in pixels. Default 300.
+            heatmap (bool): show the residue x residue heatmap panel - the
+                PAE and any other map a frame carries. Default False.
+            heatmap_size (int): heatmap panel size in pixels. Default 300.
+            pae (bool): the old name for `heatmap`; still accepted.
+            pae_size (int): the old name for `heatmap_size`; still accepted.
             scatter (bool/dict): Enable scatter plot. Default None.
             scatter_size (int): Scatter plot size in pixels. Default 300.
             overlay (bool): Enable overlay mode (show all frames simultaneously). Default False.
@@ -795,11 +850,21 @@ class view:
                             table the file parser uses. Give a number and that
                             number is used for every pair, as it always was.
         """
-        # Normalize pae_size: if tuple/list, use first value; otherwise use as-is
-        if isinstance(pae_size, (tuple, list)) and len(pae_size) > 0:
-            pae_size = int(pae_size[0])
+        # THE OLD SPELLINGS FOLD INTO THE NEW ONES HERE, once, so everything
+        # below this line deals with `heatmap` alone. `pae`/`pae_size`
+        # default to None precisely so that "not passed" can be told from
+        # "passed as False/300" - without that, `pae=False` would silently
+        # switch off a panel that `heatmap=True` had just asked for.
+        if pae is not None:
+            heatmap = pae
+        if pae_size is not None:
+            heatmap_size = pae_size
+
+        # Normalize heatmap_size: if tuple/list, use first value; else as-is
+        if isinstance(heatmap_size, (tuple, list)) and len(heatmap_size) > 0:
+            heatmap_size = int(heatmap_size[0])
         else:
-            pae_size = int(pae_size)
+            heatmap_size = int(heatmap_size)
 
         # Normalize scatter_size: if tuple/list, use first value; otherwise use as-is
         if isinstance(scatter_size, (tuple, list)) and len(scatter_size) > 0:
@@ -956,8 +1021,8 @@ class view:
             bg=bg,
             rotate=rotate,
             autoplay=autoplay,
-            pae=pae,
-            pae_size=pae_size,
+            heatmap=heatmap,
+            heatmap_size=heatmap_size,
             scatter=scatter,
             scatter_size=scatter_size,
             overlay=overlay,
@@ -1141,7 +1206,7 @@ class view:
 
         if self._pae is not None:
             # SCALED TO 0-255 (x8), then BASE64. The scaling is the panel's own
-            # storage - panels/pae.js keeps a Uint8Array at 1/8 A and its colour
+            # storage - panels/heatmap.js keeps a Uint8Array at 1/8 A and its colour
             # map divides by 8 - and it was chosen against a list of floats,
             # which it does beat. Against JSON TEXT it is the wrong way round:
             # multiplying by eight costs a DIGIT PER VALUE, and a PAE is N^2 of
@@ -1160,25 +1225,38 @@ class view:
             # to be walked. The three forms setData already took - a nested
             # list of floats, a flat list of scaled ints, a Uint8Array - all
             # still work, so an older payload still draws.
-            scaled_pae = np.clip(np.round(self._pae * 8), 0, 255).astype(np.uint8)
-            # ...AND NO MORE RESOLUTION THAN THE PANEL CAN SHOW. The matrix is
-            # drawn by scaling an n x n image into a canvas of `pae.size` px
-            # (300 by default) - so for anything bigger the browser is already
-            # throwing the detail away on every frame, and a 837-row matrix in
-            # a 300px panel gives each residue 0.36 of a pixel. Doing the
-            # resample once, in Python, is the same picture for an eighth of
-            # the bytes: 912 KB of base64 becomes 120.
-            #
-            # THE TRUE SIZE TRAVELS WITH IT. `n` was the matrix side AND the
-            # residue count, and the panel used it for both - a box dragged on
-            # the plot is a range of RESIDUES handed to setVisibility. Send
-            # pae_n and the two stop being the same number.
-            payload["pae_n"] = int(scaled_pae.shape[0])
-            cap = max(int((self.config.get("pae") or {}).get("size") or 300), 256)
-            if scaled_pae.shape[0] > cap:
-                scaled_pae = _downsample_square(scaled_pae, cap)
-            payload["pae"] = base64.b64encode(
-                scaled_pae.flatten().tobytes()).decode('ascii')
+            cap = _map_cap(self.config)
+            payload["pae"], payload["pae_n"] = _encode_map(
+                self._pae, *MAP_LIMITS["pae"], cap)
+
+        # ...and every OTHER map of the same shape. Same codec, same cap, and
+        # each carries the per_unit it was encoded with - see MAP_PER_UNIT.
+        if self._maps:
+            cap = _map_cap(self.config)
+            packed = {}
+            for key, (m, opts) in self._maps.items():
+                if m is None:
+                    continue
+                lo, hi = MAP_LIMITS.get(key, MAP_LIMITS_DEFAULT)
+                if opts.get("vmin") is not None:
+                    lo = float(opts["vmin"])
+                if opts.get("vmax") is not None:
+                    hi = float(opts["vmax"])
+                data, n = _encode_map(m, lo, hi, cap)
+                entry = {"data": data, "n": n, "vmin": lo, "vmax": hi}
+                # ...and what it should LOOK like, which the panel cannot
+                # guess: colour stops and the name on its tab. Sent only when
+                # asked for, so a map that says nothing takes the built-in
+                # scale for its key (or the generic grey for a key the panel
+                # has never heard of).
+                if opts.get("colors"):
+                    entry["colors"] = opts["colors"]
+                for ax in ("xlabel", "ylabel"):
+                    if opts.get(ax) is not None:
+                        entry[ax] = str(opts[ax])
+                packed[key] = entry
+            if packed:
+                payload["maps"] = packed
 
         if self._scatter is not None:
             payload["scatter"] = self._scatter  # Already in [x, y] format
@@ -1200,7 +1278,7 @@ class view:
 
         return payload
 
-    def _update(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None, align=True, position_names=None, residue_numbers=None, atom_types=None, allow_reflection=False, position_elements=None, sidechain_atoms=None):
+    def _update(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None, align=True, position_names=None, residue_numbers=None, atom_types=None, allow_reflection=False, position_elements=None, sidechain_atoms=None, maps=None):
       """
       Updates the internal state with new data. Coordinates are kept in original space.
       The viewing angle is chosen in the browser, not here.
@@ -1253,6 +1331,56 @@ class view:
               self._pae = None
       else:
           self._pae = None
+
+      # ...and every other residue x residue map, by name. Same shape as the
+      # PAE and the same panel draws them; `maps={"contact": m}` is the door.
+      # A map whose name is `pae` is the PAE - one field, not two, so the two
+      # spellings cannot disagree about which matrix is on the PAE tab.
+      if maps:
+          normalized = {}
+          for key, m in maps.items():
+              if m is None:
+                  continue
+              # A MAP MAY DESCRIBE ITSELF. matplotlib's vocabulary, because
+              # that is where this library's readers live:
+              #
+              #   {"data": m, "vmin": 0, "vmax": 30,
+              #    "colors": ["#0000ff", "#ffffff", "#ff0000"],
+              #    "xlabel": "Scored position"}
+              #
+              # `vmin`/`vmax` are the value bounds the bytes are encoded
+              # against; `colors` is a list of stops, evenly spaced or each
+              # given a position (`[[0, "#00f"], [0.5, "#fff"], [1, "#f00"]]`);
+              # `xlabel`/`ylabel` caption the axes. All of them beat the
+              # built-in scale for the key, so `pae` and `contact` can be
+              # restyled without touching panels/heatmap.js, and a key the
+              # panel has never heard of can look like anything.
+              #
+              # A bare matrix takes the defaults for its name (MAP_LIMITS),
+              # which is a probability for anything the table does not know.
+              opts = {}
+              if isinstance(m, dict):
+                  opts = {k: m.get(k) for k in
+                          ("vmin", "vmax", "colors", "xlabel", "ylabel")}
+                  m = m.get("data")
+                  if m is None:
+                      continue
+              arr = np.asarray(m, dtype=float)
+              if arr.ndim != 2 or arr.shape[0] != arr.shape[1]:
+                  print(f"Warning: map '{key}' must be a square 2D matrix, got "
+                        f"shape {arr.shape}. Ignoring it.")
+                  continue
+              # 🔴 `maps={"pae": ...}` IS A FULL MAP ENTRY, NOT A SHORTCUT TO
+              # `pae=`. It used to be diverted into self._pae so the two
+              # spellings could not disagree - which also threw away the
+              # vmin/vmax/colors/labels that came with it, i.e. exactly the
+              # reason someone would write it that way. Both may now be set;
+              # mapsOfFrame in panels/heatmap.js gives `maps.pae` precedence
+              # over `frame.pae`, so which one wins is stated in one place.
+              normalized[key] = (arr, opts)
+          self._maps = normalized or None
+      else:
+          self._maps = None
 
       self._scatter = scatter
       self._position_names = position_names
@@ -1959,6 +2087,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._chains = None
         self._position_types = None
         self._pae = None
+        self._maps = None
         self._scatter = None
         self._position_names = None
         self._position_residue_numbers = None
@@ -2316,6 +2445,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._chains = None
         self._position_types = None
         self._pae = None
+        self._maps = None
         self._scatter = None
         self._position_names = None
         self._position_residue_numbers = None
@@ -2343,7 +2473,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             self._send_incremental_update()
     
     def add(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None,
-            name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False, position_elements=None, sidechain_atoms=None):
+            name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False, position_elements=None, sidechain_atoms=None, maps=None):
         """
         Adds a new *frame* of data to the viewer.
 
@@ -2356,6 +2486,37 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             chains (list, optional): N-length list of chain identifiers.
             position_types (list, optional): N-length list of position types ('P', 'D', 'R', 'L').
             pae (np.array, optional): LxL PAE matrix.
+            maps (dict, optional): more LxL matrices over the same residues,
+                by name - `{"contact": p}` - drawn in the same panel, which
+                grows a tab strip when there is more than one. The selection
+                is unchanged: a box dragged on any of them is the same range
+                of residues.
+
+                A bare matrix takes the built-in scale for its name - `pae`
+                is 0-31.875 A blue to red, `contact` is 0-1 white to indigo,
+                and anything else is read as a probability and drawn in grey.
+                A map can say all of it itself instead, and what it says wins:
+
+                    maps={"contact": {"data": m,
+                                      "vmin": 0, "vmax": 1,
+                                      "colors": ["#ffffff", "#253494"],
+                                      "xlabel": "Residue"}}
+
+                `vmin`/`vmax` are the value bounds the bytes are encoded
+                against (matplotlib's names, for matplotlib's reason).
+                `colors` is a list of stops, evenly spaced or each given a
+                position - `[[0, "#00f"], [0.5, "#fff"], [1, "#f00"]]`.
+                The map's NAME on its tab is its key - `pae` and `contact`
+                are shown as "PAE" and "Contact" and anything else as itself,
+                so name the key what you want to read. The tab is always
+                shown, so a lone map is named too.
+                `xlabel`/`ylabel` caption the axes;
+                `pae` defaults to "Scored position" / "Aligned position",
+                which is what its two indices mean, and everything else has
+                no caption unless you give it one.
+
+                `maps={"pae": {...}}` is a full entry and beats `pae=m`,
+                which is the plain door with no styling.
             scatter (list/tuple/dict, optional): Scatter plot data point for this frame.
                    Accepts: [x, y], (x, y), or {"x": x, "y": y}
             name (str, optional): Name for the object. If a different name is provided than the current object, a new object is created.
@@ -2425,6 +2586,11 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     _slice(chains, i),
                     _slice(position_types, i),
                     pae=_slice(pae, i),
+                    # ...and each named map on its own, so `maps={"contact":
+                    # [m0, m1, ...]}` fans out the way `pae=[...]` does while
+                    # `maps={"contact": m}` is shared by every frame.
+                    maps=({k: _slice(v, i) for k, v in maps.items()}
+                          if maps else None),
                     scatter=_slice(scatter, i),
                     name=name,
                     align=align,
@@ -2492,7 +2658,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._update(coords, plddts, chains, position_types, pae, scatter,
             align=align, position_names=position_names, residue_numbers=residue_numbers, atom_types=atom_types,
             allow_reflection=allow_reflection,
-            position_elements=position_elements, sidechain_atoms=sidechain_atoms)
+            position_elements=position_elements, sidechain_atoms=sidechain_atoms,
+            maps=maps)
         data_dict = self._get_data_dict() # This reads the full, correct data
 
         data_dict["name"] = None  # Don't set frame-level name; use object name instead
@@ -2590,7 +2757,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             self._send_incremental_update()
 
     def replace(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None,
-                name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False, position_elements=None, sidechain_atoms=None):
+                name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False, position_elements=None, sidechain_atoms=None, maps=None):
         """
         Replace frame(s) for an object (streaming mode).
 
@@ -2623,7 +2790,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                      residue_numbers=residue_numbers, atom_types=atom_types,
                      allow_reflection=allow_reflection,
                      position_elements=position_elements,
-                     sidechain_atoms=sidechain_atoms)
+                     sidechain_atoms=sidechain_atoms, maps=maps)
 
         frame_data = self._get_data_dict()
         if color is not None:
@@ -3260,7 +3427,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             self._send_incremental_update()
 
 
-    def add_pdb(self, filepath, chains=None, name=None, paes=None, align=True, use_biounit=True, biounit_name="1", load_ligands=True, filter_additives=True, contacts=None, scatter=None, color=None, scatter_config=None):
+    def add_pdb(self, filepath, chains=None, name=None, paes=None, align=True, use_biounit=True, biounit_name="1", load_ligands=True, filter_additives=True, contacts=None, scatter=None, color=None, scatter_config=None, maps=None):
         """
         Loads a structure from a local PDB or CIF file and adds it to the viewer
         as a new frame (or object).
@@ -3274,6 +3441,10 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             chains (list, optional): Specific chains to load. Defaults to all.
             name (str, optional): Name for the object. If a different name is provided than the current object, a new object is created.
             paes (list, optional): List of PAE matrices to associate with each model.
+            maps (dict, optional): more residue x residue matrices by name -
+                see add(). A value that is a list as long as the model count
+                is one matrix per model, the way `paes` is; anything else is
+                shared by every model.
             align (bool, optional): If True, aligns subsequent frames to the first frame.
                                    Best-view rotation is ALWAYS computed for first frame. Defaults to True.
             use_biounit (bool): Build the biological assembly, which is what
@@ -3446,6 +3617,20 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 # Only add PAE matrix to the first model
                 pae_to_add = paes[i] if paes and i < len(paes) else None
 
+                # ...and the other heatmaps, per model the same way `paes`
+                # is: `maps={"contact": [m0, m1]}` gives each model its own
+                # and `maps={"contact": m}` gives them all the same one. A
+                # value that is a dict is a map naming its own domain
+                # (`{"data": m, "per_unit": 10}`) and is NOT a per-model list.
+                maps_to_add = None
+                if maps:
+                    maps_to_add = {}
+                    for key, m in maps.items():
+                        if isinstance(m, (list, tuple)) and len(m) == len(models_to_process):
+                            maps_to_add[key] = m[i]
+                        else:
+                            maps_to_add[key] = m
+
                 # Extract scatter point for this model (if scatter data provided)
                 scatter_to_add = scatter_data[i] if scatter_data and i < len(scatter_data) else None
 
@@ -3454,6 +3639,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 model_name = name if i == 0 else None
                 self.add(coords_np, plddts_np, position_chains, position_types,
                     pae=pae_to_add,
+                    maps=maps_to_add,
                     scatter=scatter_to_add,
                     name=model_name,
                     align=align,

@@ -36,6 +36,11 @@ const STATIC_FRAME_FIELDS = [
     ['plddts', null],
     ['pae', null],
     ['pae_n', null],
+    // ...and every OTHER residue x residue map, keyed by name. Same panel,
+    // same selection rules; see mapsOfFrame in src/panels/heatmap.js. The PAE
+    // keeps its own two fields because every payload that exists carries
+    // them, so nothing on the wire changed shape.
+    ['maps', null],
     // ...THE RAW SIDE-CHAIN ATOMS, when view(sidechains=True) asked for them.
     // Turned into a table by sidechainsFromAtoms below - the frame carries
     // atoms, the renderer wants coefficients, and the builder that makes one
@@ -97,8 +102,8 @@ function wireViewerUI(containerElement, viewerId, Pseudo3DRenderer) {
 // ============================================================================
 // PAE RENDERER
 // ============================================================================
-// PAERenderer class moved to panels/pae.js
-// Use window.PAERenderer if available (loaded from panels/pae.js)
+// HeatmapRenderer class moved to panels/heatmap.js
+// Use window.HeatmapRenderer if available (loaded from panels/heatmap.js)
 
 // ============================================================================
 // MAIN APP & COLAB COMMUNICATION
@@ -219,21 +224,25 @@ if (typeof wireSelectionPanel === 'function'
     wireSelectionPanel();
 }
 
-// 4. Setup PAE Renderer (if enabled)
-// 4. Setup PAE Renderer (if enabled)
-if (config.pae?.enabled) {
-    // Initialize immediately if PAE script is loaded
-    const initPAE = () => {
-        if (window.PAE && window.PAE.initialize) {
-            window.PAE.initialize(renderer, containerElement, config);
+// 4. Setup the heatmap panel (if enabled).
+//
+// `config.heatmap.enabled` is the switch, and `config.pae.enabled` is the
+// same object under its old name - normalizeConfig aliases them, so a host
+// page or a saved session written before the rename still turns the panel
+// on. See src/panels/heatmap.js.
+if (config.heatmap?.enabled ?? config.pae?.enabled) {
+    // Initialize immediately if the panel is already loaded
+    const initHeatmap = () => {
+        if (window.Heatmap && window.Heatmap.initialize) {
+            window.Heatmap.initialize(renderer, containerElement, config);
         }
     };
 
-    if (window.PAE) {
-        initPAE();
+    if (window.Heatmap) {
+        initHeatmap();
     } else {
         // Wait for script
-        window.addEventListener('py2dmol_pae_loaded', initPAE, { once: true });
+        window.addEventListener('py2dmol_heatmap_loaded', initHeatmap, { once: true });
     }
 }
 
@@ -1312,11 +1321,11 @@ if (!config.display?.box) {
     if (canvas && !paperAsked) canvas.style.background = 'transparent';
 
     // Also update PAE canvas if it exists
-    if (config.pae?.enabled) {
-        const paeCanvas = containerElement.querySelector('#paeCanvas');
-        if (paeCanvas) {
-            paeCanvas.style.border = 'none';
-            paeCanvas.style.background = 'transparent';
+    if (config.heatmap?.enabled ?? config.pae?.enabled) {
+        const heatmapCanvas = containerElement.querySelector('#heatmapCanvas');
+        if (heatmapCanvas) {
+            heatmapCanvas.style.border = 'none';
+            heatmapCanvas.style.background = 'transparent';
         }
     }
 
@@ -1499,8 +1508,8 @@ if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (windo
             // Update PAE container visibility after initial load
             // Use requestAnimationFrame to ensure PAE renderer is initialized
             requestAnimationFrame(() => {
-                if (window.PAE) {
-                    window.PAE.syncToDrawn(renderer);
+                if (window.Heatmap) {
+                    window.Heatmap.syncToDrawn(renderer);
                 }
 
                 // Update scatter with newly loaded config
@@ -1673,8 +1682,8 @@ const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject
         renderer.updateUIControls();
 
         // Update PAE container visibility once at end
-        if (window.PAE) {
-            window.PAE.syncToDrawn(renderer);
+        if (window.Heatmap) {
+            window.Heatmap.syncToDrawn(renderer);
         }
 
         // Update scatter plot if frames were added (may have scatter data)

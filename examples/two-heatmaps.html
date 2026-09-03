@@ -1,0 +1,133 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>py2Dmol - two heatmaps in one panel</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 24px;
+         background: #fafafa; color: #222; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p  { max-width: 60em; color: #444; }
+  code { background: #eee; padding: 1px 4px; border-radius: 3px; }
+  /* THE PANEL SITS BESIDE THE VIEWER, NEVER INSIDE IT - show() replaces its
+     container's children, so a canvas nested in #viewer is destroyed on the
+     first call. This is the mistake that threw `getContext of null`. */
+  .row { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+  #viewer { width: 520px; height: 380px; }
+  /* The panel finds its own markup and does nothing until it exists. It is a
+     square, positioned, with overflow hidden - the tab strip is overlaid on
+     it, so the container must be the positioning context. */
+  #heatmapContainer { position: relative; width: 340px; height: 340px;
+                      overflow: hidden; border: 1px solid #ddd;
+                      border-radius: 12px; background: #fff; }
+  #heatmapCanvas { position: absolute; top: 0; left: 0;
+                   width: 100%; height: 100%; display: block; touch-action: none; }
+  pre { background: #fff; border: 1px solid #e3e3e3; border-radius: 8px;
+        padding: 12px 14px; overflow-x: auto; font-size: 12px; max-width: 60em; }
+</style>
+</head>
+<body>
+
+<h1>Two heatmaps, one panel</h1>
+<p>Both maps below are computed from the structure that is drawn, so nothing
+here is invented: <strong>Contact</strong> is
+<code>1 / (1 + exp((d - 8&nbsp;&Aring;) / 1.5))</code> over C&alpha;&ndash;C&alpha;
+distances, and <strong>C&alpha;&ndash;C&alpha; distance</strong> is that distance in
+&Aring;ngstrom over 0&ndash;127.5. Each map states its own <code>vmin</code>,
+<code>vmax</code> and <code>colors</code>, so neither depends on what the
+panel happens to know about its key &mdash;
+<code>contact</code> has a built-in scale and this overrides it,
+<code>distance</code> has none and needs no entry. A map's tab is named by its
+KEY (shown even when there is only one) and
+<code>xlabel</code>/<code>ylabel</code> caption the axes &mdash; <code>pae</code>
+defaults to &ldquo;Scored position&rdquo; / &ldquo;Aligned position&rdquo;.
+Pick between them with the tabs in the corner of the plot. <strong>Drag a box on
+either one</strong> &mdash; a box is stored in <em>residues</em>, so it means the
+same thing on both, and switching tabs keeps it.</p>
+
+<div class="row">
+  <div id="viewer"></div>
+  <div id="heatmapContainer"><canvas id="heatmapCanvas" width="340" height="340"
+       style="cursor: crosshair;"></canvas></div>
+</div>
+
+<pre id="code"></pre>
+
+<!-- TWO SCRIPT TAGS, AND ONLY THIS BUNDLE NEEDS THEM. align/align.js can never
+     be concatenated: it starts its Worker by having the worker importScripts
+     ITSELF, found through document.currentScript.src, so inside a bundle that
+     lookup returns '' and TM-align silently runs on the main thread. -->
+<script src="../src/align/align.js"></script>
+<script src="../py2Dmol/resources/bundles/py2Dmol.full.min.js"></script>
+
+<script id="src">
+(async () => {
+  const text = await (await fetch('../1TIM.cif')).text();
+
+  // controls: true is what MOUNTS the panel on the embed path - it is what
+  // sends show() through wireViewerUI instead of the bare-canvas wirer - and
+  // heatmap.enabled is what that wirer reads to call Heatmap.initialize.
+  const v = py2Dmol.show('viewer', text, {
+    controls: true,
+    heatmap: { enabled: true },
+  });
+
+  // The frame the viewer just built, decorated with two maps and put back
+  // through replaceFrame - the public verb for "same frame, new contents",
+  // which pops and re-adds so the frame COUNT never moves.
+  const frame = py2Dmol.frameFromText(text);
+  const xyz = frame.coords;
+  const n = xyz.length;
+  const contact = [], dist = [];
+  for (let i = 0; i < n; i++) {
+    const ri = [], di = [];
+    for (let j = 0; j < n; j++) {
+      const dx = xyz[i][0] - xyz[j][0];
+      const dy = xyz[i][1] - xyz[j][1];
+      const dz = xyz[i][2] - xyz[j][2];
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      ri.push(1 / (1 + Math.exp((d - 8) / 1.5)));   // p(contact), 0-1
+      di.push(Math.min(127.5, d));                  // Angstrom, 0-127.5
+    }
+    contact.push(ri); dist.push(di);
+  }
+
+  // A map describes itself: `vmin`/`vmax` are the value bounds the bytes are
+  // encoded against, `colors` is a list of stops (evenly spaced, or each
+  // given a position), and `xlabel`/`ylabel` caption the axes. All of them
+  // beat the panel's built-in scale for that key - `contact` has one,
+  // `distance` does not - so nothing here depends on what the panel knows.
+  // The tab's NAME is the key; there is no separate title.
+  const enc = (m, vmin, vmax) => {
+    const out = new Uint8Array(n * n), span = (vmax - vmin) || 1;
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      out[i * n + j] = Math.max(0, Math.min(255,
+        Math.round(((m[i][j] - vmin) / span) * 255)));
+    }
+    return { data: out, n, vmin, vmax };
+  };
+  // The tab's name is the KEY - `contact` is one the panel knows and shows
+  // as "Contact"; `distance` it has never heard of and shows as itself.
+  frame.maps = {
+    contact: Object.assign(enc(contact, 0, 1), {
+      colors: ['#ffffff', '#253494'],          // white -> dark blue
+      xlabel: 'Residue', ylabel: 'Residue',
+    }),
+    // 🔴 THE BOUNDS HAVE TO FIT WHAT YOU ARE DRAWING. This was 0-25.5 A at
+    // first, and in a 494-residue dimer nearly every pair is past that, so
+    // the map saturated to a flat black with a white diagonal: arithmetically
+    // correct and visually empty. 0-127.5 covers the whole molecule.
+    distance: Object.assign(enc(dist, 0, 127.5), {
+      colors: [[0, '#08306b'], [0.5, '#6baed6'], [1, '#f7fbff']],
+      xlabel: 'Residue', ylabel: 'Residue',
+    }),
+  };
+  v.replaceFrame(frame);
+})();
+</script>
+<script>
+  document.getElementById('code').textContent =
+    document.getElementById('src').textContent.trim();
+</script>
+</body>
+</html>

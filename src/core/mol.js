@@ -764,7 +764,7 @@ function getHydrophobicityColor(resName) {
     return DEFAULT_GREY;
 }
 
-// PAE color functions moved to panels/pae.js
+// PAE color functions moved to panels/heatmap.js
 
 // ============================================================================
 // COLOR RESOLUTION (Unified Hierarchy System)
@@ -945,7 +945,10 @@ const DEFAULT_CONFIG = {
         mode: "auto",
         colorblind: false
     },
-    pae: {
+    // The residue x residue heatmap panel. `pae` is the same switch under
+    // its old name - see normalizeConfig, which accepts both and hands back
+    // ONE object under both keys.
+    heatmap: {
         enabled: false,
         size: 300
     },
@@ -1086,9 +1089,22 @@ function normalizeConfig(rawConfig = {}) {
             // renderer's default palette (owned by cartoon/geom.js)
             ss_palette: cfg.color?.ss_palette ?? cfg.ss_palette
         },
-        pae: {
-            enabled: cfg.pae?.enabled ?? cfg.pae ?? DEFAULT_CONFIG.pae.enabled,
-            size: cfg.pae?.size || cfg.pae_size || DEFAULT_CONFIG.pae.size
+        // 🔴 ONE SWITCH, TWO SPELLINGS, AND THE SAME OBJECT UNDER BOTH.
+        // The panel draws the PAE and whatever else a frame carries, so the
+        // key is `heatmap` - but `pae` is what Python's `view(pae=True)`
+        // sends, what every config a host page has written says, and what a
+        // saved session holds. An unrecognised key here is not an error, it
+        // is a panel that never mounts with nothing thrown, which is the
+        // same reason the markup ids kept their old spellings.
+        //
+        // ALIASED BELOW TO THE SAME OBJECT rather than copied: two fields
+        // that must agree are two fields that can disagree, and this file
+        // has half a dozen entries about exactly that.
+        heatmap: {
+            enabled: cfg.heatmap?.enabled ?? cfg.heatmap
+                ?? cfg.pae?.enabled ?? cfg.pae ?? DEFAULT_CONFIG.heatmap.enabled,
+            size: cfg.heatmap?.size || cfg.heatmap_size
+                || cfg.pae?.size || cfg.pae_size || DEFAULT_CONFIG.heatmap.size
         },
         scatter: {
             enabled: cfg.scatter?.enabled ?? cfg.scatter ?? DEFAULT_CONFIG.scatter.enabled,
@@ -1131,17 +1147,22 @@ function normalizeConfig(rawConfig = {}) {
     }
 
     // Carry over any additional top-level keys not explicitly normalized
-    const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "pae", "scatter", "overlay", "selection", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "ortho", "colorblind", "pae_size", "scatter_size", "cyclic", "style", "detail", "base_plates", "ss_palette", "preset", "gpu", "shade", ...PRESET_KEYS]);
+    const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "heatmap", "pae", "scatter", "overlay", "selection", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "ortho", "colorblind", "heatmap_size", "pae_size", "scatter_size", "cyclic", "style", "detail", "base_plates", "ss_palette", "preset", "gpu", "shade", ...PRESET_KEYS]);
     for (const [key, value] of Object.entries(cfg)) {
         if (!knownKeys.has(key)) {
             normalized[key] = value;
         }
     }
 
-    // Preserve legacy pae_size if present as an alias
-    if (cfg.pae_size && !cfg.pae?.size) {
-        normalized.pae.size = cfg.pae_size;
-    }
+    // ...and the panel's switch answers to its old name as well. THE SAME
+    // OBJECT, not a copy: `config.pae.enabled` is what a host page, a saved
+    // session and this tree's own older readers all say, and an alias that
+    // can drift from what it aliases is worse than no alias. (`pae_size` is
+    // already folded into `heatmap.size` above, so nothing is left to
+    // preserve separately - the block that used to sit here wrote
+    // `normalized.pae.size` and became a TypeError the moment `pae` stopped
+    // being the normalised key.)
+    normalized.pae = normalized.heatmap;
 
     return normalized;
 }
@@ -1576,7 +1597,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.isSliderDragging = false;
 
             // PAE and Visibility
-            this.paeRenderer = null;
+            this.heatmapRenderer = null;
             // Set of position indices to SHOW; null means everything is
             // visible. Was called visibilityMask, which invited the wrong
             // mental model - it is not a per-residue boolean array.
@@ -1604,7 +1625,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Unified selection model (sequence/chain + PAE)
             // positions: Set of position indices (0, 1, 2, ...) - one position per entry in frame data
             // chains: Set of chain IDs (empty => all chains)
-            // paeBoxes: Array of selection rectangles in PAE position space {i_start,i_end,j_start,j_end}
+            // heatmapBoxes: selection rectangles dragged on the heatmap panel,
+            //   in RESIDUE space - {i_start,i_end,j_start,j_end}. Not cells: see
+            //   cellsToResidues in src/panels/heatmap.js.
             // visibilityMode: 'default' = empty selection means "show all" (initial state)
             //                'explicit' = empty selection means "show nothing" (user cleared)
             // CLICK-SELECTION IS OFF UNLESS SOMETHING TURNS IT ON.
@@ -1625,7 +1648,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.visibilityModel = {
                 positions: new Set(), // Position indices: 0, 1, 2, ... (one position per entry in frame data)
                 chains: new Set(),
-                paeBoxes: [],
+                heatmapBoxes: [],
                 visibilityMode: 'default' // Start in default mode (show all)
             };
 
@@ -1713,11 +1736,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const c = patch.chains;
                 this.visibilityModel.chains = (c instanceof Set) ? new Set(c) : new Set(Array.from(c || []));
             }
-            if (patch.paeBoxes !== undefined) {
-                if (patch.paeBoxes === 'clear' || patch.paeBoxes === null) {
-                    this.visibilityModel.paeBoxes = [];
-                } else if (Array.isArray(patch.paeBoxes)) {
-                    this.visibilityModel.paeBoxes = patch.paeBoxes.map(b => ({
+            // 🔴 BOTH SPELLINGS, because this is a patch key on a public
+            // setter. The field is `heatmapBoxes` now - a box dragged on the
+            // contact map was never a PAE box - but `paeBoxes:` is what
+            // every caller written before the rename passes, and an unknown
+            // key on a patch object is dropped without a word.
+            const boxPatch = (patch.heatmapBoxes !== undefined)
+                ? patch.heatmapBoxes : patch.paeBoxes;
+            if (boxPatch !== undefined) {
+                if (boxPatch === 'clear' || boxPatch === null) {
+                    this.visibilityModel.heatmapBoxes = [];
+                } else if (Array.isArray(boxPatch)) {
+                    this.visibilityModel.heatmapBoxes = boxPatch.map(b => ({
                         i_start: Math.max(0, Math.floor(b.i_start ?? 0)),
                         i_end: Math.max(0, Math.floor(b.i_end ?? 0)),
                         j_start: Math.max(0, Math.floor(b.j_start ?? 0)),
@@ -1764,7 +1794,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return {
                 positions: positions,
                 chains: new Set(m.chains),
-                paeBoxes: m.paeBoxes.map(b => ({ ...b })),
+                heatmapBoxes: m.heatmapBoxes.map(b => ({ ...b })),
                 visibilityMode: m.visibilityMode
             };
         }
@@ -1773,7 +1803,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.visibilityModel = {
                 positions: new Set(),
                 chains: new Set(),
-                paeBoxes: [],
+                heatmapBoxes: [],
                 visibilityMode: 'default'
             };
             // ...AND THE OBJECTS' OWN RECORDS WITH IT. Every other write to
@@ -1811,7 +1841,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.setVisibility({
                 positions: allPositions,
                 chains: allChains,
-                paeBoxes: [],
+                heatmapBoxes: [],
                 visibilityMode: 'default'
             });
         }
@@ -1821,7 +1851,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.setVisibility({
                 positions: new Set(),
                 chains: new Set(),
-                paeBoxes: [],
+                heatmapBoxes: [],
                 visibilityMode: 'explicit'
             });
         }
@@ -1838,7 +1868,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          *
          * The rebuild path used to have its own version of this that knew
          * about positions and chains and nothing else, and it wrote its answer
-         * back through setVisibility with `paeBoxes: []` - so every rebuild of
+         * back through setVisibility with `heatmapBoxes: []` - so every rebuild of
          * the coordinate array (an eye, a side chain, a frame step) silently
          * erased the boxes and dropped the mode back to default. Draw a box on
          * a prediction, switch on a second object, and the whole structure
@@ -1852,7 +1882,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const st = o && o.visibilityState;
             const hasPos = !!(st && st.positions && st.positions.size);
             const hasChains = !!(st && st.chains && st.chains.size);
-            const boxes = (st && st.paeBoxes) || [];
+            const boxes = (st && st.heatmapBoxes) || [];
             const explicit = !!(st && st.visibilityMode === 'explicit');
             if (!st || (!hasPos && !hasChains && !boxes.length && !explicit)) return null;
 
@@ -1987,7 +2017,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                             visibilityModel: {
                                 positions: Array.from(this.visibilityModel.positions),
                                 chains: Array.from(this.visibilityModel.chains),
-                                paeBoxes: this.visibilityModel.paeBoxes.map((b) => ({ ...b })),
+                                heatmapBoxes: this.visibilityModel.heatmapBoxes.map((b) => ({ ...b })),
                                 visibilityMode: this.visibilityModel.visibilityMode
                             }
                         }
@@ -2001,8 +2031,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         // [END PATCH]
 
         // --- PAE / Visibility ---
-        setPAERenderer(paeRenderer) {
-            this.paeRenderer = paeRenderer;
+        setHeatmapRenderer(heatmapRenderer) {
+            this.heatmapRenderer = heatmapRenderer;
         }
 
         setScatterRenderer(scatterRenderer) {
@@ -2013,10 +2043,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         setResidueVisibility(selection) {
             if (selection === null) {
                 // Clear only PAE contribution; leave sequence/chain selections intact
-                this.setVisibility({ paeBoxes: 'clear' });
+                this.setVisibility({ heatmapBoxes: 'clear' });
             } else {
                 const { i_start, i_end, j_start, j_end } = selection;
-                this.setVisibility({ paeBoxes: [{ i_start, i_end, j_start, j_end }] });
+                this.setVisibility({ heatmapBoxes: [{ i_start, i_end, j_start, j_end }] });
             }
         }
         // [END PATCH]
@@ -2709,8 +2739,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // Dispatch event to notify sequence viewer
                     document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
                     // Re-render PAE canvas
-                    if (this.paeRenderer) {
-                        this.paeRenderer.render();
+                    if (this.heatmapRenderer) {
+                        this.heatmapRenderer.render();
                     }
                 });
             }
@@ -3422,7 +3452,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.objectsData[newObjectName].visibilityState = {
                     positions: new Set(),
                     chains: new Set(),
-                    paeBoxes: [],
+                    heatmapBoxes: [],
                     visibilityMode: 'default'
                 };
             }
@@ -3440,12 +3470,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // screen stays hidden, whichever object is being edited. Only the
             // PAE boxes travel, since the map belongs to the new object.
             if (mergedMask) {
-                this.visibilityModel.paeBoxes = (savedState.paeBoxes || []).map((b) => ({ ...b }));
+                this.visibilityModel.heatmapBoxes = (savedState.heatmapBoxes || []).map((b) => ({ ...b }));
             } else {
                 // Apply the saved selection directly to visibilityModel (bypassing setVisibility's normalization)
                 this.visibilityModel.positions = new Set(savedState.positions);
                 this.visibilityModel.chains = new Set(savedState.chains);
-                this.visibilityModel.paeBoxes = savedState.paeBoxes.map(box => ({ ...box }));
+                this.visibilityModel.heatmapBoxes = savedState.heatmapBoxes.map(box => ({ ...box }));
                 this.visibilityModel.visibilityMode = savedState.visibilityMode;
 
                 // Only normalize if in default mode with empty positions, using correct coords length
@@ -3706,7 +3736,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     visibilityState: {
                         positions: new Set(),
                         chains: new Set(),
-                        paeBoxes: [],
+                        heatmapBoxes: [],
                         visibilityMode: 'default'
                     },
                     viewerState: {
@@ -3835,7 +3865,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 object._lastPlddtFrame = -1; // No plddt in first frame
             }
 
-            if (window.PAE && window.PAE.isValid(data.pae)) {
+            if (window.Heatmap && window.Heatmap.isValid(data.pae)) {
                 object._lastPaeFrame = newFrameIndex;
             } else if (newFrameIndex === 0) {
                 object._lastPaeFrame = -1; // No PAE in first frame
@@ -4686,7 +4716,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Resolve inherited plddt and PAE data before extracting
             const resolvedPlddt = this._resolvePlddtData(object, frameIndex);
-            const resolvedPae = window.PAE ? window.PAE.resolveData(object, frameIndex) : null;
+            const resolvedPae = window.Heatmap ? window.Heatmap.resolveData(object, frameIndex) : null;
 
             // Use resolved data if available, otherwise use frame's own data
             const sourcePlddt = resolvedPlddt !== null ? resolvedPlddt : frame.plddts;
@@ -4985,13 +5015,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // The PAE renderer keeps its own copy of the matrix, so it is told
             // rather than left to notice.
             const obj = this.objectsData[name];
-            if (window.PAE && obj) window.PAE.updateFrame(this, obj, 0);
-            if (this.paeRenderer && this.paeRenderer.render) this.paeRenderer.render();
+            if (window.Heatmap && obj) window.Heatmap.updateFrame(this, obj, 0);
+            if (this.heatmapRenderer && this.heatmapRenderer.render) this.heatmapRenderer.render();
             this.updateScatterContainerVisibility();
             if (this.objectSelect) this.objectSelect.value = name;
             // everything visible, since nothing here has been hidden yet
             this.setVisibility({
-                positions: new Set(), chains: new Set(), paeBoxes: [],
+                positions: new Set(), chains: new Set(), heatmapBoxes: [],
                 visibilityMode: 'default',
             });
             // DROP THE SELECTION. It holds position indices into the object
@@ -5086,7 +5116,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this._invalidateScreenProjection();
                 this._loadedKey = null;
                 clearCanvas();
-                if (this.paeRenderer) { this.paeRenderer.setData(null); }
+                if (this.heatmapRenderer) { this.heatmapRenderer.setData(null); }
                 this.updateUIControls();
                 // Prevent "spinning wheel" on reload
                 this.setUIEnabled(true);
@@ -5101,7 +5131,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this._invalidateScreenProjection();
                 this._loadedKey = null;
                 clearCanvas();
-                if (this.paeRenderer) { this.paeRenderer.setData(null); }
+                if (this.heatmapRenderer) { this.heatmapRenderer.setData(null); }
                 this.updateUIControls();
                 this.setUIEnabled(true); // Enable, even if frame is invalid (so user can change obj)
                 return;
@@ -5149,8 +5179,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.lastRenderedFrame = frameIndex;
 
             // Update PAE container visibility and data
-            if (window.PAE) {
-                window.PAE.updateFrame(this, object, frameIndex);
+            if (window.Heatmap) {
+                window.Heatmap.updateFrame(this, object, frameIndex);
             }
 
             this.setUIEnabled(true); // Make sure controls are enabled
@@ -5846,7 +5876,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const data = object?.frames?.[frameIndex];
             if (!data) return null;
             const resolvedPlddt = this._resolvePlddtData(object, frameIndex);
-            const resolvedPae = window.PAE ? window.PAE.resolveData(object, frameIndex)
+            const resolvedPae = window.Heatmap ? window.Heatmap.resolveData(object, frameIndex)
                 : (data.pae || null);
             const resolved = {
                 ...data,
@@ -6624,8 +6654,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             // Clear PAE
-            if (this.paeRenderer) {
-                this.paeRenderer.setData(null);
+            if (this.heatmapRenderer) {
+                this.heatmapRenderer.setData(null);
             }
 
             // Set to empty frame, which clears canvas and updates UI
@@ -7962,11 +7992,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._noteArrayLoaded();
 
             // Load PAE data (use resolved value)
-            if (window.PAE) {
+            if (window.Heatmap) {
                 // We use updateFrame which handles data setting and visibility
-                window.PAE.updateFrame(this, object, frameIndex);
-            } else if (this.paeRenderer) {
-                this.paeRenderer.setData(resolvedPae);
+                window.Heatmap.updateFrame(this, object, frameIndex);
+            } else if (this.heatmapRenderer) {
+                this.heatmapRenderer.setData(resolvedPae);
             }
 
             // Reset selection to default (show all) when loading a new object's frame

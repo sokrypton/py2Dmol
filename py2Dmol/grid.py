@@ -154,7 +154,7 @@ class Grid:
         all viewers. JavaScript libraries are loaded only once for efficiency.
 
         Technical details:
-        - First viewer loads JS libraries (core/mol.js, panels/pae.js if needed)
+        - First viewer loads JS libraries (core/mol.js, panels/heatmap.js if needed)
         - Subsequent viewers reuse loaded libraries via browser caching
         - Each viewer gets its own canvas and unique ID
         - Viewers can have independent configurations and controls

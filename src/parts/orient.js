@@ -208,7 +208,7 @@ function orientToBestView(renderer, options) {
     // which is the visibility MODEL - and that field is normalised to hold
     // every position whenever the mode is 'default'. Hide a chain (which sets
     // .chains and leaves the mode alone) or drag a PAE box (which sets
-    // .paeBoxes and never touches .positions at all) and the field still said
+    // .heatmapBoxes and never touches .positions at all) and the field still said
     // "all of them", so the first branch matched and Orient framed the whole
     // structure. renderer.visiblePositions is the composed mask the renderer
     // actually draws from: null means everything is visible, an empty Set

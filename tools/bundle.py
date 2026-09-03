@@ -121,7 +121,7 @@ MODULES = [
     Mod('geom',       'src/cartoon/geom.js',    ['web']),
     Mod('paint2d',    'src/cartoon/paint2d.js', ['web']),
     Mod('paintgl',    'src/cartoon/paintgl.js', ['web']),
-    Mod('pae',        'src/panels/pae.js',      ['web']),
+    Mod('heatmap',    'src/panels/heatmap.js',  ['web']),
     Mod('scatter',    'src/panels/scatter.js',  ['web']),
     Mod('seq',        'src/panels/seq.js',      ['web']),
     Mod('msa',        'src/panels/msa.js',      ['web']),
@@ -164,7 +164,7 @@ BUNDLES = {
     # are paid again for every viewer in the document.
     'notebook': ['math', 'sidechains', 'bonds', 'svg', 'objstate', 'viewport', 'shadow', 'clip', 'focus',
                  'mol-sidechains', 'capture', 'savepanel', 'multi', 'panel', 'selpanel',
-                 'orient', 'ui', 'mol', 'geom', 'paintgl', 'paint2d', 'pae', 'scatter'],
+                 'orient', 'ui', 'mol', 'geom', 'paintgl', 'paint2d', 'heatmap', 'scatter'],
     # ONE NOTEBOOK BUNDLE, WITH BOTH PAINTERS. There were three - GPU, 2D, and
     # a tube-only one without the cartoon geometry - and they existed for one
     # reason: this file is inlined into the .ipynb, uncompressed, ONCE PER
@@ -188,7 +188,7 @@ BUNDLES = {
     # neither of which could serve the other.
     'web': ['math', 'sidechains', 'bonds', 'parse', 'gif', 'svg', 'objstate', 'viewport', 'shadow', 'clip', 'focus',
             'mol-sidechains', 'capture', 'savepanel', 'mol-align', 'multi', 'panel', 'selpanel', 'orient', 'ui', 'mol',
-            'geom', 'paint2d', 'paintgl', 'pae', 'scatter', 'seq', 'msa',
+            'geom', 'paint2d', 'paintgl', 'heatmap', 'scatter', 'seq', 'msa',
             'app', 'app-objects', 'app-fetch', 'app-scatter',
             'app-session'],
     # ONE PAINTER PER BUNDLE, AND OUTSIDE THE WEBSITE IT IS THE GPU.
@@ -286,7 +286,7 @@ BUNDLES = {
     # index.html has.
     'full': ['math', 'sidechains', 'bonds', 'parse', 'gif', 'svg', 'objstate', 'viewport', 'shadow', 'clip', 'focus',
              'mol-sidechains', 'capture', 'savepanel', 'mol-align', 'multi', 'panel', 'selpanel', 'orient', 'ui', 'embed', 'mol',
-             'geom', 'paint2d', 'paintgl', 'pae', 'scatter', 'seq', 'msa',
+             'geom', 'paint2d', 'paintgl', 'heatmap', 'scatter', 'seq', 'msa',
              'app', 'app-objects', 'app-fetch', 'app-scatter',
              'app-session'],
 }

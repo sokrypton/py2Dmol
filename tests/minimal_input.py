@@ -274,19 +274,19 @@ window.addEventListener('load', () => {
         await settle();
       }
 
-      // ...AND THE PAE ARRIVED AS BYTES. panels/pae.js keeps a Uint8Array at
+      // ...AND THE PAE ARRIVED AS BYTES. panels/heatmap.js keeps a Uint8Array at
       // 1/8 A; viewer.py now sends base64 of exactly those bytes instead of a
       // JSON list of the same numbers. Checked as VALUES, not as a length: an
       // undecoded base64 string still has a length, and sqrt of it is still a
       // number, so the panel would have drawn a square of nonsense and every
       // "is there a matrix" check would have passed.
-      const pr = r.paeRenderer;
+      const pr = r.heatmapRenderer;
       R.pae = {has: !!pr};
-      if (pr && pr.paeData) {
-        const at = (i, j) => pr.paeData[i * pr.n + j];
+      if (pr && pr.bytes) {
+        const at = (i, j) => pr.bytes[i * pr.n + j];
         R.pae.n = pr.n;
-        R.pae.len = pr.paeData.length;
-        R.pae.type = pr.paeData.constructor.name;
+        R.pae.len = pr.bytes.length;
+        R.pae.type = pr.bytes.constructor.name;
         R.pae.samples = [at(0, 0), at(0, 1), at(1, 0), at(3, 5), at(20, 20)];
       }
 
@@ -294,12 +294,12 @@ window.addEventListener('load', () => {
       {
         const was2 = r.currentObjectName;
         r._switchToObject('big'); r.setFrame(0);
-        window.PAE.syncToDrawn(r);
+        window.Heatmap.syncToDrawn(r);
         await settle();
-        const p2 = r.paeRenderer;
-        R.bigPae = {n: p2.n, residues: p2.residues, len: p2.paeData
-            ? p2.paeData.length : -1};
-        if (p2.paeData) {
+        const p2 = r.heatmapRenderer;
+        R.bigPae = {n: p2.n, residues: p2.residues, len: p2.bytes
+            ? p2.bytes.length : -1};
+        if (p2.bytes) {
           // THE WHOLE STRUCTURE IS REACHABLE. Dragging the full plot must give
           // back every residue - an off-by-one in the scaling loses the tail,
           // and the plot still looks right.
@@ -307,8 +307,8 @@ window.addEventListener('load', () => {
           R.bigPae.firstCell = p2.cellsToResidues(0, 0, 0, 0);
           R.bigPae.cellOfFirst = p2.residueToCell(0);
           R.bigPae.cellOfLast = p2.residueToCell(359);
-          R.bigPae.corner = [p2.paeData[0],
-                             p2.paeData[p2.n * p2.n - 1]];
+          R.bigPae.corner = [p2.bytes[0],
+                             p2.bytes[p2.n * p2.n - 1]];
           // 🔴 AND THE RECTANGLE LANDS WHERE IT WAS DRAGGED. A stored box is
           // in RESIDUES; the mask is laid out per CELL. They are the same
           // numbers only while the matrix is one cell per residue, so on a
@@ -321,17 +321,17 @@ window.addEventListener('load', () => {
           // agree with it. Two renders, one with no box and one with a box
           // over residues 0..119 (= cells 0..99 of 300), and the pixels that
           // did NOT change are the region left bright - the box itself.
-          const cv = r.paeRenderer.canvas;
+          const cv = r.heatmapRenderer.canvas;
           const snap = () => {
-            r.paeRenderer.cachedSequencePositions = null;
-            r.paeRenderer.render();
+            r.heatmapRenderer.cachedSequencePositions = null;
+            r.heatmapRenderer.render();
             return cv.getContext('2d')
                 .getImageData(0, 0, cv.width, cv.height).data;
           };
-          r.setVisibility({paeBoxes: [], positions: new Set(),
+          r.setVisibility({heatmapBoxes: [], positions: new Set(),
                            chains: new Set(), visibilityMode: 'default'}, true);
           const plainPx = snap();
-          r.setVisibility({paeBoxes: [{i_start: 0, i_end: 119,
+          r.setVisibility({heatmapBoxes: [{i_start: 0, i_end: 119,
                                        j_start: 0, j_end: 119}],
                            positions: new Set(), chains: new Set(),
                            visibilityMode: 'explicit'}, true);
@@ -391,11 +391,11 @@ window.addEventListener('load', () => {
           R.bigPae.outlinePx = on;
           R.bigPae.canvas = cv.width;
           R.bigPae.cells = p2.n;
-          r.setVisibility({paeBoxes: [], positions: new Set(),
+          r.setVisibility({heatmapBoxes: [], positions: new Set(),
                            chains: new Set(), visibilityMode: 'default'}, true);
         }
         r._switchToObject(was2); r.setFrame(0);
-        window.PAE.syncToDrawn(r);
+        window.Heatmap.syncToDrawn(r);
         await settle();
       }
 
@@ -813,7 +813,7 @@ def main():
         bad.append('no PAE panel on a viewer built with pae=True')
     elif pae.get('type') != 'Uint8Array':
         bad.append(f"the PAE arrived as {pae.get('type')} - viewer.py sends"
-                   ' base64 and panels/pae.js decodes it into a Uint8Array')
+                   ' base64 and panels/heatmap.js decodes it into a Uint8Array')
     elif pae.get('n') != _n or pae.get('len') != _n * _n:
         bad.append(f"the PAE came out {pae.get('n')}x{pae.get('n')}"
                    f" ({pae.get('len')} values) for a {_n}-position trace -"

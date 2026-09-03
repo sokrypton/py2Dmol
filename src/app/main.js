@@ -180,9 +180,9 @@ function initializeApp() {
     initDragAndDrop();
 
     // Set initial state
-    const paeCanvas = document.getElementById('paeCanvas');
-    if (paeCanvas) {
-        paeCanvas.style.display = 'none';
+    const heatmapCanvas = document.getElementById('heatmapCanvas');
+    if (heatmapCanvas) {
+        heatmapCanvas.style.display = 'none';
     }
     setStatus(readyStatus());
 }
@@ -355,7 +355,7 @@ function initializeViewerConfig() {
             mode: "auto",
             colorblind: false
         },
-        pae: {
+        heatmap: {
             enabled: true,
             size: PAE_PLOT_SIZE
         },
@@ -827,8 +827,8 @@ function setupEventListeners() {
         window.SEQ?.updateColors();
         window.SEQ?.updateSelection();
         // Update PAE viewer colors when color mode changes
-        if (viewerApi?.renderer?.paeRenderer) {
-            viewerApi.renderer.paeRenderer.render();
+        if (viewerApi?.renderer?.heatmapRenderer) {
+            viewerApi.renderer.heatmapRenderer.render();
         }
     });
 
@@ -2567,7 +2567,7 @@ function applyPendingObjects() {
         setTimeout(syncClipPanelToObject, 0);
         if (r?.objectSelect) r.objectSelect.value = show;
         if (objectSelect) objectSelect.value = show;
-        if (r?.updatePAEContainerVisibility) r.updatePAEContainerVisibility();
+        if (r?.updateHeatmapPanelVisibility) r.updateHeatmapPanelVisibility();
         if (r?.updateScatterContainerVisibility) r.updateScatterContainerVisibility();
         if (typeof updateObjectNavigationButtons === 'function') updateObjectNavigationButtons();
         if (window.SEQ?.clearPreview) window.SEQ.clearPreview();
@@ -2594,7 +2594,7 @@ function applyPendingObjects() {
         if (r?.render) r.render();
         if (r?.objectSelect) r.objectSelect.value = snapshot.object;
         if (objectSelect) objectSelect.value = snapshot.object;
-        if (r?.updatePAEContainerVisibility) r.updatePAEContainerVisibility();
+        if (r?.updateHeatmapPanelVisibility) r.updateHeatmapPanelVisibility();
         if (typeof updateObjectNavigationButtons === 'function') updateObjectNavigationButtons();
         if (window.SEQ?.clearPreview) window.SEQ.clearPreview();
         if (typeof buildView === 'function') (window.SEQ?.buildViewDeferred || window.SEQ?.buildView)?.();

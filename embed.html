@@ -391,13 +391,14 @@ module more, so it is 755&nbsp;KB against 737 and 476: the embed half costs
 18&nbsp;KB, because the app had already paid for everything it needs.</p>
 <p class="note">The bundle is the code, not the layout &mdash; and here that means
 the app's layout, not just a panel's. Every panel finds its own markup and does
-nothing until it exists (the PAE wants a <code>#paeContainer</code> holding a
-<code>#paeCanvas</code>), and <code>src/app/</code> looks up the site's controls
+nothing until it exists (the heatmap wants a <code>#heatmapContainer</code>
+holding a <code>#heatmapCanvas</code> &mdash; the older <code>#paeContainer</code>
+/ <code>#paeCanvas</code> still work), and <code>src/app/</code> looks up the site's controls
 the same way. A page loading this is hosting <code>index.html</code>'s markup, or
 the parts of it whose features it wants. Panel markup goes <strong>beside</strong>
 the viewer, never inside &mdash; <code>show</code> replaces its container's
 children. Then ask for it:</p>
-<pre>py2Dmol.show('v', text, {controls: true, pae: {enabled: true}});</pre>
+<pre>py2Dmol.show('v', text, {controls: true, heatmap: {enabled: true}});</pre>
 <p class="note"><code>controls: true</code> is not optional here: it selects the
 shell that mounts the panels. The sequence strip and the MSA look their elements
 up on <code>document</code> rather than inside the viewer, so two viewers on one

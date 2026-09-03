@@ -214,12 +214,12 @@ input[type="range"]:hover::-webkit-slider-thumb { background: #2563eb; }
 input[type="range"]:hover::-moz-range-thumb { background: #2563eb; }
 input[type="range"]:active::-webkit-slider-thumb { background: #1d4ed8; }
 input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
-    #paeContainer {
+    #heatmapContainer {
         display: none; width: 300px; height: 300px;
         border: 1px solid #ddd; border-radius: 12px; background: #ffffff; overflow: hidden;
         position: relative;
     }
-    #paeCanvas { width: 100%; height: 100%; display: block; position: absolute; top: 0; left: 0; touch-action: none; }
+    #heatmapCanvas { width: 100%; height: 100%; display: block; position: absolute; top: 0; left: 0; touch-action: none; }
     /* Scatter container (matches viewer box) */
     .scatter-container {
         box-sizing: border-box;
@@ -267,8 +267,8 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
             <button id="overlayButton" class="controlButton btn btn-secondary" title="Overlay all frames" style="font-weight: 400;">⧉</button>
         </div>
     </div>
-    <div id="paeContainer">
-        <canvas id="paeCanvas" width="300" height="300" style="cursor: crosshair;"></canvas>
+    <div id="heatmapContainer">
+        <canvas id="heatmapCanvas" width="300" height="300" style="cursor: crosshair;"></canvas>
     </div>
     <div id="scatterContainer" class="scatter-container" style="display: none; position: relative;">
         <canvas id="scatterCanvas" style="cursor: pointer;"></canvas>

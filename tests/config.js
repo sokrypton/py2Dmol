@@ -41,6 +41,45 @@ if (typeof sb.normalizeConfig !== 'function') {
     process.exit(1);
 }
 
+// --- THE HEATMAP PANEL'S SWITCH ANSWERS TO BOTH ITS NAMES -------------------
+// `pae` came first: it is what Python's view(pae=True) sent for the life of
+// the panel, what every config a host page has written says, and what a saved
+// session holds. The key is `heatmap` now, and an unrecognised key here is
+// not an error - it is a panel that never mounts, with nothing thrown. The
+// two must also be the SAME OBJECT, or they are two fields that can disagree.
+{
+    const N = sb.normalizeConfig;
+    for (const [what, cfg] of [['pae: {enabled}', { pae: { enabled: true } }],
+                               ['heatmap: {enabled}', { heatmap: { enabled: true } }],
+                               ['pae: true', { pae: true }],
+                               ['heatmap: true', { heatmap: true }]]) {
+        const out = N(cfg);
+        if (!out.heatmap || out.heatmap.enabled !== true) {
+            bad(what + ' did not turn the heatmap panel on: '
+                + JSON.stringify(out.heatmap));
+        }
+        if (out.pae !== out.heatmap) {
+            bad(what + ': config.pae is not the SAME OBJECT as config.heatmap'
+                + ' - an alias that can drift is worse than no alias');
+        }
+    }
+    for (const [what, cfg] of [['pae_size', { pae_size: 512 }],
+                               ['heatmap_size', { heatmap_size: 512 }],
+                               ['pae.size', { pae: { size: 512 } }],
+                               ['heatmap.size', { heatmap: { size: 512 } }]]) {
+        const out = N(cfg);
+        if (out.heatmap.size !== 512) {
+            bad(what + ' did not reach heatmap.size: ' + out.heatmap.size);
+        }
+    }
+    // ...and off by default, which is what keeps a click meaning what it
+    // meant in every notebook that already exists.
+    if (N({}).heatmap.enabled !== false) {
+        bad('the heatmap panel is no longer off by default');
+    }
+    console.log('heatmap switch: both spellings, aliased to one object');
+}
+
 // --- what viewer.py actually writes ----------------------------------------
 const py = fs.readFileSync('py2Dmol/viewer.py', 'utf8');
 const section = (name) => {

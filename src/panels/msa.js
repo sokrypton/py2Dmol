@@ -1713,7 +1713,7 @@
     // ============================================================================
     //
     // 🔴 A BOUNDARY IS DRAWN IN COLUMNS, AND EVERYTHING ELSE HERE IS TOO -
-    // which is the one thing that keeps this honest. `panels/pae.js` has the
+    // which is the one thing that keeps this honest. `panels/heatmap.js` has the
     // same drawing and learned it the hard way: it held its boxes in RESIDUES
     // and drew them in CELLS, and the same rectangle came out 1.2x off in one
     // of the two places it was drawn. Blocks are columns of the alignment, the

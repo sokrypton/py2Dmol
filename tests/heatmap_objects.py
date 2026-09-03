@@ -1,6 +1,6 @@
 """The PAE panel belongs to one object, and Multi has no panel at all.
 
-    python3 tests/pae_objects.py
+    python3 tests/heatmap_objects.py
 
 A PAE matrix is a square over one structure's residues - there is no such
 thing across two - but the panel was wired to whichever object was last LOADED
@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from probe_js import HELPERS, DEADLINE, check_js  # noqa: E402
 ROOT="/Users/mini/Documents/GitHub/py2Dmol"
 CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PROBE=os.path.join(ROOT,"_pae_obj.html")
+PROBE=os.path.join(ROOT,"_heatmap_obj.html")
 JS="""
 <script>
 window.addEventListener('load', () => {
@@ -29,11 +29,11 @@ window.addEventListener('load', () => {
     await window.processFiles([{name: f, readAsync: () => Promise.resolve(txt)}], false);
   };
   const panel = (r) => {
-    const c = r.paeContainer;
+    const c = r.heatmapContainer;
     return {
       shown: !!(c && c.style.display !== 'none'),
-      n: r.paeRenderer ? r.paeRenderer.n : -1,
-      has: !!(r.paeRenderer && r.paeRenderer.paeData),
+      n: r.heatmapRenderer ? r.heatmapRenderer.n : -1,
+      has: !!(r.heatmapRenderer && r.heatmapRenderer.bytes),
     };
   };
   //HELPERS
@@ -58,7 +58,7 @@ window.addEventListener('load', () => {
       o.frames[0].pae = m;
       o._lastPaeFrame = 0;
       R.paeN = n;
-      window.PAE.syncToDrawn(r);
+      window.Heatmap.syncToDrawn(r);
       await settle();
       R.alone = panel(r);           // the prediction, on its own: the old world
 
@@ -88,9 +88,9 @@ window.addEventListener('load', () => {
       R.backDrawn = r.drawnObjects();
 
       // ...AND A BOX DRAWN ON IT hides everything outside its own residues.
-      const pc = r.paeRenderer.canvas;
+      const pc = r.heatmapRenderer.canvas;
       const pr = pc.getBoundingClientRect();
-      const cell = (k) => (k + 0.5) * pr.width / r.paeRenderer.n;
+      const cell = (k) => (k + 0.5) * pr.width / r.heatmapRenderer.n;
       const at = (k) => ({clientX: pr.left + cell(k), clientY: pr.top + cell(k),
                           bubbles: true, button: 0});
       pc.dispatchEvent(new MouseEvent('mousedown', at(2)));
@@ -103,7 +103,7 @@ window.addEventListener('load', () => {
       const own = (sel.length && r.ownerOf) ? r.ownerOf(sel[0]) : null;
       R.box = {n: sel.length, lo: sel[0], hi: sel[sel.length - 1],
                object: own ? own.name : (sel.length ? r.currentObjectName : null)};
-      r.setVisibility({paeBoxes: [], positions: new Set(), chains: new Set(),
+      r.setVisibility({heatmapBoxes: [], positions: new Set(), chains: new Set(),
                        visibilityMode: 'default'}, true);
 
       // THE OBJECT WITH NO MATRIX, picked: the panel goes away.
@@ -135,11 +135,11 @@ class H(http.server.SimpleHTTPRequestHandler):
 socketserver.ThreadingTCPServer.allow_reuse_address=True
 httpd=socketserver.ThreadingTCPServer(("127.0.0.1",9652),H); httpd.daemon_threads=True
 threading.Thread(target=httpd.serve_forever,daemon=True).start()
-p=subprocess.Popen([CHROME,"--headless=new","--user-data-dir=/tmp/py2dmol-paeobj","--no-first-run",
-  "--window-size=1200,1000","http://127.0.0.1:9652/_pae_obj.html"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+p=subprocess.Popen([CHROME,"--headless=new","--user-data-dir=/tmp/py2dmol-heatmapobj","--no-first-run",
+  "--window-size=1200,1000","http://127.0.0.1:9652/_heatmap_obj.html"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 end = time.time() + DEADLINE
 while not box and time.time()<end: time.sleep(0.5)
-p.kill(); httpd.shutdown(); os.remove(PROBE); shutil.rmtree("/tmp/py2dmol-paeobj",ignore_errors=True)
+p.kill(); httpd.shutdown(); os.remove(PROBE); shutil.rmtree("/tmp/py2dmol-heatmapobj",ignore_errors=True)
 R = box[0] if box else {"error": "no result posted"}
 if R.get("error"): sys.exit("page error: " + R["error"])
 
