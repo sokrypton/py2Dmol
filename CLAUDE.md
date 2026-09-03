@@ -2166,6 +2166,76 @@ public downloads is exercised on every run.
   happened" after a change meant to halve the work is not a weak result, it is
   a wrong wire.
 
+- 🔴 **THE CARTOON IS OUT OF TEN-PERCENT WINS THAT KEEP THE PICTURE, AND HERE
+  ARE THE FOUR PLACES IT IS NOT.** Every round above found one; this one found
+  none, and the value of it is the four experiments nobody needs to run again.
+  A Chrome profile of a 4HHB rebuild with side chains is FLAT - no line over
+  1 ms of 47, `makeResident`'s "16.7% self" is attribution drift onto the two
+  lines that CALL `buildMeshPart`, and `mergeBondRuns`' 6.5% is drift onto
+  `stickBox` and `stickFrame` the same way.
+  🔴 **THE 18-DEGREE TWIST CEILING IS NOT WHAT CUTS THE BONDS.** `stickBox`
+  sets `K = ceil(|twist| / 18 deg)`, and 18 is an ANGLE where the thing a
+  reader can see is that angle times the stick's radius IN PIXELS - measured,
+  the sagitta it buys is a fiftieth of a pixel at every zoom and structure
+  tried. So it looked like the stick LOD's twin. It is not: raising the
+  ceiling to 30, 45, 90 and 180 degrees moves **0.07-0.5% of faces**, because
+  the line under it - `if (bd.halfC) K = max(2, K + K%2)` - is what forces
+  K = 2, on 634 of 2,432 bonds on 4HHB, 4,062 of 7,070 on 1AOI and 844 of
+  1,007 on 1EHZ. *A histogram of K cannot tell you WHICH rule set it; put the
+  probe between the two lines.*
+  🔴 **AND THE HALF-COLOURED SPLIT IS NEITHER REDUNDANT NOR A DOUBLE-SPLIT.**
+  Two hypotheses, both wrong and both cheap to kill. `halfC` is tested for
+  PRESENCE (`h.a && h.b`) rather than difference, which reads like a bond
+  being cut for two colours that are the same - measured, **zero** of them are
+  (`_calculateSegmentColors` already returns early on `h.a === h.b`, and the
+  element table hands out the same object for the same element, so the
+  identity test is sound). And `_materialiseSidechains` cuts a mixed bond at a
+  real midpoint POSITION, which reads like the renderer then splitting the
+  halves AGAIN and covering a quarter of the bond in red - it does not: the
+  pairs are `C-N`, `C-O`, `N-C`, `O-C`, real atom pairs, with only 25-292
+  blank-ended midpoint bonds among four thousand.
+  **What removing the split IS worth, and why it is not enough**: the faces
+  are exact and large - **-13.1 / -13.3 / -12.9% on 4HHB, 1AOI, 1TIM and
+  -38.7% on 1EHZ** - and the TIME is not, at min-of-21 with controls under
+  4%: **-6.5 / -8.7 / -2.9%**, and -31.1% on 1EHZ alone, where 84% of bonds
+  are half-coloured. A stick face is cheaper than a ribbon face and the
+  capture barely moves. Getting it needs the colour split to move into the
+  fragment shader (one prism, two colours, a split parameter along the bond)
+  AND `cartoon/paint2d.js` to keep splitting, since a flat fill and an SVG
+  path cannot carry a colour boundary - so it is a change to the geom-painter
+  contract for 3-9% on proteins. Worth it for a nucleic viewer and not for a
+  protein one; the picture would be IDENTICAL either way, since the seam sits
+  at the midpoint in both.
+  🔴 **AND THE OUTLINE PASS IS THE LARGEST SINGLE BLOCK LEFT - 36-53% OF THE
+  MESH BUILD - WITH NO WASTE POCKET IN IT.** Ablated (`wantOutline` forced
+  false, controls 1.2-9.1%): 4HHB 26.3 -> 17.5 ms, 1AOI 34.3 -> 19.1, 1EHZ
+  3.5 -> 1.7. The obvious follow-up is the one this file already names - a
+  stick is a prism whose faces share edges by construction, so stop ASKING the
+  edge map - and the measurement that kills it is the RATIO: of 38-66k edges
+  registered, **60-74% are emitted as ink**. The pass is not spending its time
+  discovering that edges are interior; it is registering and emitting the
+  strokes the drawing is made of. `window.__ES` (scratchpad `edgestats.py`) is
+  where that count comes from.
+  **AND THE DETAIL SLIDER IS WORTH A THIRD OF A RIBBON, MEASURED.** It is the
+  one lever a reader already has, and the claim above that "large structures
+  cost what they cost; the Detail slider is how you buy that back" had no
+  number on it. Detail 4 (the default) to 2 (the geometric floor), min of 21,
+  baseline first and last: **ribbon only, -41 / -37 / -33% on 4HHB, 1TIM,
+  1AOI** with controls under 4%, and the other way detail 8 is +98% faces and
+  +85 to +106% time - so the slider is close to linear in both. WITH EVERY
+  SIDE CHAIN SHOWN it is **-9.9 / -13.5 / -15.6%**, because detail touches the
+  RIBBON alone and side chains are 60-90% of the faces (`nSide` is identical
+  in both arms). 1EHZ is not a result either way: an 8.7% control on a 2.3 ms
+  arm is the six-rounds lesson again.
+  **What is left, and what it would cost**: every remaining lever changes the
+  picture, the contract, or a decision already taken. Zoom-adaptive ribbon
+  sampling is the biggest of them and is rejected TWICE above - once for the
+  mesh baking (which the stick LOD's `signatureOf` term now solves) and once
+  because it makes the drawing depend on something invisible in the controls,
+  which is a design decision and not a bug. Backface culling on the mesh is
+  refused for the same reason it always was: the resident mesh has to survive
+  a rotation, so the cull is per frame in the shader.
+
 - **AND THE SUITE'S FLAKES WERE ALL ONE THING: A CAP THAT FIRES DURING SETUP.**
   Three probes crossed a threshold on load rather than on a fault, and each
   reported the half-built page as a broken one. `tests/mobile_layout.py` loads
