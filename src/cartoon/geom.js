@@ -820,9 +820,20 @@ const STICK_FACES = [
 // n..2n-1 the far one, so every consumer that indexes V/W is unchanged.
 // n = 4 returns the hand-written tables above rather than a generated copy,
 // so a ligand stick's geometry is bit-for-bit what it was.
+// The two per-face results emitSeg computes, reused across segments.
+let SEG_SCRATCH = new Float64Array(16);
+let SEG_SCRATCH_L = new Float64Array(16);
+const STICK_SQ = [[1, 1], [1, -1], [-1, -1], [-1, 1]];
+// ...and the same four as two flat lists, for the loops that only want
+// the signs. Written as an array literal inside a per-junction or
+// per-station loop it is five allocations and an iterator each time.
+const MITRE_TOP = [0, 1];
+const MITRE_BOT = [3, 2];
+const SQ_U = [1, 1, -1, -1];
+const SQ_V = [1, -1, -1, 1];
 const RING_CACHE = new Map();
 const ringTables = (n) => {
-    if (n === 4) return { faces: STICK_FACES, edges: STICK_EDGES };
+    if (n === 4) return { faces: STICK_FACES, edges: STICK_EDGES, ring: STICK_SQ };
     let t = RING_CACHE.get(n);
     if (t) return t;
     const faces = [];
@@ -853,7 +864,16 @@ const ringTables = (n) => {
         // whole reason a tube needs no special ink rule.
         edges.push({ a: i, b: n + i, f0: i, f1: (i - 1 + n) % n, end: -1 });
     }
-    t = { faces, edges };
+    // THE UNIT RING IS THE SECTION'S, so it is cached with the tables it
+    // belongs to. `stickBox` built it inside an IIFE on every call - a
+    // closure and n arrays per BOND, for a table that depends on nothing
+    // but n.
+    const ring = [];
+    for (let i = 0; i < n; i++) {
+        const a = (2 * Math.PI * i) / n;
+        ring.push([Math.cos(a), Math.sin(a)]);
+    }
+    t = { faces, edges, ring };
     RING_CACHE.set(n, t);
     return t;
 };
@@ -3696,7 +3716,13 @@ function mergeBondRuns(S) {
     // carry a path THROUGH any junction it did not
     const mitredAtoms = new Set();
     for (const [atom, arr] of inc) {
-        let legs = arr.filter((bd) => !bd.flat && bd.fr);
+        // A WALK, NOT A `filter`: this runs for every atom that carries a
+        // bond, and the predicate is two property reads.
+        let legs = [];
+        for (let li = 0; li < arr.length; li++) {
+            const b = arr[li];
+            if (!b.flat && b.fr) legs.push(b);
+        }
         // Three legs or more. An atom with exactly two is the interior
         // of a linear run and belongs to the sweep below, which joins it
         // without pinning its roll; mitring it here as well would put
@@ -3916,7 +3942,8 @@ function mergeBondRuns(S) {
             const q = (legs[i2].a === atom) ? legs[i2].vb : legs[i2].va;
             const len = Math.hypot(q.x - pA.x, q.y - pA.y, q.z - pA.z);
             const four = [];
-            for (const [su, sv] of [[1, 1], [1, -1], [-1, -1], [-1, 1]]) {
+            for (let sq = 0; sq < 4; sq++) {
+                const su = SQ_U[sq]; const sv = SQ_V[sq];
                 const off = [u[0] * su * stickHT + v[0] * sv * stickHW,
                     u[1] * su * stickHT + v[1] * sv * stickHW,
                     u[2] * su * stickHT + v[2] * sv * stickHW];
@@ -3956,11 +3983,18 @@ function mergeBondRuns(S) {
         const shareTop = []; const shareBot = [];
         for (let a2 = 0; a2 < kk; a2++) {
             const i2 = ord[a2]; const j2 = ord[(a2 + 1) % kk];
-            for (const [ci, cj, store] of [[[0, 1], [0, 1], shareTop],
-                [[3, 2], [3, 2], shareBot]]) {
+            // TOP THEN BOTTOM, by index. This was a literal holding two
+            // triples of arrays, rebuilt for every pair of legs at every
+            // junction, to iterate two corner indices each.
+            for (let tb = 0; tb < 2; tb++) {
+                const ci = tb === 0 ? MITRE_TOP : MITRE_BOT;
+                const cj = ci;
+                const store = tb === 0 ? shareTop : shareBot;
                 let best = Infinity; let bi = ci[0]; let bj = cj[0];
-                for (const x of ci) {
-                    for (const y of cj) {
+                for (let xi = 0; xi < ci.length; xi++) {
+                    const x = ci[xi];
+                    for (let yi = 0; yi < cj.length; yi++) {
+                        const y = cj[yi];
                         const dd = dist2(corner[i2][x], corner[j2][y]);
                         if (dd < best) { best = dd; bi = x; bj = y; }
                     }
@@ -4271,7 +4305,11 @@ function mergeBondRuns(S) {
         // two trans pairs, and no run can fork to take both).
         const throughPair = new Map();
         for (const [atom, arr] of inc) {
-            const legs = arr.filter((b) => !b.flat && b.fr);
+            const legs = [];
+        for (let li = 0; li < arr.length; li++) {
+            const b = arr[li];
+            if (!b.flat && b.fr) legs.push(b);
+        }
             if (legs.length < 3 || mitredAtoms.has(atom)) continue;
             const far = (bd) => (bd.a === atom ? bd.b : bd.a);
             // shortest path between two neighbours with `atom` removed
@@ -4368,7 +4406,7 @@ function mergeBondRuns(S) {
             const atoms = [seed.a, seed.b];
             runSeen.add(seed);
             let closed = false;
-            for (const dirn of [1, 0]) {
+            for (let dirn = 1; dirn >= 0; dirn--) {
                 for (;;) {
                     const end = dirn ? atoms[atoms.length - 1] : atoms[0];
                     const here = dirn ? bonds[bonds.length - 1] : bonds[0];
@@ -4586,11 +4624,14 @@ function mergeBondRuns(S) {
                 // -u+v) onto indices 1, 0, 3, 2 of the forward one.
                 const vS = un(crs(b, uS));
                 if (!vS) continue;
-                const Q = [[1, 1], [1, -1], [-1, -1], [-1, 1]].map(
-                    ([su, sv]) => [
+                const Q = new Array(4);
+                for (let sq = 0; sq < 4; sq++) {
+                    const su = SQ_U[sq]; const sv = SQ_V[sq];
+                    Q[sq] = [
                         st.p.x + uS[0] * su * stickHT + vS[0] * sv * stickHW,
                         st.p.y + uS[1] * su * stickHT + vS[1] * sv * stickHW,
-                        st.p.z + uS[2] * su * stickHT + vS[2] * sv * stickHW]);
+                        st.p.z + uS[2] * su * stickHT + vS[2] * sv * stickHW];
+                }
                 const QR = [Q[1], Q[0], Q[3], Q[2]];
                 const L = st.L; const R = st.R;
                 const qL = dot(L.fr.t, b) > 0 ? Q : QR;
@@ -4604,8 +4645,10 @@ function mergeBondRuns(S) {
             }
             // a free end keeps a square section on the carried frame
             if (!closed) {
-                for (const [bd, atom, u] of [[bonds[0], atoms[0], U[0]],
-                    [bonds[nB - 1], atoms[nB], U[nB - 1]]]) {
+                for (let e = 0; e < 2; e++) {
+                    const bd = e === 0 ? bonds[0] : bonds[nB - 1];
+                    const atom = e === 0 ? atoms[0] : atoms[nB];
+                    const u = e === 0 ? U[0] : U[nB - 1];
                     if (endRoll(bd, atom)) continue;
                     if (bd.a === atom) bd.roll0 = u; else bd.roll1 = u;
                 }
@@ -9461,11 +9504,19 @@ function drawSticks(ctx) {
         };
         const e1 = perp(1, 0, 0) || perp(0, 1, 0) || perp(0, 0, 1);
         if (!e1) return null;
-        const e2 = [ty * e1[2] - tz * e1[1], tz * e1[0] - tx * e1[2],
-            tx * e1[1] - ty * e1[0]];
+        const e1x = e1[0]; const e1y = e1[1]; const e1z = e1[2];
+        const e2x = ty * e1z - tz * e1y;
+        const e2y = tz * e1x - tx * e1z;
+        const e2z = tx * e1y - ty * e1x;
         let accX = 0; let accY = 0; let accW = 0;
-        let pick = null; let pickIdx = Infinity;
-        for (const [atom, other] of [[bd.a, bd.b], [bd.b, bd.a]]) {
+        let pickIdx = Infinity;
+        let pickX = 0; let pickY = 0; let pickZ = 0;
+        // TWO ENDS, NAMED. `for (const [atom, other] of [[bd.a, bd.b],
+        // [bd.b, bd.a]])` built three arrays, an iterator and two
+        // destructurings for every BOND in the structure.
+        for (let e = 0; e < 2; e++) {
+            const atom = e === 0 ? bd.a : bd.b;
+            const other = e === 0 ? bd.b : bd.a;
             for (const nb of (inc.get(atom) || [])) {
                 const far = (nb.a === atom) ? nb.b : nb.a;
                 if (far === other || nb === bd) continue;
@@ -9476,14 +9527,16 @@ function drawSticks(ctx) {
                 qx /= ql; qy /= ql; qz /= ql;
                 // the lowest-numbered neighbour, kept as a fallback that is
                 // a real direction in the MOLECULE rather than in the view
-                if (far < pickIdx) { pickIdx = far; pick = [qx, qy, qz]; }
+                if (far < pickIdx) {
+                    pickIdx = far; pickX = qx; pickY = qy; pickZ = qz;
+                }
                 const cx = ty * qz - tz * qy;
                 const cy = tz * qx - tx * qz;
                 const cz = tx * qy - ty * qx;
                 const w = Math.hypot(cx, cy, cz);
                 if (w < 1e-9) continue;
-                const th = Math.atan2(cx * e2[0] + cy * e2[1] + cz * e2[2],
-                    cx * e1[0] + cy * e1[1] + cz * e1[2]);
+                const th = Math.atan2(cx * e2x + cy * e2y + cz * e2z,
+                    cx * e1x + cy * e1y + cz * e1z);
                 accX += w * Math.cos(2 * th);
                 accY += w * Math.sin(2 * th);
                 accW += w;
@@ -9497,9 +9550,9 @@ function drawSticks(ctx) {
         if (accW > 0 && Math.hypot(accX, accY) > 0.05 * accW) {
             const half = Math.atan2(accY, accX) / 2;
             const ch = Math.cos(half); const sh = Math.sin(half);
-            sx = e1[0] * ch + e2[0] * sh;
-            sy = e1[1] * ch + e2[1] * sh;
-            sz = e1[2] * ch + e2[2] * sh;
+            sx = e1x * ch + e2x * sh;
+            sy = e1y * ch + e2y * sh;
+            sz = e1z * ch + e2z * sh;
         }
         // ...and if there are no neighbours to read - an isolated bond -
         // there is nothing in the neighbourhood to read a roll from. A
@@ -9555,7 +9608,7 @@ function drawSticks(ctx) {
         const rn = bd.rollN && (bd.rollN[0] || bd.rollN[1]);
         const u = (rn && perp(rn[0], rn[1], rn[2]))
             || perp(sx, sy, sz)
-            || (pick && perp(pick[0], pick[1], pick[2]))
+            || (pickIdx !== Infinity && perp(pickX, pickY, pickZ))
             || (modelRoll && perp(modelRoll[0], modelRoll[1], modelRoll[2]))
             || perp(-mx, -my, -mz)
             || perp(1, 0, 0) || perp(0, 1, 0) || perp(0, 0, 1);
@@ -9699,8 +9752,16 @@ function drawSticks(ctx) {
         const cz3 = swz / W.length;
         // ...and the two per-face results, written by index rather than
         // pushed: the length is known before the loop starts.
-        const o = new Float64Array(SF.length);
-        const l = new Float64Array(SF.length);
+        // SCRATCH, NOT A PAIR OF ALLOCATIONS PER SEGMENT. A typed array is
+        // dearer to allocate than a plain one and this is called once per
+        // segment of every bond in the structure, for six slots. Both are
+        // fully written before they are read, and neither escapes emitSeg.
+        if (SEG_SCRATCH.length < SF.length) {
+            SEG_SCRATCH = new Float64Array(SF.length * 2);
+            SEG_SCRATCH_L = new Float64Array(SF.length * 2);
+        }
+        const o = SEG_SCRATCH;
+        const l = SEG_SCRATCH_L;
         for (let fj = 0; fj < SF.length; fj++) {
             const f = SF[fj];
             // NEWELL, over however many corners the face has. A tube's
@@ -9871,10 +9932,19 @@ function drawSticks(ctx) {
             const buried = scEnd || (f.ax === 2
                 && (f.sgn < 0 ? (!firstSeg || !!bd.cut0)
                     : (!lastSeg || !!bd.cut1)));
-            const fq = f.q.map((vi) => V[vi]);
+            // GATHERED AND SUMMED IN ONE WALK. `.map` with a closure and
+            // then a second pass for the depth is two traversals and a
+            // closure per FACE; the array itself has to stay, because the
+            // prim keeps it.
+            const fqn = f.q.length;
+            const fq = new Array(fqn);
             let zf = 0;
-            for (const p2 of fq) zf += p2[2];
-            zf /= fq.length;
+            for (let i2 = 0; i2 < fqn; i2++) {
+                const p2 = V[f.q[i2]];
+                fq[i2] = p2;
+                zf += p2[2];
+            }
+            zf /= fqn;
             prims.push({
                 kind: 'stickFace',
                 q: fq,
@@ -10063,21 +10133,18 @@ function drawSticks(ctx) {
         // through exactly the code the square does. The 4-point case keeps
         // its own corner list so a ligand stick is unchanged: a generated
         // ring of 4 would be the same square rotated 45 degrees.
-        const SQ = [[1, 1], [1, -1], [-1, -1], [-1, 1]];
-        const ring = bSides === 4 ? SQ : (() => {
-            const out = [];
-            for (let i = 0; i < bSides; i++) {
-                const a = (2 * Math.PI * i) / bSides;
-                out.push([Math.cos(a), Math.sin(a)]);
-            }
-            return out;
-        })();
+        const ring = RT.ring;
         const squareAt = (px, py, pz, uu) => {
             const vvv = vOf(uu);
-            return ring.map(([su, sv]) => [
-                px + uu[0] * su * bHT + vvv[0] * sv * bHW,
-                py + uu[1] * su * bHT + vvv[1] * sv * bHW,
-                pz + uu[2] * su * bHT + vvv[2] * sv * bHW]);
+            const out = new Array(ring.length);
+            for (let i = 0; i < ring.length; i++) {
+                const su = ring[i][0]; const sv = ring[i][1];
+                out[i] = [
+                    px + uu[0] * su * bHT + vvv[0] * sv * bHW,
+                    py + uu[1] * su * bHT + vvv[1] * sv * bHW,
+                    pz + uu[2] * su * bHT + vvv[2] * sv * bHW];
+            }
+            return out;
         };
         // A SQUARE THAT LIES ON THE BACKBONE.
         //

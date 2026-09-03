@@ -2461,6 +2461,17 @@ const matT = (m) => [[m[0][0], m[1][0], m[2][0]],
     [m[0][1], m[1][1], m[2][1]], [m[0][2], m[1][2], m[2][2]]];
 const matMul = (a, b) => a.map((r, i) => [0, 1, 2].map((j) =>
     r[0] * b[0][j] + r[1] * b[1][j] + r[2] * b[2][j]));
+// A NEGATED NORMAL, REUSING THE ARRAY WHERE THIS FACE IS THE ONLY THING
+// HOLDING IT. `nn` in buildMeshPart starts as a fresh array built from the
+// face's own Newell sum, and is REPLACED - not mutated - by `frA.n` or a
+// `wSigned` result, both of which are SHARED by every face of the piece:
+// negating one of those in place turns the whole strip inside out. `nnOwn`
+// carries which of the two it is, so the allocation is paid only when the
+// array is somebody else's.
+const negOf = (v, own) => {
+    if (own) { v[0] = -v[0]; v[1] = -v[1]; v[2] = -v[2]; return v; }
+    return [-v[0], -v[1], -v[2]];
+};
 const dotv = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const apply = (m, v) => [
     m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
@@ -3363,21 +3374,24 @@ function buildMeshPart(faces, scale, prm, lines) {
         // A zero normal makes max(0, n.L) clamp, the face falls to flat
         // ambient, and every three-way side-chain junction comes out as dark
         // triangles. Summing over all edges is immune to a repeated vertex.
-        const n = [0, 0, 0];
+        let nx = 0; let ny = 0; let nz = 0;
         for (let i2 = 0; i2 < m.length; i2++) {
             const a2 = m[i2];
             const b2 = m[(i2 + 1) % m.length];
-            n[0] += (a2[1] - b2[1]) * (a2[2] + b2[2]);
-            n[1] += (a2[2] - b2[2]) * (a2[0] + b2[0]);
-            n[2] += (a2[0] - b2[0]) * (a2[1] + b2[1]);
+            nx += (a2[1] - b2[1]) * (a2[2] + b2[2]);
+            ny += (a2[2] - b2[2]) * (a2[0] + b2[0]);
+            nz += (a2[0] - b2[0]) * (a2[1] + b2[1]);
         }
         // KEPT FOR THE EDGE PASS, which asked the same question of the same
         // four corners a second time - a four-corner Newell walk and a hypot
         // per face, purely to find out whether the quad has any area.
-        const nLen = Math.hypot(n[0], n[1], n[2]);
+        const nLen = Math.hypot(nx, ny, nz);
         nLenOf[fi] = nLen;
         const nl = nLen || 1;
-        let nn = [n[0] / nl, n[1] / nl, n[2] / nl];
+        // OWNED BY THIS FACE until one of the frame branches below hands it a
+        // shared one, which is what lets the three flips negate in place.
+        let nn = [nx / nl, ny / nl, nz / nl];
+        let nnOwn = true;
         // ORIENT IT LIKE ub, and for a rib face use the PIECE's mean frame -
         // the renderer's tone is one value for the whole strip.
         const pf = f.pieceId !== undefined ? pieceFrame.get(f.pieceId) : null;
@@ -3400,13 +3414,16 @@ function buildMeshPart(faces, scale, prm, lines) {
         // THE SIGN TRAVELS AS AN ARGUMENT. This was a closure declared inside
         // the loop, so it was allocated once per face in the build - and a
         // stick face never calls it, every use being guarded on `isRibSide`.
-        // flat: the piece mean, matching what the reference quantises
-        const wFlat = (pf && pf.wMean)
+        // flat: the piece mean, matching what the reference quantises.
+        // ASKED ONLY WHERE IT IS READ - `nFlat` consults it under `isRibSide`
+        // - so a nucleosome's 70,362 stick faces were each building a
+        // three-element array for it and dropping it unread.
+        const wFlat = (isRibSide && pf && pf.wMean)
             ? [sideSign * pf.wMean[0], sideSign * pf.wMean[1], sideSign * pf.wMean[2]] : null;
         if (frA && (f.surf === 0 || f.surf === 1)) {
-            nn = frA.n;
+            nn = frA.n; nnOwn = false;
         } else if (isRibSide && wSigned(frA, sideSign)) {
-            nn = wSigned(frA, sideSign);
+            nn = wSigned(frA, sideSign); nnOwn = false;
         } else if ((f.stick || f.cap) && f.nl !== undefined) {
             // orient it so n.L reproduces the prim's own nl
             const rn = applyInto(RN, VR, nn);
@@ -3416,14 +3433,14 @@ function buildMeshPart(faces, scale, prm, lines) {
                 // branch, so every one of a nucleosome's 70,362 stick faces
                 // paid for a rotation and a normalise it never read.
                 const vdF = viewVecAt(apply(VR, m[0]));
-                if ((dotv(rn, vdF) < 0) !== (f.nl < 0)) nn = [-nn[0], -nn[1], -nn[2]];
+                if ((dotv(rn, vdF) < 0) !== (f.nl < 0)) nn = negOf(nn, nnOwn);
             } else {
                 const dot = (rn[0] * LIT_L[0] + rn[1] * LIT_L[1] + rn[2] * LIT_L[2]) / LIT_LM;
-                if ((dot < 0) !== (f.nl < 0)) nn = [-nn[0], -nn[1], -nn[2]];
+                if ((dot < 0) !== (f.nl < 0)) nn = negOf(nn, nnOwn);
             }
         } else if (f.oB !== undefined && f.oB !== 0) {
             const zAtCapture = dotv(apply(VR, nn), viewVecAt(apply(VR, m[0])));
-            if ((zAtCapture < 0) !== (f.oB < 0)) nn = [-nn[0], -nn[1], -nn[2]];
+            if ((zAtCapture < 0) !== (f.oB < 0)) nn = negOf(nn, nnOwn);
         }
         // OUTWARD normals, and it has to be outward or the test is noise. The
         // silhouette rule is "one adjacent face points at the eye and the other
@@ -3458,19 +3475,25 @@ function buildMeshPart(faces, scale, prm, lines) {
         // derivation is wrong somewhere and the normals are fine; the ink and
         // the cull can share them.
         f._inkN = f._outN;
-        const c = f.c;
-        // the strip tangent, unprojected and unrotated the same way
-        let tv;
-        if (frA && (f.surf === 0 || f.surf === 1 || isRibSide)) {
-            tv = frA.t;
-        } else if (f.tan) {
-            TS[0] = f.tan[0] / scale; TS[1] = -f.tan[1] / scale; TS[2] = f.tan[2];
-            tv = applyInto(TV, inv, TS);
-        } else {
-            tv = TX;
+        // (`const c = f.c` stood here, read by nothing before the emit loop
+        // reads it off the face again.)
+        // The strip tangent, unprojected and unrotated the same way - ASKED
+        // ONLY WHERE IT IS READ. `tA` takes `frA.t` for a rib face or a rib
+        // side WITH a frame, which is the same condition the first branch
+        // here tests, so on all of those the normalise and its array were
+        // built and dropped.
+        let tt = null;
+        if (!(frA && (broadFace || isRibSide))) {
+            let tv;
+            if (f.tan) {
+                TS[0] = f.tan[0] / scale; TS[1] = -f.tan[1] / scale; TS[2] = f.tan[2];
+                tv = applyInto(TV, inv, TS);
+            } else {
+                tv = TX;
+            }
+            const tl = Math.hypot(tv[0], tv[1], tv[2]) || 1;
+            tt = [tv[0] / tl, tv[1] / tl, tv[2] / tl];
         }
-        const tl = Math.hypot(tv[0], tv[1], tv[2]) || 1;
-        const tt = [tv[0] / tl, tv[1] / tl, tv[2] / tl];
         // PER-STATION NORMALS. A quad spans two stations - corners 0,1 are the
         // near one and 3,2 the far one - and the ribbon TWISTS between them, so
         // one normal for the whole face throws away exactly the variation the
@@ -3576,8 +3599,8 @@ function buildMeshPart(faces, scale, prm, lines) {
         data[o++] = (f.two ? 1 : 0) + (f.unlit ? 2 : 0) + (f.plate ? 4 : 0)
             + (f.disc ? 8 : 0);
         data[o++] = f.sheetB ? 1 : 0;
-        for (const p of f.q) {
-            const z = p[2];
+        for (let qi = 0; qi < f.q.length; qi++) {
+            const z = f.q[qi][2];
             if (z < zMin) zMin = z;
             if (z > zMax) zMax = z;
         }
@@ -3666,12 +3689,18 @@ function buildMeshPart(faces, scale, prm, lines) {
         for (const f of faces) {
             if (f.gA && f.gB) continue;               // the step itself
             if (f.pieceId === undefined || f.surf === undefined) continue;
-            const k2 = f.pieceId + ':' + f.surf;
-            if (!normDonor.has(k2) && f._inkN) normDonor.set(k2, f._inkN);
+            // A NUMBER, NOT A STRING. `pieceId` counts up from zero and
+            // `surf` is one of four, so pieceId * 16 + surf is injective -
+            // and it allocates nothing, where the concatenation built a
+            // string for every ribbon face here and another in the walk
+            // below. The cheap test goes first, too.
+            if (!f._inkN) continue;
+            const k2 = f.pieceId * 16 + f.surf;
+            if (!normDonor.has(k2)) normDonor.set(k2, f._inkN);
         }
         for (const f of faces) {
             if (!(f.gA && f.gB)) continue;
-            const d = normDonor.get(f.pieceId + ':' + f.surf);
+            const d = normDonor.get(f.pieceId * 16 + f.surf);
             if (d) f._inkN = d;
         }
         // ONE PASS AND ONE LOOKUP. It was a count per key and then a second walk
@@ -3789,6 +3818,19 @@ function buildMeshPart(faces, scale, prm, lines) {
             // rails. So a base plate there is two silhouette lines, no box and
             // no crease. Matching that is what parity means.
             const alongOnly = f.surf !== undefined && f.surf < 4 && !f.fullOutline;
+            // TEN OF ADDEDGE'S FIFTEEN ARGUMENTS ARE THE FACE'S, not the
+            // edge's, and they were read and coerced inside the loop - so
+            // every one of them was fetched four times per face, about 1.6
+            // million redundant property loads on a nucleosome.
+            const fInkN = f._inkN; const fStick = !!f.stick; const fPal = f.pal;
+            const fTwo = !!f.two; const fNoInk = !!f.noInk; const fCol = f.c || null;
+            const fFull = !!f.fullOutline; const fOuter = !!f.outerOnly;
+            const fSc = !!f.sc;
+            // FOUR CORNER HASHES, NOT EIGHT. Edge i2 runs from corner i2 to
+            // corner i2+1, so every corner was hashed twice per face - 700,000
+            // calls on a nucleosome where 350,000 answer the same questions.
+            const h0 = hashAt(mBase); const h1 = hashAt(mBase + 3);
+            const h2 = hashAt(mBase + 6); const h3 = hashAt(mBase + 9);
             for (let i2 = 0; i2 < 4; i2++) {
                 // the cross-strip pair is registered as a GHOST rather than
                 // skipped: it must not ink, but the cap that shares it needs a
@@ -3800,8 +3842,8 @@ function buildMeshPart(faces, scale, prm, lines) {
                 const ghost = alongOnly && (i2 === 0 || i2 === 2);
                 const oa = mBase + i2 * 3;
                 const ob = mBase + ((i2 + 1) & 3) * 3;
-                const ka = hashAt(oa);
-                const kb = hashAt(ob);
+                const ka = i2 === 0 ? h0 : i2 === 1 ? h1 : i2 === 2 ? h2 : h3;
+                const kb = i2 === 0 ? h1 : i2 === 1 ? h2 : i2 === 2 ? h3 : h0;
                 const ek = ka < kb ? ka * 4294967296 + kb : kb * 4294967296 + ka;
                 let dup = false;
                 for (let k2 = 0; k2 < ownN; k2++) if (ownKeys[k2] === ek) { dup = true; break; }
@@ -3811,9 +3853,8 @@ function buildMeshPart(faces, scale, prm, lines) {
                 // face to claim an edge ever reads it, so packing it into a
                 // fresh three-element array at every call built about 280,000
                 // arrays a build to use a few thousand of them.
-                addEdge(oa, ob, ka, kb, f._inkN, !!f.stick, f.pal, ghost,
-                    !!f.two, !!f.noInk, f.c || null,
-                    !!f.fullOutline, seamCross, !!f.outerOnly, !!f.sc);
+                addEdge(oa, ob, ka, kb, fInkN, fStick, fPal, ghost,
+                    fTwo, fNoInk, fCol, fFull, seamCross, fOuter, fSc);
             }
         }
 

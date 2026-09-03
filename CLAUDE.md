@@ -1878,6 +1878,81 @@ public downloads is exercised on every run.
   `emitSeg`; the digests are what cover that) and by `tests/smoke.js`, which
   drives the stick geometry through `_stickProbe`. Peak live heap 96-97 -> 95-96 MB.
 
+- 🔴 **AN ARRAY LITERAL WRITTEN INSIDE A PER-BOND LOOP IS AN ALLOCATION PER
+  BOND, AND THERE WERE ELEVEN OF THEM.** Both halves of a rebuild got faster
+  again - **9 to 19% off the whole thing** - with the mesh digest unchanged
+  under three cameras on four structures, and not one of the changes is an
+  idea. Every one is the same shape: a value that depends on nothing the loop
+  varies, built fresh anyway.
+
+  | | capture | mesh | whole rebuild |
+  |---|---|---|---|
+  | 1AOI + every side chain (87,920 faces) | 48.3 -> 43.4 ms | 102.2 -> 89.4 | 170.7 -> 155.0 |
+  | 4HHB + side chains | 17.7 -> 16.5 | 31.1 -> 27.6 | 53.2 -> 47.9 |
+  | 1EHZ + side chains (RNA) | 8.2 -> 6.0 | 13.9 -> 12.1 | 24.2 -> 19.5 |
+  | 1TIM + side chains | 12.9 -> 10.9 | 22.4 -> 18.0 | 37.9 -> 32.8 |
+
+  🔴 **`for (const [a, b] of [[x, y], [y, x]])` IS THREE ARRAYS, AN ITERATOR
+  AND TWO DESTRUCTURINGS TO SAY "BOTH ENDS".** `stickFrame` ran it for every
+  bond in the structure and it was the second-hottest line in the function.
+  The same literal-as-a-loop appears five more times in the stick pipeline -
+  the mitre's four corner signs, the seam station's, the shared-corner search's
+  two corner pairs, the run walk's forwards-then-backwards - and each is now an
+  index loop over a module-scope constant. `e1`/`e2`/`pick` in the same
+  function became scalars: `e2` existed only to be read three ways in the
+  neighbour loop.
+  🔴 **AND `ringTables` CACHED THE FACES AND THE EDGES AND NOT THE RING.**
+  `stickBox` built the unit section inside an IIFE on every call - a closure
+  and n arrays per bond - for a table that depends on nothing but n. It is
+  `RT.ring` now, and `squareAt` walks it rather than `.map`ping a destructuring
+  closure over it.
+  🔴 **AND THE TWO `Float64Array`s emitSeg ALLOCATES ARE PER SEGMENT.** A typed
+  array costs more to allocate than a plain one, they hold six slots, and every
+  slot is written before it is read - so they are module scratch. (They were
+  introduced by the round before this one, which replaced two `push` loops with
+  indexed writes: a fix that traded a growth for an allocation.)
+
+  On the GPU side the same rule found four more:
+  - 🔴 **TEN OF `addEdge`'s FIFTEEN ARGUMENTS ARE THE FACE'S, NOT THE EDGE'S**,
+    and they were read and coerced inside the four-edge loop - `!!f.stick`,
+    `!!f.two`, `f.c || null` and seven others, fetched four times per face,
+    about 1.6 million redundant property loads on a nucleosome.
+  - 🔴 **AND EVERY CORNER WAS HASHED TWICE.** Edge `i` runs from corner `i` to
+    corner `i+1`, so `hashAt` was called eight times per face to answer four
+    questions: 700,000 calls where 350,000 do. `hashAt` 6.3 -> 4.1 ms.
+  - 🔴 **AND THE NORMAL-DONOR KEY WAS A STRING.** `f.pieceId + ':' + f.surf`,
+    built for every ribbon face in one walk and again in the next. `pieceId`
+    counts up from zero and `surf` is one of four, so `pieceId * 16 + surf` is
+    injective and allocates nothing. The cheap test (`f._inkN`) now goes before
+    the Map lookup rather than after it.
+  - 🔴 **AND `wFlat` AND `tt` WERE BUILT FOR EVERY FACE AND READ BY SOME.**
+    `wFlat` is consulted under `isRibSide` and `tt` only where `tA` does not
+    take `frA.t` - which is the same condition the branch above it tests - so a
+    nucleosome's 70,362 stick faces each built a three-element array for the
+    first, and every rib face built one for the second. Same fault as the
+    view vector hoisted out of the cap branch two rounds ago.
+  The Newell accumulator is three scalars rather than a three-element array,
+  and the three normal flips negate **in place** where the array is the face's
+  own - which is what `nnOwn` says. `nn` starts as a fresh array built from the
+  face's own sum and is REPLACED, not mutated, by `frA.n` or a `wSigned`
+  result: **both of those are shared by every face of the piece**, and negating
+  one in place turns the whole strip inside out.
+  **WHAT WAS NOT ATTEMPTED, AND WHY.** The three hottest single lines left are
+  `edgeMap.get`/`set` in `addEdge` (8.2 ms) and `faceSeen.get` (4.2) - JS Maps
+  keyed by doubles past 2^32. This file already records TWO measurements of
+  exactly that: an open-addressed table over typed arrays, and Smi-signing the
+  keys, both null results in Chrome. A third attempt would be re-measuring a
+  recorded answer.
+  Proved by `__meshDigest` - 12 digests, four structures x three cameras,
+  identical after every one of the four edit batches - by `paint_trace` (11
+  fixtures, 20,619 ops unchanged) and by `tests/smoke.js`'s `_stickProbe`.
+  Peak live heap 95-96 -> 96 MB.
+  🔴 **AND `--also` EXISTS ON THE A/B HARNESS BECAUSE A CHANGE ACROSS TWO FILES
+  CANNOT BE MEASURED ONE FILE AT A TIME.** Swapping only `geom.js` leaves
+  `paintgl.js`'s win in BOTH arms, so each half reports against a tree that
+  already has the other half in it - the capture read -16.3% alone and -10.1%
+  in the honest pairing. Both arms swap both files now.
+
 - **AND THE SUITE'S FLAKES WERE ALL ONE THING: A CAP THAT FIRES DURING SETUP.**
   Three probes crossed a threshold on load rather than on a fault, and each
   reported the half-built page as a broken one. `tests/mobile_layout.py` loads
