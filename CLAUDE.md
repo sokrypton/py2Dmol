@@ -1953,6 +1953,39 @@ public downloads is exercised on every run.
   already has the other half in it - the capture read -16.3% alone and -10.1%
   in the honest pairing. Both arms swap both files now.
 
+- 🔴 **`Math.hypot` IS OVERFLOW INSURANCE, AND NOTHING HERE IS WITHIN
+  150 ORDERS OF MAGNITUDE OF NEEDING IT.** The builtin exists so that
+  `hypot(1e200, 1e200)` does not square to Infinity, and it pays for that with
+  a compensated summation on every call. This tree called it **127 times** -
+  once per corner normal, once per tangent, once per bond axis, inside every
+  per-face and per-bond loop there is - on Angstroms and unit normals, whose
+  squares live around 1e4. `len3(x, y, z)` is `Math.sqrt(x*x + y*y + z*z)` and
+  the whole change is one mechanical substitution:
+
+  | | capture | mesh | whole rebuild |
+  |---|---|---|---|
+  | 1AOI + every side chain (87,920 faces) | 45.4 -> 40.1 ms | 91.3 -> 84.8 | 156.7 -> 142.1 (-9.3%) |
+  | 4HHB + side chains | 16.2 -> 13.2 | 28.0 -> 26.0 | 47.8 -> 43.7 (-8.6%) |
+  | 1EHZ + side chains (RNA) | 7.3 -> 5.8 | 11.9 -> 11.4 | 22.1 -> 18.7 (-15.4%) |
+  | 1TIM + side chains | 11.7 -> 10.4 | 18.0 -> 17.0 | 35.7 -> 34.3 |
+
+  🔴 **AND THE TWO ANSWERS DIFFER 37.5% OF THE TIME, WHICH IS NOT THE SAME AS
+  MATTERING.** Measured over two million random triples in a 200 A box: they
+  disagree on three quarters of a million of them, by at most **4.4e-16
+  relative** - and **ZERO of those differences survive `Math.fround`**, which
+  is the precision every one of these numbers is stored, uploaded and drawn at.
+  That is the argument, and it is worth making in that order: the naive
+  measurement ("do they differ") says yes and is the wrong question. Confirmed
+  end to end - 12 mesh digests (four structures x three cameras) identical, and
+  `paint_trace` 11 fixtures / 20,619 ops byte-identical, which is the harder of
+  the two because the 2D painter works in doubles all the way to the canvas.
+  **A HELPER, NOT AN INLINE EXPANSION.** `Math.sqrt((A)*(A) + ...)` evaluates
+  each argument TWICE, so a substitution over 127 sites would have had to prove
+  127 expressions side-effect-free. `len3(A, B, C)` evaluates them exactly once,
+  in order, which makes the transformation mechanical and the review trivial.
+  **What is NOT converted is the two-argument calls** - there are two, and they
+  get `len2` - and nothing outside `cartoon/`.
+
 - **AND THE SUITE'S FLAKES WERE ALL ONE THING: A CAP THAT FIRES DURING SETUP.**
   Three probes crossed a threshold on load rather than on a fault, and each
   reported the half-built page as a broken one. `tests/mobile_layout.py` loads
