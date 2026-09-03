@@ -2026,6 +2026,69 @@ public downloads is exercised on every run.
   needs no trig at all, and the whole function is 2.05% - so the best case is
   under half the floor, and a true result and a null would read the same.
 
+- 🔴 **A LIVE FRAME ALLOCATES ABOUT 9.5 KB PER FACE, AND THAT IS THE
+  NUMBER THE TRAJECTORY PATH IS LIMITED BY.** Every other measurement in this
+  file is TIME, and time here is bounded by a ~5% harness noise floor. Bytes
+  are not. Measured by driving `replaceFrame` on a moving structure - which is
+  the workload, not the cold build - with `--js-flags=--trace-gc` and summing
+  the heap's rise between one collection's end and the next one's start:
+
+  | 60 live frames | faces | allocated per frame | per face |
+  |---|---|---|---|
+  | 1TIM cartoon, no side chains | 4,367 | 37.0 MB | 8.5 KB |
+  | 1TIM cartoon + all side chains | 8,845 | 81.7 MB | 9.2 KB |
+  | 4HHB cartoon + all side chains | 12,381 | 123.8 MB | 10.0 KB |
+
+  **A FACE IS AN OBJECT OF ABOUT TWENTY FIELDS - CALL IT 300 BYTES - SO THE
+  GARBAGE IS THIRTY TIMES THE THING BEING BUILT.** It is not the face objects;
+  it is everything built around them per face and then dropped. And the rate is
+  flat across all three configurations, which says it is a per-face cost and
+  not a fixed overhead - the same shape of answer as the "flat 3 microseconds
+  per face" cost model, and this time it names a target.
+  **SIDE CHAINS ARE 55% OF IT**: 81.7 - 37.0 = 44.7 MB a frame on 1TIM, for
+  4,478 of the 8,845 faces. Which is what makes "show all side chains" during a
+  stream a different question from showing them on a static picture.
+  🔴 **AND THE SAMPLING HEAP PROFILER CANNOT ANSWER THIS. CALIBRATE IT AND
+  SEE.** `HeapProfiler.startSampling` is the obvious instrument and it is the
+  wrong one, in three ways that a real profile does not advertise. Against
+  known allocations:
+
+  | allocated inside the sampled window | reported |
+  |---|---|
+  | 400k objects x 8 fields, dropped | **0.0 MB** |
+  | the same, kept alive | 20.2 MB |
+  | **64 MB of `Float32Array`, kept alive** | **0.0 MB** |
+  | 400k arrays x 4, kept alive | 9.0 MB |
+
+  It reports only what SURVIVED, it is blind to typed-array backing stores, and
+  it attributes nothing to the allocating function. On a real trajectory it
+  confidently returned 45 KB a frame - against a true figure over a thousand
+  times larger - and put **`len3` top of the list at 12.1%**, a function that
+  allocates nothing at all. That last one is the tell, and the rule it teaches
+  is the file's oldest: **an instrument that cannot see a category will point
+  at whatever it can see.** Calibrate against a known quantity before believing
+  a ranking.
+  **AND `--trace-gc` IS A LOWER BOUND, WHICH IS WHY IT CARRIES ITS OWN CONTROL
+  IN THE SAME ISOLATE.** Fed a known 50 MB a frame it recovers **40-55%**, run
+  to run - so the numbers above are floors and the true allocation is roughly
+  double. The control has to run in the SAME PAGE: the renderer emits the trace
+  only sometimes, so a control in its own browser comes back empty and says
+  nothing about the run it was meant to validate. Compare arms, do not quote
+  absolutes.
+  `scratchpad/gcrate.py` is the instrument, `calib2.py` the calibration,
+  `traj.py` the timing, `heapnow.py` the peak.
+  🔴 **AND A PROBE THAT COPIES A FRAME WITH `JSON` DRAWS A BACKBONE AND SAYS
+  NOTHING.** A frame carries a `sidechains` table, and a JSON round trip
+  flattens it into something the renderer cannot materialise from - so
+  `showSidechains()` reports 494 residues in the set while the mesh builds ZERO
+  side-chain faces. Every side-chain measurement taken through one is a
+  measurement of a backbone. The tell is `positions`: showing side chains
+  APPENDS their atoms, so 494 becomes 2,272, and a probe that stays at 494 has
+  lost them. **A coord entry is `[x, y, z]`, an ARRAY** - a probe that rebuilds
+  it as `{x, y, z}` drops whatever else it carries and blanks the viewer
+  outright, which reads exactly like a renderer bug. Both of those cost a round
+  and both were caught by a control arm, not by inspection.
+
 - **AND THE SUITE'S FLAKES WERE ALL ONE THING: A CAP THAT FIRES DURING SETUP.**
   Three probes crossed a threshold on load rather than on a fault, and each
   reported the half-built page as a broken one. `tests/mobile_layout.py` loads
