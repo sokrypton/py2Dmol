@@ -28,6 +28,23 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
+// 🔴 THE SHIPPED CODE ASKS THE RENDERER FOR THE VIEW SCALE, AND THIS HARNESS
+// HANDS IT A STUB. cartoon/geom.js's render() calls
+// `renderer._viewportScale(w, h, object)`; a stub without it throws on the
+// first line of every chain, and the loop below CATCHES that and moves on -
+// so the probe reported "0 chains, 0 framed residues" and exited 0. Green,
+// measuring nothing. Fourth time a harness has had to learn about a new
+// callee (tests/smoke.js and tests/paint_trace.js carry the same three).
+// LIFTED from the source, never reimplemented: a second copy of this
+// arithmetic is exactly the convention the one-answer rule exists to stop.
+const L__ = require('./lift.js');
+const viewportScale = new Function(
+    'return function ' + L__.method('_viewportScale'))();
+const framingHalfSpan = new Function(
+    'return function ' + L__.method('_viewHalfSpan'))();
+global.halfSpanOf = new Function(
+    'return ' + L__.topFunction('halfSpanOf'))();
+
 const TRUTH = path.resolve(__dirname, 'out/na_truth.json');
 const SRC = process.argv[2]
     ? path.resolve(process.argv[2])
@@ -85,6 +102,8 @@ function mkRenderer(coords, names) {
             screenRadius: new Float64Array(n), screenValid: new Uint8Array(n),
             overlayState: { enabled: false },
             _calculateSegmentWidthMultiplier: () => 1,
+            _viewportScale: viewportScale,
+            _viewHalfSpan: framingHalfSpan,
             cartoonDetail: 4, cartoonThickness: 0.7,
             _naDebug: true,
         },
@@ -167,4 +186,17 @@ function mkRenderer(coords, names) {
     stats('rungturn', RUNG);
     console.log(`  twist reversals (frame steps backward inside a stem): ${reversals}/${steps}`
         + ` = ${(100 * reversals / Math.max(1, steps)).toFixed(1)}%`);
+    // 🔴 THIS IS A BENCH: it prints numbers and asserts none of them, so the
+    // only way it can fail is by crashing - and the render call above is
+    // wrapped in `catch { continue; }`, which turns a crash into a zero.
+    // It did: geom.js started asking the renderer for its view scale, the
+    // stub had no such method, every one of the 153 chains threw on its first
+    // line, and this printed "0 chains, 0 framed residues" and exited 0 for
+    // however many commits. A bench that measured nothing has to say so.
+    if (nChains === 0 || nRes === 0) {
+        console.log('FAIL na_frame: nothing rendered - the stub renderer is'
+            + ' missing something cartoon/geom.js now calls. Re-run with the'
+            + " catch in main() opened up to see the throw.");
+        process.exit(1);
+    }
 })();

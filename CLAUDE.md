@@ -2089,6 +2089,26 @@ public downloads is exercised on every run.
   outright, which reads exactly like a renderer bug. Both of those cost a round
   and both were caught by a control arm, not by inspection.
 
+- 🔴 **`tests/na_frame.js` HAD BEEN RENDERING NOTHING AND REPORTING IT AS
+  SUCCESS.** Its stub renderer has no `_viewportScale`, which `cartoon/geom.js`
+  started asking for when the view scale was consolidated - so all 153 chains
+  threw on the first line of `render()`, the loop's `catch { continue; }` ate
+  every one, and it printed `0 chains, 0 framed residues` and **exited 0**. The
+  suite said `node na_frame: ok`. It is the FOURTH harness to need a callee
+  lifted (`smoke.js` and `paint_trace.js` carry the same three:
+  `_viewportScale`, `_viewHalfSpan`, `halfSpanOf`) and the rule is unchanged -
+  **lift it from the source, never reimplement it.**
+  🔴 **AND A BENCH THAT ASSERTS NOTHING CAN ONLY FAIL BY CRASHING, so a
+  swallowed crash makes it unfailable.** `na_frame` prints statistics and
+  checks none of them; that is fine, but it must at least insist it MEASURED
+  something. `nChains === 0 || nRes === 0` now exits 1. Same family as "an
+  empty test file passes" and "the exit status counts, not just the word
+  FAIL" - the third time silence has been mistaken for a pass here.
+  The fixture it reads (`tests/out/na_truth.json`, 153 chains / 16,748
+  nucleotides) is not in the repo and is rebuilt with
+  `python3 tests/na_table.py --build`; it was a casualty of the working tree
+  being cleared, which is what made the failure visible at all.
+
 - 🔴 **A STICK THINNER THAN TWO PIXELS HAS NO INTERIOR TO SHOW, AND IT WAS
   BEING DRAWN AS A SIX-FACE SOLID ANYWAY.** Every measurement in this file
   before it is a way of doing the SAME work faster, and they are all now inside
