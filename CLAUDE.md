@@ -2615,6 +2615,45 @@ public downloads is exercised on every run.
   call updated Python, emitted nothing the browser could use, and was silently
   lost. Frame colours ride with the other per-object metadata now, as
   `frame_colors`, keyed by frame index.
+- 🔴 **AND THE PLAY BUTTON REPLACED THE ICON YOU WERE PRESSING, TEN TIMES A
+  SECOND.** Same family as the strip below, one element smaller. Reported as
+  *"the play button when pressed to stop does not always respond, I have to
+  click multiple times"* - and the handler is innocent: `togglePlay` is two
+  lines and works every time it runs. `updateUIControls` is called from the
+  frame-advance timer on EVERY TICK (100 ms at 1x, **25 ms at 4x**) and set
+  `playButton.innerHTML = '<i class="fa-solid fa-pause"></i>'` unconditionally,
+  which DESTROYS the `<i>` the pointer went down on and builds a fresh one.
+  **Chrome fires `click` only when mousedown and mouseup share a live common
+  ancestor**, so a tick landing between a human's press and release - about
+  100 ms, which is most of them - swallows the press outright. Probabilistic
+  for a reader, and it gets WORSE THE FASTER YOU PLAY, which is the tell that
+  it is the tick and not the handler.
+  **THE FIX WAS ALREADY WRITTEN EIGHT LINES BELOW IT.** The record button
+  assigns `icon.className` and mutates the element in place; only Play built a
+  new one. `_updateSpeedButtonLabel` had the same churn (`textContent` every
+  tick) and is guarded too - a text node is not a mouse target, so that one
+  was cosmetic, but two controls in a play strip should not differ on this.
+  `tests/play_stop.py` has two legs answering different questions. **IDENTITY**
+  is the mechanism and is deterministic - play, hold the `<i>`, let twelve
+  ticks pass, require the SAME NODE still in the document, no timing window to
+  flake on. **THE GESTURE** is the report - a real CDP `Input.dispatchMouseEvent`
+  press and release with a tick guaranteed to land between them, four times,
+  counting what the page swallowed (4 of 4 before, 0 of 4 after).
+  🔴 **AND A SCRIPTED `MouseEvent` WOULD HAVE PASSED AGAINST THE BUG.**
+  Dispatching mousedown/mouseup from page script does not go through the
+  browser's click synthesis at all, so it cannot see the rule this is about.
+  Real Input events are the only instrument for it - which is also why the
+  probe needs `Emulation.setDeviceMetricsOverride`: input is in VIEWPORT
+  coordinates, index.html puts the play strip at y = 950, and headless opens
+  at 469 high, so the first press landed on empty page and the probe reported
+  "the first press did not start playback" - a miss wearing a broken page's
+  clothes. It checks `elementFromPoint` at its own target now.
+  🔴 **AND THE FIRST RUN SCORED THE BUNDLE, NOT THE FIX.** It served
+  `index.html`, which loads `bundles/py2Dmol.web.min.js` - so it reported the
+  bug as still present after `src/core/mol.js` had been fixed. Browser probes
+  serve `dev.html` for exactly this reason (the rule is above); this one had to
+  learn it the same way.
+
 - 🔴 **A REBUILD OF THE SEQUENCE STRIP DESTROYS THE CANVAS THE POINTER IS OVER,
   SO NO `mouseleave` EVER ARRIVES.** The hover is a set of position indices -
   `hoverAtoms` here, `renderer.highlightedAtoms` there - and the ONLY thing

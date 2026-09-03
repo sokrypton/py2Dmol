@@ -2482,7 +2482,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         _updateSpeedButtonLabel() {
             if (!this.speedButton) return;
             const label = `${Math.round(100 / this.animationSpeed)}x`;
-            this.speedButton.textContent = label;
+            // ...and guarded like the play button above: this is called from
+            // updateUIControls, which the frame timer runs on every tick.
+            if (this.speedButton.textContent !== label) {
+                this.speedButton.textContent = label;
+            }
         }
 
         _cycleSpeed() {
@@ -5571,11 +5575,28 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const shouldDisableFrameControls = this.overlayState.enabled || (total <= 1);
 
             // Update play button - checkbox style (grey when off, blue when on)
+            //
+            // 🔴 THE ICON IS MUTATED, NEVER REPLACED, AND THAT IS WHAT MAKES THE
+            // BUTTON CLICKABLE WHILE IT PLAYS. This function is called from the
+            // frame-advance timer on EVERY tick - 100 ms at 1x, 25 ms at 4x -
+            // and it used to assign `innerHTML`, which destroys the <i> the
+            // pointer went down on and builds a fresh one. Chrome fires `click`
+            // only when mousedown and mouseup share a live common ancestor, so
+            // a tick landing between a human's press and release (about 100 ms,
+            // i.e. most of them) SWALLOWS THE PRESS ENTIRELY. Reported as the
+            // play button not always responding when you press it to stop, and
+            // needing several clicks - and it gets worse the faster you play,
+            // which is the tell that it is the tick and not the handler.
+            //
+            // The record button below has always done it this way (it assigns
+            // `icon.className`), which is why only Play had the fault.
             if (this.playButton) {
-                const hasIcon = this.playButton.querySelector('i');
-                if (hasIcon) {
+                const icon = this.playButton.querySelector('i');
+                if (icon) {
                     // Web version with Font Awesome - use icons
-                    this.playButton.innerHTML = this.isPlaying ? '<i class="fa-solid fa-pause"></i>' : '<i class="fa-solid fa-play"></i>';
+                    const want = this.isPlaying
+                        ? 'fa-solid fa-pause' : 'fa-solid fa-play';
+                    if (icon.className !== want) icon.className = want;
                     // Checkbox-style: change button class based on state
                     if (this.isPlaying) {
                         this.playButton.classList.remove('btn-secondary');
@@ -5585,9 +5606,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         this.playButton.classList.add('btn-secondary');
                     }
                 } else {
-                    // Use symbols for play/pause
-                    this.playButton.innerHTML = '';
-                    this.playButton.textContent = this.isPlaying ? '❚❚' : '▶︎';
+                    // Use symbols for play/pause. Guarded for the same reason:
+                    // assigning textContent replaces the text node every tick.
+                    const glyph = this.isPlaying ? '❚❚' : '▶︎';
+                    if (this.playButton.textContent !== glyph) {
+                        this.playButton.textContent = glyph;
+                    }
                 }
                 this.playButton.disabled = shouldDisableFrameControls;
             }
