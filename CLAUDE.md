@@ -1986,6 +1986,46 @@ public downloads is exercised on every run.
   **What is NOT converted is the two-argument calls** - there are two, and they
   get `len2` - and nothing outside `cartoon/`.
 
+- 🔴 **TWO THINGS THE PROFILER POINTED STRAIGHT AT AND NEITHER WAS THERE,
+  AND THE SECOND CLOSES A LOOPHOLE I USED TO REOPEN IT.** Both were measured
+  after the `len3` change above, both came back digest-identical on 12 digests,
+  and both were REVERTED because they could not be told from noise. The
+  measurements are here so the fourth attempt does not happen.
+  🔴 **A DECLARATION LINE IS NOT A FUNCTION'S ENTRY COST.** `lines.py` put
+  **11.0 ms of `addEdge`'s 29.2** on the line that declares it, and the obvious
+  reading is prologue - fifteen arguments pushed 350,000 times a build. So nine
+  of them, which are the FACE'S and not the edge's, moved to slots set once per
+  face and `addEdge` went to six arguments. The ticks at the declaration line
+  vanished exactly as predicted; **`addEdge`'s total went 9.39% to 9.02%**, and
+  the 11 ms reappeared on the lines that do the work (`edgeMap.get` 4.99 ->
+  7.24, the chain walk 3.75 -> 6.92). It was attribution drift, not a cost. The
+  A/B read -3.1% on the total with a control that should be zero reading
+  **-2.7%**, which is the measurement saying it has nothing to report.
+  🔴 **AND THE EDGE MAP IS NOT THE COST OF BEING A `Map`.** This file already
+  records an open-addressed table over typed arrays as a null result - and I
+  reopened it, on what looked like a sound argument: that measurement was taken
+  when a build was **740 ms**, where 17 ms is 2.3% and invisible, and a build
+  is **140 ms** now, where the same 17 ms is 12%. The line profile agreed,
+  putting 7.24 ms on `edgeMap.get(lo)` alone. Written as a bucket table indexed
+  by the low bits of the hash - keeping `gN++` so the groups are still numbered
+  in first-seen order, which is the one thing that table may not change - it
+  measured **-3.6% on the mesh with a -3.7% control**. Null a third time, now
+  at a quarter of the size where it was first null.
+  **WHAT THAT MEANS IS THAT THE COST IS THE ACCESS PATTERN, NOT THE MACHINERY.**
+  Both tables are random probes into a structure far larger than L2, one per
+  edge of every face; a typed array probes it exactly as randomly as a `Map`
+  does. The remaining candidate is to stop ASKING - a stick is a prism whose
+  faces share edges by construction, and 80% of a side-chain build's faces are
+  sticks - which is a change to what `cartoon/geom.js` hands over, not to how
+  `paintgl.js` looks things up.
+  **AND THE NOISE FLOOR IS THE RESULT TOO.** Six counterbalanced rounds, minimum
+  of nine builds, put the untouched control at 2.7-3.7% on 1AOI. **Nothing worth
+  under about 5% can be demonstrated by this harness at this size**, which is
+  what retires the micro-allocation lane rather than any one of these attempts:
+  `stickFrame`'s `cos(2*atan2(y, x))` is exactly `(x*x - y*y) / (x*x + y*y)` and
+  needs no trig at all, and the whole function is 2.05% - so the best case is
+  under half the floor, and a true result and a null would read the same.
+
 - **AND THE SUITE'S FLAKES WERE ALL ONE THING: A CAP THAT FIRES DURING SETUP.**
   Three probes crossed a threshold on load rather than on a fault, and each
   reported the half-built page as a broken one. `tests/mobile_layout.py` loads
