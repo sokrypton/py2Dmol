@@ -73,6 +73,14 @@
     border: 1px solid var(--line); border-radius: 5px; background: #fff; color: inherit;
   }
   .row.pair > input { flex: 1 1 0; }
+  /* A SWITCH SAYS WHAT TICKING IT DOES. Two of these were dropdowns whose
+     two entries were "on" and "off" written out - "Biological assembly / As
+     deposited" is a yes-or-no question wearing a menu's clothes. */
+  .check { display: flex; align-items: center; gap: 7px; margin-bottom: 6px;
+           cursor: pointer; }
+  .check:last-child { margin-bottom: 0; }
+  .check > input { width: 14px; height: 14px; margin: 0; flex: 0 0 auto;
+                   accent-color: var(--accent); cursor: pointer; }
   button {
     font: inherit; height: 30px; padding: 0 14px; border-radius: 6px;
     border: 1px solid var(--line); background: #fff; color: inherit; cursor: pointer;
@@ -134,22 +142,20 @@
          or one protomer of it - and it is answered before anything is drawn,
          so it belongs beside the files rather than beside the DPI. -->
     <div class="card">
-      <div class="row"><label for="biounit">Assembly</label>
-        <select id="biounit">
-          <option value="1">Biological assembly</option>
-          <option value="0">As deposited</option>
-        </select></div>
+      <label class="check" for="biounit"
+             title="Build the whole complex from the file's symmetry records - the trimer rather than one protomer of it. Off: exactly the chains the file deposits.">
+        <input type="checkbox" id="biounit" checked>
+        Build the biological assembly</label>
       <!-- EVERY FILE IS ORIENTED, and it always was - load() turns each
            structure to face the reader, which is what makes a folder of
            unrelated proteins come out as a folder of pictures rather than of
            crystal settings. The switch is for the other case: a series of
            ALIGNED structures, where the point is that they are in the same
            frame and re-orienting each one throws that away. -->
-      <div class="row" style="margin:0"><label for="orient">View</label>
-        <select id="orient">
-          <option value="best">Best view, each</option>
-          <option value="keep">Keep this view</option>
-        </select></div>
+      <label class="check" for="bestview"
+             title="Turn each structure to face you as it loads. Off: keep the view you have set here, which is what a set of already-aligned structures wants.">
+        <input type="checkbox" id="bestview" checked>
+        Turn each to its best view</label>
     </div>
 
     <div class="card">
@@ -173,15 +179,14 @@
         </select></div>
       <div class="row"><label for="dpi">DPI</label>
         <input id="dpi" type="number" min="36" max="1200" step="6" value="150"></div>
-      <div class="row pair"><label>Size</label>
+      <div class="row pair"><label>Size (px)</label>
         <input id="w" type="number" min="80" max="2000" step="20" value="500" aria-label="width">
         <input id="h" type="number" min="80" max="2000" step="20" value="500" aria-label="height">
       </div>
-      <div class="row"><label for="bg">Ground</label>
-        <select id="bg">
-          <option value="clear">Cut out</option>
-          <option value="paper">The viewer's</option>
-        </select></div>
+      <label class="check" for="transparent"
+             title="Save the picture with nothing behind the structure, so it drops onto any colour of slide or page. Off: the viewer's own background is painted in.">
+        <input type="checkbox" id="transparent" checked>
+        Transparent background</label>
       <p class="hint" id="outHint"></p>
     </div>
   </div>
@@ -192,8 +197,8 @@
       <div id="viewer"></div>
       <p class="hint" id="previewName">Drop a structure to begin.</p>
       <p class="hint">Every setting beside the canvas is the viewer's own, and
-         every file is rendered exactly as you see it here &mdash; at the size
-         and ground chosen on the left. Drag the structure to turn it.</p>
+         each file is rendered exactly as you see it here, at the size and
+         background chosen on the left. Drag the structure to turn it.</p>
     </div>
   </div>
 </main>
@@ -207,7 +212,8 @@
     let viewer = null;           // ONE renderer, for the preview and the batch
     let busy = false, stopped = false;
 
-    const OPT_IDS = ['format', 'dpi', 'w', 'h', 'bg', 'biounit', 'orient'];
+    const OPT_IDS = ['format', 'dpi', 'w', 'h', 'transparent',
+                     'biounit', 'bestview'];
     const OBJECT = 'structure';  // one object, replaced per file
 
     function size() {
@@ -222,12 +228,12 @@
             // ONE CONTROL, ONE FLAG. A menu saying "the viewer's" while the
             // file comes out cut out is two answers to one question - so the
             // preview is switched to match at the same moment.
-            transparent: $('bg').value === 'clear',
+            transparent: $('transparent').checked,
             dataUrl: true,
         };
     }
 
-    function parseOpts() { return { biounit: $('biounit').value === '1' }; }
+    function parseOpts() { return { biounit: $('biounit').checked }; }
 
     function say(msg, bad) {
         const s = $('status');
@@ -400,7 +406,7 @@
         // the object, and an object's rotation is its own, so without the
         // second half "keep" would hand back the file's deposited frame -
         // which is a third answer nobody asked for.
-        const keep = $('orient').value === 'keep';
+        const keep = !$('bestview').checked;
         const rot = (keep && viewer)
             ? viewer.viewerState.rotation.map((r) => r.slice()) : null;
         if (!viewer) {

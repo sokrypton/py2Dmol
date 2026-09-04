@@ -164,7 +164,9 @@ def main():
               el.dispatchEvent(new Event('change', { bubbles: true }));
             };
             set('w', 200); set('h', 200); set('dpi', 96); set('format', 'png');
-            set('bg', 'clear');
+            const t = document.getElementById('transparent');
+            t.checked = true;
+            t.dispatchEvent(new Event('change', { bubbles: true }));
             return true;
         })()""")
         time.sleep(0.4)
@@ -188,13 +190,13 @@ def main():
         # 🔴 THE PAPER MENU IS THE ONE CONTROL, and `transparent` is derived
         # from it - two controls would be two answers to one question.
         cdp.evaluate(ws, """(() => {
-            const el = document.getElementById('bg');
-            el.value = 'paper';
+            const el = document.getElementById('transparent');
+            el.checked = false;
             el.dispatchEvent(new Event('change', { bubbles: true }));
             return true; })()""")
         time.sleep(0.4)
         check(cdp.evaluate(ws, 'py2dmolBatch.imageOpts().transparent')
-              is False, 'choosing the viewer\'s ground turns the cut-out off')
+              is False, 'unticking Transparent background turns the cut-out off')
         papered = cdp.evaluate(ws, IMAGE, True)[0]
         check(papered['ink'] == papered['px'],
               'and every pixel is painted: %d of %d'
@@ -213,10 +215,10 @@ def main():
         })()"""
         lit = cdp.evaluate(ws, corner)
         check(lit['alpha'] == 255 and not lit['checker'],
-              "the preview paints the viewer's ground: %r" % (lit,))
+              "the preview paints the background: %r" % (lit,))
         cdp.evaluate(ws, """(() => {
-            const el = document.getElementById('bg');
-            el.value = 'clear';
+            const el = document.getElementById('transparent');
+            el.checked = true;
             el.dispatchEvent(new Event('change', { bubbles: true }));
             return true; })()""")
         time.sleep(0.4)
@@ -295,19 +297,20 @@ def main():
         (async () => {
           const B = window.py2dmolBatch;
           const rot = () => JSON.stringify(B.viewer.viewerState.rotation);
-          const set = (v) => { const el = document.getElementById('orient');
-            el.value = v; el.dispatchEvent(new Event('change', { bubbles: true })); };
+          const set = (best) => { const el = document.getElementById('bestview');
+            el.checked = best;
+            el.dispatchEvent(new Event('change', { bubbles: true })); };
           // a rotation nobody's best view would land on
           const mine = [[0, 1, 0], [0, 0, 1], [1, 0, 0]];
-          set('keep');
+          set(false);
           B.viewer.viewerState.rotation = mine.map((r) => r.slice());
           await B.preview(1);
           const kept = rot();
-          set('best');
+          set(true);
           B.viewer.viewerState.rotation = mine.map((r) => r.slice());
           await B.preview(0);
           const oriented = rot();
-          set('keep');
+          set(true);
           return { mine: JSON.stringify(mine), kept, oriented };
         })()""", True)
         check(view['kept'] == view['mine'],

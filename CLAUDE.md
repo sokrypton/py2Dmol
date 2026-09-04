@@ -1027,6 +1027,14 @@ public downloads is exercised on every run.
   `window.py2dmolBatch` is the door `tests/render_page.py` drives, and the probe
   drops REAL `File` objects through a real `drop` event, because that is the
   page's only entrance.
+  **A YES-OR-NO QUESTION IS A SWITCH, AND ITS LABEL SAYS WHAT TICKING IT
+  DOES.** Three of these were dropdowns whose two entries were "on" and "off"
+  written out - *Assembly: Biological assembly / As deposited* is a menu's
+  clothes on a checkbox - and one of them, `Ground: Cut out / The viewer's`,
+  was a word I made up for the background. They are `Build the biological
+  assembly`, `Turn each to its best view` and `Transparent background`, each
+  with the sentence explaining the OFF case in its title. What stayed a menu is
+  the one question with more than two answers (Format) and the two numbers.
   **EVERY FILE IS ORIENTED, AND THE SWITCH IS FOR WHEN THAT IS WRONG.**
   `load()` turns each structure to face the reader, so a folder of unrelated
   proteins comes out as pictures rather than as crystal settings - and that is
