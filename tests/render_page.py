@@ -245,10 +245,16 @@ def main():
                      style: !!box.querySelector('#styleSelect'),
                      color: !!box.querySelector('#colorSelect'),
                      detail: !!box.querySelector('#detailSlider'),
-                     orient: !!box.querySelector('#orientButton') };
+                     // ...OPEN, and with the toolbar gone: the panel is the
+                     // whole of what this page borrows from the shell.
+                     open: !box.querySelector('#stylePanel').hidden,
+                     noToolbar: !box.querySelector('#styleToggle')
+                                && !box.querySelector('#saveImageButton'),
+                     // Sele marks a selection and nothing here can make one.
+                     noDeadRow: !box.querySelector('#selectionMarkSelect') };
         })()""")
         check(all(panel.values()),
-              'the shipped Style panel is mounted in the preview: %r' % (panel,))
+              'the shipped Style panel is mounted, open, and alone: %r' % (panel,))
 
         was = cdp.evaluate(ws, """(() => {
             const box = document.getElementById('viewer');

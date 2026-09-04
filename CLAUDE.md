@@ -1027,6 +1027,16 @@ public downloads is exercised on every run.
   `window.py2dmolBatch` is the door `tests/render_page.py` drives, and the probe
   drops REAL `File` objects through a real `drop` event, because that is the
   page's only entrance.
+  **AND WHAT IT SHOWS IS THE PANEL, OPEN, AND NOTHING ELSE.** The shell puts
+  six buttons above it - Orient, Focus, Rotate, Style, Clip, Capture - and they
+  are the viewer's toolbar rather than a look: Capture saves ONE picture where
+  this page saves all of them, Clip wants a selection, Rotate is for a viewer
+  you sit and watch. They are REMOVED, not hidden, so there is no state to get
+  wrong, and the panel is opened once. Picking is off with them (a stray click
+  on the preview would put a highlight in every exported picture), which is why
+  the `Sele` row goes too: it says how a selection is MARKED and nothing here
+  can make one - the "a control that cannot do anything is worse than no
+  control" rule, applied to a control we borrowed rather than one we wrote.
   🔴 **THE VIEWER IS BUILT ONCE AND EVERY FILE IS SWAPPED IN WITH `load()`, AND
   THAT IS WHAT MAKES THE LOOK STICK.** The page mounts the shell with
   `controls: true`, so the LOOK is the shipped Style panel's - all forty

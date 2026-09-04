@@ -180,10 +180,9 @@
       <h2>Preview &mdash; and the look</h2>
       <div id="viewer"></div>
       <p class="hint" id="previewName">Drop a structure to begin.</p>
-      <p class="hint">Set the look here and every file is rendered the same way:
-         <b>Style</b> opens the full panel, and Orient, Clip, Focus and the
-         colour menus all work as they do in the viewer. This canvas is the
-         export, at the size and ground chosen on the left.</p>
+      <p class="hint">Every setting beside the canvas is the viewer's own, and
+         every file is rendered exactly as you see it here &mdash; at the size
+         and ground chosen on the left. Drag the structure to turn it.</p>
     </div>
   </div>
 </main>
@@ -301,6 +300,39 @@
               + ' px per image.';
     }
 
+    /** THE PANEL, OPEN, AND NOTHING ELSE.
+     *
+     *  The shell puts six buttons above the Style panel - Orient, Focus,
+     *  Rotate, Style, Clip, Capture - and they are the viewer's toolbar, not
+     *  a look: Capture saves one picture where this page saves all of them,
+     *  Clip wants a selection, and Rotate is for a viewer you sit and watch.
+     *  What is left is the panel itself, so it is opened once and the button
+     *  that opens it goes with the rest.
+     *
+     *  REMOVED RATHER THAN HIDDEN, so there is no state to get wrong: nothing
+     *  can reopen a panel that is already open or press a button that is not
+     *  there. wireViewerUI keeps its own references and goes on writing to
+     *  them, which is harmless - a detached node takes an attribute as
+     *  happily as an attached one.
+     */
+    function styleOptionsOnly() {
+        const box = $('viewer');
+        const panel = box.querySelector('#stylePanel');
+        if (panel) panel.hidden = false;
+        box.querySelectorAll('#rightPanelContainer .btn-row')
+           .forEach((row) => row.remove());
+        const sel = box.querySelector('#selectionPanelMount');
+        if (sel) sel.remove();
+        // ...AND THE ONE ROW THAT NOW MEANS NOTHING. Sele says how a selected
+        // residue is MARKED, and nothing here can select one: picking is off,
+        // because a stray click on the preview would put a highlight in every
+        // exported picture. A control that cannot do anything is worse than no
+        // control - this file's oldest rule, applied to a control we borrowed
+        // rather than one we wrote.
+        const mark = box.querySelector('#selectionMarkSelect');
+        if (mark) (mark.closest('.half') || mark.parentNode).remove();
+    }
+
     /** DETAIL OPENS AT THE MAXIMUM, where the panel's own default is 4.
      *  The slider is subdivisions per residue and it is close to linear in
      *  both faces and time - the reason to default it low is a viewer being
@@ -360,10 +392,11 @@
             // resolves to, under the name the flat API uses.
             viewer = window.py2Dmol.show($('viewer'), text, {
                 width: w, height: h, controls: true, play: false,
-                select: true, orient: true, style: 'richardson',
+                select: false, orient: true, style: 'richardson',
                 biounit: parseOpts().biounit,
             });
             applySize();
+            styleOptionsOnly();
             openAtFullDetail();
         } else {
             viewer.load(text, OBJECT, true, parseOpts());
