@@ -1136,6 +1136,39 @@ public downloads is exercised on every run.
   rename broke it - correctly, and it is the one check that would have caught
   the offset being dropped. A text-scanning test is a pointer like any other.
 
+- 🔴 **A ROTATED RING PASS MAY ADD SECONDARY STRUCTURE AND NEVER TAKE IT
+  AWAY - UNLESS THE RING IS THE WHOLE STRUCTURE.** `assignSecondary` handles
+  a head-to-tail closure by re-assigning the ring under several rotations and
+  keeping, per residue, the pass whose artificial break was furthest away.
+  Those passes run on the RING ALONE, which is what keeps the cost off a big
+  complex holding one small ring - and the file's own comment conceded they
+  cannot see a bond to another chain, on the reasoning that their result is
+  only USED near the seam. **That reasoning is wrong**: the margin rule lets
+  a rotated pass win wherever its margin beats pass 0's, which on a SHORT
+  ring is nearly everywhere. `ladders` was already a union across passes;
+  `sec` was an overwrite, so a context-free pass beat a fully-informed one.
+  Measured on a 14-residue cyclic peptide bound to GABARAP: two clean
+  five-residue strands, `CEEEEECCEEEEEC`, came back as `CEECEECCEECCEC` the
+  moment the ring was closed - the strands are to the PARTNER. **Reported as
+  the secondary structure getting worse when the Cyclic box is ticked.**
+  A break DESTROYS evidence and cannot create any, so a rotation that finds
+  MORE has found what the seam hid and a rotation that finds LESS has proved
+  nothing. **Except when the ring IS the structure** (`span === n`), where
+  the rotated pass sees everything pass 0 saw and its coil is a real finding:
+  refusing there unconditionally costs **1.1 points of seam Q3** across the
+  24 isolated rings of `tests/cyclic_bench.js`, which is the case that whole
+  mechanism was built for.
+  🔴 **AND THE TWO HALVES NEED TWO TESTS, ONE OF WHICH DID NOT ASSERT.**
+  `tests/cyclic_partner.js` is the refusal - a ring bound to something,
+  requiring that closing it loses no structure - and `cyclic_bench.js` is the
+  exception, which it could not guard because it only PRINTED. It has a seam
+  and an overall floor now, the same lesson as `tests/na_frame.js`. *The
+  first version of that floor multiplied a percentage by 100 and read a field
+  called `q3` that is called `all`, so it compared 8590 against 86 and NaN
+  against 88 and could never fail - caught only by mutating the code it was
+  meant to guard.*
+  **AND THE FIXTURE IS INLINE**, because `*.pdb` AND `tests/*.json` are both
+  gitignored: a test whose input is not tracked is a test nobody else can run.
 - 🔴 **THE PAE PANEL WAS NEVER ABOUT PAE. IT IS AN N x N MAP OVER RESIDUES
   WITH A DRAG ON IT, AND ONLY TWO THINGS IN IT KNEW WHAT THE NUMBERS MEANT.**
   The drag, the cells/residues crossings, the chain rules, the dim mask, the

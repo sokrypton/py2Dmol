@@ -1920,6 +1920,9 @@ function assignSecondary(coords, n, positionTypes, opts) {
     for (const [lo, hi] of rings) {
         const span = hi - lo + 1;
         if (span < 5) continue;
+        // Does this ring's own pass see everything pass 0 saw? Only then is
+        // a coil it reports evidence rather than an absence of evidence.
+        const ringIsWhole = (span === n);
         // Enough rotations that every residue gets one where the break is a
         // full neighbourhood away. Cost is passes * span, independent of
         // how big the rest of the structure is, so this can be generous.
@@ -1948,7 +1951,44 @@ function assignSecondary(coords, n, positionTypes, opts) {
             for (let q = 0; q < span; q++) {
                 const m = Math.min(q, span - 1 - q);
                 const g = back[q];
-                if (m > margin[g - lo]) { margin[g - lo] = m; sec[g] = res.sec[q]; }
+                if (m <= margin[g - lo]) continue;
+                // 🔴 A ROTATION MAY ADD STRUCTURE, NEVER TAKE IT AWAY.
+                //
+                // An artificial break DESTROYS evidence - it cuts the i to
+                // i+4 bonds of a helix and the continuity a ladder is read
+                // along - so a rotation that finds MORE has found what the
+                // old seam hid, and that is the whole point of rotating.
+                // A rotation that finds LESS has not disproved anything: it
+                // ran on the ring's residues ALONE, so it cannot see a bond
+                // to any other chain, and pass 0 could.
+                //
+                // That asymmetry was the bug. `ladders` was already a union
+                // across passes; `sec` was an overwrite, so a context-free
+                // pass beat a fully-informed one wherever its margin was
+                // larger - which on a SHORT ring is nearly everywhere.
+                // Measured on a 14-residue cyclic peptide bound to GABARAP:
+                // two clean five-residue strands, CEEEEECCEEEEEC, came back
+                // as CEECEECCEECCEC the moment the ring was closed. The
+                // strands are to the PARTNER, which the ring pass cannot
+                // see. Reported as the SS getting worse when Cyclic is
+                // ticked.
+                //
+                // The margin is left alone on a refusal, so a later pass
+                // that does find structure there can still take it.
+                //
+                // ...AND THE REFUSAL IS ONLY RIGHT WHEN THE PASS IS LESS
+                // INFORMED. When the ring IS the whole structure - which is
+                // the ordinary case for a cyclic peptide on its own - the
+                // rotated pass sees exactly what pass 0 saw, so a coil it
+                // reports is a real finding and refusing it throws away the
+                // correction the rotation exists to make. Measured on
+                // tests/cyclic_bench.js: refusing unconditionally costs
+                // 1.1 points of seam Q3 across 24 isolated rings, and
+                // allowing it there keeps 87.0% while the GABARAP peptide
+                // above stays whole.
+                if (!ringIsWhole && sec[g] !== 'C' && res.sec[q] === 'C') continue;
+                margin[g - lo] = m;
+                sec[g] = res.sec[q];
             }
             for (const pair of (res.ladders || [])) {
                 const a = back[pair[0]];

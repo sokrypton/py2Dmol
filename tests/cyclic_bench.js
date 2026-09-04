@@ -170,6 +170,34 @@ function main() {
     console.log(`\nseam delta: ${d >= 0 ? '+' : ''}${d.toFixed(1)} points `
         + `(${rows[0].nSeam} seam residues scored)`);
 
+    // 🔴 A FLOOR, BECAUSE A BENCH THAT ASSERTS NOTHING CAN ONLY FAIL BY
+    // CRASHING - the rule this file already learnt as tests/na_frame.js.
+    // The numbers here are 88.7% overall and 87.0% at the seam; the floors
+    // are set below those with room for a real improvement to move them and
+    // not so low that a regression slips under. What they guard is the
+    // exception in assignSecondary that lets a rotated pass report coil when
+    // the ring IS the whole structure: removing it drops the seam to 85.9%,
+    // and nothing else in the suite would have noticed. Its other half - a
+    // ring bound to a partner, where that same downgrade must be refused -
+    // is tests/cyclic_partner.js.
+    const SEAM_FLOOR = 86.0;
+    const OVERALL_FLOOR = 88.0;
+    // `q3()` already returns PERCENT and the field is `all`, not `q3` - the
+    // first version of this check multiplied by 100 and read an undefined
+    // field, so it compared 8590 against 86 and NaN against 88 and could
+    // never fail. Read the same fields the table above prints.
+    const cyc = rows[1];
+    if (cyc.seam < SEAM_FLOOR) {
+        console.log(`FAIL cyclic_bench: seam Q3 ${cyc.seam.toFixed(1)}%`
+            + ` is below the ${SEAM_FLOOR}% floor`);
+        process.exitCode = 1;
+    }
+    if (cyc.all < OVERALL_FLOOR) {
+        console.log(`FAIL cyclic_bench: overall Q3 ${cyc.all.toFixed(1)}%`
+            + ` is below the ${OVERALL_FLOOR}% floor`);
+        process.exitCode = 1;
+    }
+
     // CONTROL: a ring has no canonical first residue, so cutting it somewhere
     // else must give the same answer rotated. Cuts are taken in the MIDDLE of a
     // secondary-structure element, which is where a linear assigner is worst -
