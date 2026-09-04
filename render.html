@@ -129,11 +129,23 @@
       <input id="picker" type="file" multiple accept=".pdb,.cif,.mmcif,.ent,.zip" hidden>
     </div>
 
+    <!-- WITH THE INPUT, NOT THE OUTPUT. Whether to build the biological
+         assembly is a question about what is READ out of the file - a trimer
+         or one protomer of it - and it is answered before anything is drawn,
+         so it belongs beside the files rather than beside the DPI. -->
+    <div class="card">
+      <div class="row" style="margin:0"><label for="biounit">Assembly</label>
+        <select id="biounit">
+          <option value="1">Biological assembly</option>
+          <option value="0">As deposited</option>
+        </select></div>
+    </div>
+
     <div class="card">
       <h2>Files <span id="count" style="color:var(--muted);font-weight:400"></span></h2>
       <ul id="files"></ul>
       <div class="actions">
-        <button id="go" class="primary" disabled>Render all &amp; save</button>
+        <button id="go" class="primary" disabled>Render</button>
         <button id="stop" disabled>Stop</button>
         <button id="clear" disabled>Clear</button>
       </div>
@@ -158,11 +170,6 @@
         <select id="bg">
           <option value="clear">Cut out</option>
           <option value="paper">The viewer's</option>
-        </select></div>
-      <div class="row"><label for="biounit">Assembly</label>
-        <select id="biounit">
-          <option value="1">Biological assembly</option>
-          <option value="0">As deposited</option>
         </select></div>
       <p class="hint" id="outHint"></p>
     </div>
@@ -220,24 +227,69 @@
 
     function baseName(n) { return n.replace(/\.[^.]+$/, ''); }
 
-    function refreshList() {
+    // 🔴 THE LIST IS BUILT ONCE AND MUTATED AFTERWARDS. Rebuilding it to
+    // change one file's status is O(n) per file and so O(n^2) over a run - at
+    // a thousand files that is a million nodes created to write the word
+    // "done" a thousand times, and the page stops answering. It is the same
+    // rule the play button had to learn: a rebuild also destroys the row the
+    // pointer is over, so a click during a render went nowhere.
+    const rows = [];             // one {li, st} per file, in file order
+
+    function rowFor(i) {
+        const f = files[i];
+        const li = document.createElement('li');
+        li.setAttribute('aria-current', 'false');
+        const nm = document.createElement('span');
+        nm.className = 'nm';
+        nm.textContent = f.name;
+        nm.title = f.name;
+        const st = document.createElement('span');
+        st.className = 'st';
+        li.appendChild(nm);
+        li.appendChild(st);
+        li.onclick = () => preview(i);
+        return { li, st };
+    }
+
+    /** Append the rows that have no node yet - a drop of a thousand builds a
+     *  thousand rows once, and a second drop builds only its own. */
+    function growList() {
         const ul = $('files');
-        ul.innerHTML = '';
-        files.forEach((f, i) => {
-            const li = document.createElement('li');
-            li.setAttribute('aria-current', i === current ? 'true' : 'false');
-            const nm = document.createElement('span');
-            nm.className = 'nm';
-            nm.textContent = f.name;
-            const st = document.createElement('span');
-            st.className = 'st' + (f.status === 'failed' ? ' bad'
-                : f.status === 'done' ? ' good' : '');
-            st.textContent = f.status || '';
-            li.appendChild(nm);
-            li.appendChild(st);
-            li.onclick = () => preview(i);
-            ul.appendChild(li);
-        });
+        const frag = document.createDocumentFragment();
+        for (let i = rows.length; i < files.length; i++) {
+            const r = rowFor(i);
+            rows.push(r);
+            frag.appendChild(r.li);
+        }
+        ul.appendChild(frag);
+        syncControls();
+    }
+
+    function markRow(i) {
+        const r = rows[i];
+        if (!r) return;
+        const f = files[i];
+        r.st.textContent = f.status || '';
+        r.st.className = 'st' + (f.status === 'failed' ? ' bad'
+            : f.status === 'done' ? ' good' : '');
+    }
+
+    function markCurrent(i) {
+        rows.forEach((r, k) => r.li.setAttribute('aria-current',
+            k === i ? 'true' : 'false'));
+        // ...and it is brought into view, because with a thousand files the
+        // one being worked on is usually off the bottom of the box.
+        if (rows[i]) rows[i].li.scrollIntoView({ block: 'nearest' });
+    }
+
+    function clearList() {
+        $('files').innerHTML = '';
+        rows.length = 0;
+        files.length = 0;
+        syncControls();
+    }
+
+    function syncControls() {
         $('count').textContent = files.length ? '(' + files.length + ')' : '';
         $('go').disabled = busy || !files.length;
         $('clear').disabled = busy || !files.length;
@@ -247,6 +299,22 @@
             ? 'SVG is vector - the DPI does not apply to it.'
             : Math.round(w * o.dpi / 96) + ' x ' + Math.round(h * o.dpi / 96)
               + ' px per image.';
+    }
+
+    /** DETAIL OPENS AT THE MAXIMUM, where the panel's own default is 4.
+     *  The slider is subdivisions per residue and it is close to linear in
+     *  both faces and time - the reason to default it low is a viewer being
+     *  dragged around, and nothing here is: every picture this page makes is
+     *  a still, rendered once, to be looked at afterwards.
+     *
+     *  Driven through the CONTROL rather than by assigning the field, so the
+     *  panel says what the renderer is doing - a control showing something
+     *  the viewer is not doing is worse than no control. */
+    function openAtFullDetail() {
+        const sl = $('viewer').querySelector('#detailSlider');
+        if (!sl) return;
+        sl.value = sl.max;
+        sl.dispatchEvent(new Event('input', { bubbles: true }));
     }
 
     /** The ground, on the picture as well as in the file. */
@@ -283,20 +351,22 @@
      *  first one. */
     async function draw(i) {
         const [w, h] = size();
+        const text = await files[i].read();
         if (!viewer) {
             // OPENS ON A CARTOON, where the library's own default is the
             // tube: this page exists to make figures, and the panel's Style
             // menu is one click away for anyone who wants the trace.
             // `richardson` is the flat cartoon - the same look `cartoon`
             // resolves to, under the name the flat API uses.
-            viewer = window.py2Dmol.show($('viewer'), files[i].text, {
+            viewer = window.py2Dmol.show($('viewer'), text, {
                 width: w, height: h, controls: true, play: false,
                 select: true, orient: true, style: 'richardson',
                 biounit: parseOpts().biounit,
             });
             applySize();
+            openAtFullDetail();
         } else {
-            viewer.load(files[i].text, OBJECT, true, parseOpts());
+            viewer.load(text, OBJECT, true, parseOpts());
         }
         applyGround();
         await settle();
@@ -306,7 +376,7 @@
     async function preview(i) {
         if (busy || !files.length) return;
         current = Math.max(0, Math.min(files.length - 1, i));
-        refreshList();
+        markCurrent(current);
         $('previewName').textContent = files[current].name;
         try {
             await draw(current);
@@ -331,7 +401,8 @@
             if (stopped) break;
             current = i;
             files[i].status = '...';
-            refreshList();
+            markRow(i);
+            markCurrent(i);
             try {
                 made.push(await renderOne(i));
                 files[i].status = 'done';
@@ -339,7 +410,7 @@
                 files[i].status = 'failed';
                 say(files[i].name + ': ' + e.message, true);
             }
-            refreshList();
+            markRow(i);
             if (onEach) onEach(i + 1, files.length);
         }
         return made;
@@ -396,15 +467,26 @@
         bar.style.width = '0';
         $('bar').classList.remove('on');
         busy = false; $('stop').disabled = true;
-        refreshList();
+        syncControls();
     }
 
     // ---- getting files in -------------------------------------------------
 
     const STRUCT = /\.(pdb|cif|mmcif|ent|pdb1|txt)$/i;
 
+    // 🔴 A FILE IS A NAME AND A WAY TO READ IT, not its text. A thousand
+    // structures held as strings is a gigabyte of heap for something the
+    // browser already has on disk - and reading them all up front is a wait
+    // before anything is on screen. `read` is called when a file is actually
+    // drawn; a File can be read as often as you like, and a zip entry stays
+    // compressed until asked. It is the shape src/app/main.js already takes
+    // (`{name, readAsync}`), for the same reason.
+    function addFile(name, read) {
+        files.push({ name, read, status: '' });
+    }
+
     function addText(name, text) {
-        files.push({ name, text, status: '' });
+        addFile(name, () => Promise.resolve(text));
     }
 
     async function ingest(list) {
@@ -420,15 +502,16 @@
                     (n) => STRUCT.test(n) && !zip.files[n].dir
                         && !/(^|\/)__MACOSX\//.test(n)).sort();
                 for (const n of names) {
-                    addText(n.split('/').pop(), await zip.files[n].async('string'));
+                    const entry = zip.files[n];
+                    addFile(n.split('/').pop(), () => entry.async('string'));
                     added++;
                 }
             } else if (STRUCT.test(f.name)) {
-                addText(f.name, await f.text());
+                addFile(f.name, () => f.text());
                 added++;
             }
         }
-        refreshList();
+        growList();
         if (added && current < 0) await preview(0);
         else if (!added) say('nothing there looked like a structure', true);
         return added;
@@ -453,28 +536,30 @@
     $('go').onclick = go;
     $('stop').onclick = () => { stopped = true; say('stopping...'); };
     $('clear').onclick = () => {
-        files.length = 0; current = -1;
+        clearList();
+        current = -1;
         $('previewName').textContent = 'Drop a structure to begin.';
-        say(''); refreshList();
+        say('');
     };
     // A CHANGE APPLIES TO WHAT IS ON SCREEN, and none of these rebuilds the
     // viewer: the size moves the box, the ground repaints, and the assembly
     // needs the file parsed again - which load() does, in the same renderer.
     for (const id of OPT_IDS) {
         $(id).addEventListener('change', async () => {
-            refreshList();
+            syncControls();
             applySize();
             applyGround();
             if (id === 'biounit' && current >= 0) await preview(current);
         });
     }
 
-    refreshList();
+    syncControls();
 
     // The door a probe drives, and the same one every button above goes
     // through - so a test measures the page rather than a second copy of it.
-    window.py2dmolBatch = { files, ingest, addText, preview, renderOne,
-                            renderAll, imageOpts, parseOpts, refreshList,
+    window.py2dmolBatch = { files, rows, ingest, addText, addFile, preview,
+                            renderOne, renderAll, imageOpts, parseOpts,
+                            growList, syncControls, markRow, markCurrent,
                             get viewer() { return viewer; } };
 }());
 </script>

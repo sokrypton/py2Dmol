@@ -1020,7 +1020,7 @@ public downloads is exercised on every run.
   clamp, the export pixel scale, the transparency and the "SVG needs the 2D
   painter" refusal in one place.
   **AND THE ANSWER TO THE THOUSAND IS `render.html`, NOT A PYTHON DOOR.** Drop
-  the files on, set the look once, press Render all, get one zip. It uploads
+  the files on, set the look once, press Render, get one zip. It uploads
   nothing: the files are read in the browser and JSZip builds the archive there
   (optional, from a CDN; without it the page saves the images one at a time, and
   a dropped .zip of structures is unpacked the same way).
@@ -1040,10 +1040,28 @@ public downloads is exercised on every run.
   look panel of our own.
   **What that needs from the page**: the size menu writes `#canvasContainer`'s
   box rather than rebuilding (`setupViewport`'s ResizeObserver does the rest),
-  and the assembly menu re-`load()`s the same file. And it needed one gap
+  and the assembly menu re-`load()`s the same file - which is why Assembly sits
+  with the FILES and not with the DPI: it is a question about what is read out
+  of a file, answered before anything is drawn. **Detail opens at the
+  maximum**, against the panel's own default of 4: that default is for a viewer
+  being dragged, and every picture here is a still. It is set through the
+  CONTROL, not by assigning `cartoonDetail`, so the panel says what the
+  renderer is doing - and it has to be read back while the CARTOON is up,
+  because `cartoonDetail` is a `STYLE_SETTING` and a switch to tube installs
+  tube's own profile. And it needed one gap
   closed in the API - `renderer.load` dropped the parse options its own
   implementation takes, so `biounit` was reachable through `show()` and not
   through the one door a page swapping structures actually has.
+  🔴 **AND A THOUSAND FILES IS THE CASE IT IS FOR, so nothing in it may be
+  O(n) per file.** The list is BUILT once and MUTATED afterwards - rebuilding
+  it to write one status is a million nodes over a run of a thousand, and it
+  also destroys the row under the pointer, which is the play button's bug in a
+  list. And a file is a NAME AND A WAY TO READ IT, never its text: a thousand
+  structures held as strings is a gigabyte of heap for something the browser
+  has on disk, and reading them up front is a wait before anything is on
+  screen. A drop reads exactly the one file it shows. That is the shape
+  `src/app/main.js` already takes (`{name, readAsync}`), for the same reason.
+  The box scrolls; the page does not grow.
   🔴 **AND THE GROUND HAS TO BE VISIBLE IN THE PREVIEW, which is the whole
   point of one.** Reported as the paper choice not showing up. A transparent
   export over a white card looks exactly like a white one, so the canvas is

@@ -132,12 +132,29 @@ def main():
         check(names == ['1UBQ.cif', '3CHY.cif'],
               'a drop loads the files: %r' % (names,))
         check(cdp.evaluate(ws, 'document.getElementById("go").disabled') is False,
-              'and Render all comes alive')
+              'and Render comes alive')
         opened = cdp.evaluate(ws, 'py2dmolBatch.viewer.style + "/" '
                                   '+ py2dmolBatch.viewer.stylePreset')
         check(opened == 'cartoon/richardson',
               'a figure page opens on a cartoon, not the library tube: %r'
               % (opened,))
+
+        # 🔴 DETAIL OPENS AT THE MAXIMUM, and this is asked while the
+        # cartoon is up: cartoonDetail is a STYLE_SETTING, so a switch to
+        # tube installs tube's own profile and the number read back is no
+        # longer the cartoon's. Every picture here is a still, so
+        # the reason to default it low - a viewer being dragged - does not
+        # apply, and the control has to AGREE with the renderer.
+        det = cdp.evaluate(ws, """(() => {
+            const sl = document.getElementById('viewer')
+                         .querySelector('#detailSlider');
+            return { slider: sl && sl.value, max: sl && sl.max,
+                     renderer: py2dmolBatch.viewer.cartoonDetail };
+        })()""")
+        check(det['slider'] == det['max']
+              and str(det['renderer']) == str(det['max']),
+              'Detail opens at the maximum, panel and renderer agreeing: %r'
+              % (det,))
 
         # Small and cheap: this is measuring the wiring, not the renderer.
         cdp.evaluate(ws, """(() => {
@@ -262,6 +279,69 @@ def main():
         check(after['objects'] == ['structure'],
               'one object, replaced rather than appended: %r'
               % (after['objects'],))
+
+        # 🔴 A THOUSAND FILES IS THE CASE THIS PAGE IS FOR. The list is built
+        # once and mutated afterwards - rebuilding it to write one status is
+        # O(n) per file and O(n^2) over a run - and the box scrolls rather
+        # than growing the page.
+        many = cdp.evaluate(ws, """
+        (async () => {
+          const B = window.py2dmolBatch;
+          document.getElementById('clear').click();
+          const text = await (await fetch('/1UBQ.cif')).text();
+          for (let i = 0; i < 400; i++)
+            B.addFile('s' + String(i).padStart(4, '0') + '.cif',
+                      () => Promise.resolve(text));
+          const t0 = performance.now();
+          B.growList();
+          const built = performance.now() - t0;
+          const ul = document.getElementById('files');
+          const node = ul.children[3];
+          B.files[3].status = 'done';
+          B.markRow(3);   // the call the batch itself makes, per file
+          return { rows: B.rows.length, kids: ul.children.length,
+                   scrolls: ul.scrollHeight > ul.clientHeight + 20,
+                   clientH: ul.clientHeight, scrollH: ul.scrollHeight,
+                   sameNode: ul.children[3] === node, built: Math.round(built),
+                   marked: ul.children[3].querySelector('.st').textContent };
+        })()""", True)
+        check(many['rows'] == 400 and many['kids'] == 400,
+              '400 files make 400 rows: %r' % (many['rows'],))
+        check(many['scrolls'],
+              'and the list scrolls inside its box (%dpx of %dpx)'
+              % (many['clientH'], many['scrollH']))
+        check(many['sameNode'] and many['marked'] == 'done',
+              'a status is written INTO the row, not by rebuilding the list')
+
+        # 🔴 AND A FILE IS A NAME AND A WAY TO READ IT. A thousand structures
+        # held as strings is a gigabyte of heap for something the browser
+        # already has on disk, and reading them all up front is a wait before
+        # anything is on screen. Measured through the page's own ingest, with
+        # a reader that counts.
+        lazy = cdp.evaluate(ws, """
+        (async () => {
+          const B = window.py2dmolBatch;
+          document.getElementById('clear').click();
+          window.__reads = 0;
+          const text = await (await fetch('/1UBQ.cif')).text();
+          const mk = (n) => ({ name: n,
+              text: () => { window.__reads++; return Promise.resolve(text); } });
+          await B.ingest([mk('lazy1.cif'), mk('lazy2.cif'), mk('lazy3.cif')]);
+          const afterDrop = window.__reads;
+          await B.preview(2);
+          return { afterDrop, afterPreview: window.__reads,
+                   files: B.files.length };
+        })()""", True)
+        check(lazy['files'] == 3, 'three files in: %r' % (lazy['files'],))
+        # ONE read for a drop of three - the one it puts on screen - and one
+        # more when another is asked for. Eagerly, it would be three and three.
+        check(lazy['afterDrop'] == 1,
+              'a drop reads the file it shows and no other: %d of 3'
+              % (lazy['afterDrop'],))
+        check(lazy['afterPreview'] == 2,
+              'and the rest stay unread until something asks: %d'
+              % (lazy['afterPreview'],))
+        cdp.evaluate(ws, 'document.getElementById("clear").click()')
 
         # A zip of structures is one file to drag, which is how a thousand of
         # them arrive. Skipped rather than failed with no JSZip - it is a CDN
