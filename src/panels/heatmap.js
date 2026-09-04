@@ -667,6 +667,7 @@ class HeatmapRenderer {
      */
     setMaps(maps) {
         const keys = maps ? Object.keys(maps).filter((k) => maps[k] && maps[k].data) : [];
+        const previous = this.maps;
         this.maps = keys.length ? maps : null;
         // KEEP THE READER ON THE TAB THEY CHOSE. A frame step and an object
         // switch both come through here, and throwing them back to the first
@@ -680,8 +681,33 @@ class HeatmapRenderer {
         // `_wantKey` is what they CLICKED; `mapKey` is what is on screen.
         const key = keys.indexOf(this._wantKey) >= 0 ? this._wantKey
             : (keys.indexOf(this.mapKey) >= 0 ? this.mapKey : keys[0]);
-        this._selectMap(key || DEFAULT_MAP_KEY, key ? maps[key] : null);
+        const entry = key ? maps[key] : null;
+
+        // 🔴 A FRAME THAT INHERITED THE SAME MAP REDRAWS NOTHING. Every frame
+        // step comes through here, and _selectMap ends in _syncAxes, which
+        // relayouts - which resizes the canvas, and a resized canvas is a
+        // CLEARED one. During a live trajectory that is one clear-and-repaint
+        // per frame as frames arrive: the panel flickers. `setMap` has guarded
+        // on the key alone since it was written; this needs the ENTRY too,
+        // because a contact map that changes every recycle keeps one key while
+        // its data moves. Identity is the right test - the maps are resolved
+        // by backward search, so an inherited one is the SAME object, and a
+        // new one never is.
+        const held = previous && key ? previous[key] : null;
+        const same = entry !== null && entry === held && key === this.mapKey
+            && this._sameKeys(previous, maps);
+        if (same) return;
+
+        this._selectMap(key || DEFAULT_MAP_KEY, entry);
         this._syncTabs();
+    }
+
+    /** Do two map sets offer the same tabs? The strip is redrawn when not. */
+    _sameKeys(a, b) {
+        if (!a || !b) return false;
+        const one = Object.keys(a);
+        const two = Object.keys(b);
+        return one.length === two.length && one.every((k) => two.indexOf(k) >= 0);
     }
 
     /**
@@ -1409,8 +1435,20 @@ const Heatmap = {
         if (has(object.frames[frameIndex])) return object.frames[frameIndex];
         const cache = object._lastMapFrame || (object._lastMapFrame = {});
         const c = cache[key];
-        if (c >= 0 && c < frameIndex && has(object.frames[c])) return object.frames[c];
-        for (let i = frameIndex - 1; i >= 0; i--) {
+        // 🔴 THE CACHE IS A FLOOR, NOT AN ANSWER. Returning frames[c] straight
+        // out skips every frame BETWEEN c and frameIndex - so once the cache
+        // held frame 0, a frame carrying no map of its own resolved to the
+        // FIRST map in the trajectory rather than the nearest one behind it.
+        // A host that attaches a map just after adding its frame - which is
+        // what computing one off the critical path means - lands in exactly
+        // that window on every frame: the panel jumps back to the original
+        // map and then snaps forward when the map arrives. It reads as a
+        // flicker and it is a wrong answer.
+        //
+        // As a floor it still saves the scan it was written for: nothing below
+        // c needs looking at, because c is known to have the map.
+        const floor = (c >= 0 && c < frameIndex && has(object.frames[c])) ? c : 0;
+        for (let i = frameIndex - 1; i >= floor; i--) {
             if (has(object.frames[i])) { cache[key] = i; return object.frames[i]; }
         }
         return null;
