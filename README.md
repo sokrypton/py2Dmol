@@ -131,10 +131,12 @@ sets it to the paper colour instead, for a player that shows transparency as
 black.
 
 **A folder of them, without clicking a thousand times.** Open
-[`render.html`](render.html), drop the structures onto it, set the look once
-against a live preview and press *Render all* — every picture comes back as one
-zip. Nothing is uploaded: the files are read in the browser and the zip is built
-there, so it works offline and on structures you cannot send anywhere.
+[`render.html`](render.html), drop the structures onto it, set the look once and
+press *Render all* — every picture comes back as one zip. The preview **is** a
+viewer, with the whole Style panel on it, so anything you can set in py2Dmol you
+can set here, and every file is rendered exactly as you see it. Nothing is
+uploaded: the files are read in the browser and the zip is built there, so it
+works offline and on structures you cannot send anywhere.
 
 From your own code it is `renderer.toImage({format, dpi})`, which renders
 exactly what the camera button renders and hands back the bytes instead of

@@ -412,7 +412,14 @@ function rangeOf(a, b) {
  * version of embed.html, where four of its buttons changed nothing.
  */
 function attach(renderer) {
-    renderer.load = (text, name, orient) => load(renderer, text, name, orient);
+    // ...AND THE PARSE OPTIONS TRAVEL WITH IT. `load` has taken them since
+    // framesFromText learnt about the biological assembly, and this wrapper
+    // dropped them on the floor - so `show(el, text, {biounit: false})`
+    // honoured the choice and `v.load(text, name, true, {biounit: false})`
+    // silently did not, which is the one door a page swapping structures
+    // through a single viewer has.
+    renderer.load = (text, name, orient, opts) =>
+        load(renderer, text, name, orient, opts);
 
     /**
      * Colour part of the structure, the way Python's set_color does.

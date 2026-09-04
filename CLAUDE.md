@@ -1020,15 +1020,36 @@ public downloads is exercised on every run.
   clamp, the export pixel scale, the transparency and the "SVG needs the 2D
   painter" refusal in one place.
   **AND THE ANSWER TO THE THOUSAND IS `render.html`, NOT A PYTHON DOOR.** Drop
-  the files on, set the look once against a live preview, press Render all, get
-  one zip. It is a plain page over the embed API - `py2Dmol.show` then
-  `toImage`, through ONE viewer for the whole run, because a viewer per
-  structure is the entire cost - and it uploads nothing: the files are read in
-  the browser and JSZip builds the archive there (optional, from a CDN; without
-  it the page saves the images one at a time, and a dropped .zip of structures
-  is unpacked the same way). `window.py2dmolBatch` is the door
-  `tests/render_page.py` drives, and the probe drops REAL `File` objects through
-  a real `drop` event, because that is the page's only entrance.
+  the files on, set the look once, press Render all, get one zip. It uploads
+  nothing: the files are read in the browser and JSZip builds the archive there
+  (optional, from a CDN; without it the page saves the images one at a time, and
+  a dropped .zip of structures is unpacked the same way).
+  `window.py2dmolBatch` is the door `tests/render_page.py` drives, and the probe
+  drops REAL `File` objects through a real `drop` event, because that is the
+  page's only entrance.
+  🔴 **THE VIEWER IS BUILT ONCE AND EVERY FILE IS SWAPPED IN WITH `load()`, AND
+  THAT IS WHAT MAKES THE LOOK STICK.** The page mounts the shell with
+  `controls: true`, so the LOOK is the shipped Style panel's - all forty
+  controls, `parts/panel.js`'s one table - and the page owns only what the
+  viewer has no opinion about: which files, what format, how big, and whether
+  the ground is cut out. A viewer rebuilt per file would reset every control in
+  that panel, and it is also the entire cost of a batch. The first version had
+  a Style/Colour/Paper card of its own, which was a second copy of that
+  vocabulary and offered five of the forty. *"lets all the other style options?
+  give user more control in the look panel"* - the answer was to stop having a
+  look panel of our own.
+  **What that needs from the page**: the size menu writes `#canvasContainer`'s
+  box rather than rebuilding (`setupViewport`'s ResizeObserver does the rest),
+  and the assembly menu re-`load()`s the same file. And it needed one gap
+  closed in the API - `renderer.load` dropped the parse options its own
+  implementation takes, so `biounit` was reachable through `show()` and not
+  through the one door a page swapping structures actually has.
+  🔴 **AND THE GROUND HAS TO BE VISIBLE IN THE PREVIEW, which is the whole
+  point of one.** Reported as the paper choice not showing up. A transparent
+  export over a white card looks exactly like a white one, so the canvas is
+  made really transparent (`setClearColor`) and a checker sits behind it; the
+  probe measures the live canvas's own corner alpha, because the checker is
+  only visible THROUGH a transparent canvas.
   🔴 **A `view.save_image(path)` WAS WRITTEN, MEASURED, TESTED AND REMOVED.** It
   worked - there is no renderer in Python, so it started a headless Chrome on a
   standalone page and called `toImage` - and it cost a CDP WebSocket client in

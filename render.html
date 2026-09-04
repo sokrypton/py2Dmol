@@ -8,20 +8,25 @@
   RENDER MANY STRUCTURES WITHOUT WRITING ANYTHING.
 
   The first piece of feedback this project got was from someone with about a
-  thousand structures and no way to save a picture except by hand. There are
-  two answers to that and they are for different people: view.save_image() /
-  examples/batch_render.py for anyone already in Python, and THIS page for
-  anyone who is not - drop the files in, set the look once, watch it on a
-  preview, render the lot into one zip.
+  thousand structures and no way to save a picture except by hand. Drop the
+  files in, set the look once, watch it on a live preview, render the lot into
+  one zip.
 
-  It is a plain page over the same embed API a host site uses, so there is
-  nothing here the library does not already do. Two things it does NOT do, on
-  purpose: it never uploads anything (the files are read in the browser and the
-  zip is built there), and it renders through ONE viewer rather than one per
-  file, because a viewer per structure is the whole cost.
+  🔴 THE PREVIEW IS THE VIEWER, AND IT IS BUILT ONCE. Every file is swapped
+  into the SAME renderer with v.load(), which is what makes the look stick: the
+  Style panel below the canvas is the shipped one - the same forty controls the
+  website and the notebook mount - and rebuilding a viewer per file would reset
+  every one of them. It is also the whole of the speed, since a viewer per
+  structure is the entire cost of a batch.
 
-  JSZip is the only outside script and it is optional - without it the page
-  saves the images one at a time instead.
+  So this page owns only the questions the viewer does not have an opinion
+  about: which files, what format, how big, and whether the ground is cut out.
+  Everything about the LOOK is the panel's, and there is no second copy of that
+  vocabulary here to fall out of step with parts/panel.js.
+
+  It never uploads anything: the files are read in the browser and the zip is
+  built there. JSZip is the only outside script and it is optional - without it
+  the page saves the images one at a time.
 -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="py2Dmol/resources/bundles/py2Dmol.full.min.js"></script>
@@ -37,15 +42,15 @@
   }
   header {
     padding: 14px 20px; background: var(--card); border-bottom: 1px solid var(--line);
-    display: flex; align-items: baseline; gap: 12px;
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
   }
   header h1 { font-size: 15px; margin: 0; font-weight: 600; }
   header p { margin: 0; color: var(--muted); }
   header a { color: var(--accent); }
-  main { display: flex; gap: 16px; padding: 16px; align-items: flex-start; }
+  main { display: flex; gap: 16px; padding: 16px; align-items: flex-start; flex-wrap: wrap; }
   .col { display: flex; flex-direction: column; gap: 12px; }
   .left { width: 300px; flex: 0 0 300px; }
-  .right { flex: 1 1 auto; min-width: 0; }
+  .right { flex: 1 1 520px; min-width: 0; }
   .card {
     background: var(--card); border: 1px solid var(--line); border-radius: 8px;
     padding: 12px;
@@ -78,7 +83,7 @@
   }
   button.primary:hover:not(:disabled) { background: #1d4fd8; }
   button:disabled { opacity: .5; cursor: default; }
-  #files { max-height: 260px; overflow: auto; margin: 0; padding: 0; list-style: none; }
+  #files { max-height: 240px; overflow: auto; margin: 0; padding: 0; list-style: none; }
   #files li {
     display: flex; gap: 6px; align-items: center; padding: 3px 5px; border-radius: 4px;
     cursor: pointer;
@@ -89,21 +94,24 @@
   #files .st { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
   #files .st.bad { color: #b42318; }
   #files .st.good { color: #157347; }
-  #fit { border: 1px solid var(--line); border-radius: 6px; background: #fff; overflow: hidden; }
-  /* THE PREVIEW IS SCALED FOR LOOKING, NEVER FOR DRAWING. The canvas is
-     always the size that will be exported - the renderer frames the structure
-     against it - so a 900px setting must not become a 900px box on the page.
-     transform leaves the element's own layout alone, which is what viewport.js
-     measures. */
-  #viewer { transform-origin: 0 0; }
-  #stage { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
-  /* A progress bar with nothing in progress is a grey line saying nothing. */
-  #bar { height: 6px; background: var(--ground); border-radius: 3px; overflow: hidden; margin-top: 8px; display: none; }
+  /* THE CUT-OUT IS SHOWN AS A CUT-OUT. A transparent export over a white card
+     looks exactly like a white one, so the checker is the only way the choice
+     is visible before the file is written. */
+  #viewer.clear #canvasContainer {
+    background-color: #fff;
+    background-image:
+      linear-gradient(45deg, #e6e8ec 25%, transparent 25%, transparent 75%, #e6e8ec 75%),
+      linear-gradient(45deg, #e6e8ec 25%, transparent 25%, transparent 75%, #e6e8ec 75%);
+    background-size: 16px 16px;
+    background-position: 0 0, 8px 8px;
+  }
+  #bar { height: 6px; background: var(--ground); border-radius: 3px; overflow: hidden;
+         margin-top: 8px; display: none; }
   #bar.on { display: block; }
   #bar > div { height: 100%; width: 0; background: var(--accent); transition: width .1s linear; }
   #status { color: var(--muted); margin-top: 8px; min-height: 18px; }
   .hint { color: var(--muted); margin: 8px 0 0; }
-  .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -124,39 +132,13 @@
     <div class="card">
       <h2>Files <span id="count" style="color:var(--muted);font-weight:400"></span></h2>
       <ul id="files"></ul>
-    </div>
-
-    <div class="card">
-      <h2>Look</h2>
-      <div class="row"><label for="style">Style</label>
-        <select id="style">
-          <option value="cartoon">Cartoon</option>
-          <option value="richardson">Richardson</option>
-          <option value="ribbon">Ribbon</option>
-          <option value="3d">3D</option>
-          <option value="tube">Tube</option>
-        </select></div>
-      <div class="row"><label for="color">Colour</label>
-        <select id="color">
-          <option value="chain">Chain</option>
-          <option value="rainbow">Rainbow</option>
-          <option value="plddt">pLDDT</option>
-          <option value="deepmind">pLDDT (AF)</option>
-          <option value="ss">Secondary structure</option>
-          <option value="hydrophobicity">Hydrophobicity</option>
-          <option value="single">One colour</option>
-        </select></div>
-      <div class="row"><label for="bg">Paper</label>
-        <select id="bg">
-          <option value="">Transparent</option>
-          <option value="#ffffff">White</option>
-          <option value="#000000">Black</option>
-        </select></div>
-      <div class="row"><label for="biounit">Assembly</label>
-        <select id="biounit">
-          <option value="1">Biological assembly</option>
-          <option value="0">As deposited</option>
-        </select></div>
+      <div class="actions">
+        <button id="go" class="primary" disabled>Render all &amp; save</button>
+        <button id="stop" disabled>Stop</button>
+        <button id="clear" disabled>Clear</button>
+      </div>
+      <div id="bar"><div></div></div>
+      <div id="status"></div>
     </div>
 
     <div class="card">
@@ -169,32 +151,32 @@
       <div class="row"><label for="dpi">DPI</label>
         <input id="dpi" type="number" min="36" max="1200" step="6" value="150"></div>
       <div class="row pair"><label>Size</label>
-        <input id="w" type="number" min="80" max="2000" step="20" value="600" aria-label="width">
-        <input id="h" type="number" min="80" max="2000" step="20" value="600" aria-label="height">
+        <input id="w" type="number" min="80" max="2000" step="20" value="500" aria-label="width">
+        <input id="h" type="number" min="80" max="2000" step="20" value="500" aria-label="height">
       </div>
+      <div class="row"><label for="bg">Ground</label>
+        <select id="bg">
+          <option value="clear">Cut out</option>
+          <option value="paper">The viewer's</option>
+        </select></div>
+      <div class="row"><label for="biounit">Assembly</label>
+        <select id="biounit">
+          <option value="1">Biological assembly</option>
+          <option value="0">As deposited</option>
+        </select></div>
       <p class="hint" id="outHint"></p>
     </div>
   </div>
 
   <div class="col right">
     <div class="card">
-      <h2>Preview</h2>
-      <div id="stage">
-        <div id="fit"><div id="viewer"></div></div>
-        <div style="flex:1 1 220px; min-width:200px">
-          <p class="hint" id="previewName">No structures yet.</p>
-          <p class="hint">This is exactly what each file will be rendered as -
-             the same viewer, the same exporter. Click a file on the left to
-             preview it.</p>
-          <div class="actions" style="margin-top:14px">
-            <button id="go" class="primary" disabled>Render all &amp; save</button>
-            <button id="stop" disabled>Stop</button>
-            <button id="clear" disabled>Clear</button>
-          </div>
-          <div id="bar"><div></div></div>
-          <div id="status"></div>
-        </div>
-      </div>
+      <h2>Preview &mdash; and the look</h2>
+      <div id="viewer"></div>
+      <p class="hint" id="previewName">Drop a structure to begin.</p>
+      <p class="hint">Set the look here and every file is rendered the same way:
+         <b>Style</b> opens the full panel, and Orient, Clip, Focus and the
+         colour menus all work as they do in the viewer. This canvas is the
+         export, at the size and ground chosen on the left.</p>
     </div>
   </div>
 </main>
@@ -205,36 +187,30 @@
     const $ = (id) => document.getElementById(id);
     const files = [];            // {name, text, status}
     let current = -1;            // which one the preview is showing
-    let viewer = null;
+    let viewer = null;           // ONE renderer, for the preview and the batch
     let busy = false, stopped = false;
 
-    const OPT_IDS = ['style', 'color', 'bg', 'biounit', 'format', 'dpi', 'w', 'h'];
+    const OPT_IDS = ['format', 'dpi', 'w', 'h', 'bg', 'biounit'];
+    const OBJECT = 'structure';  // one object, replaced per file
 
-    /** The settings, as the two option bags the API takes. */
-    function settings() {
-        const fmt = $('format').value;
+    function size() {
+        return [Math.max(80, +$('w').value || 500),
+                Math.max(80, +$('h').value || 500)];
+    }
+
+    function imageOpts() {
         return {
-            show: {
-                style: $('style').value,
-                color: { mode: $('color').value },
-                bg: $('bg').value || undefined,
-                biounit: $('biounit').value === '1',
-                width: Math.max(80, +$('w').value || 600),
-                height: Math.max(80, +$('h').value || 600),
-                controls: false, play: false, orient: true, select: false,
-            },
-            image: {
-                format: fmt,
-                dpi: Math.max(36, Math.min(1200, +$('dpi').value || 150)),
-                // The paper is a CHOICE here where the camera button always
-                // cuts out: a page of PNGs for a slide deck wants the ground
-                // painted, and compositing a thousand of them afterwards is
-                // exactly the work this page exists to remove.
-                transparent: !$('bg').value,
-                dataUrl: true,
-            },
+            format: $('format').value,
+            dpi: Math.max(36, Math.min(1200, +$('dpi').value || 150)),
+            // ONE CONTROL, ONE FLAG. A menu saying "the viewer's" while the
+            // file comes out cut out is two answers to one question - so the
+            // preview is switched to match at the same moment.
+            transparent: $('bg').value === 'clear',
+            dataUrl: true,
         };
     }
+
+    function parseOpts() { return { biounit: $('biounit').value === '1' }; }
 
     function say(msg, bad) {
         const s = $('status');
@@ -265,33 +241,66 @@
         $('count').textContent = files.length ? '(' + files.length + ')' : '';
         $('go').disabled = busy || !files.length;
         $('clear').disabled = busy || !files.length;
-        const s = settings();
-        $('outHint').textContent = s.image.format === 'svg'
+        const [w, h] = size();
+        const o = imageOpts();
+        $('outHint').textContent = o.format === 'svg'
             ? 'SVG is vector - the DPI does not apply to it.'
-            : Math.round(s.show.width * s.image.dpi / 96) + ' x '
-              + Math.round(s.show.height * s.image.dpi / 96) + ' px per image.';
+            : Math.round(w * o.dpi / 96) + ' x ' + Math.round(h * o.dpi / 96)
+              + ' px per image.';
     }
 
-    /** Draw one file into the preview viewer, and hand the renderer back. */
-    function draw(i) {
-        const s = settings();
-        const el = $('viewer');
-        el.style.width = s.show.width + 'px';
-        el.style.height = s.show.height + 'px';
-        const k = Math.min(1, 440 / s.show.width, 440 / s.show.height);
-        el.style.transform = k < 1 ? 'scale(' + k + ')' : '';
-        $('fit').style.width = Math.round(s.show.width * k) + 'px';
-        $('fit').style.height = Math.round(s.show.height * k) + 'px';
-        viewer = window.py2Dmol.show(el, files[i].text, s.show);
-        return viewer;
+    /** The ground, on the picture as well as in the file. */
+    function applyGround() {
+        const clear = imageOpts().transparent;
+        $('viewer').classList.toggle('clear', clear);
+        if (!viewer) return;
+        viewer.setClearColor(clear);
+        const c = $('viewer').querySelector('#canvas');
+        if (c) c.style.background = 'transparent';
+        viewer.render('ground');
+    }
+
+    /** The canvas follows the size menu WITHOUT a rebuild - see the note at
+     *  the top: a rebuild would reset every control in the Style panel.
+     *  setupViewport's ResizeObserver watches #canvasContainer, so setting its
+     *  box is the whole of it. */
+    function applySize() {
+        const [w, h] = size();
+        const box = $('viewer').querySelector('#canvasContainer');
+        if (!box) return;
+        box.style.width = w + 'px';
+        box.style.height = h + 'px';
     }
 
     function settle() {
-        // TWO FRAMES, because the opening orient lands on the first and the
-        // GPU cartoon builds its mesh on the draw after it. A capture in the
-        // same tick is of a viewer that has not drawn.
+        // TWO FRAMES: the opening orient lands on the first and the GPU
+        // cartoon builds its mesh on the draw after it.
         return new Promise((done) => requestAnimationFrame(
             () => requestAnimationFrame(done)));
+    }
+
+    /** Put file `i` in front of the reader, building the viewer if this is the
+     *  first one. */
+    async function draw(i) {
+        const [w, h] = size();
+        if (!viewer) {
+            // OPENS ON A CARTOON, where the library's own default is the
+            // tube: this page exists to make figures, and the panel's Style
+            // menu is one click away for anyone who wants the trace.
+            // `richardson` is the flat cartoon - the same look `cartoon`
+            // resolves to, under the name the flat API uses.
+            viewer = window.py2Dmol.show($('viewer'), files[i].text, {
+                width: w, height: h, controls: true, play: false,
+                select: true, orient: true, style: 'richardson',
+                biounit: parseOpts().biounit,
+            });
+            applySize();
+        } else {
+            viewer.load(files[i].text, OBJECT, true, parseOpts());
+        }
+        applyGround();
+        await settle();
+        return viewer;
     }
 
     async function preview(i) {
@@ -300,8 +309,7 @@
         refreshList();
         $('previewName').textContent = files[current].name;
         try {
-            draw(current);
-            await settle();
+            await draw(current);
             say('');
         } catch (e) {
             say(files[current].name + ': ' + e.message, true);
@@ -310,10 +318,8 @@
 
     /** One file in, one {name, blob} out. */
     async function renderOne(i) {
-        const s = settings();
-        draw(i);
-        await settle();
-        const out = await viewer.toImage(s.image);
+        await draw(i);
+        const out = await viewer.toImage(imageOpts());
         const ext = out.format === 'svgz' ? 'svgz' : out.format;
         const bytes = await (await fetch(out.dataUrl)).blob();
         return { name: baseName(files[i].name) + '.' + ext, blob: bytes };
@@ -323,6 +329,7 @@
         const made = [];
         for (let i = 0; i < files.length; i++) {
             if (stopped) break;
+            current = i;
             files[i].status = '...';
             refreshList();
             try {
@@ -353,7 +360,7 @@
         if (!made.length) return;
         // ONE FILE IF WE CAN. A thousand separate downloads is a thousand
         // prompts and a Downloads folder nobody can find anything in; the zip
-        // is built here, in the browser, from bytes that never left it.
+        // is built here, from bytes that never left the browser.
         if (made.length > 1 && typeof JSZip !== 'undefined') {
             say('Zipping ' + made.length + ' images...');
             const zip = new JSZip();
@@ -422,7 +429,7 @@
             }
         }
         refreshList();
-        if (added && current < 0) preview(0);
+        if (added && current < 0) await preview(0);
         else if (!added) say('nothing there looked like a structure', true);
         return added;
     }
@@ -434,14 +441,12 @@
             e.preventDefault(); $('drop').classList.add('over');
         });
     }
-    for (const ev of ['dragleave', 'drop']) {
-        document.addEventListener(ev, (e) => {
-            e.preventDefault();
-            if (ev === 'drop' || e.target === $('drop')) $('drop').classList.remove('over');
-        });
-    }
+    document.addEventListener('dragleave', (e) => {
+        if (e.target === $('drop')) $('drop').classList.remove('over');
+    });
     document.addEventListener('drop', (e) => {
         e.preventDefault();
+        $('drop').classList.remove('over');
         if (e.dataTransfer && e.dataTransfer.files.length) ingest([...e.dataTransfer.files]);
     });
 
@@ -449,14 +454,18 @@
     $('stop').onclick = () => { stopped = true; say('stopping...'); };
     $('clear').onclick = () => {
         files.length = 0; current = -1;
-        $('viewer').innerHTML = '';
-        $('previewName').textContent = 'No structures yet.';
+        $('previewName').textContent = 'Drop a structure to begin.';
         say(''); refreshList();
     };
+    // A CHANGE APPLIES TO WHAT IS ON SCREEN, and none of these rebuilds the
+    // viewer: the size moves the box, the ground repaints, and the assembly
+    // needs the file parsed again - which load() does, in the same renderer.
     for (const id of OPT_IDS) {
-        $(id).addEventListener('change', () => {
+        $(id).addEventListener('change', async () => {
             refreshList();
-            if (current >= 0) preview(current);
+            applySize();
+            applyGround();
+            if (id === 'biounit' && current >= 0) await preview(current);
         });
     }
 
@@ -465,7 +474,8 @@
     // The door a probe drives, and the same one every button above goes
     // through - so a test measures the page rather than a second copy of it.
     window.py2dmolBatch = { files, ingest, addText, preview, renderOne,
-                            renderAll, settings, refreshList };
+                            renderAll, imageOpts, parseOpts, refreshList,
+                            get viewer() { return viewer; } };
 }());
 </script>
 </body>

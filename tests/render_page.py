@@ -133,6 +133,11 @@ def main():
               'a drop loads the files: %r' % (names,))
         check(cdp.evaluate(ws, 'document.getElementById("go").disabled') is False,
               'and Render all comes alive')
+        opened = cdp.evaluate(ws, 'py2dmolBatch.viewer.style + "/" '
+                                  '+ py2dmolBatch.viewer.stylePreset')
+        check(opened == 'cartoon/richardson',
+              'a figure page opens on a cartoon, not the library tube: %r'
+              % (opened,))
 
         # Small and cheap: this is measuring the wiring, not the renderer.
         cdp.evaluate(ws, """(() => {
@@ -142,7 +147,7 @@ def main():
               el.dispatchEvent(new Event('change', { bubbles: true }));
             };
             set('w', 200); set('h', 200); set('dpi', 96); set('format', 'png');
-            set('bg', '');
+            set('bg', 'clear');
             return true;
         })()""")
         time.sleep(0.4)
@@ -167,16 +172,40 @@ def main():
         # from it - two controls would be two answers to one question.
         cdp.evaluate(ws, """(() => {
             const el = document.getElementById('bg');
-            el.value = '#ffffff';
+            el.value = 'paper';
             el.dispatchEvent(new Event('change', { bubbles: true }));
             return true; })()""")
         time.sleep(0.4)
-        check(cdp.evaluate(ws, 'py2dmolBatch.settings().image.transparent')
-              is False, 'choosing White turns the cut-out off')
+        check(cdp.evaluate(ws, 'py2dmolBatch.imageOpts().transparent')
+              is False, 'choosing the viewer\'s ground turns the cut-out off')
         papered = cdp.evaluate(ws, IMAGE, True)[0]
         check(papered['ink'] == papered['px'],
               'and every pixel is painted: %d of %d'
               % (papered['ink'], papered['px']))
+
+        # 🔴 AND IT HAS TO SHOW IN THE PREVIEW, which is the whole point of a
+        # preview: reported as the ground choice doing nothing on screen. The
+        # canvas's own corner is the measurement - the checker behind it is
+        # only visible THROUGH a transparent canvas.
+        corner = """(() => {
+            const c = document.getElementById('viewer').querySelector('#canvas');
+            const d = c.getContext('2d').getImageData(2, 2, 1, 1).data;
+            return { alpha: d[3],
+                     checker: document.getElementById('viewer')
+                                .classList.contains('clear') };
+        })()"""
+        lit = cdp.evaluate(ws, corner)
+        check(lit['alpha'] == 255 and not lit['checker'],
+              "the preview paints the viewer's ground: %r" % (lit,))
+        cdp.evaluate(ws, """(() => {
+            const el = document.getElementById('bg');
+            el.value = 'clear';
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return true; })()""")
+        time.sleep(0.4)
+        cut = cdp.evaluate(ws, corner)
+        check(cut['alpha'] == 0 and cut['checker'],
+              'and shows the cut-out as a cut-out: %r' % (cut,))
 
         cdp.evaluate(ws, """(() => {
             const el = document.getElementById('format');
@@ -188,6 +217,51 @@ def main():
         check(vec['name'].endswith('.svg'), 'the format menu names the file %s'
               % vec['name'])
         check('<svg' in vec['text'], 'and what comes back is vector')
+
+        # 🔴 THE LOOK IS THE PANEL'S, AND IT HAS TO SURVIVE THE NEXT FILE.
+        # The page mounts the shipped Style panel and swaps each structure into
+        # ONE renderer with load(); a viewer rebuilt per file would reset every
+        # control in it, which is the whole reason for that design.
+        panel = cdp.evaluate(ws, """(() => {
+            const box = document.getElementById('viewer');
+            return { panel: !!box.querySelector('#stylePanel'),
+                     style: !!box.querySelector('#styleSelect'),
+                     color: !!box.querySelector('#colorSelect'),
+                     detail: !!box.querySelector('#detailSlider'),
+                     orient: !!box.querySelector('#orientButton') };
+        })()""")
+        check(all(panel.values()),
+              'the shipped Style panel is mounted in the preview: %r' % (panel,))
+
+        was = cdp.evaluate(ws, """(() => {
+            const box = document.getElementById('viewer');
+            const sel = box.querySelector('#styleSelect');
+            sel.value = 'tube';
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+            window.__vid = py2dmolBatch.viewer;
+            return py2dmolBatch.viewer.style;
+        })()""")
+        check(was == 'tube', 'a style chosen in the panel takes: %r' % (was,))
+
+        cdp.evaluate(ws, """(() => {
+            const el = document.getElementById('format');
+            el.value = 'png';
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return true; })()""")
+        after = cdp.evaluate(ws, """
+        (async () => {
+          await py2dmolBatch.renderAll();
+          return { style: py2dmolBatch.viewer.style,
+                   same: py2dmolBatch.viewer === window.__vid,
+                   objects: Object.keys(py2dmolBatch.viewer.objectsData) };
+        })()""", True)
+        check(after['same'], 'every file goes through the same renderer')
+        check(after['style'] == 'tube',
+              'and the look is still the one that was chosen: %r'
+              % (after['style'],))
+        check(after['objects'] == ['structure'],
+              'one object, replaced rather than appended: %r'
+              % (after['objects'],))
 
         # A zip of structures is one file to drag, which is how a thousand of
         # them arrive. Skipped rather than failed with no JSZip - it is a CDN
