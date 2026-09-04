@@ -132,7 +132,9 @@ black.
 
 **A folder of them, without clicking a thousand times.** Open
 [`render.html`](render.html), drop the structures onto it, set the look once and
-press *Render* — every picture comes back as one zip. The preview **is** a
+press *Render* — every picture comes back as one zip. Each structure is turned
+to face you as it loads; for a series that is already aligned, *Keep this view*
+holds the camera you set across the whole run. The preview **is** a
 viewer, with the whole Style panel on it, so anything you can set in py2Dmol you
 can set here, and every file is rendered exactly as you see it. Nothing is
 uploaded: the files are read in the browser and the zip is built there, so it

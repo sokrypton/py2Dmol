@@ -286,6 +286,36 @@ def main():
               'one object, replaced rather than appended: %r'
               % (after['objects'],))
 
+        # 🔴 EVERY FILE IS ORIENTED, WHICH IS WHY THE SWITCH EXISTS. load()
+        # turns each structure to face the reader - a folder of unrelated
+        # proteins comes out as pictures rather than crystal settings - and
+        # that is exactly wrong for a series of ALIGNED structures, where the
+        # point is that they share a frame.
+        view = cdp.evaluate(ws, """
+        (async () => {
+          const B = window.py2dmolBatch;
+          const rot = () => JSON.stringify(B.viewer.viewerState.rotation);
+          const set = (v) => { const el = document.getElementById('orient');
+            el.value = v; el.dispatchEvent(new Event('change', { bubbles: true })); };
+          // a rotation nobody's best view would land on
+          const mine = [[0, 1, 0], [0, 0, 1], [1, 0, 0]];
+          set('keep');
+          B.viewer.viewerState.rotation = mine.map((r) => r.slice());
+          await B.preview(1);
+          const kept = rot();
+          set('best');
+          B.viewer.viewerState.rotation = mine.map((r) => r.slice());
+          await B.preview(0);
+          const oriented = rot();
+          set('keep');
+          return { mine: JSON.stringify(mine), kept, oriented };
+        })()""", True)
+        check(view['kept'] == view['mine'],
+              'Keep this view carries the camera onto the next file')
+        check(view['oriented'] != view['mine'],
+              'and Best view turns each one to face the reader: %s'
+              % (view['oriented'][:40],))
+
         # 🔴 A THOUSAND FILES IS THE CASE THIS PAGE IS FOR. The list is built
         # once and mutated afterwards - rebuilding it to write one status is
         # O(n) per file and O(n^2) over a run - and the box scrolls rather

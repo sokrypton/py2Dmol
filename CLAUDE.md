@@ -1027,6 +1027,15 @@ public downloads is exercised on every run.
   `window.py2dmolBatch` is the door `tests/render_page.py` drives, and the probe
   drops REAL `File` objects through a real `drop` event, because that is the
   page's only entrance.
+  **EVERY FILE IS ORIENTED, AND THE SWITCH IS FOR WHEN THAT IS WRONG.**
+  `load()` turns each structure to face the reader, so a folder of unrelated
+  proteins comes out as pictures rather than as crystal settings - and that is
+  exactly wrong for a series of ALIGNED structures, whose whole point is a
+  shared frame. **Keep means both halves**: do not orient, AND carry the
+  camera the reader is looking through onto the next file. `load()` replaces
+  the object and a rotation belongs to its object, so the second half is not
+  optional - without it "keep" hands back the file's deposited frame, which is
+  a third answer nobody asked for.
   **AND WHAT IT SHOWS IS THE PANEL, OPEN, AND NOTHING ELSE.** The shell puts
   six buttons above it - Orient, Focus, Rotate, Style, Clip, Capture - and they
   are the viewer's toolbar rather than a look: Capture saves ONE picture where
