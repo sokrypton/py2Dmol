@@ -959,6 +959,20 @@ public downloads is exercised on every run.
   is in the same shell. The panel was invisible and still first in the document,
   which is the whole of the damage above. It follows `opts.controls` now, the
   same thing that decides whether the Style panel is visible.
+  **AND FIND AND ALIGN SHARE A LINE IN THE CARD, THROUGH A WRAPPER.** Two
+  rows carrying one short caption and one control each read as two half-empty
+  lines on a 322px card. A row marked `pair` is grouped into a
+  `.selection-row-pair` by `buildSelectionPanel` - a WRAPPER rather than one
+  merged row, because each row keeps its own id and `hidden`, so
+  `syncAlignRow` goes on hiding Align by itself and Find takes the width
+  back; merging would have meant hiding half a row. The wrapper is
+  `display: contents` under the 260px container query, so in a 180px control
+  column the pairing VANISHES with nothing else moving - two captions and two
+  controls do not fit there, and that is arithmetic. **Inside a pair the
+  captions size to their text** (`Find` is 25px against the 74px a stacked
+  row uses): the fixed width exists so rows line up UNDER each other, and two
+  sharing a line have nothing to line up with - at 74 each the pair would be
+  148px of caption in 322 and would wrap. Measured: one line, 9px to spare.
   🔴 **AND A RAW BACKTICK IN `SELECTION_PANEL_CSS` PARSES.** The literal holds
   forty-six commented rules, and a comment quoting a class name in backticks —
   the way every comment in this project does — ENDS the template literal; what

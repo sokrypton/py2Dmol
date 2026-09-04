@@ -750,7 +750,32 @@ SCOPE :where(.selection-panel) :where(.btn-toggle) :where(input:checked + span) 
    the caption width and the switch height did not. Half a restyle, and it
    looked like the container query was not matching.
    ========================================================================== */
+/* 🔴 TWO ROWS ON ONE LINE, IN THE CARD ONLY. Find and Align each carry one
+   control and a short caption, so on index.html's ~322px card they read as
+   one line of actions rather than two half-empty ones. The captions size to
+   THEIR TEXT here - "Find" is 25px against the 74px every stacked row uses -
+   because the fixed width exists so that rows line up UNDER each other, and
+   two rows sharing a line have nothing to line up with. At 74 each the pair
+   would be 148px of caption in 322 and would wrap. */
+SCOPE .selection-row-pair {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+SCOPE .selection-row-pair > .selection-panel-row { flex: 1 1 auto; min-width: 0; }
+SCOPE .selection-row-pair .selection-panel-label { width: auto; flex: 0 0 auto; }
+
 @container (max-width: 260px) {
+    /* ...and NOT in a control column. display:contents takes the wrapper
+       out of the layout so its rows are ordinary children again - the pairing
+       disappears with nothing else moving. A 180px column cannot hold two
+       captions and two controls on one line; that is arithmetic. The caption
+       width has to be restated because the pair's selector above is more
+       specific than the plain one below, and order alone will not beat it. */
+    SCOPE .selection-row-pair { display: contents; }
+    SCOPE .selection-row-pair .selection-panel-label {
+        width: 66px; flex: 0 0 66px;
+    }
     /* The caption is the shell's 52px, which is what makes a row fit at all:
        52 + 30 + a pair is inside 172px where 74 + 30 + a pair is not. */
     /* 🔴 THE CAPTION IS BACK ON THE ROW. It was given a line of its own here,
@@ -970,7 +995,7 @@ const SELECTION_PANEL_ROWS = [
     // FIND INTERACTIONS: the residues whose SIDE CHAINS come within 5 A of the
     // selection, atom to atom. One button and no settings. The seed stays
     // selected, as PyMOL's byres does.
-    { id: 'nearbyRow', label: 'Find', items: [
+    { id: 'nearbyRow', label: 'Find', pair: 'act', items: [
         { kind: 'button', id: 'selectNearby', label: 'interactions',
           title: 'Select every residue whose side chain comes within'
                + ' 5 Å of the selection' },
@@ -985,7 +1010,7 @@ const SELECTION_PANEL_ROWS = [
     // built everywhere and syncAlignRow hides it when `window.Align` is absent,
     // which is the same shape as the Style panel's Draw item: a control the
     // shared panel shows and no shell can honour is worse than no control.
-    { id: 'alignRow', label: 'Align', hidden: true, items: [
+    { id: 'alignRow', label: 'Align', hidden: true, pair: 'act', items: [
         { kind: 'select', id: 'alignSelect',
           title: 'Superpose other objects onto the selected residues (TM-align)',
           options: [['', 'to selection', { selected: true, hidden: true }],
@@ -1102,8 +1127,20 @@ function buildSelectionPanel() {
 
     const tools = el('div', { id: 'selectionTools', class: 'selection-tools',
                               title: 'Applies to the selected residues' });
+    // 🔴 A `pair` PUTS CONSECUTIVE ROWS ON ONE LINE, and it is a WRAPPER
+    // rather than one row with two captions. Two reasons. The rows keep
+    // their own ids and `hidden`, so syncAlignRow goes on hiding the Align
+    // row by itself and Find simply takes the width back - merging them
+    // would have meant hiding half a row instead. And the wrapper is
+    // `display: contents` in the narrow shells, which makes the pairing
+    // vanish without moving anything: a 180px control column cannot hold
+    // two captions and two controls on one line, and that is arithmetic
+    // rather than styling. See the CSS.
+    let pen = null;      // the open wrapper, if any
+    let penKey = null;
     for (const row of SELECTION_PANEL_ROWS) {
         if (row.divider) {
+            pen = null; penKey = null;
             tools.appendChild(el('div', { class: 'selection-panel-divider',
                                           id: row.divider }));
             continue;
@@ -1113,7 +1150,17 @@ function buildSelectionPanel() {
         node.appendChild(el('span', { class: 'selection-panel-label',
                                       text: row.label }));
         for (const item of row.items) node.appendChild(buildSelectionItem(item));
-        tools.appendChild(node);
+        if (row.pair) {
+            if (!pen || penKey !== row.pair) {
+                pen = el('div', { class: 'selection-row-pair' });
+                penKey = row.pair;
+                tools.appendChild(pen);
+            }
+            pen.appendChild(node);
+        } else {
+            pen = null; penKey = null;
+            tools.appendChild(node);
+        }
     }
     panel.appendChild(tools);
     return panel;
