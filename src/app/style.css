@@ -1709,6 +1709,43 @@ table.layout-table td {
     white-space: nowrap;
 }
 
+/* THE THIRD QUESTION, AND THE QUIETEST. The eye is a state and the name is a
+   state; `sele` is an ACTION, and three equally loud controls stop the row
+   reading as "this object, shown, being edited". It sits at the right because
+   the name takes flex: 1, and it comes up only on the row the pointer is on -
+   the list is scanned far more often than it is acted on. */
+.object-list-sele {
+    flex: 0 0 auto;
+    cursor: pointer;
+    font-size: 10px;
+    line-height: 1;
+    padding: 3px 5px;
+    border: 1px solid var(--color-gray-300);
+    border-radius: var(--btn-radius);
+    background: #fff;
+    color: var(--color-gray-500);
+}
+.object-list-sele:hover {
+    color: var(--color-primary);
+    border-color: var(--color-primary);
+}
+
+/* 🔴 ALWAYS THERE, AND IT SAYS WHEN IT IS ON. It used to appear on hover
+   only, which made it a control you had to already know about - and nothing
+   told you whether the selection on screen was this object's or something
+   else's. Pressed means the selection is EXACTLY this object's residues. */
+.object-list-sele[aria-pressed="true"] {
+    background: var(--color-primary);
+    border-color: var(--color-primary);
+    color: #fff;
+}
+.object-list-sele[aria-pressed="true"]:hover {
+    color: #fff;
+}
+/* ...and a hidden object still offers it: selecting is not showing, and
+   sele then Show is how you get at something you cannot currently see. */
+.object-list-row.is-hidden .object-list-sele { opacity: 0.55; }
+
 
 
 /* THE SEQUENCE STRIP WITH NOTHING ON SCREEN. Every object can be switched off,

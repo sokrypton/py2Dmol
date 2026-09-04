@@ -1765,15 +1765,20 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
     // ========================================================================
     const rawFrames = [];
     let previousBonds = undefined; // Track bonds for change detection
+    // 🔴 THE MODELS OF ONE FILE ARE ALWAYS FRAMES OF ONE OBJECT.
+    //
+    // "Load as Frames" answers a question about FILES - do several structures
+    // become one object with frames, or one object each - and it used to
+    // answer a second question with the same tick: whether the MODELS inside a
+    // single file were split into `NAME_model_2`, `NAME_model_3` and so on.
+    // That was survivable while the box was ticked by default. It is not now
+    // that it is not: dropping ONE 20-model NMR ensemble would come back as
+    // twenty objects, which is nothing the reader asked for and has nothing to
+    // do with how many files they dropped.
+    //
+    // `isTrajectory` above already reads `models.length > 1` on its own, so
+    // the two halves of the old behaviour disagreed with each other anyway.
     for (let i = 0; i < models.length; i++) {
-        if (!loadAsFramesCheckbox.checked && i > 0) {
-            const modelObjectName = `${targetObjectName}_model_${i + 1}`;
-            targetObject = tempBatch.find(obj => obj.name === modelObjectName) || null;
-            if (!targetObject) {
-                targetObject = { name: modelObjectName, frames: [] };
-                tempBatch.push(targetObject);
-            }
-        }
 
         // ONLY THE PAE NEEDS THIS, so only build it when there is a PAE.
         //
@@ -4989,6 +4994,18 @@ function handleFileUpload(event) {
         (async () => {
             try {
                 const stats = await processFiles(looseFiles, loadAsFrames);
+
+                // ...AND SEVERAL STRUCTURES AT ONCE MEANS SEVERAL ON SCREEN.
+                // With "Load as Frames" off - which is the default - each file
+                // becomes its own object, and showing one of four reads as
+                // three failures. Multi is the mode that shows them all, so a
+                // drop that produced more than one object turns it on. Only on
+                // a real multi-object load: a single structure must not flip a
+                // mode nobody asked for.
+                if (!loadAsFrames && stats && stats.objectsLoaded > 1
+                    && typeof showAllObjectsMulti === 'function') {
+                    showAllObjectsMulti();
+                }
 
                 // If processFiles returned early due to state file, stats will indicate it
                 if (stats.objectsLoaded === 0 && stats.framesAdded === 0 &&

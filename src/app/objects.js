@@ -150,10 +150,115 @@ function renderObjectList() {
             selectObjectForEditing(name);
         });
 
+        // ...AND `sele` TAKES THE WHOLE OF IT. The third question a row can
+        // answer: not what is drawn and not what is edited, but what is
+        // SELECTED - so the panels, Focus, Copy and Cut can act on one
+        // structure without dragging its whole sequence in the strip.
+        const sele = document.createElement('span');
+        sele.className = 'object-list-sele';
+        sele.textContent = 'sele';
+        sele.title = 'Select every residue of this object';
+        sele.setAttribute('aria-pressed', 'false');
+        sele.addEventListener('click', (e) => {
+            e.stopPropagation();
+            selectWholeObject(name);
+        });
+
         row.appendChild(eye);
         row.appendChild(label);
+        row.appendChild(sele);
         list.appendChild(row);
     }
+    syncObjectSeleState();
+}
+
+/**
+ * WHICH `sele` IS ON, without rebuilding a row.
+ *
+ * 🔴 MUTATED, NEVER REBUILT. This runs on every selection change - which is
+ * every click on the canvas and every step of a drag in the sequence strip -
+ * and re-rendering the list would destroy the button the pointer is on.
+ * Chrome fires `click` only when mousedown and mouseup share a live common
+ * ancestor, so a rebuild between the two swallows the press: the play button
+ * lost its icon that way ten times a second.
+ *
+ * A row is ON when the selection is EXACTLY that object's residues - the
+ * state the button puts you in. Not "overlaps": a click that selects one
+ * residue of an object would otherwise light the whole row, and the button
+ * would look pressed while naming something it did not do.
+ */
+function syncObjectSeleState() {
+    const renderer = viewerApi?.renderer;
+    const { list } = objectListEls();
+    if (!renderer || !list || list.hidden) return;
+    const sel = renderer.residueSelection;
+    const n = sel ? sel.size : 0;
+    for (const row of list.querySelectorAll('.object-list-row')) {
+        const name = row.querySelector('.object-list-name')?.textContent;
+        const btn = row.querySelector('.object-list-sele');
+        if (!btn || !name) continue;
+        let on = false;
+        if (n && renderer.localRangeOf) {
+            const win = renderer.localRangeOf(name);
+            const total = (renderer.coords || []).length;
+            const lo = win.off;
+            const hi = Math.min(total, win.end === Infinity ? total : win.end);
+            if (n === hi - lo) {
+                on = true;
+                for (let i = lo; i < hi; i++) {
+                    if (!sel.has(i)) { on = false; break; }
+                }
+            }
+        }
+        const want = on ? 'true' : 'false';
+        if (btn.getAttribute('aria-pressed') !== want) {
+            btn.setAttribute('aria-pressed', want);
+        }
+    }
+}
+
+/**
+ * SELECT EVERY RESIDUE OF ONE OBJECT.
+ *
+ * 🔴 IT HAS TO BE ADDRESSABLE FIRST. `localRangeOf` answers
+ * `{off: 0, end: Infinity}` whenever the merge is not enabled, and
+ * `{0, total}` when it is but the name is not one of its sources - both
+ * correct on their own terms, and both meaning "everything". So
+ * a selector naming an object hands back the WHOLE array in either state,
+ * and naming a row to get another row's residues is worse than the button
+ * not being there.
+ *
+ * These rows only exist in Multi - syncObjectListButton hides the list
+ * otherwise - so the usual case is a real slice and nothing has to move.
+ * What is left is the window where Multi is on and the merge has not been
+ * built yet, which a click can land in. There, switching makes the object
+ * the only one in the arrays, and "everything" becomes the right answer by
+ * construction. The select waits a frame because the switch goes through the
+ * picker's change event and the coordinates are not the new object's until
+ * it has settled.
+ */
+function selectWholeObject(name) {
+    const renderer = viewerApi?.renderer;
+    if (!renderer || !renderer.coords) return;
+    const ms = renderer.multiState;
+    const addressable = !!(ms && ms.enabled && ms.sourceNames
+        && ms.sourceNames.indexOf(name) >= 0);
+    const take = () => {
+        const r = viewerApi?.renderer;
+        if (!r || !r.coords) return;
+        // THROUGH THE RENDERER'S OWN VERB, beside clipTo and orientTo. A
+        // shell that resolves a selector itself is a second copy of the
+        // translation, and tests/interaction.js refuses one by name.
+        r.selectTo({ object: name });
+        if (window.SEQ?.updateColors) window.SEQ.updateColors();
+        r.render('select object');
+    };
+    if (!addressable && renderer.currentObjectName !== name) {
+        selectObjectForEditing(name);
+        requestAnimationFrame(() => requestAnimationFrame(take));
+        return;
+    }
+    take();
 }
 
 /**
@@ -277,10 +382,41 @@ function toggleObjectMulti() {
     afterShownObjectsChange();
 }
 
+/**
+ * SHOW EVERYTHING, IN MULTI. What a drop of several files ends with.
+ *
+ * Dropping four structures and being shown one of them reads as three of
+ * them having failed to load - the objects are there, the picker lists them,
+ * and the canvas shows one. Turning Multi on and lighting every eye is what
+ * "load all of them" means on screen.
+ *
+ * Through setShownObjects, the renderer's own setter, because that is what
+ * keeps `_framedObjects` - assigning `shownObjects` by hand skips it and the
+ * camera never widens to hold what just arrived.
+ */
+function showAllObjectsMulti() {
+    const renderer = viewerApi?.renderer;
+    if (!renderer || !renderer.setShownObjects) return false;
+    const names = Object.keys(renderer.objectsData || {});
+    if (names.length < 2) return false;
+    renderer.setShownObjects(names);
+    afterShownObjectsChange();
+    return true;
+}
+
 function attachObjectList() {
     const { btn, select } = objectListEls();
     if (!btn || !select) return;
     btn.addEventListener('click', toggleObjectMulti);
+    // ...AND `sele` FOLLOWS THE SELECTION, however it was made - a canvas
+    // click, a drag in the sequence strip, Select all, another row's button.
+    // A control that shows something the viewer is not doing is worse than no
+    // control, which is a rule this project has three other instances of.
+    // 🔴 SYNC, NOT RENDER: this fires on every step of a drag, and
+    // renderObjectList rebuilds every row - which destroys the button the
+    // pointer is on and swallows the click.
+    document.addEventListener('py2dmol-residue-selection-change',
+                              syncObjectSeleState);
     // WHAT IS ON SCREEN CAN CHANGE WITHOUT A CLICK IN THIS LIST - a restored
     // session, a Copy, the Python API - and so can which object is being
     // edited. Both labels follow the renderer rather than the buttons.

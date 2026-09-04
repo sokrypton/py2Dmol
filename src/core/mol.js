@@ -4286,6 +4286,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /** Set the residue selection and tell every surface that draws it. */
+        /**
+         * REPLACE THE SELECTION WITH WHATEVER A SELECTOR NAMES.
+         *
+         * The third verb beside clipTo and orientTo, and it exists for the
+         * same reason: a shell that resolves a selector itself is a second
+         * copy of the translation, and the copies drift. `src/app/objects.js`
+         * wanted "select this whole object" for its list rows and reached for
+         * positionsFor directly - which tests/interaction.js refuses by name.
+         *
+         * REPLACES rather than adds, unlike the embed's relative select() /
+         * unselect() pair - and that pair lives in parts/embed.js, which is
+         * in no web bundle, so the website could not have used it anyway.
+         */
+        selectTo(sel) {
+            this.setResidueSelection(positionsFor(this, sel));
+        }
+
         setResidueSelection(positions) {
             // A SET OR AN ARRAY. Every caller inside this repo passes a Set, so
             // the test was `positions.size` - and an array has no `.size`, so
