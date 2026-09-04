@@ -61,7 +61,14 @@
 // INLINES its scripts (the notebook build - viewer.py) does not have; there the
 // same job runs on the main thread, which is the honest trade rather than a
 // feature that silently does nothing.
-(function (global) {
+// 🔴 NAMED, SO THE WORKER CAN BE BUILT FROM THIS FILE'S OWN SOURCE.
+// See superpose: the worker used to `importScripts` this file by URL, which
+// needs the file to HAVE a url and needs that url to be fetchable. Neither
+// holds on a page opened from file:// - Chrome refuses importScripts there -
+// and neither holds when the script is inlined. A function knows its own
+// text, so the Blob carries the module itself and asks the network for
+// nothing.
+var py2dmolAlignModule = function (global) {
 'use strict';
 
 // >>> BEGIN GENERATED: foldjs/lib/tmalign.js
@@ -1649,26 +1656,52 @@ function applyInverseTransform(ya, n, t, u) {
      * copy of that path, and a second thing to keep in step.
      */
     function superpose(job, onProgress) {
-        var canWork = !!(SELF_URL && typeof Worker !== 'undefined' && typeof Blob !== 'undefined');
-        if (!canWork) {
-            // Main thread, fast settings, and the caller is told which it got.
+        // Main thread, fast settings, and the caller is told which it got.
+        var runHere = function () {
             var res = runJob({ ref: job.ref, targets: job.targets, full: FULL_SEARCH },
                 onProgress ? function (r, i, n) { onProgress(i + 1, n); } : null);
-            return Promise.resolve({ results: res, inWorker: false });
-        }
-        // ITS OWN URL, not a name spelled out again. This used to rebuild the
-        // path as base + 'align/align.js', which is this file's name written
-        // twice - and when the file was renamed the worker asked for one that
-        // no longer existed, failed to start, and every alignment fell back to
-        // the main thread. SELF_URL is already exactly this script.
-        var boot = 'importScripts(' + JSON.stringify(SELF_URL) + ');';
+            return { results: res, inWorker: false };
+        };
+        var canWork = !!(typeof Worker !== 'undefined' && typeof Blob !== 'undefined'
+            && typeof URL !== 'undefined' && URL.createObjectURL);
+        if (!canWork) return Promise.resolve(runHere());
+
+        // 🔴 THE WORKER CARRIES THIS FILE, NOT A PATH TO IT. It used to be
+        // `importScripts(SELF_URL)` - the script's own url, which at least
+        // could not go stale the way a rebuilt `base + 'align/align.js'` did.
+        // But a url is still something that has to be FETCHABLE, and on a page
+        // opened from file:// Chrome refuses importScripts outright:
+        //   "Failed to execute 'importScripts' on 'WorkerGlobalScope'".
+        // That surfaced as an uncaught NetworkError and no alignment at all,
+        // because the promise rejected instead of falling back. A function
+        // knows its own text, so the Blob is the module itself; the worker
+        // asks the network for nothing and there is no url to be wrong.
+        var boot;
+        try { boot = '(' + py2dmolAlignModule + ')(self);'; }
+        catch (e) { return Promise.resolve(runHere()); }
         var url = URL.createObjectURL(new Blob([boot], { type: 'text/javascript' }));
         return new Promise(function (resolve, reject) {
-            var w;
-            try { w = new Worker(url); } catch (e) { URL.revokeObjectURL(url); reject(e); return; }
+            var w = null;
+            var settled = false;
+            // 🔴 A WORKER THAT WILL NOT START IS NOT A FAILED ALIGNMENT.
+            // Every one of these used to reject, so anything that stopped the
+            // worker stopped the feature - when the same job runs perfectly
+            // well here, just slower. Only an error from the ALGORITHM is a
+            // real failure: re-running that on this thread would fail again
+            // and cost the page a freeze to say so.
+            var fallback = function () {
+                if (settled) return;
+                settled = true;
+                try { if (w) w.terminate(); } catch (e) { /* already gone */ }
+                URL.revokeObjectURL(url);
+                resolve(runHere());
+            };
             var done = function (fn, arg) {
+                if (settled) return;
+                settled = true;
                 w.terminate(); URL.revokeObjectURL(url); fn(arg);
             };
+            try { w = new Worker(url); } catch (e) { fallback(); return; }
             w.onmessage = function (e) {
                 if (e.data.progress) {
                     if (onProgress) onProgress(e.data.progress.done, e.data.progress.total);
@@ -1677,8 +1710,10 @@ function applyInverseTransform(ya, n, t, u) {
                 if (e.data.error) done(reject, new Error(e.data.error));
                 else done(resolve, { results: e.data.results, inWorker: true });
             };
-            w.onerror = function (e) { done(reject, new Error(e.message || 'align worker failed')); };
-            w.postMessage({ ref: job.ref, targets: job.targets, full: FULL_SEARCH });
+            w.onerror = fallback;
+            try {
+                w.postMessage({ ref: job.ref, targets: job.targets, full: FULL_SEARCH });
+            } catch (e) { fallback(); }
         });
     }
 
@@ -1699,4 +1734,5 @@ function applyInverseTransform(ya, n, t, u) {
         makeSec: makeSec,
         applyTransform: applyTransform
     };
-}(typeof self !== 'undefined' ? self : this));
+};
+py2dmolAlignModule(typeof self !== 'undefined' ? self : this);

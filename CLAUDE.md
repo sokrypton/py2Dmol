@@ -109,8 +109,9 @@ at call time, because the message is set again on every clear.
 
 🔴 **AND IT CARRIES `mol-align`, SO THE PAGE LOADS `align/align.js` ITSELF** -
 exactly as `index.html` does, and for the reason no bundle may contain it: it
-finds its own URL through `document.currentScript.src` to start its Worker, so
-concatenated it has none and TM-align silently runs on the main thread. Every
+is loaded by its own `<script>` tag - which used to be forced, because the
+Worker was started by importing that URL; the Blob carries the module's own
+source now, so this is a size choice rather than a requirement. Every
 method `mol-align` adds throws until that second script is loaded. This is the
 one bundle whose page needs two `<script>` tags, and they are `index.html`'s two.
 
@@ -207,10 +208,27 @@ public downloads is exercised on every run.
   nothing else — `index.html` does not name sources any more, and `dev.html`
   is generated; `python3 tools/bundle.py check` names every consumer that has
   not caught up. It is in the node lane, so it fails in seconds.
-- **`align/align.js` is never concatenated or inlined.** It starts its Worker
-  by having the worker `importScripts` *itself*, found through
-  `document.currentScript.src`. Without a URL of its own that lookup returns
-  `''` and TM-align runs on the main thread — seconds of frozen page, no error.
+- 🔴 **`align/align.js` NEEDED ITS OWN URL, AND NO LONGER DOES.** It started
+  its Worker by having the worker `importScripts` *itself*, found through
+  `document.currentScript.src` — so a bundled or inlined copy had no URL, the
+  lookup returned `''`, and TM-align ran on the main thread: seconds of frozen
+  page, no error. **A URL also has to be FETCHABLE**, which it is not on a page
+  opened from `file://` — Chrome refuses `importScripts` there, and the promise
+  REJECTED rather than falling back, so a local page got an uncaught
+  `NetworkError` and no alignment at all. Reported exactly that way.
+  The module is a named function now (`py2dmolAlignModule`) and the Blob is
+  built from **its own source**, so the worker asks the network for nothing and
+  there is no URL to be wrong. Measured on `index.html` opened straight off the
+  disk: `inWorker: true`, TM 1.000, 23 ms, against 22 ms over http.
+  🔴 **AND A WORKER THAT WILL NOT START IS NOT A FAILED ALIGNMENT.** Every way
+  of failing to get one used to reject, so anything that stopped the worker
+  stopped the feature — when the same job runs on this thread, just slower.
+  Construction, `onerror` and `postMessage` all fall back now; only an error
+  from the ALGORITHM still rejects, because re-running that here would fail
+  again and cost a freeze to say so.
+  **It is still not bundled**, but the reason it could not be is gone: the
+  file is loaded by its own `<script>` tag because that keeps ~25 KB out of
+  every bundle, not because the Worker needs a URL any more.
 - **ONE NOTEBOOK BUNDLE, WITH BOTH PAINTERS, AND `gpu` IS A RUNTIME SETTING.**
   There were three — GPU, 2D, and a cartoon-less tube — and the reason was
   never the download: the notebook library is **inlined into the .ipynb once

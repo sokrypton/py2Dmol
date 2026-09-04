@@ -91,16 +91,32 @@ const near = (a, b, tol, msg) => ok(Math.abs(a - b) <= tol,
     const src = fs.readFileSync('src/align/align.js', 'utf8');
     ok(src.indexOf(END_MARK) > 0 && src.indexOf('// >>> BEGIN GENERATED') >= 0,
         'the generated region has lost its markers, so nothing can check it');
-    // ...ONE file, and it names it by its own URL rather than spelling the
-    // filename out a second time. It did spell it out, and a rename then left
-    // the worker asking for a file that no longer existed - it failed to start
-    // and every alignment quietly ran on the main thread instead.
-    const boot = /var boot = [^;]*;/.exec(src);
-    ok(boot && /JSON\.stringify\(SELF_URL\)/.test(boot[0]),
-        'the worker builds its import path from something other than SELF_URL,'
-        + ' so a rename can break it again: ' + (boot && boot[0]));
-    ok(boot && !/\.js'/.test(boot[0]),
-        'the worker boot names a filename literally: ' + (boot && boot[0]));
+    // ...ONE file, AND THE WORKER CARRIES IT RATHER THAN A PATH TO IT.
+    // This has been wrong twice. First the worker rebuilt the path as
+    // base + 'align/align.js' - the filename written a second time - and a
+    // rename left it asking for a file that was not there. Then it used the
+    // script's own url, which cannot go stale but still has to be FETCHABLE:
+    // on a page opened from file:// Chrome refuses importScripts outright,
+    // and the promise rejected instead of falling back, so local pages got an
+    // uncaught NetworkError and no alignment at all. A function knows its own
+    // text, so the Blob is the module itself and there is no url to be wrong.
+    const boot = /boot = [^;]*;/.exec(src);
+    ok(boot && /py2dmolAlignModule/.test(boot[0]),
+        'the worker boot is built from something other than this module\'s own'
+        + ' source, so it depends on fetching a url again: ' + (boot && boot[0]));
+    ok(boot && !/\.js'/.test(boot[0]) && !/importScripts/.test(boot[0]),
+        'the worker boot names a file or imports one: ' + (boot && boot[0]));
+    // ...and the module has to BE a named function for that to be possible.
+    ok(/var py2dmolAlignModule = function \(global\) \{/.test(src),
+        'the module is not a named function any more, so its source cannot be'
+        + ' handed to a worker and the url is back');
+    // 🔴 AND A WORKER THAT WILL NOT START IS NOT A FAILED ALIGNMENT. Every
+    // way of failing to get one used to reject, so anything that stopped the
+    // worker stopped the feature - when the same job runs here, just slower.
+    ok(/w\.onerror = fallback;/.test(src),
+        'a worker that errors no longer falls back to the main thread');
+    ok(/catch \(e\) \{ fallback\(\); return; \}/.test(src),
+        'a worker that cannot be constructed no longer falls back');
     // ...and nothing anywhere still points at the file that used to hold it
     for (const f of ['index.html', 'src/core/mol.js', 'the web app']) {
         ok(readNamed(f).indexOf('resources/tmalign.js') < 0,
