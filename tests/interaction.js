@@ -5173,18 +5173,26 @@ function capturePanelBody() {
 // dead and stayed dead: reported as "Capture, Rotate, Turn does not record" and
 // "the GIF path is broken", which are the same bug. This builds a sink for each
 // format against stubs and pushes frames through it.
-t('a GIF is always cut out, and says so once', () => {
+t('a GIF is cut out unless asked otherwise, and says so once', () => {
     const body = capturePanelBody();
     const src2 = src;
-    // A CHOICE THAT IS ALWAYS THE SAME ANSWER IS NOT A CHOICE. Paper or Clear
-    // was one more control on the widest row in the panel, and a turn dropped
-    // onto a slide or a dark page wants the cut-out far more often than it
-    // wants a white square around the structure. PNG already exports this way.
-    if (/saveGifBackground/.test(body)) {
-        throw new Error('the background choice is back on the row');
+    // 🔴 TRANSPARENT IS THE DEFAULT AND THE PAPER IS THE OPTION. It was always
+    // the cut-out, on the argument that a choice which is always the same
+    // answer is not a choice - and it is not always the same answer: a player
+    // that renders transparency as BLACK turns a light drawing into a
+    // silhouette, and there is no way back from inside the file. So the menu
+    // is on the row again, defaulting to clear, and shown for GIF alone.
+    if (!/const clear = gif && \(o\.transparent !== false\);/.test(src2)) {
+        throw new Error('a GIF no longer defaults to transparent');
     }
-    if (!/const clear = gif;/.test(src2)) {
-        throw new Error('a GIF is no longer always transparent');
+    if (!/transparent: true/.test(src2)) {
+        throw new Error('CAPTURE_DEFAULTS does not carry the default');
+    }
+    if (!/menu\('saveGifBg'/.test(body)) {
+        throw new Error('the background menu is gone from the panel');
+    }
+    if (!/show\(bgBox, gif\)/.test(body)) {
+        throw new Error('the background menu is offered for a non-GIF format');
     }
     // ...and the limits are not spelled out beside the format: they are
     // applied to the controls themselves (fps max, sizes greyed out), which is

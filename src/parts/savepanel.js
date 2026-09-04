@@ -436,6 +436,7 @@
             let vFmt = null; let secIn = null; let fpsIn = null;
             let mbpsIn = null; let sizeSel = null; let colorsSel = null;
             let framesIn = null; let colorsBox = null; let sizeBox = null;
+            let bgSel = null; let bgBox = null;
             let srcSel = null; let rotIn = null;
             let vFmtBox = null; let srcBox = null;
             // ...assigned with the video row, called from the record row too:
@@ -495,6 +496,20 @@
                 ], opts.colors || 256, 'GIF palette size');
                 colorsBox = pair('Color', 'saveGifColors', colorsSel);
                 vRow.appendChild(colorsBox);
+                // ...AND WHETHER THE PAPER COMES WITH IT. A GIF's transparency
+                // is one palette entry, so the edge is a hard cut - right over
+                // a slide or a dark page, wrong over a busy one, where a matte
+                // that matches the background reads better than a fringe. A
+                // menu rather than a checkbox so it sits in the row like Sec,
+                // FPS and Color, which all say what they are in front of a
+                // value.
+                bgSel = menu('saveGifBg', [
+                    { value: 1, label: 'clear' },
+                    { value: 0, label: 'paper' },
+                ], opts.transparent === false ? 0 : 1,
+                'Cut the GIF out, or matte it onto the background colour');
+                bgBox = pair('Bg', 'saveGifBg', bgSel);
+                vRow.appendChild(bgBox);
                 }
                 if (sizes.length) {
                     // ...WITH ITS NAME IN FRONT OF IT, like Sec and FPS. "1x"
@@ -548,6 +563,9 @@
                         || pickedId === 'DR');
                     show(frL, counted);
                     show(colorsBox, gif);
+                    // ...only for the format that has the choice: WebM and MP4
+                    // cannot be transparent and a zip of PNGs always is.
+                    show(bgBox, gif);
                     // A GIF'S LIMITS ARE APPLIED TO THE CONTROLS, not just to
                     // the recording. The sink clamps either way, but a panel
                     // reading 30 fps and 1194x1194 over a file that came out
@@ -605,6 +623,9 @@
                 dpi: Number(dpiSel.value) || was.dpi,
                 frames: framesIn ? Number(framesIn.value) || was.frames : was.frames,
                 rotations: rotIn ? Number(rotIn.value) || was.rotations : was.rotations,
+                // ...and an absent control leaves the setting alone, which is
+                // why this reads `was` rather than a literal true.
+                transparent: bgSel ? bgSel.value !== '0' : was.transparent,
                 // WHICH OF THE FOUR, so the description can work out who sets
                 // the length. It used to be written only when record was
                 // pressed, so until then the line described the last thing
@@ -624,7 +645,7 @@
             // would be lost with it - so it lives in _captureOpts and the DOM
             // is filled from there.
             for (const c of [fmtSel, dpiSel, vFmt, secIn, fpsIn, mbpsIn, sizeSel,
-                colorsSel, framesIn, rotIn]) {
+                colorsSel, bgSel, framesIn, rotIn]) {
                 if (c) c.addEventListener('change', commit);
             }
             commit();

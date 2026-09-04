@@ -11442,11 +11442,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Clear the full canvas in device pixels, independent of current transform
             ctx.save();
             ctx.setTransform(1, 0, 0, 1, 0, 0);
+            // 🔴 THE CONTEXT'S OWN CANVAS, NOT THE VIEWER'S. An export renders
+            // into a DIFFERENT canvas - a 300 dpi PNG is 3.1x the on-screen
+            // one - and an SVG context has no canvas at all, so this read the
+            // screen's size in both. Transparent, it only ever cleared a
+            // buffer that was already clear; asked for paper, the fill covered
+            // the top-left third of the image and the rest came out cut out.
+            const cw = (ctx.canvas && ctx.canvas.width) || displayWidth;
+            const ch = (ctx.canvas && ctx.canvas.height) || displayHeight;
             if (this.isTransparent) {
-                ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                ctx.clearRect(0, 0, cw, ch);
             } else {
                 ctx.fillStyle = this.backgroundColor || '#ffffff';
-                ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                ctx.fillRect(0, 0, cw, ch);
             }
             ctx.restore();
 

@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>py2Dmol - render a folder</title>
+<!--
+  RENDER MANY STRUCTURES WITHOUT WRITING ANYTHING.
+
+  The first piece of feedback this project got was from someone with about a
+  thousand structures and no way to save a picture except by hand. There are
+  two answers to that and they are for different people: view.save_image() /
+  examples/batch_render.py for anyone already in Python, and THIS page for
+  anyone who is not - drop the files in, set the look once, watch it on a
+  preview, render the lot into one zip.
+
+  It is a plain page over the same embed API a host site uses, so there is
+  nothing here the library does not already do. Two things it does NOT do, on
+  purpose: it never uploads anything (the files are read in the browser and the
+  zip is built there), and it renders through ONE viewer rather than one per
+  file, because a viewer per structure is the whole cost.
+
+  JSZip is the only outside script and it is optional - without it the page
+  saves the images one at a time instead.
+-->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="py2Dmol/resources/bundles/py2Dmol.full.min.js"></script>
+<style>
+  :root {
+    --line: #d8dbe0; --ink: #24292f; --muted: #6b7280; --accent: #2563eb;
+    --ground: #f6f7f9; --card: #fff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+  header {
+    padding: 14px 20px; background: var(--card); border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header p { margin: 0; color: var(--muted); }
+  header a { color: var(--accent); }
+  main { display: flex; gap: 16px; padding: 16px; align-items: flex-start; }
+  .col { display: flex; flex-direction: column; gap: 12px; }
+  .left { width: 300px; flex: 0 0 300px; }
+  .right { flex: 1 1 auto; min-width: 0; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px;
+  }
+  .card h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); margin: 0 0 8px; font-weight: 600;
+  }
+  #drop {
+    border: 2px dashed var(--line); border-radius: 8px; padding: 22px 12px;
+    text-align: center; color: var(--muted); background: var(--card);
+    cursor: pointer;
+  }
+  #drop.over { border-color: var(--accent); background: #eff5ff; color: var(--accent); }
+  #drop b { color: var(--ink); display: block; font-size: 14px; margin-bottom: 3px; }
+  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .row > label { flex: 0 0 74px; color: var(--muted); }
+  .row > select, .row > input {
+    flex: 1 1 auto; min-width: 0; height: 26px; padding: 0 6px; font: inherit;
+    border: 1px solid var(--line); border-radius: 5px; background: #fff; color: inherit;
+  }
+  .row.pair > input { flex: 1 1 0; }
+  button {
+    font: inherit; height: 30px; padding: 0 14px; border-radius: 6px;
+    border: 1px solid var(--line); background: #fff; color: inherit; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: #b9bec6; }
+  button.primary {
+    background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
+  }
+  button.primary:hover:not(:disabled) { background: #1d4fd8; }
+  button:disabled { opacity: .5; cursor: default; }
+  #files { max-height: 260px; overflow: auto; margin: 0; padding: 0; list-style: none; }
+  #files li {
+    display: flex; gap: 6px; align-items: center; padding: 3px 5px; border-radius: 4px;
+    cursor: pointer;
+  }
+  #files li:hover { background: var(--ground); }
+  #files li[aria-current="true"] { background: #eff5ff; }
+  #files .nm { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #files .st { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
+  #files .st.bad { color: #b42318; }
+  #files .st.good { color: #157347; }
+  #fit { border: 1px solid var(--line); border-radius: 6px; background: #fff; overflow: hidden; }
+  /* THE PREVIEW IS SCALED FOR LOOKING, NEVER FOR DRAWING. The canvas is
+     always the size that will be exported - the renderer frames the structure
+     against it - so a 900px setting must not become a 900px box on the page.
+     transform leaves the element's own layout alone, which is what viewport.js
+     measures. */
+  #viewer { transform-origin: 0 0; }
+  #stage { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+  /* A progress bar with nothing in progress is a grey line saying nothing. */
+  #bar { height: 6px; background: var(--ground); border-radius: 3px; overflow: hidden; margin-top: 8px; display: none; }
+  #bar.on { display: block; }
+  #bar > div { height: 100%; width: 0; background: var(--accent); transition: width .1s linear; }
+  #status { color: var(--muted); margin-top: 8px; min-height: 18px; }
+  .hint { color: var(--muted); margin: 8px 0 0; }
+  .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>py2Dmol &mdash; render a folder</h1>
+  <p>Drop structures in, set the look once, save every picture. Nothing leaves this
+     browser. &nbsp;<a href="index.html">the viewer</a></p>
+</header>
+
+<main>
+  <div class="col left">
+    <div id="drop">
+      <b>Drop structures here</b>
+      .pdb, .cif, .ent &mdash; or a .zip of them<br>or click to choose
+      <input id="picker" type="file" multiple accept=".pdb,.cif,.mmcif,.ent,.zip" hidden>
+    </div>
+
+    <div class="card">
+      <h2>Files <span id="count" style="color:var(--muted);font-weight:400"></span></h2>
+      <ul id="files"></ul>
+    </div>
+
+    <div class="card">
+      <h2>Look</h2>
+      <div class="row"><label for="style">Style</label>
+        <select id="style">
+          <option value="cartoon">Cartoon</option>
+          <option value="richardson">Richardson</option>
+          <option value="ribbon">Ribbon</option>
+          <option value="3d">3D</option>
+          <option value="tube">Tube</option>
+        </select></div>
+      <div class="row"><label for="color">Colour</label>
+        <select id="color">
+          <option value="chain">Chain</option>
+          <option value="rainbow">Rainbow</option>
+          <option value="plddt">pLDDT</option>
+          <option value="deepmind">pLDDT (AF)</option>
+          <option value="ss">Secondary structure</option>
+          <option value="hydrophobicity">Hydrophobicity</option>
+          <option value="single">One colour</option>
+        </select></div>
+      <div class="row"><label for="bg">Paper</label>
+        <select id="bg">
+          <option value="">Transparent</option>
+          <option value="#ffffff">White</option>
+          <option value="#000000">Black</option>
+        </select></div>
+      <div class="row"><label for="biounit">Assembly</label>
+        <select id="biounit">
+          <option value="1">Biological assembly</option>
+          <option value="0">As deposited</option>
+        </select></div>
+    </div>
+
+    <div class="card">
+      <h2>Output</h2>
+      <div class="row"><label for="format">Format</label>
+        <select id="format">
+          <option value="png">PNG</option>
+          <option value="svg">SVG</option>
+        </select></div>
+      <div class="row"><label for="dpi">DPI</label>
+        <input id="dpi" type="number" min="36" max="1200" step="6" value="150"></div>
+      <div class="row pair"><label>Size</label>
+        <input id="w" type="number" min="80" max="2000" step="20" value="600" aria-label="width">
+        <input id="h" type="number" min="80" max="2000" step="20" value="600" aria-label="height">
+      </div>
+      <p class="hint" id="outHint"></p>
+    </div>
+  </div>
+
+  <div class="col right">
+    <div class="card">
+      <h2>Preview</h2>
+      <div id="stage">
+        <div id="fit"><div id="viewer"></div></div>
+        <div style="flex:1 1 220px; min-width:200px">
+          <p class="hint" id="previewName">No structures yet.</p>
+          <p class="hint">This is exactly what each file will be rendered as -
+             the same viewer, the same exporter. Click a file on the left to
+             preview it.</p>
+          <div class="actions" style="margin-top:14px">
+            <button id="go" class="primary" disabled>Render all &amp; save</button>
+            <button id="stop" disabled>Stop</button>
+            <button id="clear" disabled>Clear</button>
+          </div>
+          <div id="bar"><div></div></div>
+          <div id="status"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+'use strict';
+(function () {
+    const $ = (id) => document.getElementById(id);
+    const files = [];            // {name, text, status}
+    let current = -1;            // which one the preview is showing
+    let viewer = null;
+    let busy = false, stopped = false;
+
+    const OPT_IDS = ['style', 'color', 'bg', 'biounit', 'format', 'dpi', 'w', 'h'];
+
+    /** The settings, as the two option bags the API takes. */
+    function settings() {
+        const fmt = $('format').value;
+        return {
+            show: {
+                style: $('style').value,
+                color: { mode: $('color').value },
+                bg: $('bg').value || undefined,
+                biounit: $('biounit').value === '1',
+                width: Math.max(80, +$('w').value || 600),
+                height: Math.max(80, +$('h').value || 600),
+                controls: false, play: false, orient: true, select: false,
+            },
+            image: {
+                format: fmt,
+                dpi: Math.max(36, Math.min(1200, +$('dpi').value || 150)),
+                // The paper is a CHOICE here where the camera button always
+                // cuts out: a page of PNGs for a slide deck wants the ground
+                // painted, and compositing a thousand of them afterwards is
+                // exactly the work this page exists to remove.
+                transparent: !$('bg').value,
+                dataUrl: true,
+            },
+        };
+    }
+
+    function say(msg, bad) {
+        const s = $('status');
+        s.textContent = msg || '';
+        s.style.color = bad ? '#b42318' : '';
+    }
+
+    function baseName(n) { return n.replace(/\.[^.]+$/, ''); }
+
+    function refreshList() {
+        const ul = $('files');
+        ul.innerHTML = '';
+        files.forEach((f, i) => {
+            const li = document.createElement('li');
+            li.setAttribute('aria-current', i === current ? 'true' : 'false');
+            const nm = document.createElement('span');
+            nm.className = 'nm';
+            nm.textContent = f.name;
+            const st = document.createElement('span');
+            st.className = 'st' + (f.status === 'failed' ? ' bad'
+                : f.status === 'done' ? ' good' : '');
+            st.textContent = f.status || '';
+            li.appendChild(nm);
+            li.appendChild(st);
+            li.onclick = () => preview(i);
+            ul.appendChild(li);
+        });
+        $('count').textContent = files.length ? '(' + files.length + ')' : '';
+        $('go').disabled = busy || !files.length;
+        $('clear').disabled = busy || !files.length;
+        const s = settings();
+        $('outHint').textContent = s.image.format === 'svg'
+            ? 'SVG is vector - the DPI does not apply to it.'
+            : Math.round(s.show.width * s.image.dpi / 96) + ' x '
+              + Math.round(s.show.height * s.image.dpi / 96) + ' px per image.';
+    }
+
+    /** Draw one file into the preview viewer, and hand the renderer back. */
+    function draw(i) {
+        const s = settings();
+        const el = $('viewer');
+        el.style.width = s.show.width + 'px';
+        el.style.height = s.show.height + 'px';
+        const k = Math.min(1, 440 / s.show.width, 440 / s.show.height);
+        el.style.transform = k < 1 ? 'scale(' + k + ')' : '';
+        $('fit').style.width = Math.round(s.show.width * k) + 'px';
+        $('fit').style.height = Math.round(s.show.height * k) + 'px';
+        viewer = window.py2Dmol.show(el, files[i].text, s.show);
+        return viewer;
+    }
+
+    function settle() {
+        // TWO FRAMES, because the opening orient lands on the first and the
+        // GPU cartoon builds its mesh on the draw after it. A capture in the
+        // same tick is of a viewer that has not drawn.
+        return new Promise((done) => requestAnimationFrame(
+            () => requestAnimationFrame(done)));
+    }
+
+    async function preview(i) {
+        if (busy || !files.length) return;
+        current = Math.max(0, Math.min(files.length - 1, i));
+        refreshList();
+        $('previewName').textContent = files[current].name;
+        try {
+            draw(current);
+            await settle();
+            say('');
+        } catch (e) {
+            say(files[current].name + ': ' + e.message, true);
+        }
+    }
+
+    /** One file in, one {name, blob} out. */
+    async function renderOne(i) {
+        const s = settings();
+        draw(i);
+        await settle();
+        const out = await viewer.toImage(s.image);
+        const ext = out.format === 'svgz' ? 'svgz' : out.format;
+        const bytes = await (await fetch(out.dataUrl)).blob();
+        return { name: baseName(files[i].name) + '.' + ext, blob: bytes };
+    }
+
+    async function renderAll(onEach) {
+        const made = [];
+        for (let i = 0; i < files.length; i++) {
+            if (stopped) break;
+            files[i].status = '...';
+            refreshList();
+            try {
+                made.push(await renderOne(i));
+                files[i].status = 'done';
+            } catch (e) {
+                files[i].status = 'failed';
+                say(files[i].name + ': ' + e.message, true);
+            }
+            refreshList();
+            if (onEach) onEach(i + 1, files.length);
+        }
+        return made;
+    }
+
+    function saveBlob(blob, name) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+    }
+
+    async function deliver(made) {
+        if (!made.length) return;
+        // ONE FILE IF WE CAN. A thousand separate downloads is a thousand
+        // prompts and a Downloads folder nobody can find anything in; the zip
+        // is built here, in the browser, from bytes that never left it.
+        if (made.length > 1 && typeof JSZip !== 'undefined') {
+            say('Zipping ' + made.length + ' images...');
+            const zip = new JSZip();
+            made.forEach((m) => zip.file(m.name, m.blob));
+            const blob = await zip.generateAsync({ type: 'blob' });
+            saveBlob(blob, 'py2dmol_renders.zip');
+            return;
+        }
+        for (const m of made) {
+            saveBlob(m.blob, m.name);
+            await new Promise((r) => setTimeout(r, 120));
+        }
+    }
+
+    async function go() {
+        if (busy || !files.length) return;
+        busy = true; stopped = false;
+        $('go').disabled = true; $('stop').disabled = false; $('clear').disabled = true;
+        const t0 = Date.now();
+        $('bar').classList.add('on');
+        const bar = $('bar').firstElementChild;
+        say('Rendering 1 of ' + files.length + '...');
+        const made = await renderAll((n, total) => {
+            bar.style.width = (100 * n / total) + '%';
+            say('Rendering ' + Math.min(n + 1, total) + ' of ' + total + '...');
+        });
+        await deliver(made);
+        const dt = (Date.now() - t0) / 1000;
+        const bad = files.filter((f) => f.status === 'failed').length;
+        say((stopped ? 'Stopped after ' : 'Rendered ') + made.length + ' of '
+            + files.length + ' in ' + dt.toFixed(1) + 's'
+            + (bad ? ', ' + bad + ' failed' : ''), !!bad);
+        bar.style.width = '0';
+        $('bar').classList.remove('on');
+        busy = false; $('stop').disabled = true;
+        refreshList();
+    }
+
+    // ---- getting files in -------------------------------------------------
+
+    const STRUCT = /\.(pdb|cif|mmcif|ent|pdb1|txt)$/i;
+
+    function addText(name, text) {
+        files.push({ name, text, status: '' });
+    }
+
+    async function ingest(list) {
+        let added = 0;
+        for (const f of list) {
+            if (/\.zip$/i.test(f.name)) {
+                if (typeof JSZip === 'undefined') {
+                    say('a .zip needs JSZip, which did not load', true);
+                    continue;
+                }
+                const zip = await JSZip.loadAsync(f);
+                const names = Object.keys(zip.files).filter(
+                    (n) => STRUCT.test(n) && !zip.files[n].dir
+                        && !/(^|\/)__MACOSX\//.test(n)).sort();
+                for (const n of names) {
+                    addText(n.split('/').pop(), await zip.files[n].async('string'));
+                    added++;
+                }
+            } else if (STRUCT.test(f.name)) {
+                addText(f.name, await f.text());
+                added++;
+            }
+        }
+        refreshList();
+        if (added && current < 0) preview(0);
+        else if (!added) say('nothing there looked like a structure', true);
+        return added;
+    }
+
+    $('picker').onchange = (e) => { ingest([...e.target.files]); e.target.value = ''; };
+    $('drop').onclick = () => $('picker').click();
+    for (const ev of ['dragenter', 'dragover']) {
+        document.addEventListener(ev, (e) => {
+            e.preventDefault(); $('drop').classList.add('over');
+        });
+    }
+    for (const ev of ['dragleave', 'drop']) {
+        document.addEventListener(ev, (e) => {
+            e.preventDefault();
+            if (ev === 'drop' || e.target === $('drop')) $('drop').classList.remove('over');
+        });
+    }
+    document.addEventListener('drop', (e) => {
+        e.preventDefault();
+        if (e.dataTransfer && e.dataTransfer.files.length) ingest([...e.dataTransfer.files]);
+    });
+
+    $('go').onclick = go;
+    $('stop').onclick = () => { stopped = true; say('stopping...'); };
+    $('clear').onclick = () => {
+        files.length = 0; current = -1;
+        $('viewer').innerHTML = '';
+        $('previewName').textContent = 'No structures yet.';
+        say(''); refreshList();
+    };
+    for (const id of OPT_IDS) {
+        $(id).addEventListener('change', () => {
+            refreshList();
+            if (current >= 0) preview(current);
+        });
+    }
+
+    refreshList();
+
+    // The door a probe drives, and the same one every button above goes
+    // through - so a test measures the page rather than a second copy of it.
+    window.py2dmolBatch = { files, ingest, addText, preview, renderOne,
+                            renderAll, settings, refreshList };
+}());
+</script>
+</body>
+</html>

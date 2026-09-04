@@ -126,6 +126,19 @@ transparent. Shift-click skips the panel.
 
 With **Rotate** or **Draw** on, the same button records a video instead: one
 seamless full turn, or the drawing being made.
+A GIF's background is transparent by default; the **Bg** menu beside the format
+sets it to the paper colour instead, for a player that shows transparency as
+black.
+
+**A folder of them, without clicking a thousand times.** Open
+[`render.html`](render.html), drop the structures onto it, set the look once
+against a live preview and press *Render all* — every picture comes back as one
+zip. Nothing is uploaded: the files are read in the browser and the zip is built
+there, so it works offline and on structures you cannot send anywhere.
+
+From your own code it is `renderer.toImage({format, dpi})`, which renders
+exactly what the camera button renders and hands back the bytes instead of
+starting a download.
 
 #### Getting around
 **Moving the view.** Drag to rotate, scroll to zoom, middle-drag or

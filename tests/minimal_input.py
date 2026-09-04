@@ -460,6 +460,54 @@ window.addEventListener('load', () => {
       // the bug, and it is what a "does it export at all" check cannot see -
       // and the shaded one has to be DARKER, which an inverted or misapplied
       // shadow would fail while still differing.
+      // 🔴 AND THE PICTURE CAN BE TAKEN WITHOUT A DOWNLOAD. saveImage ends
+      // in the browser's download flow, which is fine for one file and
+      // useless for a thousand - reported by a reader wanting to render a
+      // thousand structures from a script. toImage RETURNS the bytes, and
+      // both sit on ONE renderer, so the dpi clamp, the export pixel scale
+      // and the SVG refusals cannot drift between them.
+      try {
+        const a96 = await r.toImage({ format: 'png', dpi: 96 });
+        const a300 = await r.toImage({ format: 'png', dpi: 300 });
+        const asvg = await r.toImage({ format: 'svg' });
+        const url = await r.toImage({ format: 'png', dpi: 96, dataUrl: true });
+        R.toImage = {
+          png: [a96.width, a96.height, a96.blob.size, a96.blob.type],
+          hi: [a300.width, a300.height, a300.blob.size],
+          svgLen: (asvg.text || '').length,
+          svgHead: (asvg.text || '').slice(0, 4),
+          svgPaths: ((asvg.text || '').match(/<path/g) || []).length,
+          dataUrl: (url.dataUrl || '').slice(0, 22),
+        };
+      } catch (e) { R.toImage = { threw: String(e && e.message || e) }; }
+
+      // 🔴 THE PAPER, AND THE CANVAS IT IS PAINTED ONTO. The export forced
+      // transparency, so `transparent: false` could not be asked for at all -
+      // and the fill under it read the SCREEN canvas's size while an export
+      // renders into a DIFFERENT one (a 300 dpi PNG is 3.1x as wide), so asked
+      // for paper it covered the top-left corner and cut out the rest.
+      // ON THE 2D PAINTER, which is the only place it shows: the GPU clears
+      // its own buffer at alpha 1 and blits the whole image over the fill.
+      try {
+        const wasGpu = r.useGPU, wasT = r.isTransparent, wasBg = r.backgroundColor;
+        r.useGPU = false; r.isTransparent = false; r.backgroundColor = '#ffffff';
+        const k = 2.5;
+        const big = document.createElement('canvas');
+        big.width = Math.round(r.displayWidth * k);
+        big.height = Math.round(r.displayHeight * k);
+        const bctx = big.getContext('2d');
+        r._exportPxScale = k;
+        try { r._renderToContext(bctx, big.width, big.height); }
+        finally { r._exportPxScale = 1; }
+        const d = bctx.getImageData(0, 0, big.width, big.height).data;
+        let painted = 0;
+        for (let i = 3; i < d.length; i += 4) if (d[i] > 8) painted++;
+        R.paper = { painted, px: big.width * big.height,
+                    w: big.width, screen: r.canvas.width };
+        r.useGPU = wasGpu; r.isTransparent = wasT; r.backgroundColor = wasBg;
+        r.render('paperProbe');
+      } catch (e) { R.paper = { threw: String(e && e.message || e) }; }
+
       if (typeof C2S !== 'undefined') {
         const svgOf = (on) => {
           r.shadowEnabled = on;
@@ -672,7 +720,45 @@ def main():
     print(f"  orient: module {o.get('module')}, from python"
           f" {o.get('fromPython')}, identity {o.get('identity')}")
 
+    pa = R.get('paper') or {}
+    print(f"  paper: {pa.get('painted')} of {pa.get('px')} painted on a"
+          f" {pa.get('w')}px export (screen {pa.get('screen')}px)")
+
+    ti = R.get('toImage') or {}
+    print(f"  toImage: png {ti.get('png')}, 300dpi {ti.get('hi')},"
+          f" svg {ti.get('svgLen')} chars / {ti.get('svgPaths')} paths")
+
     bad = []
+    if pa.get('threw'):
+        bad.append('the paper probe threw: ' + pa['threw'])
+    elif pa.get('painted') != pa.get('px'):
+        bad.append(f"transparent:false painted {pa.get('painted')} of"
+                   f" {pa.get('px')} pixels - the background fill is reading"
+                   f" the screen canvas's size, not the export's")
+    # 🔴 A SCRIPT NEEDS THE BYTES, NOT A DOWNLOAD. saveImage ends in the
+    # browser's download flow; toImage is the door that returns them.
+    if ti.get('threw'):
+        bad.append(f"toImage threw: {ti.get('threw')} - a script then has no"
+                   " way at all to get a picture out")
+    else:
+        png = ti.get('png') or [0, 0, 0, '']
+        hi = ti.get('hi') or [0, 0, 0]
+        if png[3] != 'image/png' or png[2] < 1000:
+            bad.append(f"toImage(png) gave {png}, which is not a PNG")
+        # 300 dpi is 96 dpi times 300/96, and the BYTES have to grow with the
+        # pixels - a scale that reached the canvas size but not the drawing
+        # would keep the dimensions and lose the detail.
+        if not (hi[0] > png[0] * 2.5 and hi[2] > png[2]):
+            bad.append(f"300 dpi gave {hi} against 96 dpi's {png} - the dpi"
+                       " reached the canvas size but not the drawing")
+        if ti.get('svgHead') != '<svg' or (ti.get('svgPaths') or 0) < 50:
+            bad.append(f"toImage(svg) returned {ti.get('svgLen')} chars, head"
+                       f" {ti.get('svgHead')!r}, {ti.get('svgPaths')} paths -"
+                       " an export with no paths is 359 bytes of nothing,"
+                       " which every length check passes")
+        if ti.get('dataUrl') != 'data:image/png;base64,':
+            bad.append(f"dataUrl came back as {ti.get('dataUrl')!r}")
+
     o = R.get('orient') or {}
     if not o.get('module'):
         bad.append('parts/orient.js is not in the notebook bundle, so nothing can'

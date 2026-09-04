@@ -1,0 +1,229 @@
+"""render.html - drop a folder of structures in, get every picture out.
+
+    python3 tests/render_page.py
+
+The page is the answer for anyone who is not in Python (view.save_image and
+examples/batch_render.py are the answer for anyone who is). It reads the files
+in the browser, renders them through ONE viewer - a viewer per structure is the
+whole cost - and hands back a zip.
+
+Driven the way a reader drives it: a real `drop` event carrying real File
+objects, then the same renderAll() every button on the page goes through, so
+this measures the page and not a second copy of it.
+
+What is checked:
+
+  * a drop is what loads the files, and a .zip of them is unpacked;
+  * the preview draws;
+  * renderAll() returns one image per file, and the PNG HAS INK IN IT - a
+    viewer that drew nothing writes a well-formed PNG of the right size;
+  * the format menu reaches the exporter (SVG comes back as vector text);
+  * 🔴 and the Paper menu reaches it too. `transparent` is derived from that
+    one control, so a page offering White while exporting a cut-out is two
+    answers to one question.
+"""
+import http.server
+import json
+import os
+import shutil
+import socketserver
+import subprocess
+import sys
+import threading
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+import cdp  # noqa: E402
+
+PORT = 8946
+CDP_PORT = 9346
+fails = []
+
+
+def check(ok, msg):
+    print(('  ok   ' if ok else '  FAIL ') + msg)
+    if not ok:
+        fails.append(msg)
+
+
+def serve(port):
+    class H(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **k):
+            super().__init__(*a, directory=ROOT, **k)
+
+        def log_message(self, *a):
+            pass
+
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
+    httpd = socketserver.ThreadingTCPServer(('127.0.0.1', port), H)
+    httpd.daemon_threads = True
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd
+
+
+# A REAL DROP. The page never sees these as anything but files a person let go
+# of over it - which is the only entrance it has, so a probe that called
+# addText() would be testing a door nobody uses.
+DROP = """
+(async () => {
+  const names = %s;
+  const dt = new DataTransfer();
+  for (const n of names) {
+    const text = await (await fetch('/' + n)).text();
+    dt.items.add(new File([text], n, { type: 'chemical/x-cif' }));
+  }
+  document.dispatchEvent(new DragEvent('drop', {
+      dataTransfer: dt, bubbles: true, cancelable: true }));
+  const t0 = Date.now();
+  const B = window.py2dmolBatch;
+  while (Date.now() - t0 < 15000 && B.files.length < names.length)
+    await new Promise((s) => setTimeout(s, 50));
+  return B.files.map((f) => f.name);
+})()"""
+
+# The image the page would have saved, measured: its size and how much of it
+# is not empty.
+IMAGE = """
+(async () => {
+  const B = window.py2dmolBatch;
+  const made = await B.renderAll();
+  const read = (blob) => new Promise((s) => {
+      const fr = new FileReader(); fr.onload = () => s(fr.result);
+      fr.readAsDataURL(blob); });
+  const out = [];
+  for (const m of made) {
+    const url = await read(m.blob);
+    const rec = { name: m.name, size: m.blob.size, head: url.slice(0, 32) };
+    if (/\\.png$/.test(m.name)) {
+      const img = new Image();
+      await new Promise((s, j) => { img.onload = s; img.onerror = j; img.src = url; });
+      const c = document.createElement('canvas');
+      c.width = img.width; c.height = img.height;
+      c.getContext('2d').drawImage(img, 0, 0);
+      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      let ink = 0;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 8) ink++;
+      Object.assign(rec, { w: img.width, h: img.height, ink,
+                           px: img.width * img.height });
+    } else {
+      rec.text = atob(url.split(',')[1]).slice(0, 400);
+    }
+    out.push(rec);
+  }
+  return out;
+})()"""
+
+
+def main():
+    profile = '/tmp/py2dmol-render-page-%d' % os.getpid()
+    httpd = serve(PORT)
+    proc, ws = cdp.launch(CDP_PORT, profile)
+    try:
+        ws.call('Runtime.enable')
+        ws.call('Page.enable')
+        ws.call('Page.navigate', url='http://127.0.0.1:%d/render.html' % PORT)
+        cdp.wait_for(ws, "!!(window.py2dmolBatch && window.py2Dmol && "
+                         'document.getElementById(\'go\'))', 40,
+                     'the page never finished loading')
+
+        names = cdp.evaluate(ws, DROP % json.dumps(['1UBQ.cif', '3CHY.cif']))
+        check(names == ['1UBQ.cif', '3CHY.cif'],
+              'a drop loads the files: %r' % (names,))
+        check(cdp.evaluate(ws, 'document.getElementById("go").disabled') is False,
+              'and Render all comes alive')
+
+        # Small and cheap: this is measuring the wiring, not the renderer.
+        cdp.evaluate(ws, """(() => {
+            const set = (id, v) => {
+              const el = document.getElementById(id);
+              el.value = v;
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            };
+            set('w', 200); set('h', 200); set('dpi', 96); set('format', 'png');
+            set('bg', '');
+            return true;
+        })()""")
+        time.sleep(0.4)
+
+        shots = cdp.evaluate(ws, IMAGE, True)
+        check(len(shots) == 2, 'renderAll returns one image per file: %d'
+              % len(shots))
+        check(all(s['name'].endswith('.png') for s in shots),
+              'named after the structure: %s'
+              % ', '.join(s['name'] for s in shots))
+        check(all(s['head'].startswith('data:image/png') for s in shots),
+              'and they really are PNGs')
+        one = shots[0]
+        check(190 <= one['w'] <= 210 and one['w'] == one['h'],
+              'at the size the menu asked for: %dx%d' % (one['w'], one['h']))
+        check(one['ink'] > 200,
+              'with ink in it: %d opaque pixels of %d' % (one['ink'], one['px']))
+        check(one['ink'] < one['px'],
+              'and the ground is cut out (%d of %d)' % (one['ink'], one['px']))
+
+        # 🔴 THE PAPER MENU IS THE ONE CONTROL, and `transparent` is derived
+        # from it - two controls would be two answers to one question.
+        cdp.evaluate(ws, """(() => {
+            const el = document.getElementById('bg');
+            el.value = '#ffffff';
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return true; })()""")
+        time.sleep(0.4)
+        check(cdp.evaluate(ws, 'py2dmolBatch.settings().image.transparent')
+              is False, 'choosing White turns the cut-out off')
+        papered = cdp.evaluate(ws, IMAGE, True)[0]
+        check(papered['ink'] == papered['px'],
+              'and every pixel is painted: %d of %d'
+              % (papered['ink'], papered['px']))
+
+        cdp.evaluate(ws, """(() => {
+            const el = document.getElementById('format');
+            el.value = 'svg';
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return true; })()""")
+        time.sleep(0.4)
+        vec = cdp.evaluate(ws, IMAGE, True)[0]
+        check(vec['name'].endswith('.svg'), 'the format menu names the file %s'
+              % vec['name'])
+        check('<svg' in vec['text'], 'and what comes back is vector')
+
+        # A zip of structures is one file to drag, which is how a thousand of
+        # them arrive. Skipped rather than failed with no JSZip - it is a CDN
+        # script and the lane may have no network.
+        if cdp.evaluate(ws, 'typeof JSZip !== "undefined"'):
+            got = cdp.evaluate(ws, """
+            (async () => {
+              const B = window.py2dmolBatch;
+              document.getElementById('clear').click();
+              const zip = new JSZip();
+              zip.file('a/one.cif', await (await fetch('/1UBQ.cif')).text());
+              zip.file('a/two.cif', await (await fetch('/3CHY.cif')).text());
+              zip.file('a/readme.md', 'not a structure');
+              const blob = await zip.generateAsync({ type: 'blob' });
+              const dt = new DataTransfer();
+              dt.items.add(new File([blob], 'bundle.zip'));
+              document.dispatchEvent(new DragEvent('drop', {
+                  dataTransfer: dt, bubbles: true, cancelable: true }));
+              const t0 = Date.now();
+              while (Date.now() - t0 < 15000 && !B.files.length)
+                await new Promise((s) => setTimeout(s, 50));
+              return B.files.map((f) => f.name);
+            })()""")
+            check(got == ['one.cif', 'two.cif'],
+                  'a dropped zip is unpacked, and only the structures: %r'
+                  % (got,))
+        else:
+            print('  --   JSZip did not load; the zip leg is skipped')
+    finally:
+        proc.kill()
+        httpd.shutdown()
+        shutil.rmtree(profile, ignore_errors=True)
+
+    print('FAIL' if fails else 'PASS')
+    return 1 if fails else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

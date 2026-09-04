@@ -215,14 +215,18 @@
             // A CUT-OUT GIF HAS TO BE RENDERED, not read off the screen: the
             // live canvas has the paper painted into it and every pixel is
             // opaque. So transparency forces the offscreen path even at 1x.
-            // A GIF IS ALWAYS CUT OUT. Its transparency is one palette entry
-            // rather than an alpha channel, so the edge is a hard cut - but a
-            // turn dropped onto a slide or a dark page wants that far more
-            // often than it wants a white square around the structure, and the
-            // choice was one more control on the widest row in the panel. PNG
-            // already exports this way; WebM and MP4 cannot, which is why it
-            // is not a question anywhere else either.
-            const clear = gif;
+            // A GIF IS CUT OUT UNLESS ASKED OTHERWISE. Its transparency is
+            // one palette entry rather than an alpha channel, so the edge is a
+            // hard cut - and a turn dropped onto a slide or a dark page wants
+            // that far more often than a white square, which is why it is
+            // still the default. It used to be the only option, on the
+            // reasoning that the choice was not worth one more control on the
+            // widest row in the panel; asked for, because a hard-cut edge is
+            // exactly wrong over a busy background, where a matte matching the
+            // page reads better than a fringe. PNG already exports both ways;
+            // WebM and MP4 cannot be transparent at all, which is why this is
+            // not a question anywhere else.
+            const clear = gif && (o.transparent !== false);
             // A zip is always rendered: its frames are PNGs at their own size,
             // and a PNG of the live canvas would be the screen's.
             const offscreen = zip || clear || (w !== source.width || h !== source.height);
@@ -488,7 +492,10 @@
                     : `${o.frames || 36} PNGs`;
                 bits.push(n, `${o.dpi} dpi`);
             } else if (gif) {
-                bits.push(`${o.colors} colours`, 'transparent');
+                bits.push(`${o.colors} colours`,
+                    o.transparent === false
+                        ? `on ${this.backgroundColor || '#ffffff'}`
+                        : 'transparent');
             } else {
                 bits.push(`${o.mbps} Mbps`);
             }
@@ -553,7 +560,21 @@
             if (this._savePanel) this._syncCaptureButtons();
         },
 
-        saveImage(opts) {
+        /**
+         * 🔴 ONE RENDERER, TWO SINKS. This used to end in _triggerDownload,
+         * so the ONLY way to get a picture out was a browser download - fine
+         * for one, useless for a thousand, and reported that way: "I would
+         * like to render and save about a thousand structures but I couldn't
+         * find the way to actually save the image programmatically."
+         *
+         * `_renderImage` does the work and hands the result to a sink;
+         * `saveImage` downloads it and `toImage` returns it. Splitting the
+         * SINK off rather than adding a second exporter is what keeps the dpi
+         * clamp, the export pixel scale, the transparent-background dance and
+         * the "SVG needs the 2D painter" refusal in ONE place - two exporters
+         * would have drifted the way this file's other pairs did.
+         */
+        _renderImage(opts, sink) {
             const o = opts || {};
             // PNG unless asked otherwise. The panel offers SVG alongside it
             // everywhere except in Draw mode, where the look is made of
@@ -563,8 +584,13 @@
             const dpi = Math.max(36, Math.min(1200, Number(o.dpi)
                 || this.constructor.CAPTURE_DEFAULTS.dpi));
 
+            // TRANSPARENT UNLESS ASKED OTHERWISE - the same rule and the same
+            // spelling as the GIF's. The camera button passes nothing and
+            // still gets the cut-out, which is what a figure wants; a caller
+            // rendering a folder of PNGs for a slide deck asks for the paper
+            // with `transparent: false` rather than compositing them itself.
             const prevTransparent = this.isTransparent;
-            this.isTransparent = true;
+            this.isTransparent = (o.transparent !== false);
             const restore = () => {
                 this.isTransparent = prevTransparent;
                 try { this.render(); } catch (e) { /* view is cosmetic here */ }
@@ -610,13 +636,12 @@
                     out.toBlob((blob) => {
                         if (!blob) {
                             this._captureStatus('PNG export failed', true);
+                            sink(null, new Error('PNG export failed'));
                             return;
                         }
-                        const filename = this._generateFilename(objectName, 'png');
-                        this._triggerDownload(blob, filename);
-                        this._captureStatus(`Saved PNG: ${out.width}x${out.height}, `
-                            + `${Math.round(k * 96)} dpi, `
-                            + `${(blob.size / 1048576).toFixed(1)} MB`);
+                        sink({ blob, format: 'png', mime: 'image/png',
+                               width: out.width, height: out.height,
+                               dpi: Math.round(k * 96), name: objectName });
                     }, 'image/png');
                     restore();
                     return;
@@ -647,28 +672,79 @@
 
                 if (format === 'svgz' && typeof CompressionStream !== 'undefined') {
                     // .svgz: the same bytes through the browser's native gzip.
-                    // Async, so it downloads from the promise; errors fall back
-                    // to the plain path rather than losing the export.
+                    // Async, so it reaches the sink from the promise; errors
+                    // fall back to the plain path rather than losing the export.
                     new Response(
                         new Blob([svgString]).stream()
                             .pipeThrough(new CompressionStream('gzip'))
                     ).blob().then((gz) => {
-                        const filename = this._generateFilename(objectName, 'svgz');
-                        this._triggerDownload(
-                            new Blob([gz], { type: 'image/svg+xml' }), filename);
-                        this._captureStatus(`Saved ${filename}`);
-                    }).catch(() => this._downloadSvg(svgString, objectName));
+                        sink({ blob: new Blob([gz], { type: 'image/svg+xml' }),
+                               format: 'svgz', mime: 'image/svg+xml',
+                               text: null, width, height, name: objectName });
+                    }).catch(() => sink({
+                        blob: new Blob([svgString], { type: 'image/svg+xml' }),
+                        format: 'svg', mime: 'image/svg+xml',
+                        text: svgString, width, height, name: objectName }));
                     restore();
                     return;
                 }
 
-                this._downloadSvg(svgString, objectName);
+                sink({ blob: new Blob([svgString], { type: 'image/svg+xml' }),
+                       format: 'svg', mime: 'image/svg+xml',
+                       text: svgString, width, height, name: objectName });
                 restore();
             } catch (e) {
                 restore();
                 console.error('Failed to export image:', e);
                 this._captureStatus(`Error exporting image: ${e.message}`, true);
+                sink(null, e);
             }
+        },
+
+        /** Render and DOWNLOAD - the camera button, and every existing caller. */
+        saveImage(opts) {
+            this._renderImage(opts, (out, err) => {
+                if (!out || err) return;
+                if (out.format === 'svg' && out.text) {
+                    this._downloadSvg(out.text, out.name);
+                    return;
+                }
+                const filename = this._generateFilename(out.name, out.format);
+                this._triggerDownload(out.blob, filename);
+                this._captureStatus(out.format === 'png'
+                    ? `Saved PNG: ${out.width}x${out.height}, ${out.dpi} dpi, `
+                        + `${(out.blob.size / 1048576).toFixed(1)} MB`
+                    : `Saved ${filename}`);
+            });
+        },
+
+        /**
+         * Render and RETURN it - no download, no panel, no file name.
+         *
+         * The door a script needs: load a structure, await this, write the
+         * bytes yourself. Resolves to {blob, format, mime, width, height,
+         * dpi, text} - `text` is the SVG source when the format is svg, so a
+         * caller that wants a string never has to read a Blob back.
+         *
+         * `dataUrl: true` adds a base64 data: URL, which is what a headless
+         * browser can carry out over CDP in one evaluate.
+         */
+        toImage(opts) {
+            const o = opts || {};
+            return new Promise((resolve, reject) => {
+                this._renderImage(o, (out, err) => {
+                    if (err || !out) {
+                        reject(err || new Error('image export failed'));
+                        return;
+                    }
+                    if (!o.dataUrl) { resolve(out); return; }
+                    const fr = new FileReader();
+                    fr.onload = () => resolve(
+                        Object.assign({}, out, { dataUrl: fr.result }));
+                    fr.onerror = () => reject(new Error('could not read the image'));
+                    fr.readAsDataURL(out.blob);
+                });
+            });
         },
 
         /** Deprecated: kept so existing callers and saved pages keep working. */
@@ -1181,6 +1257,9 @@
         get CAPTURE_DEFAULTS() {
             return { format: 'png', dpi: 200,
                 seconds: 6, fps: 30, mbps: 12, container: 'webm', scale: 1,
+                // GIF only, and true is what it has always done. WebM and MP4
+                // have no transparency to offer and a zip of PNGs always has.
+                transparent: true,
                 rotations: 1 };
         },
         get GIF_LIMITS() { return { maxPx: 1024, maxFps: 20, maxFrames: 300 }; },

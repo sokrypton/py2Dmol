@@ -160,7 +160,8 @@ if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
   UI=(pick_empty selection_mark focus_mode hover_echo heatmap_objects heatmap_visibility hidden_reload cut_ligands
       sidechain_toggle nucleic_multi save_multi selection_panel minimal_input
       object_reload python_page python_multi style_per_object align_objects embed panel
-      msa_paired_ui selection_shells mobile_layout play_stop heatmap_maps heatmap_names)
+      msa_paired_ui selection_shells mobile_layout play_stop heatmap_maps heatmap_names
+      render_page)
   pids=(); names=()
   for t in $UI; do
     ( run_probe $t ) & pids+=($!); names+=($t)

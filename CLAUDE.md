@@ -1009,6 +1009,48 @@ public downloads is exercised on every run.
   those depends on how wide the column is. The panel does need a ceiling
   (`max-width: 100%`) or its stated 340px hangs out of both.
 
+- 🔴 **THE EXPORT HAD ONE SINK AND IT WAS THE BROWSER'S DOWNLOAD FLOW.** The
+  first piece of user feedback this project received was that there is no way
+  to save a picture from code - *"I would like to render and save about a
+  thousand structures but I couldn't find the way"* - and there was not:
+  `saveImage` ended in `_triggerDownload`. `_renderImage(opts, sink)` is the
+  work and the two sinks are `saveImage` (download) and `toImage` (returns
+  `{blob, format, width, height, dpi, text}`, plus a `dataUrl` when asked).
+  Splitting the SINK rather than adding a second exporter is what keeps the dpi
+  clamp, the export pixel scale, the transparency and the "SVG needs the 2D
+  painter" refusal in one place.
+  **AND THE ANSWER TO THE THOUSAND IS `render.html`, NOT A PYTHON DOOR.** Drop
+  the files on, set the look once against a live preview, press Render all, get
+  one zip. It is a plain page over the embed API - `py2Dmol.show` then
+  `toImage`, through ONE viewer for the whole run, because a viewer per
+  structure is the entire cost - and it uploads nothing: the files are read in
+  the browser and JSZip builds the archive there (optional, from a CDN; without
+  it the page saves the images one at a time, and a dropped .zip of structures
+  is unpacked the same way). `window.py2dmolBatch` is the door
+  `tests/render_page.py` drives, and the probe drops REAL `File` objects through
+  a real `drop` event, because that is the page's only entrance.
+  🔴 **A `view.save_image(path)` WAS WRITTEN, MEASURED, TESTED AND REMOVED.** It
+  worked - there is no renderer in Python, so it started a headless Chrome on a
+  standalone page and called `toImage` - and it cost a CDP WebSocket client in
+  the shipped wheel, a save/restore of the six `_sent_*` fields plus the queued
+  orient (because `_display_viewer` is the PUBLISHING path and marks things
+  sent), a Chrome-hunting error message, and a batch example to say "do not
+  loop over this". *Reverted at the reader's word: "feels hacky... keep it
+  simple, provide user a html for bulk only".* One page does the job the
+  feedback asked for. Do not add it back without a reason the page cannot meet.
+  🔴 **AND THE PAPER MENU IS ONE CONTROL FEEDING ONE FLAG.** `transparent` is
+  derived from the background choice rather than offered beside it - a page
+  saying White while exporting a cut-out is two answers to one question. That
+  needed the export to stop FORCING transparency (`this.isTransparent =
+  (o.transparent !== false)`, the same spelling as the GIF's), and it needed
+  the background fill to stop reading the SCREEN canvas's size: an export
+  renders into a DIFFERENT canvas - a 300 dpi PNG is 3.1x the on-screen one -
+  and an SVG context has no canvas at all, so `ctx.canvas` with the display
+  size as the fallback is the only reading that is right in all three. Asked
+  for paper, the old one painted the top-left third and cut out the rest.
+  **Invisible on the GPU**, which clears its own buffer at alpha 1 and blits
+  the whole image over the fill - so it is checked on the 2D painter, in
+  `tests/minimal_input.py`, where mutating it back paints 40% of the canvas.
 - **A capability in the bundle that no interface reaches is not shipped.**
   `parts/clip.js` is in every build and only `index.html` could get to it: the
   website had a Clip panel, the embed had `v.clip(sel)`, the notebook had
@@ -2961,6 +3003,32 @@ public downloads is exercised on every run.
   is a view nobody sees. `msa.defaultQuery` names the ALIGNMENT, and the initial
   load and the picker both prefer it.
 
+- 🔴 **A PICTURE COULD ONLY LEAVE THROUGH A DOWNLOAD.** `saveImage` ended in
+  `_triggerDownload`, so the only way to get a rendering out was the browser's
+  download flow - fine for one file and useless for a thousand. Reported by a
+  reader: *"I would like to render and save about a thousand structures but I
+  couldn't find the way to actually save the image programmatically."* There
+  was no Python door either; `save_state` is a session, not an image.
+  **ONE RENDERER, TWO SINKS.** `_renderImage(opts, sink)` does the work;
+  `saveImage` downloads what it produces and `toImage` returns it. Splitting
+  the SINK off rather than writing a second exporter is what keeps the dpi
+  clamp, `_exportPxScale`, the transparent-background dance and the "SVG needs
+  the 2D painter" refusal in one place - two exporters would have drifted the
+  way every other pair in this tree did.
+  `toImage({format, dpi, dataUrl})` resolves to `{blob, format, mime, width,
+  height, dpi, text}` - `text` is the SVG source, so a caller wanting a string
+  never reads a Blob back, and `dataUrl` is what a headless browser can carry
+  out over CDP in one evaluate.
+  **`examples/batch_render.py` is the answer to the question that was asked**:
+  one Chrome, one page, N structures, because starting the browser and loading
+  the bundle per file is what makes a thousand unreasonable. Measured **0.11 s
+  a structure** - a thousand is about two minutes.
+  Checked in `tests/minimal_input.py`, and the checks are shaped the way this
+  file keeps having to relearn: **a PNG at 300 dpi must be bigger in BYTES as
+  well as in pixels**, because a scale that reaches the canvas size but not the
+  drawing keeps the dimensions and loses the detail; and an SVG is counted in
+  `<path>` elements, because an export with nothing in it is 359 bytes of well
+  formed nothing that every length check passes.
 - **Subsystems are optional and guarded.** `if (window.Heatmap)`, `if (window.MSA)`,
   `typeof C2S === 'undefined'`. A build without one loses a feature, not a page.
 - **Prove a move changed nothing.** `node tests/paint_trace.js` digests every
