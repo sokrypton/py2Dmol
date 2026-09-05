@@ -158,7 +158,7 @@ function renderObjectList() {
         sele.className = 'object-list-sele';
         sele.textContent = 'sele';
         sele.title = 'Select every residue of this object'
-            + ' (press again to clear, shift-click to add another)';
+            + ' (click again to unselect; other objects stay selected)';
         sele.setAttribute('aria-pressed', 'false');
         // 🔴 A LATCH, NOT A ONE-WAY DOOR. The button lights up while its
         // selection stands, and a lit button that does nothing when you press
@@ -169,24 +169,20 @@ function renderObjectList() {
         // Asked of the SELECTION, not of the attribute: the attribute is the
         // answer syncObjectSeleState computed on the last selection change,
         // and one question with two answers is how they come to disagree.
+        // 🔴 A PER-OBJECT TOGGLE THAT COMPOSES, AND NO MODIFIER TO KNOW ABOUT.
+        // Each button owns its own object's residues: click to put them in,
+        // click again to take them out, and what the other rows put in stays
+        // where it is. Two structures selected is two clicks, and letting one
+        // go is a click on the one you want gone - not a rebuild of the
+        // selection from whichever row you happen to press next.
+        //
+        // It was a replace with shift for the relative pair, which is the
+        // convention a file list uses; here every row is a whole object rather
+        // than one of a thousand lines, so the modifier bought a rule to learn
+        // and nothing else.
         sele.addEventListener('click', (e) => {
             e.stopPropagation();
-            // 🔴 SHIFT IS THE RELATIVE PAIR, and it toggles the OBJECT rather
-            // than replacing the selection: shift-click a second row and both
-            // structures are selected, shift-click a lit one and it drops out
-            // while the others stay. Without the second half, shift could only
-            // ever add and there would be no way to take one back except by
-            // starting again.
-            if (e.shiftKey) {
-                selectWholeObject(name, covered(name) ? 'remove' : 'add');
-                return;
-            }
-            // A plain click NARROWS to this object - and clears only when the
-            // selection is already exactly that, which is the state the button
-            // itself put you in. With two objects selected, clicking one means
-            // "just this one", not "none".
-            if (selectionIsExactlyObject(name)) clearObjectSelection();
-            else selectWholeObject(name);
+            selectWholeObject(name, covered(name) ? 'remove' : 'add');
         });
 
         row.appendChild(eye);
@@ -213,17 +209,15 @@ function renderObjectList() {
  * would look pressed while naming something it did not do.
  */
 /**
- * TWO QUESTIONS, AND THE ROW LIGHTS ON THE WIDER ONE.
+ * IS EVERY RESIDUE OF THIS OBJECT SELECTED?
  *
- * `covered` is "every residue of this object is selected" - true for both rows
- * when two objects have been shift-selected, which is what the lit state has
- * to mean once more than one can be on at a time. It is still not "overlaps":
- * a click that selects ONE residue lights nothing, which is the rule the
- * single-object version was written for.
+ * One question, asked by the click and by the sync - the button lights when
+ * the answer is yes and the click reads it to decide which way it goes, so
+ * the two cannot disagree about what the button is showing.
  *
- * `selectionIsExactlyObject` is the narrower one, and only the plain click
- * asks it - it is the state that click puts you in, and so the only state in
- * which pressing again can mean "let go".
+ * "Covered", not "overlaps": a click in the canvas that selects ONE residue
+ * lights nothing. And not "exactly", which cannot express two objects being
+ * selected at once - both rows are lit, and each one lets go of its own.
  */
 function objectWindow(name) {
     const renderer = viewerApi?.renderer;
@@ -243,12 +237,6 @@ function covered(name) {
     return true;
 }
 
-function selectionIsExactlyObject(name) {
-    const sel = viewerApi?.renderer?.residueSelection;
-    const w = objectWindow(name);
-    if (!sel || !w) return false;
-    return sel.size === w.hi - w.lo && covered(name);
-}
 
 function syncObjectSeleState() {
     const renderer = viewerApi?.renderer;
@@ -263,22 +251,6 @@ function syncObjectSeleState() {
             btn.setAttribute('aria-pressed', want);
         }
     }
-}
-
-/**
- * ...AND LET IT GO AGAIN.
- *
- * `clearResidueSelection`, not `setResidueSelection` with an empty set: that
- * is the verb a click on the background calls, and the two are not the same
- * door - parts/ui.js wraps both for focus mode and only one of them means
- * "nothing is selected any more".
- */
-function clearObjectSelection() {
-    const r = viewerApi?.renderer;
-    if (!r) return;
-    r.clearResidueSelection();
-    if (window.SEQ?.updateColors) window.SEQ.updateColors();
-    r.render('unselect object');
 }
 
 /**

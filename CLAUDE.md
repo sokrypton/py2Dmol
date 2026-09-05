@@ -807,27 +807,25 @@ public downloads is exercised on every run.
   answer used by both the click and `syncObjectSeleState`), never of the
   `aria-pressed` attribute: the attribute is what the last selection change
   computed, and one question with two answers is how they come to disagree.
-  The clear goes through `clearResidueSelection`, which is the verb a click on
-  the background uses.
-  🔴 **AND SHIFT IS THE RELATIVE PAIR, WHICH THE RENDERER NOW OWNS.**
-  `selectTo(sel, mode)` takes `'add'` and `'remove'` beside the default
-  replace - the same question the embed's `select`/`unselect` answer, and that
-  pair lives in `parts/embed.js`, which is in no web bundle. One translation,
-  three things to do with the answer, rather than a second walk of the selector
-  in the shell that wanted the other two. Shift-click TOGGLES the object: add a
-  second structure to the selection, shift-click a lit row to take it back out.
-  Without that second half shift could only ever add, and the only way back
-  would be to start again.
-  **So the row lights on "covered", not on "exactly".** Two objects
-  shift-selected means two lit rows, which the exact rule cannot express - and
-  it is still not "overlaps": one residue lights nothing, which is what the
-  exact rule was written for. `selectionIsExactlyObject` survives for the
-  PLAIN click alone: that click narrows to one object, and clears only from
-  the state it put you in, so clicking one of two selected objects means "just
-  this one" rather than "none".
-  *An empty relative result was given a `clearResidueSelection` branch first
-  and measured as a no-op - `setResidueSelection` stores null for an empty set,
-  which is the same end state - so it is not there.*
+  🔴 **AND EACH ROW OWNS ITS OWN OBJECT'S RESIDUES, SO THEY COMPOSE.** Click a
+  second row and that structure JOINS the selection; click a lit row and that
+  one leaves while the rest stay. `selectTo(sel, mode)` is what makes it one
+  translation: `'add'` and `'remove'` beside the default replace, the same
+  question the embed's `select`/`unselect` answer - and that pair lives in
+  `parts/embed.js`, which is in no web bundle, so the alternative was a second
+  walk of the selector in the shell.
+  *It was a REPLACE with shift for the relative pair first - the convention a
+  file list uses - and that is wrong here: every row is a whole object rather
+  than one of a thousand lines, so the modifier bought a rule to learn and
+  nothing else. Reverted at the reader's word.*
+  **So the row lights on "covered", not on "exactly".** Two objects selected
+  means two lit rows, which an exact rule cannot express - and it is still not
+  "overlaps": one residue selected in the canvas lights nothing. One question,
+  asked by the click and by the sync, so the button and what pressing it does
+  cannot disagree.
+  *An empty result was given a `clearResidueSelection` branch first and
+  measured as a no-op - `setResidueSelection` stores null for an empty set -
+  so it is not there, and `clearObjectSelection` went with it.*
   🔴 **AND THE CHECK HAS TO READ THE CLICK, NOT A FRAME LATER.**
   `tests/multi_object.py` first measured the selection after a settle, and a
   build with the toggle REMOVED reads 0 there too - the second press re-selects
