@@ -818,6 +818,17 @@ public downloads is exercised on every run.
   file list uses - and that is wrong here: every row is a whole object rather
   than one of a thousand lines, so the modifier bought a rule to learn and
   nothing else. Reverted at the reader's word.*
+  🔴 **AND A ROW CANNOT CLAIM A SELECTION IT DOES NOT ADDRESS.**
+  `localRangeOf` answers `{off: 0, end: Infinity}` whenever the merge is off -
+  for ANY name, including objects whose coordinates are not loaded at all - so
+  "is every residue of this object selected" came back true for EVERY row the
+  moment anything was fully selected. **Reported as: click one and they all get
+  selected.** The state it happens in is the one Multi opens in: the list is up
+  and only the edited object is shown, so there is no merge yet.
+  `objectWindow` asks the addressability question first - merged, a name
+  addresses the arrays when it is one of the sources; un-merged, only the
+  current object does - which is the rule `selectWholeObject` already applies
+  before it ACTS, applied before we ANSWER.
   **So the row lights on "covered", not on "exactly".** Two objects selected
   means two lit rows, which an exact rule cannot express - and it is still not
   "overlaps": one residue selected in the canvas lights nothing. One question,

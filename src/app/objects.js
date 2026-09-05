@@ -222,6 +222,23 @@ function renderObjectList() {
 function objectWindow(name) {
     const renderer = viewerApi?.renderer;
     if (!renderer || !renderer.localRangeOf) return null;
+    // 🔴 IT HAS TO ADDRESS THE ARRAY, AND localRangeOf CANNOT SAY THAT.
+    // It answers {off: 0, end: Infinity} whenever the merge is off - for ANY
+    // name, including objects whose coordinates are not loaded at all - so
+    // "is every residue of this object selected" came back TRUE for every row
+    // the moment anything was fully selected. Reported as: click one, and
+    // they all light up.
+    //
+    // Merged, a name addresses the arrays when it is one of the sources.
+    // Un-merged, the arrays hold the CURRENT object and nothing else, so it is
+    // the only name that addresses anything. Same rule selectWholeObject
+    // applies before it acts; this is it applied before we answer.
+    const ms = renderer.multiState;
+    const merged = !!(ms && ms.enabled && ms.sourceNames);
+    const addresses = merged
+        ? ms.sourceNames.indexOf(name) >= 0
+        : name === renderer.currentObjectName;
+    if (!addresses) return null;
     const win = renderer.localRangeOf(name);
     const total = (renderer.coords || []).length;
     const lo = win.off;

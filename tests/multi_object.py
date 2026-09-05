@@ -448,6 +448,29 @@ window.addEventListener('load', () => {
       R.multiOpensOnEdited = r.drawnObjects().join(',') === r.currentObjectName;
       R.eyesOnAtOpen = R.rows.map((_, k) => rowOn(k));
 
+      // 🔴 A ROW CANNOT CLAIM A SELECTION IT DOES NOT ADDRESS. Multi opens on
+      // the edited object alone, so there is no merge yet - and localRangeOf
+      // answers {0, Infinity} for ANY name while the merge is off, including
+      // objects whose coordinates are not loaded. Every row's sele lit up the
+      // moment anything was fully selected: reported as "click one and they
+      // all get selected". This is the state it happens in.
+      {
+        const seles0 = () => Array.from(
+            document.querySelectorAll('#objectList .object-list-sele'));
+        const k = R.rows.indexOf(r.currentObjectName);
+        seles0()[k].click();
+        await settle();
+        R.seleUnmerged = {
+          merged: !!(r.multiState && r.multiState.enabled),
+          n: r.residueSelection ? r.residueSelection.size : 0,
+          want: r.coords.length,
+          pressed: seles0().map((b) => b.getAttribute('aria-pressed')),
+          lit: seles0().filter((b) => b.getAttribute('aria-pressed') === 'true').length,
+        };
+        seles0()[k].click();            // ...and put it back
+        await settle();
+      }
+
       // EVERY EYE ON
       for (let k = 0; k < R.rows.length; k++) if (!rowOn(k)) {
         eyes()[k].click();
@@ -1078,6 +1101,10 @@ def main():
           f"  (merge {'on' if R['multi'] else 'OFF'}, offsets {R['offsets']})")
     sb, so, sf, sx = (R.get('seleBefore') or {}, R.get('seleOn') or {},
                       R.get('seleOff') or {}, R.get('seleFollows') or {})
+    su = R.get('seleUnmerged') or {}
+    print(f"  sele before the merge: {su.get('n')}/{su.get('want')} selected,"
+          f" {su.get('lit')} of {len(su.get('pressed') or [])} rows lit"
+          f" (merged {su.get('merged')})")
     both, back = (R.get('seleBoth') or {}, R.get('seleBackToOne') or {})
     print(f"  sele compose: both {both.get('n')}/{both.get('want')}"
           f" {both.get('pressed')}, one out {back.get('n')}/{back.get('want')}"
@@ -1183,6 +1210,13 @@ def main():
         bad.append(f"pressing a lit sele again left {sx.get('n')} residues"
                    f" selected and the button {(sx.get('pressed') or [None])[0]}"
                    " - a latch that only latches one way")
+    if su.get('n') != su.get('want'):
+        bad.append(f"sele on the only loaded object selected {su.get('n')} of"
+                   f" {su.get('want')} positions")
+    if su.get('lit') != 1:
+        bad.append(f"one row was pressed and {su.get('lit')} lit up"
+                   f" ({su.get('pressed')}) - a row is claiming a selection it"
+                   " does not address, which localRangeOf cannot tell it")
     if both.get('n') != both.get('want'):
         bad.append(f"selecting a second object gave {both.get('n')} residues,"
                    f" not the {both.get('want')} of both - a row replaces the"
