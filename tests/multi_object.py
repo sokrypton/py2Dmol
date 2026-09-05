@@ -497,6 +497,50 @@ window.addEventListener('load', () => {
       R.afterJoinMulti = !!(r.multiState && r.multiState.enabled);
       R.cameraHeld = camA === JSON.stringify([r.viewerState.extent, r.viewerState.center]);
 
+      // 🔴 `sele` IS A LATCH. It selects every residue of its object, lights
+      // up while that selection stands, and pressing it again lets go - a lit
+      // button that does nothing when pressed reads as a missed click. The
+      // state is asked of the SELECTION, so a click anywhere else drops it
+      // without the button being touched.
+      {
+        const seles = () => Array.from(
+            document.querySelectorAll('#objectList .object-list-sele'));
+        const pressed = () => seles().map((b) => b.getAttribute('aria-pressed'));
+        const size = () => (r.residueSelection ? r.residueSelection.size : 0);
+        const idx = 0;
+        const who = rowNames()[idx];
+        const node = seles()[idx];
+        R.seleBefore = { pressed: pressed(), n: size() };
+        seles()[idx].click();
+        await settle();
+        R.seleOn = { pressed: pressed(), n: size(),
+                     // every residue of that object and no other
+                     whole: r.localRangeOf ? (() => {
+                       const w = r.localRangeOf(who);
+                       const total = r.coords.length;
+                       const hi = w.end === Infinity ? total : Math.min(total, w.end);
+                       return hi - w.off; })() : -1 };
+        // ...AND THE SAME NODE, because the list is mutated and not rebuilt:
+        // a rebuild between mousedown and mouseup swallows the press.
+        R.seleSameNode = seles()[idx] === node;
+        seles()[idx].click();           // press again
+        // 🔴 READ BEFORE THE SETTLE. What the CLICK did is the thing under
+        // test; a frame later is a different question with the strip, the
+        // panels and the merge's own translation in between - measured, a
+        // build whose second press re-selects still reads 0 after a settle.
+        R.seleOffAtOnce = size();
+        await settle();
+        R.seleOff = { pressed: pressed(), n: size() };
+
+        // and it follows a selection made anywhere else
+        seles()[idx].click();
+        await settle();
+        r.clearResidueSelection();
+        r.render('probe clear');
+        await settle();
+        R.seleFollows = { pressed: pressed(), n: size() };
+      }
+
       // BACK TO ONE OBJECT AT A TIME: the picker comes back, and what it names
       // is what is on screen.
       btn.click();
@@ -1006,6 +1050,14 @@ def main():
     print(f"  one:   {R['oneN']:6d} positions, {R['oneInk']:8d} ink")
     print(f"  both:  {R['bothN']:6d} positions, {R['bothInk']:8d} ink"
           f"  (merge {'on' if R['multi'] else 'OFF'}, offsets {R['offsets']})")
+    sb, so, sf, sx = (R.get('seleBefore') or {}, R.get('seleOn') or {},
+                      R.get('seleOff') or {}, R.get('seleFollows') or {})
+    print(f"  sele: {sb.get('n')} selected -> press {so.get('n')}"
+          f" of {so.get('whole')} -> press again {sx.get('n')};"
+          f" pressed {sb.get('pressed')} -> {so.get('pressed')}"
+          f" -> {sx.get('pressed')} (at once {R.get('seleOffAtOnce')})")
+
+
     print(f"  map covers {R['mapLen']} of {R['bothN']} positions")
     print(f"  {R['segments']} segments, {R['crossing']} of them across the join")
     print(f"  auto per object: {R.get('autos')}; first position of each:"
@@ -1088,6 +1140,24 @@ def main():
           + (f"  DECLINED: {R['gpuError']}" if R.get("gpuError") else ""))
 
     bad = []
+    if so.get('n') != so.get('whole') or so.get('whole', 0) <= 0:
+        bad.append(f"sele selected {so.get('n')} of the object's"
+                   f" {so.get('whole')} residues")
+    if (so.get('pressed') or [None])[0] != 'true':
+        bad.append("sele did not light up while its selection stood")
+    if R.get('seleOffAtOnce') != 0:
+        bad.append(f"pressing a lit sele again re-selected"
+                   f" {R.get('seleOffAtOnce')} residues - the latch only"
+                   " latches one way")
+    if sx.get('n') != 0 or (sx.get('pressed') or [None])[0] != 'false':
+        bad.append(f"pressing a lit sele again left {sx.get('n')} residues"
+                   f" selected and the button {(sx.get('pressed') or [None])[0]}"
+                   " - a latch that only latches one way")
+    if not R.get('seleSameNode'):
+        bad.append('the sele button was rebuilt by its own click, which is how'
+                   ' the press gets swallowed')
+    if (sf.get('pressed') or [None])[0] != 'false' or sf.get('n') != 0:
+        bad.append('sele stayed lit after the selection was cleared elsewhere')
     if not R.get("iconCount"):
         bad.append("no toolbar icons were found, so the clash check below"
                    " passes on an empty set")

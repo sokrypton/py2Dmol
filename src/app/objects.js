@@ -157,11 +157,22 @@ function renderObjectList() {
         const sele = document.createElement('span');
         sele.className = 'object-list-sele';
         sele.textContent = 'sele';
-        sele.title = 'Select every residue of this object';
+        sele.title = 'Select every residue of this object'
+            + ' (press again to clear)';
         sele.setAttribute('aria-pressed', 'false');
+        // 🔴 A LATCH, NOT A ONE-WAY DOOR. The button lights up while its
+        // selection stands, and a lit button that does nothing when you press
+        // it is the worst kind: it looks like the click was missed. Pressing
+        // again clears, which is what Clip already does and what the arrow on
+        // the button's own state promises.
+        //
+        // Asked of the SELECTION, not of the attribute: the attribute is the
+        // answer syncObjectSeleState computed on the last selection change,
+        // and one question with two answers is how they come to disagree.
         sele.addEventListener('click', (e) => {
             e.stopPropagation();
-            selectWholeObject(name);
+            if (selectionIsWholeObject(name)) clearObjectSelection();
+            else selectWholeObject(name);
         });
 
         row.appendChild(eye);
@@ -187,34 +198,50 @@ function renderObjectList() {
  * residue of an object would otherwise light the whole row, and the button
  * would look pressed while naming something it did not do.
  */
+function selectionIsWholeObject(name) {
+    const renderer = viewerApi?.renderer;
+    if (!renderer || !renderer.localRangeOf) return false;
+    const sel = renderer.residueSelection;
+    const n = sel ? sel.size : 0;
+    if (!n) return false;
+    const win = renderer.localRangeOf(name);
+    const total = (renderer.coords || []).length;
+    const lo = win.off;
+    const hi = Math.min(total, win.end === Infinity ? total : win.end);
+    if (n !== hi - lo) return false;
+    for (let i = lo; i < hi; i++) if (!sel.has(i)) return false;
+    return true;
+}
+
 function syncObjectSeleState() {
     const renderer = viewerApi?.renderer;
     const { list } = objectListEls();
     if (!renderer || !list || list.hidden) return;
-    const sel = renderer.residueSelection;
-    const n = sel ? sel.size : 0;
     for (const row of list.querySelectorAll('.object-list-row')) {
         const name = row.querySelector('.object-list-name')?.textContent;
         const btn = row.querySelector('.object-list-sele');
         if (!btn || !name) continue;
-        let on = false;
-        if (n && renderer.localRangeOf) {
-            const win = renderer.localRangeOf(name);
-            const total = (renderer.coords || []).length;
-            const lo = win.off;
-            const hi = Math.min(total, win.end === Infinity ? total : win.end);
-            if (n === hi - lo) {
-                on = true;
-                for (let i = lo; i < hi; i++) {
-                    if (!sel.has(i)) { on = false; break; }
-                }
-            }
-        }
-        const want = on ? 'true' : 'false';
+        const want = selectionIsWholeObject(name) ? 'true' : 'false';
         if (btn.getAttribute('aria-pressed') !== want) {
             btn.setAttribute('aria-pressed', want);
         }
     }
+}
+
+/**
+ * ...AND LET IT GO AGAIN.
+ *
+ * `clearResidueSelection`, not `setResidueSelection` with an empty set: that
+ * is the verb a click on the background calls, and the two are not the same
+ * door - parts/ui.js wraps both for focus mode and only one of them means
+ * "nothing is selected any more".
+ */
+function clearObjectSelection() {
+    const r = viewerApi?.renderer;
+    if (!r) return;
+    r.clearResidueSelection();
+    if (window.SEQ?.updateColors) window.SEQ.updateColors();
+    r.render('unselect object');
 }
 
 /**

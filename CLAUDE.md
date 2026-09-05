@@ -798,6 +798,26 @@ public downloads is exercised on every run.
   with the viewer beside it — and it is a GETTER, because `parts/embed.js`
   loads BEFORE `core/mol.js` and a `const` in its temporal dead zone makes even
   `typeof` throw.
+- 🔴 **`sele` IS A LATCH, AND A LIT BUTTON THAT DOES NOTHING IS THE WORST
+  KIND.** The object row's third control selects every residue of its object
+  and lights while that selection stands; pressing it again now lets go, the
+  way Clip does. Without that, the one thing a reader tries when they want the
+  selection gone - press the button that is obviously on - looked like a missed
+  click. The state is asked of the SELECTION (`selectionIsWholeObject`, one
+  answer used by both the click and `syncObjectSeleState`), never of the
+  `aria-pressed` attribute: the attribute is what the last selection change
+  computed, and one question with two answers is how they come to disagree.
+  The clear goes through `clearResidueSelection`, which is the verb a click on
+  the background uses - `setResidueSelection` with an empty set is a different
+  door, and `parts/ui.js` wraps both.
+  🔴 **AND THE CHECK HAS TO READ THE CLICK, NOT A FRAME LATER.**
+  `tests/multi_object.py` first measured the selection after a settle, and a
+  build with the toggle REMOVED reads 0 there too - the second press re-selects
+  348 residues and something between the strip, the panels and the merge's own
+  translation drops them again before the next frame. (`selectTo` twice in a
+  row is stable, measured: 348, 348, 348 - so it is the click path, and it only
+  shows in a build that does not ship.) Read at once, the mutation reports 348
+  and fails, which is the difference the test exists for.
 - 🔴 **THE SELECTION PANEL WAS THE LARGEST CAPABILITY ONE PAGE COULD REACH.**
   Two hundred lines of markup in `index.html`, forty-six rules in
   `src/app/style.css`, a thousand lines of verbs under `src/app/` and
