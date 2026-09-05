@@ -57,8 +57,11 @@ same thing on both, and switching tabs keeps it.</p>
      be concatenated: it starts its Worker by having the worker importScripts
      ITSELF, found through document.currentScript.src, so inside a bundle that
      lookup returns '' and TM-align silently runs on the main thread. -->
-<script src="../src/align/align.js"></script>
-<script src="../py2Dmol/resources/bundles/py2Dmol.full.min.js"></script>
+<!-- THE EMBED BUNDLE, not the full one: the heatmap panel is in both embed
+     builds now, and everything below is embed API - show, frameFromText,
+     replaceFrame. 539 KB against 774, and no second <script> for the aligner
+     this page never uses. -->
+<script src="../py2Dmol/resources/bundles/py2Dmol.embed.min.js"></script>
 
 <script id="src">
 (async () => {

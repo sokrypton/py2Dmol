@@ -151,6 +151,23 @@ const drivePage = async () => {
     const s = sig(box.id);
     out.viewers[box.id] = s ? s.ink : null;
   }
+  // 🔴 AND THE HEATMAP PANEL, WHICH IS IN THIS BUNDLE NOW. `heatmap:
+  // {enabled: true}` was a config key both embed builds carried and neither
+  // could honour - normalizeConfig kept it and parts/ui.js reads it under
+  // `if (window.Heatmap)`, so asking got silence. The section is what proves
+  // the module arrived: the panel is a global, it claims the page's own
+  // container, and it paints.
+  out.heatmap = { global: typeof W.Heatmap, ink: 0, cells: 0 };
+  {
+    const c = D.querySelector('#heatmapCanvas');
+    if (c && c.width) {
+      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i] < 240 || d[i + 1] < 240 || d[i + 2] < 240) out.heatmap.ink++;
+      }
+      out.heatmap.cells = c.width * c.height;
+    }
+  }
   // ...AND WHETHER THE PAGE'S OWN CSS HAS REACHED INTO THEM.
   //
   // Every selector in the shell is scoped so it cannot take a host page's
@@ -1628,6 +1645,27 @@ for box, info in sorted(page.get('boxes', {}).items()):
                    f" {info['spill']}px into the code beneath - a viewer with a"
                    ' panel or a player is taller than its canvas, so its'
                    ' container must not have a fixed height')
+# 🔴 AND THE HEATMAP PANEL IS IN THIS BUNDLE NOW. It was a config key both
+# embed builds carried and neither could honour: normalizeConfig kept
+# `heatmap: {enabled: true}` and parts/ui.js reads it under
+# `if (window.Heatmap)`, so an embed asking for the plot got silence - the
+# promise honoured everywhere else and nowhere here. Section 16 is the proof,
+# and the assertion is PIXELS: the global being defined says the module was
+# concatenated, not that anything reached a canvas.
+hm = page.get('heatmap') or {}
+print(f"  page heatmap: window.Heatmap is {hm.get('global')},"
+      f" {hm.get('ink')} of {hm.get('cells')} pixels inked")
+if hm.get('global') != 'object':
+    bad.append('window.Heatmap is not defined in the embed bundle - the panel'
+               ' is out of the manifest again, and heatmap:{enabled:true} is a'
+               ' switch that does nothing')
+if not hm.get('cells'):
+    bad.append("embed.html has no #heatmapCanvas with a size - the panel found"
+               ' no container, or the page stopped providing one')
+elif (hm.get('ink') or 0) < hm['cells'] // 20:
+    bad.append(f"the heatmap drew {hm.get('ink')} of {hm['cells']} pixels -"
+               ' the panel mounted and painted nothing')
+
 if len(page.get('boxes', {})) < 12:
     bad.append(f"only {len(page.get('boxes', {}))} examples printed code -"
                ' the page has stopped running its own sections')

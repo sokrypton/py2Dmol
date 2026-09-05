@@ -354,22 +354,55 @@ optional.</p>
    underneath.</p>
   </div>
 </div>
+<h2>16 &middot; A map beside it</h2>
+<p class="sub">Any residue&times;residue matrix &mdash; a PAE, a contact map, a
+distogram &mdash; with a drag on it that selects.</p>
+<div class="ex">
+  <div id="v16" style="width:600px;"></div>
+  <div class="side">
+    <!-- BESIDE THE VIEWER, NEVER INSIDE IT: show() replaces its container's
+         children, so a panel built into #v16 would be thrown away on load.
+         The panel finds this by id, scoping to the viewer's container first
+         and falling back to the document. -->
+    <div id="heatmapContainer"
+         style="width:260px;height:260px;position:relative;border:1px solid #e5e7eb;
+                border-radius:6px;overflow:hidden;margin-bottom:.7rem">
+      <canvas id="heatmapCanvas"></canvas>
+    </div>
+<pre id="v16code" class="ran"></pre>
+    <p class="note">The bundle carries the panel; <strong>your page carries the
+   box</strong> &mdash; a <code>#heatmapContainer</code> holding a
+   <code>#heatmapCanvas</code> (the older <code>#paeContainer</code> /
+   <code>#paeCanvas</code> still work). <code>controls: true</code> is not
+   optional: it selects the shell that mounts the panels.</p>
+    <p class="note"><strong>A map describes itself.</strong>
+   <code>vmin</code>/<code>vmax</code> are the values the bytes are encoded
+   against, <code>colors</code> is a list of stops, and
+   <code>xlabel</code>/<code>ylabel</code> caption the axes &mdash; all of them
+   beating the panel's built-in scale for that key. The tab is named by the key,
+   so two maps in one frame are two tabs.</p>
+    <p class="note">Dragging a box on the plot selects those residues in the
+   structure, and a box is stored in <strong>residues</strong> &mdash; so it
+   means the same thing on every map, whatever each one's resolution.</p>
+  </div>
+</div>
 <h2>Which bundle</h2>
 <p>Two, differing only in which painter they carry. Everything on this page runs
 the same on either.</p>
 <table>
 <tr><th>file</th><th>size</th><th></th></tr>
-<tr><td>py2Dmol.embed.min.js</td><td>512 KB</td><td>WebGL2. What this page loads.
+<tr><td>py2Dmol.embed.min.js</td><td>539 KB</td><td>WebGL2. What this page loads.
     Turning and zooming cost one draw call, which is what makes a large
     structure usable.</td></tr>
-<tr><td>py2Dmol.embed.cpu.min.js</td><td>467 KB</td><td>The 2D painter. 45 KB smaller,
+<tr><td>py2Dmol.embed.cpu.min.js</td><td>494 KB</td><td>The 2D painter. 45 KB smaller,
     no WebGL2 needed, and it can export SVG &mdash; but a big structure repaints
     slowly.</td></tr>
 </table>
-<p>Both carry the control panel and the capture UI &mdash; what
-<code>controls: true</code> gives you. Neither carries the sequence, PAE or MSA
-panels, saved sessions, or structural alignment; for those, use the full
-application.</p>
+<p>Both carry the control panel, the capture UI and the <strong>heatmap
+panel</strong> &mdash; what <code>controls: true</code> gives you, plus 15&nbsp;KB
+for a plot that draws nothing until you give it a container. Neither carries the
+sequence strip, the MSA, saved sessions or structural alignment; for those, use
+the full application.</p>
 
 <div class="warn">
 <strong>Neither is a fallback for the other.</strong> Each carries one painter
@@ -1998,9 +2031,40 @@ const SOURCE = {
     v1: 'ubq', v2: 'ubq', v3: '4hhb', v4: '4hhb', v5: '4hhb', v6: '4hhb',
     v7: '3ptb', v8: '3ptb', v9: '3ptb', v10: '3ptb', v11: '1yne',
     v12: 'ubq', v13: ['ubq', 'shifted'], v14: ['ubq', '1bna'], v15: '1yne',
+    v16: '4hhb',
 };
 
 example('v1', `const v = py2Dmol.show('v1', text);`);
+
+example('v16', `const v = py2Dmol.show('v16', text, {
+    controls: true,                 // mounts the panels
+    heatmap: { enabled: true },     // ...and turns this one on
+});
+
+// A map is per FRAME, so build the frame, decorate it, and put it back.
+// replaceFrame is "same frame, new contents" - it pops and re-adds, so the
+// frame count never moves.
+const frame = py2Dmol.frameFromText(text);
+const xyz = frame.coords, n = xyz.length;
+
+// p(contact) from the alpha carbons, one byte a cell
+const bytes = new Uint8Array(n * n);
+for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+  const dx = xyz[i][0] - xyz[j][0];
+  const dy = xyz[i][1] - xyz[j][1];
+  const dz = xyz[i][2] - xyz[j][2];
+  const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  bytes[i * n + j] = Math.round(255 / (1 + Math.exp((d - 8) / 1.5)));
+}
+
+frame.maps = {
+  contact: {
+    data: bytes, n, vmin: 0, vmax: 1,
+    colors: ['#ffffff', '#253494'],
+    xlabel: 'Residue', ylabel: 'Residue',
+  },
+};
+v.replaceFrame(frame);`);
 
 example('v2', `const v = py2Dmol.show('v2', text, { style: 'tube' });
 

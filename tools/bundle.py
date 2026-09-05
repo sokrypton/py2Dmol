@@ -228,9 +228,19 @@ BUNDLES = {
     # panel + ui are what `controls: true` and `play` need: the embed mounts
     # the notebook's own Style panel and is wired by wireViewerUI, rather than
     # growing a third set of controls to keep in step. 25 KB for exact parity.
+    #
+    # 🔴 AND 'heatmap' IS IN IT, BECAUSE THE SWITCH THAT ASKS FOR IT ALREADY
+    # WAS. `heatmap: {enabled: true}` is a config key normalizeConfig carries
+    # and parts/ui.js reads - it calls window.Heatmap.initialize under
+    # `if (window.Heatmap)` - so without the module an embed asking for the
+    # panel got silence: the promise honoured everywhere else and nowhere here.
+    # That is this file's own rule from the other side, where the usual case is
+    # a capability in the bundle no interface reaches.
+    # 15 KB minified, 6 KB gzipped over the wire, and it registers a global and
+    # does nothing at all until a host page provides #heatmapContainer.
     'embed': ['math', 'sidechains', 'bonds', 'parse', 'objstate', 'viewport', 'shadow', 'clip', 'focus',
               'mol-sidechains', 'capture', 'savepanel', 'multi', 'panel', 'selpanel',
-              'orient', 'ui', 'embed', 'mol', 'geom', 'paintgl'],
+              'orient', 'ui', 'embed', 'mol', 'geom', 'paintgl', 'heatmap'],
     # ...and the same embed drawn on the CPU. THE SECOND ARTEFACT THAT EARNS ITS
     # KEEP, where embed-tube did not: it draws the same picture from the same
     # geometry - one geometry, two painters - so nothing is given up but speed on
@@ -243,7 +253,8 @@ BUNDLES = {
     # which painter is present and refuses a request for the other one.
     'embed.cpu': ['math', 'sidechains', 'bonds', 'parse', 'objstate', 'svg', 'viewport', 'shadow',
                   'clip', 'focus', 'mol-sidechains', 'capture', 'savepanel', 'multi',
-                  'panel', 'selpanel', 'orient', 'ui', 'embed', 'mol', 'geom', 'paint2d'],
+                  'panel', 'selpanel', 'orient', 'ui', 'embed', 'mol', 'geom', 'paint2d',
+                  'heatmap'],
     # THE WEBSITE, PLUS THE EMBED API. Set-for-set this is exactly `web` plus
     # ONE module - parts/embed.js - so a page gets the whole app (the panels,
     # the sessions, the ingestion) AND can call py2Dmol.show / frameFromText /

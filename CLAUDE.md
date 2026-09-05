@@ -1066,6 +1066,11 @@ public downloads is exercised on every run.
   Splitting the SINK rather than adding a second exporter is what keeps the dpi
   clamp, the export pixel scale, the transparency and the "SVG needs the 2D
   painter" refusal in one place.
+  🔴 **AND IT IS NOT LINKED FROM ANYWHERE YET, DELIBERATELY.** The page is in
+  the repo and reachable by URL; `index.html` does not link it and the README
+  does not name it, because it is still in development and a link is a promise.
+  *Asked for explicitly: "no link to render, since that is still in
+  development".* Linking it is one line in each when it is ready.
   **AND THE ANSWER TO THE THOUSAND IS `render.html`, NOT A PYTHON DOOR.** Drop
   the files on, set the look once, press Render, get one zip. It uploads
   nothing: the files are read in the browser and JSZip builds the archive there
@@ -3142,6 +3147,24 @@ public downloads is exercised on every run.
   drawing keeps the dimensions and loses the detail; and an SVG is counted in
   `<path>` elements, because an export with nothing in it is 359 bytes of well
   formed nothing that every length check passes.
+- 🔴 **A CONFIG KEY IN A BUNDLE WITHOUT ITS MODULE IS A SWITCH THAT DOES
+  NOTHING.** `heatmap: {enabled: true}` was carried by `normalizeConfig` and
+  read by `parts/ui.js` (`if (window.Heatmap)`) in BOTH embed builds, which did
+  not contain `panels/heatmap.js` - so an embed asking for the plot got
+  silence, the promise honoured on every other surface and nowhere there. It is
+  in the manifest for `embed` and `embed.cpu` now: 15 KB minified, 6 KB
+  gzipped, and it registers a global and draws nothing until a host page
+  provides `#heatmapContainer`. This is the "a capability in the bundle that no
+  interface reaches is not shipped" rule from the other side - the interface
+  was there and the capability was not.
+  `embed.html` section 16 is the specification and the proof: it computes a
+  contact map from the alpha carbons it is drawing and puts it on the frame
+  with `replaceFrame`. **The assertion is PIXELS, not the global** - measured,
+  dropping the module leaves an empty canvas that reads as 45,000 of 45,000
+  "inked", so the ink check alone would pass against it and the two checks
+  together are what catch it. `examples/two-heatmaps.html` loads the embed
+  bundle now rather than `full`, which is 539 KB against 774 and one `<script>`
+  instead of two.
 - **Subsystems are optional and guarded.** `if (window.Heatmap)`, `if (window.MSA)`,
   `typeof C2S === 'undefined'`. A build without one loses a feature, not a page.
 - **Prove a move changed nothing.** `node tests/paint_trace.js` digests every

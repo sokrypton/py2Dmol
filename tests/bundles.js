@@ -56,7 +56,7 @@ const EXPECT = {
         ['py2Dmol', 'wireEmbedUI', 'setupViewport', 'initializePy2DmolViewer',
          'parseCIF', 'parsePDB', 'convertParsedToFrameData',
          'py2dmolCartoon', 'py2dmolCartoonPaint', 'C2S',
-         'py2dmolPanel', 'wireViewerUI'],
+         'py2dmolPanel', 'wireViewerUI', 'Heatmap'],
         ['py2dmolCartoonGPU', 'Align', 'MSA', 'SEQ'],
     ],
     embed: [
@@ -65,7 +65,14 @@ const EXPECT = {
          'py2dmolCartoon', 'py2dmolCartoonGPU',
          // ...and the notebook's own panel and wiring, which controls:true
          // mounts rather than growing a third set of controls
-         'py2dmolPanel', 'wireViewerUI'],
+         'py2dmolPanel', 'wireViewerUI',
+         // ...AND THE HEATMAP, because `heatmap: {enabled: true}` is a config
+         // key both embeds already carried: normalizeConfig kept it and
+         // parts/ui.js reads it under `if (window.Heatmap)`, so without the
+         // module the switch was honoured with silence. It draws nothing until
+         // a host page provides #heatmapContainer, which is the same contract
+         // every panel in this project has.
+         'Heatmap'],
         // no 2D painter, no save UI, no side panels, no alignment
         ['py2dmolCartoonPaint', 'Align', 'MSA', 'SEQ'],
     ],

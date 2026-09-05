@@ -130,17 +130,6 @@ A GIF's background is transparent by default; the **Bg** menu beside the format
 sets it to the paper colour instead, for a player that shows transparency as
 black.
 
-**A folder of them, without clicking a thousand times.** Open
-[`render.html`](render.html), drop the structures onto it, set the look once and
-press *Render* — every picture comes back as one zip. Each structure is turned
-to face you as it loads; untick *Turn each to its best view* and the camera you
-set is held across the whole run, which is what a set of aligned structures
-wants. The preview **is** a
-viewer, with the whole Style panel on it, so anything you can set in py2Dmol you
-can set here, and every file is rendered exactly as you see it. Nothing is
-uploaded: the files are read in the browser and the zip is built there, so it
-works offline and on structures you cannot send anywhere.
-
 From your own code it is `renderer.toImage({format, dpi})`, which renders
 exactly what the camera button renders and hands back the bytes instead of
 starting a download.
@@ -372,12 +361,15 @@ Two bundles, differing only in the painter:
 
 | file | size | |
 | --- | --- | --- |
-| `py2Dmol.embed.min.js` | 512 KB | WebGL2. Fast on large structures. |
-| `py2Dmol.embed.cpu.min.js` | 467 KB | 2D canvas. No WebGL2 needed, and it can export SVG. |
+| `py2Dmol.embed.min.js` | 539 KB | WebGL2. Fast on large structures. |
+| `py2Dmol.embed.cpu.min.js` | 494 KB | 2D canvas. No WebGL2 needed, and it can export SVG. |
 
-Neither carries the control panel, the save UI or the side panels; for those,
-load the full application. Neither falls back to the other — each has one
-painter and nothing behind it.
+Both carry the control panel, the save UI and the heatmap panel — a
+residue×residue plot (a PAE, a contact map, a distogram) that draws nothing
+until your page gives it a `#heatmapContainer`. Neither carries the sequence
+strip, the MSA, saved sessions or structural alignment; for those, load the full
+application. Neither falls back to the other — each has one painter and nothing
+behind it.
 
 **[Live demo and full API →](https://py2dmol.solab.org/embed.html)**
 
