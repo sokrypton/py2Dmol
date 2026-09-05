@@ -4295,12 +4295,27 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * wanted "select this whole object" for its list rows and reached for
          * positionsFor directly - which tests/interaction.js refuses by name.
          *
-         * REPLACES rather than adds, unlike the embed's relative select() /
-         * unselect() pair - and that pair lives in parts/embed.js, which is
-         * in no web bundle, so the website could not have used it anyway.
+         * REPLACES by default, which is what a click means. `mode` is the
+         * embed's relative pair by another spelling - 'add' and 'remove' -
+         * because a shift-click on a list row is exactly that question, and
+         * that pair lives in parts/embed.js, which is in no web bundle. One
+         * translation, three things to do with the answer, rather than a
+         * second walk of the selector in the shell that wanted the other two.
          */
-        selectTo(sel) {
-            this.setResidueSelection(positionsFor(this, sel));
+        selectTo(sel, mode) {
+            const named = positionsFor(this, sel);
+            if (!mode || mode === 'replace') {
+                this.setResidueSelection(named);
+                return;
+            }
+            const next = new Set(this.residueSelection || []);
+            if (mode === 'remove') for (const i of named) next.delete(i);
+            else for (const i of named) next.add(i);
+            // ...and an empty result needs no special case: setResidueSelection
+            // stores null for an empty set, which IS "nothing is selected".
+            // (A clearResidueSelection branch was written here first and
+            // measured as a no-op - the end state is identical either way.)
+            this.setResidueSelection(next);
         }
 
         setResidueSelection(positions) {

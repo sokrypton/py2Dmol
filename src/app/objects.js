@@ -158,7 +158,7 @@ function renderObjectList() {
         sele.className = 'object-list-sele';
         sele.textContent = 'sele';
         sele.title = 'Select every residue of this object'
-            + ' (press again to clear)';
+            + ' (press again to clear, shift-click to add another)';
         sele.setAttribute('aria-pressed', 'false');
         // 🔴 A LATCH, NOT A ONE-WAY DOOR. The button lights up while its
         // selection stands, and a lit button that does nothing when you press
@@ -171,7 +171,21 @@ function renderObjectList() {
         // and one question with two answers is how they come to disagree.
         sele.addEventListener('click', (e) => {
             e.stopPropagation();
-            if (selectionIsWholeObject(name)) clearObjectSelection();
+            // 🔴 SHIFT IS THE RELATIVE PAIR, and it toggles the OBJECT rather
+            // than replacing the selection: shift-click a second row and both
+            // structures are selected, shift-click a lit one and it drops out
+            // while the others stay. Without the second half, shift could only
+            // ever add and there would be no way to take one back except by
+            // starting again.
+            if (e.shiftKey) {
+                selectWholeObject(name, covered(name) ? 'remove' : 'add');
+                return;
+            }
+            // A plain click NARROWS to this object - and clears only when the
+            // selection is already exactly that, which is the state the button
+            // itself put you in. With two objects selected, clicking one means
+            // "just this one", not "none".
+            if (selectionIsExactlyObject(name)) clearObjectSelection();
             else selectWholeObject(name);
         });
 
@@ -198,19 +212,42 @@ function renderObjectList() {
  * residue of an object would otherwise light the whole row, and the button
  * would look pressed while naming something it did not do.
  */
-function selectionIsWholeObject(name) {
+/**
+ * TWO QUESTIONS, AND THE ROW LIGHTS ON THE WIDER ONE.
+ *
+ * `covered` is "every residue of this object is selected" - true for both rows
+ * when two objects have been shift-selected, which is what the lit state has
+ * to mean once more than one can be on at a time. It is still not "overlaps":
+ * a click that selects ONE residue lights nothing, which is the rule the
+ * single-object version was written for.
+ *
+ * `selectionIsExactlyObject` is the narrower one, and only the plain click
+ * asks it - it is the state that click puts you in, and so the only state in
+ * which pressing again can mean "let go".
+ */
+function objectWindow(name) {
     const renderer = viewerApi?.renderer;
-    if (!renderer || !renderer.localRangeOf) return false;
-    const sel = renderer.residueSelection;
-    const n = sel ? sel.size : 0;
-    if (!n) return false;
+    if (!renderer || !renderer.localRangeOf) return null;
     const win = renderer.localRangeOf(name);
     const total = (renderer.coords || []).length;
     const lo = win.off;
     const hi = Math.min(total, win.end === Infinity ? total : win.end);
-    if (n !== hi - lo) return false;
-    for (let i = lo; i < hi; i++) if (!sel.has(i)) return false;
+    return hi > lo ? { lo, hi } : null;
+}
+
+function covered(name) {
+    const sel = viewerApi?.renderer?.residueSelection;
+    const w = objectWindow(name);
+    if (!sel || !sel.size || !w) return false;
+    for (let i = w.lo; i < w.hi; i++) if (!sel.has(i)) return false;
     return true;
+}
+
+function selectionIsExactlyObject(name) {
+    const sel = viewerApi?.renderer?.residueSelection;
+    const w = objectWindow(name);
+    if (!sel || !w) return false;
+    return sel.size === w.hi - w.lo && covered(name);
 }
 
 function syncObjectSeleState() {
@@ -221,7 +258,7 @@ function syncObjectSeleState() {
         const name = row.querySelector('.object-list-name')?.textContent;
         const btn = row.querySelector('.object-list-sele');
         if (!btn || !name) continue;
-        const want = selectionIsWholeObject(name) ? 'true' : 'false';
+        const want = covered(name) ? 'true' : 'false';
         if (btn.getAttribute('aria-pressed') !== want) {
             btn.setAttribute('aria-pressed', want);
         }
@@ -264,7 +301,7 @@ function clearObjectSelection() {
  * picker's change event and the coordinates are not the new object's until
  * it has settled.
  */
-function selectWholeObject(name) {
+function selectWholeObject(name, mode) {
     const renderer = viewerApi?.renderer;
     if (!renderer || !renderer.coords) return;
     const ms = renderer.multiState;
@@ -276,7 +313,7 @@ function selectWholeObject(name) {
         // THROUGH THE RENDERER'S OWN VERB, beside clipTo and orientTo. A
         // shell that resolves a selector itself is a second copy of the
         // translation, and tests/interaction.js refuses one by name.
-        r.selectTo({ object: name });
+        r.selectTo({ object: name }, mode);
         if (window.SEQ?.updateColors) window.SEQ.updateColors();
         r.render('select object');
     };

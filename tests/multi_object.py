@@ -532,6 +532,43 @@ window.addEventListener('load', () => {
         await settle();
         R.seleOff = { pressed: pressed(), n: size() };
 
+        // 🔴 SHIFT ADDS A SECOND OBJECT, and shift again takes it back out.
+        // A plain click NARROWS to one; only shift builds a union.
+        const other = 1;
+        const whole = (nm) => {
+          const w = r.localRangeOf(nm);
+          const total = r.coords.length;
+          const hi = w.end === Infinity ? total : Math.min(total, w.end);
+          return hi - w.off;
+        };
+        const shiftClick = (k) => seles()[k].dispatchEvent(new MouseEvent(
+            'click', { bubbles: true, cancelable: true, shiftKey: true }));
+        seles()[idx].click();                 // one object
+        await settle();
+        shiftClick(other);                    // ...and the other beside it
+        await settle();
+        R.seleBoth = { pressed: pressed(), n: size(),
+                       want: whole(rowNames()[idx]) + whole(rowNames()[other]) };
+        shiftClick(other);                    // ...and out again
+        await settle();
+        R.seleBackToOne = { pressed: pressed(), n: size(),
+                            want: whole(rowNames()[idx]) };
+        // ...AND A PLAIN CLICK ON A UNION NARROWS RATHER THAN CLEARING: the
+        // latch lets go only from the state it put you in.
+        shiftClick(other);
+        await settle();
+        seles()[other].click();
+        await settle();
+        R.seleNarrow = { pressed: pressed(), n: size(),
+                         want: whole(rowNames()[other]) };
+        // ...and shift-clicking the LAST one out empties the selection: the
+        // relative path has to end in clearResidueSelection, which is the door
+        // a background click uses and the one parts/ui.js watches.
+        shiftClick(other);
+        await settle();
+        R.seleShiftEmpty = { n: size(), pressed: pressed(),
+                             held: !!r.residueSelection };
+
         // and it follows a selection made anywhere else
         seles()[idx].click();
         await settle();
@@ -1052,6 +1089,12 @@ def main():
           f"  (merge {'on' if R['multi'] else 'OFF'}, offsets {R['offsets']})")
     sb, so, sf, sx = (R.get('seleBefore') or {}, R.get('seleOn') or {},
                       R.get('seleOff') or {}, R.get('seleFollows') or {})
+    both, back, narrow = (R.get('seleBoth') or {}, R.get('seleBackToOne') or {},
+                          R.get('seleNarrow') or {})
+    print(f"  sele shift: both {both.get('n')}/{both.get('want')}"
+          f" {both.get('pressed')}, out again {back.get('n')}/{back.get('want')}"
+          f" {back.get('pressed')}, plain click narrows to"
+          f" {narrow.get('n')}/{narrow.get('want')} {narrow.get('pressed')}")
     print(f"  sele: {sb.get('n')} selected -> press {so.get('n')}"
           f" of {so.get('whole')} -> press again {sx.get('n')};"
           f" pressed {sb.get('pressed')} -> {so.get('pressed')}"
@@ -1153,6 +1196,25 @@ def main():
         bad.append(f"pressing a lit sele again left {sx.get('n')} residues"
                    f" selected and the button {(sx.get('pressed') or [None])[0]}"
                    " - a latch that only latches one way")
+    if both.get('n') != both.get('want'):
+        bad.append(f"shift-clicking a second sele gave {both.get('n')} residues,"
+                   f" not the {both.get('want')} of both objects")
+    if (both.get('pressed') or []) != ['true', 'true']:
+        bad.append(f"both rows should be lit with both selected, got"
+                   f" {both.get('pressed')}")
+    if back.get('n') != back.get('want') or (back.get('pressed') or []) != ['true', 'false']:
+        bad.append(f"shift-clicking a lit row again left {back.get('n')}"
+                   f" residues and {back.get('pressed')} - shift has to take"
+                   " one back out, not only add")
+    if narrow.get('n') != narrow.get('want') or (narrow.get('pressed') or []) != ['false', 'true']:
+        bad.append(f"a plain click on one of two selected objects gave"
+                   f" {narrow.get('n')} residues and {narrow.get('pressed')} -"
+                   " it should narrow to that object, not clear")
+    se = R.get('seleShiftEmpty') or {}
+    if se.get('n') != 0 or se.get('held') or (se.get('pressed') or []) != ['false', 'false']:
+        bad.append(f"shift-clicking the last selected object out left"
+                   f" {se.get('n')} residues (held {se.get('held')},"
+                   f" {se.get('pressed')})")
     if not R.get('seleSameNode'):
         bad.append('the sele button was rebuilt by its own click, which is how'
                    ' the press gets swallowed')
