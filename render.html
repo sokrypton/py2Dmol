@@ -350,6 +350,16 @@
         if (mark) (mark.closest('.half') || mark.parentNode).remove();
     }
 
+    /** The GPU, on a bundle that has both painters - see the note in draw().
+     *  Invalidate first: the mesh may have been built by the other painter. */
+    function useTheGPU() {
+        const G = window.py2dmolCartoonGPU;
+        if (!viewer || !G || !G.available()) return;
+        viewer.useGPU = true;
+        G.invalidate();
+        viewer.render('useTheGPU');
+    }
+
     /** DETAIL OPENS AT THE MAXIMUM, where the panel's own default is 4.
      *  The slider is subdivisions per residue and it is close to linear in
      *  both faces and time - the reason to default it low is a viewer being
@@ -410,6 +420,30 @@
         const rot = (keep && viewer)
             ? viewer.viewerState.rotation.map((r) => r.slice()) : null;
         if (!viewer) {
+            // 🔴 ON THE GPU, WHICH IS A DECISION ABOUT THE PREVIEW AND NOT
+            // ABOUT THE BATCH. Measured per image, counterbalanced, minimum of
+            // eight: the two painters are within 0-23% (1UBQ 40 ms against 39,
+            // 1TIM 113/87, 4HHB 144/135, 1AOI 276/250, and 330/281 at 300 dpi)
+            // because every image is a NEW structure, and building the
+            // geometry - which both painters share - is most of the work.
+            // What the GPU is for is redrawing a mesh it already has, and that
+            // is exactly what dragging the preview is: a redraw costs 23 ms on
+            // 1TIM, 33 on 4HHB and 89 on 1AOI with the 2D painter, against
+            // 0.0, 0.2 and 0.3. Turning a nucleosome went from 11 fps to
+            // smooth.
+            //
+            // Nothing is given up, because the `full` bundle carries BOTH
+            // painters: an SVG export takes the 2D path by itself (the GPU
+            // refuses an export context - it holds a raster and has no vector
+            // to give), and so does the panel's Draw mode.
+            //
+            // 🔴 AND IT IS THE FIELD, NOT AN OPTION. `py2Dmol.show` REFUSES a
+            // `gpu` key by name - "there is no gpu option, the bundle decides"
+            // - which is true of the two embed builds, each of which carries
+            // one painter and nothing behind it, and not of this one. Assigning
+            // renderer.useGPU is what index.html's own checkbox does, and for
+            // the same reason.
+            //
             // OPENS ON A CARTOON, where the library's own default is the
             // tube: this page exists to make figures, and the panel's Style
             // menu is one click away for anyone who wants the trace.
@@ -420,6 +454,7 @@
                 select: false, orient: !keep, style: 'richardson',
                 biounit: parseOpts().biounit,
             });
+            useTheGPU();
             applySize();
             styleOptionsOnly();
             openAtFullDetail();

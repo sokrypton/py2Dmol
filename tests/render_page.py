@@ -139,6 +139,26 @@ def main():
               'a figure page opens on a cartoon, not the library tube: %r'
               % (opened,))
 
+        # 🔴 AND ON THE GPU, which is a decision about the PREVIEW: per image
+        # the two painters are within 0-23%, because every file is a new
+        # structure and the geometry both share is most of the work - but a
+        # REDRAW, which is what dragging is, costs 23/33/89 ms on 1TIM/4HHB/
+        # 1AOI with the 2D painter against 0.0/0.2/0.3.
+        #
+        # `py2Dmol.show` refuses a `gpu` key by name, so this is the FIELD,
+        # the way index.html's own checkbox sets it.
+        gpu = cdp.evaluate(ws, """({
+            useGPU: py2dmolBatch.viewer.useGPU,
+            available: !!(window.py2dmolCartoonGPU
+                          && py2dmolCartoonGPU.available()),
+            has2d: typeof window.py2dmolCartoonPaint === 'function',
+        })""")
+        check(gpu['useGPU'] is True and gpu['available'],
+              'the preview draws on the GPU: %r' % (gpu,))
+        check(gpu['has2d'],
+              'and the 2D painter is still in the download, which is what lets'
+              ' an SVG export and Draw mode work at all')
+
         # 🔴 DETAIL OPENS AT THE MAXIMUM, and this is asked while the
         # cartoon is up: cartoonDetail is a STYLE_SETTING, so a switch to
         # tube installs tube's own profile and the number read back is no

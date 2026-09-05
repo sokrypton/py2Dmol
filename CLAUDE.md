@@ -1131,6 +1131,23 @@ public downloads is exercised on every run.
   closed in the API - `renderer.load` dropped the parse options its own
   implementation takes, so `biounit` was reachable through `show()` and not
   through the one door a page swapping structures actually has.
+  🔴 **AND IT DRAWS ON THE GPU, WHICH IS A DECISION ABOUT THE PREVIEW AND NOT
+  ABOUT THE BATCH.** Per image the two painters are within 0-23% (measured
+  counterbalanced, min of eight: 1UBQ 40 ms against 39, 1TIM 113/87, 4HHB
+  144/135, 1AOI 276/250, and 330/281 at 300 dpi) - because every file is a NEW
+  structure and building the geometry, which both painters share, is most of
+  the work. What the GPU is for is redrawing a mesh it already has, and that is
+  exactly what dragging the preview is: **23 / 33 / 89 ms** on 1TIM / 4HHB /
+  1AOI with the 2D painter against **0.0 / 0.2 / 0.3**.
+  **Nothing is given up**, because `full` carries BOTH painters: an SVG export
+  takes the 2D path by itself (the GPU refuses an export context), measured
+  byte-identical to the same export with the GPU off - 1,352,799 bytes, 4,515
+  paths, either way - and Draw stays in the panel.
+  🔴 **AND IT IS THE FIELD, NOT AN OPTION.** `py2Dmol.show` refuses a `gpu` key
+  BY NAME - *"there is no gpu option - the bundle decides"* - which is true of
+  the two embed builds, each carrying one painter with nothing behind it, and
+  false of this one. Assigning `renderer.useGPU` (then `invalidate()`, then a
+  render) is what `index.html`'s own checkbox does, and for the same reason.
   🔴 **AND A THOUSAND FILES IS THE CASE IT IS FOR, so nothing in it may be
   O(n) per file.** The list is BUILT once and MUTATED afterwards - rebuilding
   it to write one status is a million nodes over a run of a thousand, and it
