@@ -9295,25 +9295,27 @@ t('an eye does not move the camera; an object that just arrived does', () => {
     }
 });
 
-// AN OBJECT KEEPS THE COORDINATES ITS FILE GAVE IT. Every frame used to be
-// moved so its first chain's centroid sat at the origin, which is an alignment
-// by another name: two structures loaded as two objects came up stacked on
-// each other whatever their coordinates said. Align Frames is for FRAMES.
-t('loading an object does not move it to the origin', () => {
+// AN OBJECT KEEPS THE COORDINATES ITS FILE GAVE IT, AND SO DOES EVERY FRAME.
+// Frames used to be moved so their first chain's centroid sat on the reference
+// frame's - which only ever ran with Align Frames OFF, the one state that asks
+// for nothing to be moved. Reported as "when I disable this, frames are still
+// being centred to match the first frame". The whole of the placing is STEP 2's
+// Kabsch now, which runs only when the switch is on.
+t('an unaligned frame is not translated onto the first one', () => {
     const app = L.app;
-    const at = app.indexOf('const alignedTogether = isTrajectory && shouldAlign;');
-    if (at < 0) throw new Error('the centring block moved');
-    const body = app.slice(at, app.indexOf('STEP 4', at)).replace(/\s+/g, ' ');
-    if (/sharedOffset = targetObject\.frames\.length > 0 \? \[0, 0, 0\] : center/
-        .test(body)) {
-        throw new Error('an aligned batch is still moved to the origin');
+    const at = app.indexOf('STEP 3');
+    if (at < 0) throw new Error('the frame pipeline lost its STEP 3 marker');
+    const body = app.slice(at, app.indexOf('STEP 4', at));
+    if (/referenceCentre|centeringChainId|sharedOffset|alignedTogether/.test(body)) {
+        throw new Error('the drift centring is back: with Align Frames off the'
+            + " frames are moved onto the reference frame's centre anyway");
     }
-    if (!/referenceCentre/.test(body)) {
-        throw new Error('frames are centred absolutely rather than against the'
-            + " object's own first frame, so a new object lands on the origin");
+    if (/coord\[0\] -=/.test(body)) {
+        throw new Error('frames are still translated after parsing');
     }
-    if (!/center = \[center\[0\] - referenceCentre\[0\]/.test(body)) {
-        throw new Error('the offset is not relative to the reference frame');
+    // ...and the placing that IS wanted is behind the switch
+    if (!/if \(isTrajectory && shouldAlign\) \{/.test(app)) {
+        throw new Error('the Kabsch step no longer asks whether Align Frames is on');
     }
 });
 

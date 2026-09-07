@@ -2164,129 +2164,30 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
     }
 
     // ========================================================================
-    // STEP 3: Center each frame based on first available chain
+    // STEP 3: NOTHING. FRAMES KEEP THE COORDINATES THEIR FILE GAVE THEM.
     // ========================================================================
-    // ...BUT NOT EACH FRAME SEPARATELY WHEN THEY HAVE JUST BEEN ALIGNED.
+    // There was a centring here, and it moved every frame so that its first
+    // chain's centroid sat on the reference frame's - the object's own first
+    // frame, or the first of the batch. It was for DRIFT: frame 30 of a
+    // trajectory that has wandered off, put back beside frame 0.
     //
-    // Centring subtracts a frame's own centroid, which is a TRANSLATION - and
-    // an alignment is a rotation AND a translation. Doing this per frame after
-    // aligning throws the alignment's half away and puts every frame back on
-    // its own centre, so the superposition survives only where the two happen
-    // to coincide. Measured on a two-chain fixture aligned on chain B: the
-    // frame moved 14.8 A after the alignment placed it, and chain B came out
-    // 14.9 A from where it was aligned to - the whole of the error.
+    // 🔴 IT ONLY EVER RAN WITH ALIGN FRAMES OFF, WHICH IS THE ONE STATE THAT
+    // ASKS FOR NOTHING TO MOVE. With the switch on, STEP 2 has already placed
+    // every frame by Kabsch - the rotation AND the translation - so the block
+    // took a zero offset and did nothing; with it off, it translated each
+    // frame onto the first one's centre. Reported exactly that way: "when I
+    // disable this, frames are still being aligned, or at least being centred
+    // to match the first frame". A switch whose OFF position still moves the
+    // structure halfway is worse than no switch.
     //
-    // Aligned frames are already in the reference's frame of reference, so they
-    // are shifted TOGETHER by one offset: the reference's, which is zero once
-    // the object holds a centred frame already. Unaligned trajectories keep the
-    // old per-frame centring, which is what removes their drift.
-    const alignedTogether = isTrajectory && shouldAlign;
-    let sharedOffset = null;
-    // WHERE THE OBJECT SITS IS THE FILE'S BUSINESS.
-    //
-    // Every frame used to be moved so that its first chain's centroid was at
-    // the origin, which is an alignment by another name: two structures loaded
-    // as two objects came up stacked on each other whatever their coordinates
-    // said, and a complex split across two files lost the one thing the files
-    // agreed on. Align Frames is for FRAMES - it says so - and adding an
-    // object is not adding a frame.
-    //
-    // What the centring is still for is DRIFT: frame 30 of a trajectory that
-    // has wandered off is put back beside frame 0. So the offsets are relative
-    // now - measured from the frame this object already holds, or from the
-    // first of the batch - and the first frame of a new object is not moved at
-    // all. The renderer frames the camera on each object's own centre
+    // So the drift removal is gone rather than gated: gated on the switch it
+    // is unreachable code, since the only state it fires in is the one the
+    // switch turns off. Align Frames is the whole of "put these frames on top
+    // of each other"; off means the file's own coordinates, which is also what
+    // makes an unaligned trajectory show the drift it actually has.
+    // The camera still frames each object on its own centre
     // (_recomputeObjectStats), so a structure far from the origin is drawn
-    // exactly as before.
-    let referenceCentre = null;
-    // Determine which chain to use for centering
-    let centeringChainId = null;
-    if (rawFrames.length > 0 && rawFrames[0].chains && rawFrames[0].chains.length > 0) {
-        // Find first non-empty chain ID
-        for (let j = 0; j < rawFrames[0].chains.length; j++) {
-            const chainId = rawFrames[0].chains[j];
-            if (chainId && chainId.trim() !== '') {
-                centeringChainId = chainId;
-                break;
-            }
-        }
-    }
-
-    // The centroid of one frame over the centring chain, or over everything
-    // when there is no chain information - the same reckoning the loop below
-    // does, needed once more for the reference frame.
-    function centroidOfFrame(frame, chainId) {
-        if (!frame || !frame.coords || !frame.coords.length) return null;
-        let n = 0; const c = [0, 0, 0];
-        for (let j = 0; j < frame.coords.length; j++) {
-            if (chainId !== null && frame.chains && frame.chains[j] !== chainId) continue;
-            c[0] += frame.coords[j][0];
-            c[1] += frame.coords[j][1];
-            c[2] += frame.coords[j][2];
-            n++;
-        }
-        if (!n) return null;
-        return [c[0] / n, c[1] / n, c[2] / n];
-    }
-
-    for (let i = 0; i < rawFrames.length; i++) {
-        const frame = rawFrames[i];
-
-        // Extract centering chain coordinates
-        const centeringCoords = [];
-        if (centeringChainId !== null) {
-            for (let j = 0; j < frame.coords.length; j++) {
-                if (frame.chains && frame.chains[j] === centeringChainId) {
-                    centeringCoords.push(frame.coords[j]);
-                }
-            }
-        } else {
-            // No chain information - use all positions for centering
-            for (let j = 0; j < frame.coords.length; j++) {
-                centeringCoords.push(frame.coords[j]);
-            }
-        }
-
-        if (centeringCoords.length > 0) {
-            // Compute center of centering chain (or all positions)
-            let center = [0, 0, 0];
-            for (const coord of centeringCoords) {
-                center[0] += coord[0];
-                center[1] += coord[1];
-                center[2] += coord[2];
-            }
-            center[0] /= centeringCoords.length;
-            center[1] /= centeringCoords.length;
-            center[2] /= centeringCoords.length;
-
-            // WHAT THIS FRAME IS MEASURED AGAINST: the object's first frame
-            // when it has one, otherwise the first frame of this batch, which
-            // therefore does not move.
-            if (referenceCentre === null) {
-                const ref = targetObject.frames.length > 0
-                    ? targetObject.frames[0] : rawFrames[0];
-                referenceCentre = centroidOfFrame(ref, centeringChainId) || center;
-            }
-            if (alignedTogether) {
-                // Aligned frames are already in the reference's frame of
-                // reference - the rotation and the translation both - so there
-                // is nothing left to take off them.
-                if (sharedOffset === null) sharedOffset = [0, 0, 0];
-                center = sharedOffset;
-            } else {
-                center = [center[0] - referenceCentre[0],
-                    center[1] - referenceCentre[1],
-                    center[2] - referenceCentre[2]];
-            }
-
-            // Subtract center from all coordinates
-            for (const coord of frame.coords) {
-                coord[0] -= center[0];
-                coord[1] -= center[1];
-                coord[2] -= center[2];
-            }
-        }
-    }
+    // where it always was.
 
     // ========================================================================
     // STEP 4: Add processed frames to targetObject
