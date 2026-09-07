@@ -44,10 +44,22 @@ function detectRedundantFields(frames) {
     return redundant;
 }
 
-function saveViewerState() {
+/**
+ * Everything the page is showing, as the object a session file holds.
+ *
+ * 🔴 SPLIT OUT OF saveViewerState, WHICH BUILT THIS AND IMMEDIATELY DOWNLOADED
+ * IT. A caller that wants the state for anything else - storing it, sending
+ * it, diffing two of them - had no way to get at it, and the only alternative
+ * was to intercept URL.createObjectURL and read the blob back out of a
+ * download that was never wanted. The download is one caller of this now.
+ *
+ * Returns null when there is nothing to save, so a caller can tell "no viewer"
+ * from "an empty one".
+ */
+function buildViewerState() {
     if (!viewerApi || !viewerApi.renderer) {
         setStatus("Error: No viewer data to save.", true);
-        return;
+        return null;
     }
 
     const renderer = viewerApi.renderer;
@@ -425,34 +437,43 @@ function saveViewerState() {
             selections_by_object: selectionsByObject
         };
 
-        // Create filename with timestamp
-        const now = new Date();
-        const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
-        const jsonFilename = `py2dmol_state_${timestamp}.json`;
-
-        // NOT PRETTY-PRINTED. Two-space indentation on a session file is
-        // between two and four times the payload, and nothing reads these by
-        // hand: the app parses them back, and at this size no editor opens one
-        // anyway. Measured on 7Y7A - 305,004 positions, 1,065,107 side-chain
-        // rows - the indentation alone was 153 MB of a 212 MB file.
-        const jsonString = JSON.stringify(stateData);
-
-        // Download JSON file
-        const blob = new Blob([jsonString], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = jsonFilename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-
-        setStatus(`State saved to ${jsonFilename}`);
+        return stateData;
     } catch (e) {
-        console.error("Failed to save state:", e);
+        console.error("Failed to build state:", e);
         setStatus(`Error saving state: ${e.message}`, true);
+        return null;
     }
+}
+
+/** The session as a file, which is what the Save button wants. */
+function saveViewerState() {
+    const stateData = buildViewerState();
+    if (!stateData) return;
+
+    // Create filename with timestamp
+    const now = new Date();
+    const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
+    const jsonFilename = `py2dmol_state_${timestamp}.json`;
+
+    // NOT PRETTY-PRINTED. Two-space indentation on a session file is
+    // between two and four times the payload, and nothing reads these by
+    // hand: the app parses them back, and at this size no editor opens one
+    // anyway. Measured on 7Y7A - 305,004 positions, 1,065,107 side-chain
+    // rows - the indentation alone was 153 MB of a 212 MB file.
+    const jsonString = JSON.stringify(stateData);
+
+    // Download JSON file
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = jsonFilename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    setStatus(`State saved to ${jsonFilename}`);
 }
 
 // ============================================================================

@@ -4205,6 +4205,25 @@ function applySelectionToMSA() {
 window.py2dmolLoadFiles = (files, loadAsFrames = true, groupName = null) =>
     processFiles(files, loadAsFrames, groupName);
 
+/**
+ * The session, in and out, without going through a file.
+ *
+ * 🔴 saveViewerState WAS THE ONLY DOOR AND IT DOWNLOADS. A host page that
+ * wants to keep a session - in IndexedDB, in a server, anywhere that is not
+ * the user's Downloads folder - had to intercept URL.createObjectURL to catch
+ * a blob it never wanted written. `buildViewerState` returns the object;
+ * `loadViewerState` was already the loader and simply was not reachable, so a
+ * session could be restored from a dropped file and not from anything else.
+ */
+// 🔴 THE FUNCTION ITSELF, NEVER A WRAPPER THAT CALLS IT BY NAME. The bundle is
+// concatenated, not module-scoped, so a top-level `function buildViewerState`
+// IS `window.buildViewerState` - and `window.buildViewerState = () =>
+// buildViewerState()` therefore replaces the global with an arrow whose body
+// resolves to the arrow. It recurses until the stack ends, and the only
+// symptom is a RangeError from a function that looks like it should work.
+window.buildViewerState = buildViewerState;
+window.loadViewerState = loadViewerState;
+
 async function processFiles(files, loadAsFrames, groupName = null) {
     beginProgress();
     const tempBatch = [];
