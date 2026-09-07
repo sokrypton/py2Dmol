@@ -71,7 +71,29 @@
             if (!P) return null;
             // the shown set is a Set in Multi and null in the ordinary mode -
             // see setShownObjects
-            if (this.shownObjects instanceof Set) return null;
+            //
+            // 🔴 A SET OF ONE IS NOT MULTI, AND REFUSING IT HID THE PANEL FROM
+            // A VIEWER SHOWING EXACTLY ONE OBJECT. The rule above is "the
+            // matrix belongs to one, so it waits until the viewer is back to
+            // one" - and a one-element set IS back to one, whether it got
+            // there by switching everything else off or by a host narrowing
+            // the set to the object it just opened. Any Set answering null
+            // made this depend on HOW the viewer arrived at one object rather
+            // than on whether it is showing one.
+            //
+            // It hid on a restored session and not on a live one, which is the
+            // shape that made it hard to see: `updateVisibility` runs when the
+            // panel is asked to change, so a page that showed the panel while
+            // the set was still null kept it on screen after the set became a
+            // Set - visible by inertia, with nothing to recompute it. Loading
+            // a session recomputes everything from nothing, and the panel that
+            // had been on screen all along did not come back.
+            if (this.shownObjects instanceof Set) {
+                if (this.shownObjects.size !== 1) return null;
+                const only = [...this.shownObjects][0];
+                const shown = this.objectsData ? this.objectsData[only] : null;
+                return (shown && P.hasData(shown)) ? only : null;
+            }
             const cur = this.currentObjectName;
             const o = cur && this.objectsData ? this.objectsData[cur] : null;
             return (o && P.hasData(o)) ? cur : null;
