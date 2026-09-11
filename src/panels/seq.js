@@ -2766,35 +2766,33 @@ function updateSequenceViewSelectionState() {
     const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
     if (!renderer) return;
 
-    // Determine what's actually visible from the unified model or visiblePositions
-    // Use previewSelectionSet during drag for live feedback
-    let visiblePositions = new Set();
-
+    // 🔴 HOW MANY ARE VISIBLE, NOT WHICH ONES. This built a Set of the visible
+    // positions - and in the default case, where nothing is selected and the
+    // mask is null, that means adding every index of the structure, 3,348 of
+    // them on a big one - and then used it for its SIZE and nothing else. The
+    // set was dead by the next line: the hash below is the only reader, and the
+    // rest of the function schedules a redraw.
+    //
+    // It is called from the render path, so a trajectory paid for it on every
+    // frame. The sizes are all available without materialising anything.
     const previewSelectionSet = getLocalPreview();
-
+    let visibleCount = 0;
     if (previewSelectionSet && previewSelectionSet.size > 0) {
-        // During drag, use preview selection for live feedback (already position indices)
-        visiblePositions = new Set(previewSelectionSet);
-    } else {
-        // Use positions directly from selection model
-        if (renderer.visibilityModel && renderer.visibilityModel.positions && renderer.visibilityModel.positions.size > 0) {
-            visiblePositions = new Set(renderer.visibilityModel.positions);
-        } else if (renderer.visiblePositions === null) {
-            // null mask means all positions are visible (default mode)
-            const n = renderer.coords ? renderer.coords.length : 0;
-            for (let i = 0; i < n; i++) {
-                visiblePositions.add(i);
-            }
-        } else if (renderer.visiblePositions && renderer.visiblePositions.size > 0) {
-            // Non-empty Set means some positions are visible
-            visiblePositions = new Set(renderer.visiblePositions);
-        }
+        visibleCount = previewSelectionSet.size;
+    } else if (renderer.visibilityModel && renderer.visibilityModel.positions
+        && renderer.visibilityModel.positions.size > 0) {
+        visibleCount = renderer.visibilityModel.positions.size;
+    } else if (renderer.visiblePositions === null) {
+        // null mask means all positions are visible (default mode)
+        visibleCount = renderer.coords ? renderer.coords.length : 0;
+    } else if (renderer.visiblePositions && renderer.visiblePositions.size > 0) {
+        visibleCount = renderer.visiblePositions.size;
     }
 
     // Create hash to detect if selection actually changed
     // Include previewSelectionSet in hash to ensure live feedback during drag
     const previewHash = previewSelectionSet ? previewSelectionSet.size : 0;
-    const currentHash = visiblePositions.size + previewHash + (renderer?.visiblePositions === null ? 'all' : 'some');
+    const currentHash = visibleCount + previewHash + (renderer?.visiblePositions === null ? 'all' : 'some');
     if (currentHash === lastSequenceUpdateHash && !previewSelectionSet) {
         return; // No change, skip update (unless we have preview selection for live feedback)
     }
