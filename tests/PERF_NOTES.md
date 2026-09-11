@@ -5365,3 +5365,63 @@ configuration timed back to back read **7.1 ms and 5.3 ms** - a third of the
 number - which is how the corner projection came to look like a 1.7 ms win.
 Every number above is a minimum over interleaved rounds, and the two node-level
 ones are minima of three runs in both orders.
+
+
+## The load, on a capsid: 1.63x to the first picture
+
+`1M4X.cif` is 1,680 assembly operations over the asymmetric unit - 10,115,280
+atoms, 2,081,520 drawn positions - and it is the case where every per-atom and
+per-residue cost in the load path is visible at once. Measured with a probe that
+watches the canvas for its first non-white pixel, three loads an arm:
+
+| | first ink | settled |
+|---|---:|---:|
+| before | 8931 / 9180 / 9175 ms | 9249 / 9519 / 9494 ms |
+| after  | 5472 / 5537 / 5548 ms | 6732 / 6854 / 6868 ms |
+|        | **1.63x** | **1.37x** |
+
+Note the first row: the picture used to arrive 300 ms before the load finished.
+Nine seconds of blank canvas, and then everything at once.
+
+Four changes, in the order they were found.
+
+**The sequence strip was in front of the picture.** `checkFrameChange` is an
+animation-frame watcher and it built the strip directly; a build inside a rAF
+callback runs before the browser can paint, so the first picture waited 1.9 s
+for a panel that nothing drawn depends on. It goes through `buildViewDeferred`
+now - which stays synchronous whenever the strip would not rebuild, so a
+playback step is unchanged. `tests/load_work.py` gates the provenance: no build
+may come from `checkFrameChange`.
+
+**The side-chain table, 1.33x** (1365 / 1419 / 1404 ms -> 1017 / 1058 / 1070,
+`window.__sidechainMs`). `primed` was called three times per atom where once
+does; the backbone test asked a dictionary per emitted row for an answer only
+proline has; `join`, `grow` and `rowIdx` were declared inside the residue loop,
+which is three closures per residue and 939,000 of them here, beside two fresh
+arrays. The frame is also computed once per residue instead of twice - that one
+measured nothing on its own and is kept for being half the work, not for a
+speedup it did not give.
+
+**The nucleic question, 1.10x on the conversion** (2979 / 3190 / 3164 ms ->
+2717 / 2868 / 2851, `window.__convertMs`). Every residue was asked both whether
+it is an amino acid and whether it is a nucleotide, and the branches take
+protein first - so on a capsid with no nucleic acid in it, 2 million
+connectivity walks were discarded.
+
+**The assembly expansion, 1.26x** (1020 / 1075 / 1020 ms -> 807 / 826 / 808,
+`window.__biounitMs`). The copy's chain name is a function of the chain and the
+operation, and it was rebuilt per atom: eight million string concatenations
+producing a few dozen distinct strings. One map per operation.
+
+🔴 **AND TWO OBVIOUS REPAIRS MEASURED NOTHING OR WORSE.** `rowIdx` is 113 ms
+and looks like the hashing candidate; one reused Map, cleared per residue, cost
+1161 / 1245 / 1246 ms against the scan's 1017 / 1058 / 1070 - hashing fourteen
+strings to save scanning them does not pay at fourteen. And
+`maybeFilterAdditives` builds a 10-million-element array to decide it has
+dropped nothing; counting first measured 149 / 158 ms against 170, which is
+inside the spread. The passes over ten million atoms are the cost there, not the
+array, and the change was reverted rather than kept for looking right.
+
+**Each arm is three loads and the arms were run back to back**, because this
+machine drifts: the same configuration measured 8931 and 9180 ms in consecutive
+runs. Single numbers from this probe mean nothing.
