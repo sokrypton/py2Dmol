@@ -8534,6 +8534,26 @@ function drawRun(runIdx, ctx) {
                 // and leaving a wedge. Shared tangents make the edges C1.
                 // The helix stencil applies because side vectors rotate at
                 // the same 100 degrees per residue as the positions.
+                //
+                // 🔴 AND THIS IS THE ONE PER-LETTER FORK LEFT IN THE RIBBON'S
+                // CONSTRUCTION, DELIBERATELY. The sampling and the centre-line
+                // stencil were both collapsed - a letter chooses a profile now,
+                // not a construction - and the obvious next step is to collapse
+                // this one too and delete the central-difference arm. It is a
+                // visible picture change, measured by rendering both ways:
+                //
+                //     1TIM   4.066% of pixels differ, worst channel 128
+                //     3CHY   5.641%                          163
+                //     1UBQ   3.225%                          143
+                //
+                // The centre line could be unified because the helix stencil is
+                // very nearly linear on a straight run, so strands did not move.
+                // Side vectors are not the same case: a strand's come from
+                // buildSheetFrames with PyMOL's parity flip, which alternates
+                // residue to residue, and a four-point filter fitted to a smooth
+                // 100-degrees-a-residue rotation has no business smoothing a
+                // pleat. Collapsing this is a drawing decision with a reference
+                // to check against, not a cleanup.
                 const sideTanAt = (j) => {
                     const q1 = sides[wrapIdx(j - 1) - lo];
                     const q2 = sides[wrapIdx(j + 1) - lo];
