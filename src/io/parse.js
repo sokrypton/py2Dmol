@@ -1523,15 +1523,25 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
         // Use unified classification functions
         // If includeAllResidues is true, skip connectivity checks (for PAE mapping)
         // Otherwise, use connectivity checks (for normal filtering)
+        // 🔴 AND THE NUCLEIC QUESTION IS ONLY ASKED WHERE THE PROTEIN ANSWER
+        // WAS NO. The branches below take protein first, so a residue that is
+        // protein never reads this - and asking costs a name lookup, an atom
+        // scan for the 2' oxygen, and a connectivity walk over the neighbours.
+        // It was asked for every residue in the file: 313,000 times on a
+        // capsid with no nucleic acid anywhere in it. isRealNucleicAcid is a
+        // pure function of the residue and its neighbours, so not asking is
+        // the same answer.
         let is_protein, nucleicType;
         if (includeAllResidues) {
             // For PAE mapping: include all residues, skip connectivity checks
             is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, null, -1);
-            nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, null, -1);
+            nucleicType = is_protein ? null
+                : isRealNucleicAcid(residue, modresMap, chemCompMap, null, -1);
         } else {
             // Normal mode: use connectivity checks
             is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, allResidues, idx);
-            nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, allResidues, idx);
+            nucleicType = is_protein ? null
+                : isRealNucleicAcid(residue, modresMap, chemCompMap, allResidues, idx);
         }
         // Whether it IS a nucleotide is per residue; which KIND it is falls
         // back to the chain when the residue itself gave no evidence. A
@@ -1865,7 +1875,16 @@ function convertParsedToFrameData(...args) {
 async function convertParsedToFrameDataAsync(...args) {
     const it = convertParsedToFrameDataSteps(...args);
     for (;;) {
+        // WHAT THE CONVERSION ITSELF COSTS, as `window.__convertMs` - the sum
+        // of the slices and not the wall, because the wall includes whatever
+        // the browser did with the turn it was handed between them. It is the
+        // largest single item in a big load's profile, so it has to be a
+        // number that does not drift with the machine.
+        const __cvT0 = (typeof performance !== 'undefined') ? performance.now() : 0;
         const r = it.next();
+        if (typeof window !== 'undefined' && typeof performance !== 'undefined') {
+            window.__convertMs = (window.__convertMs || 0) + (performance.now() - __cvT0);
+        }
         if (r.done) return r.value;
         await yieldIfBusy();
     }
