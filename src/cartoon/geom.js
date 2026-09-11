@@ -2302,6 +2302,22 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
             if (p.z < mnz) mnz = p.z; if (p.z > mxz) mxz = p.z;
             nProt += 1;
         }
+        //
+        // 🔴 AND HALVING THE CELL TO WIDEN THE RING DOES NOT PAY, MEASURED. The
+        // reach to cover is HB_SEARCH, and a ring of R cells of side
+        // HB_SEARCH/R covers it whatever R is - but not in the same volume. At
+        // R = 1 the neighbourhood is 27 cells of 9 A, 19,683 A^3, against the
+        // 2,572 A^3 of the sphere that can actually hold a partner: seven and a
+        // half times more candidates than there are places for one. R = 2 is
+        // 125 cells of 4.5 A, 11,390 A^3, and 1.7x fewer pairs to reject.
+        //
+        // It is CORRECT - the assignment of all 151 chains digests identically -
+        // and it is not faster. Eight times the cells is eight times the
+        // counting array to allocate and prefix-sum, and twenty-five row slices
+        // to reach instead of nine, and at protein sizes that is the whole
+        // saving. On _traj_1tim.pdb, 494 residues, the assignment's own clock
+        // over 59 steps: 0.7 / 0.7 ms against 0.8 / 0.8, the wrong way round.
+        // The candidate count was never the binding cost at this scale.
         if (nProt) {
             const inv = 1 / HB_SEARCH;
             const nx = Math.max(1, Math.floor((mxx - mnx) * inv) + 1);
