@@ -7689,7 +7689,27 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Calculate what 'auto' should resolve to
             // Priority: plddt (if PAE present) > chain (if multi-chain) > rainbow
             // In overlay mode, use merged auto color based on all frames
-            const uniqueChains = new Set(this.chains);
+            // 🔴 ONE QUESTION, NOT A SET OF EVERY CHAIN ID. This was
+            // `new Set(this.chains)` and the only thing asked of it is whether
+            // there is more than one distinct chain - so it built a hash set of
+            // 3,348 strings on a big structure, on every setCoords, which is
+            // every frame of a trajectory. A scan that stops at the second
+            // distinct value answers the same question, and the answer is
+            // remembered against the ARRAY: a trajectory hands the same chains
+            // array to every frame, so past the first it costs a comparison.
+            const chArr = this.chains;
+            if (this._multiChainFor !== chArr) {
+                let multi = false;
+                if (chArr && chArr.length > 1) {
+                    const first = chArr[0];
+                    for (let ci = 1; ci < chArr.length; ci += 1) {
+                        if (chArr[ci] !== first) { multi = true; break; }
+                    }
+                }
+                this._multiChainFor = chArr;
+                this._multiChain = multi;
+            }
+            const manyChains = this._multiChain;
             if (this.multiState && this.multiState.enabled) {
                 // EACH OBJECT KEEPS ITS OWN SCHEME. A monomer rainbows, a
                 // complex colours by chain, a predicted model by confidence -
@@ -7710,7 +7730,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             } else {
                 if (hasPAE) {
                     this.resolvedAutoColor = 'plddt';
-                } else if (uniqueChains.size > 1) {
+                } else if (manyChains) {
                     this.resolvedAutoColor = 'chain';
                 } else {
                     this.resolvedAutoColor = 'rainbow';
@@ -7737,120 +7757,157 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Track which chains contain only ligands (no P/D/R atoms)
             this.ligandOnlyChains = new Set();
             // ...keyed by SOURCE AND CHAIN when several objects are merged, so
-            // two structures that both have a chain A do not share its colour.
-            // Null otherwise, and then the key is the plain id - see
-            // chainColorKeyAt.
-            {
-                // KEYED BY OBJECT NAME once more than one object is loaded, so
-                // an object's colours do not move when another is switched on
-                // or off. Never for the overlay: it puts every frame of ONE
-                // object in the array, and chain A is the same chain A in all
-                // of them - keyed per frame it would come out a different
-                // colour in each, which the overlay has never looked like.
-                const ms = this.multiState;
-                const loaded = Object.keys(this.objectsData || {});
-                const grp = (ms && ms.enabled) ? this.sourceGroups() : null;
-                const nameOf = (i) => {
-                    if (grp && ms.sourceNames) {
-                        const s = grp[i];
-                        if (s >= 0 && s < ms.sourceNames.length) return ms.sourceNames[s];
-                    }
-                    return this.currentObjectName;
-                };
-                this._chainColorKeys = (loaded.length > 1)
-                    ? this.chains.map((c, i) => nameOf(i) + '|' + (c || 'A'))
-                    : null;
-            }
-            if (this.chains.length > 0) {
-                // Every chain of every LOADED object, in load order - see
-                // _buildChainIndexMap. Not just the drawn ones, or an object's
-                // colours would move as its neighbours came and went.
-                this._buildChainIndexMap();
-                const sortedUniqueChains = [...this.chainIndexMap.keys()];
+            // 🔴 THE CHAIN TABLES ARE NOT A FUNCTION OF THE COORDINATES, and
+            // this whole section was rebuilt on every setCoords - which is
+            // every frame of a trajectory. It walks the positions twice with a
+            // string chain key per position, allocates `perChainIndices` and
+            // (with more than one object loaded) `_chainColorKeys` at full
+            // length, and builds the chain index map from a Set and a sort per
+            // object. On a 3,348-position tube step the profile put 6% of the
+            // frame in _buildChainIndexMap and chainKeyAt alone.
+            //
+            // What it reads: the chains array, the position types, the source
+            // grouping, which objects are loaded and which one is current. A
+            // trajectory changes none of them - it hands the same arrays to
+            // every frame - so the tables are keyed on those by IDENTITY and
+            // rebuilt when one of them is a different array.
+            const __groupsNow = this.sourceGroups();
+            const __msNow = (this.multiState && this.multiState.enabled
+                && this.multiState.sourceNames)
+                ? this.multiState.sourceNames.join('\u0001') : '';
+            const __namesNow = Object.keys(this.objectsData || {}).join('\u0001');
+            const __chainsFresh = this._chainTablesFor !== this.chains
+                || this._chainTablesTypes !== this.positionTypes
+                || this._chainTablesGroups !== __groupsNow
+                || this._chainTablesNames !== __namesNow
+                || this._chainTablesObject !== this.currentObjectName
+                // ...and WHICH SOURCES the merge is showing, by name: the
+                // grouping array can stay the same object while the names it
+                // indexes change, and `_chainColorKeys` is built from them.
+                || this._chainTablesMs !== __msNow
+                || !this.perChainIndices || this.perChainIndices.length !== n;
+            if (__chainsFresh) {
+                this._chainTablesFor = this.chains;
+                this._chainTablesTypes = this.positionTypes;
+                this._chainTablesGroups = __groupsNow;
+                this._chainTablesNames = __namesNow;
+                this._chainTablesObject = this.currentObjectName;
+                this._chainTablesMs = __msNow;
+                // two structures that both have a chain A do not share its colour.
+                // Null otherwise, and then the key is the plain id - see
+                // chainColorKeyAt.
+                {
+                    // KEYED BY OBJECT NAME once more than one object is loaded, so
+                    // an object's colours do not move when another is switched on
+                    // or off. Never for the overlay: it puts every frame of ONE
+                    // object in the array, and chain A is the same chain A in all
+                    // of them - keyed per frame it would come out a different
+                    // colour in each, which the overlay has never looked like.
+                    const ms = this.multiState;
+                    const loaded = Object.keys(this.objectsData || {});
+                    const grp = (ms && ms.enabled) ? this.sourceGroups() : null;
+                    const nameOf = (i) => {
+                        if (grp && ms.sourceNames) {
+                            const s = grp[i];
+                            if (s >= 0 && s < ms.sourceNames.length) return ms.sourceNames[s];
+                        }
+                        return this.currentObjectName;
+                    };
+                    this._chainColorKeys = (loaded.length > 1)
+                        ? this.chains.map((c, i) => nameOf(i) + '|' + (c || 'A'))
+                        : null;
+                }
+                if (this.chains.length > 0) {
+                    // Every chain of every LOADED object, in load order - see
+                    // _buildChainIndexMap. Not just the drawn ones, or an object's
+                    // colours would move as its neighbours came and went.
+                    this._buildChainIndexMap();
+                    const sortedUniqueChains = [...this.chainIndexMap.keys()];
 
-                // WHICH CHAINS ARE LIGAND-ONLY: one pass over the positions,
-                // not one pass PER CHAIN.
+                    // WHICH CHAINS ARE LIGAND-ONLY: one pass over the positions,
+                    // not one pass PER CHAIN.
+                    //
+                    // This asked, for every chain, "does any position in it carry a
+                    // polymer type" by scanning the whole position list - so it
+                    // cost chains x positions. On a capsid that is 1,356 chains
+                    // against 313,236 positions: 425 million string comparisons,
+                    // and 3.6 s of a 16 s load, all of it inside setCoords.
+                    //
+                    // The question is per POSITION, not per chain: walk the
+                    // positions once, note the chain of each polymer one, and any
+                    // chain not noted is ligand-only. Same answer, O(n + chains).
+                    const polymerChains = new Set();
+                    for (let i = 0; i < n; i++) {
+                        const type = this.positionTypes[i];
+                        if (type === 'P' || type === 'D' || type === 'R') {
+                            polymerChains.add(this.chainKeyAt(i));
+                        }
+                    }
+                    for (const chainId of sortedUniqueChains) {
+                        if (!polymerChains.has(chainId)) {
+                            this.ligandOnlyChains.add(chainId);
+                        }
+                    }
+                }
+
+                // No longer need polymerPositionIndices - all positions are treated the same
+                // (One position = one position, no distinction between polymer/ligand)
+
+                // WHERE EACH RESIDUE SITS ALONG ITS CHAIN, and how long that
+                // chain is - one walk, because the second answer falls out of the
+                // first. The index counts 0, 1, 2... along each chain, so the
+                // rainbow's range for that chain is 0 to the last index it handed
+                // out; it was recomputed by a second pass over every position that
+                // could only ever arrive at the same two numbers, and both passes
+                // built a chain key per position to do it.
                 //
-                // This asked, for every chain, "does any position in it carry a
-                // polymer type" by scanning the whole position list - so it
-                // cost chains x positions. On a capsid that is 1,356 chains
-                // against 313,236 positions: 425 million string comparisons,
-                // and 3.6 s of a 16 s load, all of it inside setCoords.
-                //
-                // The question is per POSITION, not per chain: walk the
-                // positions once, note the chain of each polymer one, and any
-                // chain not noted is ligand-only. Same answer, O(n + chains).
-                const polymerChains = new Set();
+                // A MERGED VIEW RAMPS EACH SOURCE ON ITS OWN - each frame of a
+                // trajectory, or each object, running its own blue-to-red rather
+                // than taking a slice of one ramp spread over the lot. Two copies
+                // of the same protein should look like two copies of it. So the
+                // count along a chain restarts at each source, and the scales are
+                // kept per source; with one source they are kept per chain, and
+                // the other table is left null so nothing reads the wrong one.
+                this.perChainIndices = new Array(n);
+                const chainIndices = {};        // running count, per chain
+                const groups = this.sourceGroups();
+                let lastFrame = -1;             // the source the walk is inside
+                const scales = {};              // src -> chain -> {min, max}
+                this.sourceRainbowScales = groups ? scales : null;
+                this.chainRainbowScales = groups ? null : {};
+                const scaleFor = (src, chainId) => {
+                    if (groups) {
+                        const bySrc = scales[src] || (scales[src] = {});
+                        return bySrc[chainId]
+                            || (bySrc[chainId] = { min: 0, max: 0 });
+                    }
+                    return this.chainRainbowScales[chainId]
+                        || (this.chainRainbowScales[chainId] = { min: 0, max: 0 });
+                };
                 for (let i = 0; i < n; i++) {
                     const type = this.positionTypes[i];
-                    if (type === 'P' || type === 'D' || type === 'R') {
-                        polymerChains.add(this.chainKeyAt(i));
+                    const chainId = this.chainKeyAt(i);
+                    const src = groups ? groups[i] : 0;
+                    // Chain A of the second source is not a continuation of
+                    // chain A of the first, so the count along it starts again.
+                    if (groups && src !== lastFrame) {
+                        for (const key in chainIndices) chainIndices[key] = 0;
+                        lastFrame = src;
                     }
-                }
-                for (const chainId of sortedUniqueChains) {
-                    if (!polymerChains.has(chainId)) {
-                        this.ligandOnlyChains.add(chainId);
+                    const counts = (type === 'P' || type === 'D' || type === 'R'
+                        || (type === 'L' && this.ligandOnlyChains.has(chainId)));
+                    if (!counts) {
+                        this.perChainIndices[i] = 0;   // a ligand in a mixed chain
+                        continue;
                     }
+                    if (chainIndices[chainId] === undefined) chainIndices[chainId] = 0;
+                    const at = chainIndices[chainId]++;
+                    this.perChainIndices[i] = at;
+                    const scale = scaleFor(src, chainId);
+                    if (at > scale.max) scale.max = at;
                 }
+
             }
-
-            // No longer need polymerPositionIndices - all positions are treated the same
-            // (One position = one position, no distinction between polymer/ligand)
-
-            // WHERE EACH RESIDUE SITS ALONG ITS CHAIN, and how long that
-            // chain is - one walk, because the second answer falls out of the
-            // first. The index counts 0, 1, 2... along each chain, so the
-            // rainbow's range for that chain is 0 to the last index it handed
-            // out; it was recomputed by a second pass over every position that
-            // could only ever arrive at the same two numbers, and both passes
-            // built a chain key per position to do it.
-            //
-            // A MERGED VIEW RAMPS EACH SOURCE ON ITS OWN - each frame of a
-            // trajectory, or each object, running its own blue-to-red rather
-            // than taking a slice of one ramp spread over the lot. Two copies
-            // of the same protein should look like two copies of it. So the
-            // count along a chain restarts at each source, and the scales are
-            // kept per source; with one source they are kept per chain, and
-            // the other table is left null so nothing reads the wrong one.
-            this.perChainIndices = new Array(n);
-            const chainIndices = {};        // running count, per chain
-            const groups = this.sourceGroups();
-            let lastFrame = -1;             // the source the walk is inside
-            const scales = {};              // src -> chain -> {min, max}
-            this.sourceRainbowScales = groups ? scales : null;
-            this.chainRainbowScales = groups ? null : {};
-            const scaleFor = (src, chainId) => {
-                if (groups) {
-                    const bySrc = scales[src] || (scales[src] = {});
-                    return bySrc[chainId]
-                        || (bySrc[chainId] = { min: 0, max: 0 });
-                }
-                return this.chainRainbowScales[chainId]
-                    || (this.chainRainbowScales[chainId] = { min: 0, max: 0 });
-            };
-            for (let i = 0; i < n; i++) {
-                const type = this.positionTypes[i];
-                const chainId = this.chainKeyAt(i);
-                const src = groups ? groups[i] : 0;
-                // Chain A of the second source is not a continuation of
-                // chain A of the first, so the count along it starts again.
-                if (groups && src !== lastFrame) {
-                    for (const key in chainIndices) chainIndices[key] = 0;
-                    lastFrame = src;
-                }
-                const counts = (type === 'P' || type === 'D' || type === 'R'
-                    || (type === 'L' && this.ligandOnlyChains.has(chainId)));
-                if (!counts) {
-                    this.perChainIndices[i] = 0;   // a ligand in a mixed chain
-                    continue;
-                }
-                if (chainIndices[chainId] === undefined) chainIndices[chainId] = 0;
-                const at = chainIndices[chainId]++;
-                this.perChainIndices[i] = at;
-                const scale = scaleFor(src, chainId);
-                if (at > scale.max) scale.max = at;
-            }
-
             // Pre-allocate rotatedCoords array
             if (this.rotatedCoords.length !== n) {
                 this.rotatedCoords = Array.from({ length: n }, () => new Vec3(0, 0, 0));
