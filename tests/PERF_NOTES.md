@@ -5348,6 +5348,18 @@ obviously right and cost an hour to disprove.
     13.7% the profile attributed to `len3` is in the amide and dihedral passes,
     not there.
 
+  * **Deferring the per-piece array slices.** A rib piece slices FIFTEEN arrays
+    out of its run's - about 2,000 pieces on 1TIM, so 30,000 array allocations
+    a frame - and the station path reads five of them. A node micro-benchmark
+    of exactly that shape says **1.12 ms a frame**, which would be a fifth of
+    the step. Built it: the piece carries a window (`src`, `srcAt`, `ns`) and
+    `pieceArrays` cuts the other ten on demand, so a frame that never rebuilds
+    never cuts them. Interleaved three rounds: **5.8 ms before, 6.2 after** -
+    slower. The slicing is not what the micro-benchmark measures in place, and
+    the extra fields change the prim's shape for every other read of it.
+    Reverted. Third time tonight that an allocation win did not survive contact
+    with V8.
+
 🔴 **AND THIS MACHINE MAKES A SINGLE MEASUREMENT WORTHLESS.** The same
 configuration timed back to back read **7.1 ms and 5.3 ms** - a third of the
 number - which is how the corner projection came to look like a 1.7 ms win.
