@@ -1848,6 +1848,21 @@ function predictBackbone(at, n, want, out, mirrored) {
 const HB_ENERGY_CUTOFF = -0.4;
 const HB_COUPLING = 0.084 * 332;
 const HB_NH_LENGTH = 1.01;
+// 🔴 AND IT IS NOT THE BOND'S LENGTH, WHICH IS THE TEMPTING SHRINK. The energy
+// test is on O...N at 5.5 A, so a 5.5 A cell looks sufficient and is not: the
+// grid is built on C-ALPHAS, and the O and the N stand off their own alphas, so
+// a bonded pair's alphas are further apart than the bond. Measured over the 151
+// chains of tests/out/ss_truth.json, the longest C-alpha separation of an
+// ACCEPTED bond is 8.502 A - a cell smaller than that no longer guarantees the
+// pair is among the 27 neighbours, and 9.0 is that bound with a margin.
+//
+// Tried anyway, because the candidate count scales with the cell's VOLUME: at
+// 7.0 the assignment is identical over all 16,899 residues and at 6.5 it is
+// not. The identical one is luck rather than a guarantee - a pair 8.5 A apart
+// falls in adjacent 7 A cells only when it straddles the boundaries kindly - and
+// a search that is right on the fixtures and wrong on a structure nobody has
+// tried is worse than a slow one. `window.__hbSpan = {max: 0}` before an
+// assignment measures the bound again on anything else.
 const HB_SEARCH = 9.0;      // A between C-alphas; an H-bond cannot be longer
 // Rungs to walk past the end of a detected ladder. DSSP's strand boundaries
 // are conservative and this backbone is predicted, so ladders end early and
@@ -2182,21 +2197,29 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
     }
     // --- phi/psi per residue, from the rebuilt backbone ---
     // phi: C(i-1) N(i) CA(i) C(i);  psi: N(i) CA(i) C(i) N(i+1)
-    const dihedral = (p0, p1, p2, p3) => {
-        const b0x = p1[0] - p0[0], b0y = p1[1] - p0[1], b0z = p1[2] - p0[2];
-        const b1x = p2[0] - p1[0], b1y = p2[1] - p1[1], b1z = p2[2] - p1[2];
-        const b2x = p3[0] - p2[0], b2y = p3[1] - p2[1], b2z = p3[2] - p2[2];
+    // 🔴 TWELVE SCALARS, NOT FOUR ARRAYS. Called twice a residue, it was handed
+    // four three-element arrays built at the call site - eight allocations per
+    // residue per frame, and the assignment runs on every frame of a trajectory.
+    // The three len3 calls inside went the same way: the profile put 13.7% of
+    // the assignment inside len3 itself, which is the calling rather than the
+    // arithmetic.
+    const dihedral = (p0x, p0y, p0z, p1x, p1y, p1z,
+        p2x, p2y, p2z, p3x, p3y, p3z) => {
+        const b0x = p1x - p0x, b0y = p1y - p0y, b0z = p1z - p0z;
+        const b1x = p2x - p1x, b1y = p2y - p1y, b1z = p2z - p1z;
+        const b2x = p3x - p2x, b2y = p3y - p2y, b2z = p3z - p2z;
         let n1x = b0y * b1z - b0z * b1y;
         let n1y = b0z * b1x - b0x * b1z;
         let n1z = b0x * b1y - b0y * b1x;
         let n2x = b1y * b2z - b1z * b2y;
         let n2y = b1z * b2x - b1x * b2z;
         let n2z = b1x * b2y - b1y * b2x;
-        const l1 = len3(n1x, n1y, n1z), l2 = len3(n2x, n2y, n2z);
+        const l1 = Math.sqrt(n1x * n1x + n1y * n1y + n1z * n1z);
+        const l2 = Math.sqrt(n2x * n2x + n2y * n2y + n2z * n2z);
         if (l1 < 1e-9 || l2 < 1e-9) return null;
         n1x /= l1; n1y /= l1; n1z /= l1;
         n2x /= l2; n2y /= l2; n2z /= l2;
-        const bl = len3(b1x, b1y, b1z);
+        const bl = Math.sqrt(b1x * b1x + b1y * b1y + b1z * b1z);
         if (bl < 1e-9) return null;
         const mx = n1y * (b1z / bl) - n1z * (b1y / bl);
         const my = n1z * (b1x / bl) - n1x * (b1z / bl);
@@ -2220,15 +2243,15 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
         if (!adj(i, i - 1) || !adj(i, i + 1)) continue;
         const ca = at(i);
         const phi = dihedral(
-            [bb[prev], bb[prev + 1], bb[prev + 2]],
-            [bb[o + 6], bb[o + 7], bb[o + 8]],
-            [ca.x, ca.y, ca.z],
-            [bb[o], bb[o + 1], bb[o + 2]]);
+            bb[prev], bb[prev + 1], bb[prev + 2],
+            bb[o + 6], bb[o + 7], bb[o + 8],
+            ca.x, ca.y, ca.z,
+            bb[o], bb[o + 1], bb[o + 2]);
         const psi = dihedral(
-            [bb[o + 6], bb[o + 7], bb[o + 8]],
-            [ca.x, ca.y, ca.z],
-            [bb[o], bb[o + 1], bb[o + 2]],
-            [bb[next + 6], bb[next + 7], bb[next + 8]]);
+            bb[o + 6], bb[o + 7], bb[o + 8],
+            ca.x, ca.y, ca.z,
+            bb[o], bb[o + 1], bb[o + 2],
+            bb[next + 6], bb[next + 7], bb[next + 8]);
         if (phi === null || psi === null) continue;
         // A D residue's dihedrals are genuinely the negatives of its L
         // mirror image - that is real geometry, not a prediction artefact,
@@ -2237,9 +2260,13 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
         // to support helix, it actively EXCLUDES it, and the H-bond
         // evidence never gets considered.
         const ms = (mirrored && mirrored(i)) ? -1 : 1;
-        for (const cls of ['H', 'E']) {
+        // ...and the two classes without the array literal that was built per
+        // residue to iterate over two names.
+        const mpsi = ms * psi; const mphi = ms * phi;
+        for (let ci = 0; ci < 2; ci += 1) {
+            const cls = ci === 0 ? 'H' : 'E';
             const b = SS_PHI_PSI[cls];
-            const dpsi = delta(ms * psi, b.psi), dphi = delta(ms * phi, b.phi);
+            const dpsi = delta(mpsi, b.psi), dphi = delta(mphi, b.phi);
             if (dpsi > b.psiOut || dphi > b.phiOut) phiPsi[cls][i] = -1;
             else if (dpsi < b.psiIn && dphi < b.phiIn) phiPsi[cls][i] = 1;
         }
@@ -2248,41 +2275,94 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
     // hbond.get(i) = donors j whose N-H is bonded to the C=O of i
     const hb = new Set();
     const key = (i, j) => i * n + j;
-    {   // cell grid over the C-alphas: only near neighbours can bond
-        const bins = new Map();
-        const bkey = (x, y, z) => cellKey(Math.floor(x / HB_SEARCH),
-            Math.floor(y / HB_SEARCH), Math.floor(z / HB_SEARCH));
+    {   // 🔴 A FLAT GRID, COUNTED AND FILLED, NOT A MAP OF ARRAYS. This pass is
+        // NINE TENTHS of the assignment - 175.7 ms of 193.5 over the 151 chains
+        // of tests/out/ss_truth.json - and the assignment runs on every frame of
+        // every trajectory, so what it spends is what a step spends.
+        //
+        // The old grid was `Map<cellKey, number[]>`: an array allocated per
+        // occupied cell, a hash lookup per insert, and 27 more per donor, with
+        // an iterator allocated for every cell walked. None of that is the
+        // arithmetic the pass is about. This counts the residues per cell,
+        // prefix-sums the counts into offsets, and fills one Int32Array - so a
+        // neighbourhood is 27 contiguous slices reached by index, with no
+        // allocation inside either loop.
+        //
+        // The candidate ORDER changes, and cannot matter: the result is a SET
+        // of pairs, and `bonded` is a lookup into it. Proved by digesting the
+        // assignment of all 151 chains before and after - identical.
+        let mnx = Infinity; let mny = Infinity; let mnz = Infinity;
+        let mxx = -Infinity; let mxy = -Infinity; let mxz = -Infinity;
+        let nProt = 0;
         for (let i = 0; i < n; i++) {
             if (!isProtein(i)) continue;
             const p = at(i);
-            const k = bkey(p.x, p.y, p.z);
-            let arr = bins.get(k);
-            if (!arr) { arr = []; bins.set(k, arr); }
-            arr.push(i);
+            if (p.x < mnx) mnx = p.x; if (p.x > mxx) mxx = p.x;
+            if (p.y < mny) mny = p.y; if (p.y > mxy) mxy = p.y;
+            if (p.z < mnz) mnz = p.z; if (p.z > mxz) mxz = p.z;
+            nProt += 1;
         }
-        for (let i = 0; i < n; i++) {          // i donates C=O
-            if (!isProtein(i) || !has(i, 0) || !has(i, 3)) continue;
-            const p = at(i);
-            const bx = Math.floor(p.x / HB_SEARCH);
-            const by = Math.floor(p.y / HB_SEARCH);
-            const bz = Math.floor(p.z / HB_SEARCH);
-            const o = i * 9;
-            for (let dx = -1; dx <= 1; dx++) {
-                for (let dy = -1; dy <= 1; dy++) {
-                    for (let dz = -1; dz <= 1; dz++) {
-                        const arr = bins.get(cellKey(bx + dx, by + dy, bz + dz));
-                        if (!arr) continue;
-                        for (const j of arr) {      // j donates N-H
-                            if (Math.abs(i - j) < 3) continue;
+        if (nProt) {
+            const inv = 1 / HB_SEARCH;
+            const nx = Math.max(1, Math.floor((mxx - mnx) * inv) + 1);
+            const ny = Math.max(1, Math.floor((mxy - mny) * inv) + 1);
+            const nz = Math.max(1, Math.floor((mxz - mnz) * inv) + 1);
+            const nCell = nx * ny * nz;
+            const cellOf = new Int32Array(n).fill(-1);
+            const counts = new Int32Array(nCell + 1);
+            for (let i = 0; i < n; i++) {
+                if (!isProtein(i)) continue;
+                const p = at(i);
+                const ix = Math.min(nx - 1, (p.x - mnx) * inv | 0);
+                const iy = Math.min(ny - 1, (p.y - mny) * inv | 0);
+                const iz = Math.min(nz - 1, (p.z - mnz) * inv | 0);
+                const c = ix + nx * (iy + ny * iz);
+                cellOf[i] = c;
+                counts[c + 1] += 1;
+            }
+            for (let c = 0; c < nCell; c++) counts[c + 1] += counts[c];
+            const fill = counts.slice(0, nCell);
+            const items = new Int32Array(nProt);
+            for (let i = 0; i < n; i++) {
+                const c = cellOf[i];
+                if (c >= 0) { items[fill[c]] = i; fill[c] += 1; }
+            }
+            for (let i = 0; i < n; i++) {          // i donates C=O
+                if (cellOf[i] < 0 || !has(i, 0) || !has(i, 3)) continue;
+                const p = at(i);
+                const bx = Math.min(nx - 1, (p.x - mnx) * inv | 0);
+                const by = Math.min(ny - 1, (p.y - mny) * inv | 0);
+                const bz = Math.min(nz - 1, (p.z - mnz) * inv | 0);
+                const o = i * 9;
+                const z0 = bz > 0 ? bz - 1 : 0;
+                const z1 = bz + 1 < nz ? bz + 1 : nz - 1;
+                const y0 = by > 0 ? by - 1 : 0;
+                const y1 = by + 1 < ny ? by + 1 : ny - 1;
+                const x0 = bx > 0 ? bx - 1 : 0;
+                const x1 = bx + 1 < nx ? bx + 1 : nx - 1;
+                for (let cz = z0; cz <= z1; cz++) {
+                    for (let cy = y0; cy <= y1; cy++) {
+                        const rowBase = nx * (cy + ny * cz);
+                        // ...one slice per ROW of cells, not per cell: the x
+                        // neighbours are contiguous in the fill order, so the
+                        // three of them are one run.
+                        const from = counts[rowBase + x0];
+                        const to = counts[rowBase + x1 + 1];
+                        for (let q = from; q < to; q++) {
+                            const j = items[q];
+                            const d = i - j;
+                            if (d < 3 && d > -3) continue;
                             if (groups && groups[i] !== groups[j]) continue;
-                            if (!has(j, 6)) continue;
-                            const hq = j * 3;
-                            if (!H[hq] && !H[hq + 1] && !H[hq + 2]) continue;
+                            // ...`has(j, 6)` and the amide test, inlined: both
+                            // are three array reads, and this is the innermost
+                            // loop of the pass that is nine tenths of the
+                            // assignment.
                             const jo = j * 9;
+                            if (bb[jo + 6] === 0 && bb[jo + 7] === 0 && bb[jo + 8] === 0) continue;
+                            const hq = j * 3;
+                            if (H[hq] === 0 && H[hq + 1] === 0 && H[hq + 2] === 0) continue;
                             // 🔴 THE FIRST TEST REJECTS ALMOST EVERY CANDIDATE,
-                            // SO IT MUST NOT TAKE A SQUARE ROOT. The grid is 9 A
-                            // cells and the neighbourhood is 27 of them, which is
-                            // a 27 A box against a 5.5 A bond - so the overwhelming
+                            // SO IT MUST NOT TAKE A SQUARE ROOT. The overwhelming
                             // majority of pairs reaching here fail this line, and
                             // each of them was paying a Math.sqrt to find out. The
                             // squared comparison is the same test (both sides are
@@ -2299,7 +2379,17 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
                             const dCN = len3(bb[o] - bb[jo + 6], bb[o + 1] - bb[jo + 7], bb[o + 2] - bb[jo + 8]);
                             if (dON < 0.5 || dCH < 0.5 || dOH < 0.5 || dCN < 0.5) continue;
                             const e = HB_COUPLING * (1 / dON + 1 / dCH - 1 / dOH - 1 / dCN);
-                            if (e < cutoff) hb.add(key(i, j));
+                            if (e < cutoff) {
+                                hb.add(key(i, j));
+                                // ...and how far apart the ALPHAS of an accepted
+                                // bond are, which is the number HB_SEARCH has to
+                                // cover. Off unless asked for.
+                                if (typeof window !== 'undefined' && window.__hbSpan) {
+                                    const pj = at(j);
+                                    const dd = len3(p.x - pj.x, p.y - pj.y, p.z - pj.z);
+                                    if (dd > window.__hbSpan.max) window.__hbSpan.max = dd;
+                                }
+                            }
                         }
                     }
                 }
