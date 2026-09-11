@@ -15,6 +15,19 @@ and each entry is an object -
 - so it is allocation as much as time; the profile had 2,530 ms of garbage
   collector in it.
 
+🔴 AND WHERE THE ONE BUILD COMES FROM IS ASSERTED TOO, not only that there is
+one of it. `checkFrameChange` is an animation-frame watcher, and a direct build
+inside it runs before the browser can paint - so on a big assembly the first
+picture waits for the whole strip. Measured on the 1M4X capsid, first ink
+against the moment the load settles:
+
+    direct build in checkFrameChange    9157 / 9007 ms  of a 9471 / 9335 load
+    deferred, so the picture goes first  7232 / 7364 ms  of a 9177 / 9311 load
+
+Same total work, 1.9 s sooner on screen. The deferred form is still synchronous
+whenever the strip would not rebuild - which is every step of a playback - so
+the colour and selection pass does not fall a frame behind the canvas.
+
 🔴 MILLISECONDS ARE NOT ASSERTED HERE. This machine drifts by up to 3.2x
 between runs, and a load is a long operation with a network-shaped tail. Counts
 do not drift: one build is one build on any machine, and a second one is a bug
@@ -193,6 +206,17 @@ for tag, row in (("the first load", out["first"]), ("a second load", out["second
                    " since it was written; render() declines it now too, and"
                    " only index.html sets the flag, so an embed and the"
                    " notebook still draw")
+for tag, row in (("the first load", out["first"]), ("a second load", out["second"])):
+    for f in row.get("from") or []:
+        if "checkFrameChange" in f:
+            bad.append(f"{tag} built the sequence view from checkFrameChange,"
+                       " which is an animation-frame watcher - so the build"
+                       " ran before the browser could paint and the first"
+                       " picture waited for the whole strip. It must go"
+                       " through buildViewDeferred, which is synchronous"
+                       " anyway whenever the strip would not rebuild."
+                       f" Stack: {f}")
+
 if f1["mesh"] != 1:
     bad.append(f"the first load built the mesh {f1['mesh']} time(s), not once")
 if out["second"]["seqBuilds"] != 1:

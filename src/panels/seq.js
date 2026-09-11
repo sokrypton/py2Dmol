@@ -1400,6 +1400,13 @@ function watchSequenceWidth(el) {
 
 function buildSequenceViewDeferred() {
     if (typeof requestAnimationFrame !== 'function') { buildSequenceView(); return; }
+    // 🔴 A CALL THAT WILL NOT REBUILD HAS NOTHING TO DEFER. What is left when
+    // the key matches is the colour and selection pass over a strip that
+    // already exists - cheap, and wanted NOW, because deferring it leaves the
+    // strip's highlight two frames behind the canvas. It would also forget the
+    // position state below on every frame of a playback, which is state a
+    // pointer sitting over the strip depends on.
+    if (!stripWouldRebuild()) { buildSequenceView(); return; }
     // ...FORGOTTEN NOW, NOT IN TWO FRAMES. The canvas standing between here and
     // the rebuild still has its listeners and its own layout, so a pointer
     // moving over it in that window would light positions from the structure
@@ -1434,6 +1441,47 @@ function buildSequenceView() {
                 + ((typeof performance !== 'undefined') ? performance.now() - __sqT0 : 0);
         }
     }
+}
+
+/**
+ * WHICH STRIP IS ON SCREEN, as a string - or null when there is nothing to
+ * show. Every term is an array identity or a number, so asking costs nothing;
+ * building the sections to ask costs 2,081,520 entry objects on a capsid.
+ *
+ * It lives out here because TWO callers need it and only one of them builds:
+ * buildSequenceViewDeferred asks whether a call would rebuild at all before it
+ * decides to wait for a frame. Inlined in the builder, that second caller
+ * would have had to restate it, and a restated key goes stale.
+ */
+function shownKeyOf(sequenceViewEl, renderer) {
+    // 🔴 AND THE BOX IS AN INPUT, so before the FIRST build - when no observer
+    // has measured it - read it once here and never again.
+    if (!sequenceWidthObserver) {
+        sequenceObservedWidth = Math.round(
+            sequenceViewEl.getBoundingClientRect().width);
+    }
+    const objectsKey = sequenceKeyOf(renderer);
+    if (objectsKey === null) return null;
+    return objectsKey
+        + '|w' + sequenceObservedWidth + '|m' + (sequenceViewMode ? 1 : 0);
+}
+
+/**
+ * Would a build actually rebuild the strip, or fall through to the colour and
+ * selection pass? The same question the builder's early-out asks, asked from
+ * outside so a caller can know whether it has anything worth deferring.
+ */
+function stripWouldRebuild() {
+    if (!sequenceCanvasData) return true;
+    const el = (typeof document !== 'undefined')
+        ? document.getElementById('sequenceView') : null;
+    if (!el) return true;
+    const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
+    if (!renderer) return true;
+    const objectSelect = callbacks.getObjectSelect ? callbacks.getObjectSelect() : null;
+    if (!(objectSelect?.value || renderer?.currentObjectName)) return true;
+    const key = shownKeyOf(el, renderer);
+    return key === null || lastSequenceShownKey !== key;
 }
 
 function buildSequenceViewInner() {
@@ -1534,25 +1582,19 @@ function buildSequenceViewInner() {
     // harmless, and it shows up as a rebuild in tests/panel_idle.py, which is
     // reason enough not to have it. One layout read, once, and never again:
     // the observer owns the number from here on.
-    if (!sequenceWidthObserver) {
-        sequenceObservedWidth = Math.round(
-            sequenceViewEl.getBoundingClientRect().width);
-    }
     //
     // 🔴 AND THE KEY IS ASKED BEFORE THE SECTIONS ARE BUILT, not after. Every
     // term of it comes from array identities and two numbers, so it costs
     // nothing - while BUILDING the sections to ask is 2,081,520 entry objects
     // on a capsid and 3,348 on every step of a 9FOG trajectory, thrown away
     // the moment the key matches.
-    const objectsKey = sequenceKeyOf(renderer);
-    if (objectsKey === null) {
+    const shownKey = shownKeyOf(sequenceViewEl, renderer);
+    if (shownKey === null) {
         wipe();
         showEmptyStrip(sequenceViewEl);
         return;
     }
     setStripEnabled(true);
-    const shownKey = objectsKey
-        + '|w' + sequenceObservedWidth + '|m' + (sequenceViewMode ? 1 : 0);
     if (sequenceCanvasData && lastSequenceShownKey === shownKey) {
         // Sequence hasn't changed, just update colors and selection
         updateSequenceViewColors();

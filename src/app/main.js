@@ -714,8 +714,19 @@ function setupEventListeners() {
                 if (objectName && renderer.objectsData[objectName]) {
                     const object = renderer.objectsData[objectName];
                     if (object.frames && object.frames.length > currentFrame) {
-                        // Rebuild sequence view if sequence changed
-                        window.SEQ?.buildView();
+                        // Rebuild sequence view if sequence changed - AFTER the
+                        // paint when it is a real rebuild, because nothing the
+                        // structure canvas draws depends on the strip and this
+                        // is a watcher, not a user's gesture. Measured on the
+                        // 1M4X capsid: this call landed inside the rAF that
+                        // would have painted, and held the first picture back
+                        // by the 1.9 s the strip takes to build.
+                        //
+                        // The deferred form is synchronous whenever the strip
+                        // would not rebuild, which is every step of a playback,
+                        // so the per-frame colour and selection pass is not
+                        // pushed a frame behind the canvas.
+                        (window.SEQ?.buildViewDeferred || window.SEQ?.buildView)?.();
                     }
                 }
             }
