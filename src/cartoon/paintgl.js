@@ -4632,10 +4632,17 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused) {
         // or -1 where the rule is off. Enough to redo the classification as
         // well as the geometry.
         // 🔴 ONLY WHEN THE STATION PATH IS ON. Six integer writes an edge and an
-        // Int32Array the size of the edge table, on every rebuild - and a reader
-        // who never presses Keep SSE pays all of it for nothing. Measured at
-        // 3-5% of a rebuild step, which is exactly the tax a feature has no
-        // business levying on people not using it.
+        // Int32Array the size of the edge table, on every rebuild - and a still
+        // structure, which never steps and so never arms the table, would pay
+        // all of it for nothing. Measured at 3-5% of a rebuild step, which is
+        // exactly the tax a feature has no business levying on people not
+        // using it.
+        //
+        // 🔴 AND THE GATE IS stationDraw, NOT Keep SSE. This said "a reader who
+        // never presses Keep SSE", which names the wrong switch: the table is
+        // the machinery and the pin is a separate promise about the data - see
+        // wantStationTable in parts/ui.js, which turns exactly one of the two
+        // on. The table arms itself on any trajectory, pinned or not.
         // SEVEN a row now, not six: the last is whether the letter decides
         // this edge - see the note where it is written.
         const edgeSrc = stationDraw
@@ -8404,10 +8411,17 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
         // it needs has already been computed - from the same prims, by the same
         // function - a few hundred lines above.
         let stationMeshThisFrame = null;
-        // 🔴 THE TRAJECTORY FAST PATH, AND IT IS DEAD CODE UNLESS ASKED FOR.
+        // 🔴 THE TRAJECTORY FAST PATH, AND IT ARMS ITSELF.
         // A frame change moves the atoms and nothing else: the face list, the
         // flags, the colours and the palette are all still right, so the mesh
         // does not have to be rebuilt - only the two geometry textures written.
+        //
+        // 🔴 THIS USED TO SAY "DEAD CODE UNLESS ASKED FOR" AND IT IS NOT TRUE
+        // ANY MORE. The auto-switch a hundred lines above turns stationDraw on
+        // for any object with more than one frame, so a trajectory takes this
+        // path without anyone pressing anything. What is still true is the half
+        // that matters: a SINGLE structure never steps, never arms the switch,
+        // and pays nothing for any of it.
         // Measured on a 30-frame trajectory of 1TIM: 12.0 ms a step against
         // 4.0, with the picture the same to 0.0002% of pixels
         // (tests/station_frames.py).
@@ -8415,9 +8429,11 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
         // Three things have to hold, and each of them is a way this would
         // otherwise be wrong:
         //
-        //   stationDraw       the caller has turned the path on. Off by
-        //                     default, so none of this runs for anyone who has
-        //                     not asked.
+        //   stationDraw       the table is on - because the object has frames
+        //                     and the switch armed itself, or because the
+        //                     slider latch or the button asked. Only ever
+        //                     turned ON automatically; the off switch belongs
+        //                     to the two callers that own it.
         //   topology unchanged  everything but the coordinates is the same. If
         //                     a colour or an eye or the canvas moved, the
         //                     instance row is stale and only a rebuild fixes it.

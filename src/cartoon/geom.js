@@ -8431,46 +8431,46 @@ function drawRun(runIdx, ctx) {
                 // smoothing filter fitted to a helix's 100 degrees a residue;
                 // on a straight run it is very nearly linear, which is why the
                 // strands do not move and the loops only get smoother.
+                //
+                // 🔴 AND THE OTHER STENCIL IS GONE, not disabled. Unifying the
+                // two left `if (true) {` around the helix arm with the plain
+                // central difference `0.5 * (q[j+1] - q[j-1])` stranded behind
+                // it - five lines that cannot run, under a condition that
+                // cannot be false, which reads like a switch somebody might
+                // still flip. There is one stencil; this is it.
                 const tanAt = (j) => {
                     const q1 = at(wrapIdx(j - 1));
                     const q2 = at(wrapIdx(j + 1));
-                    if (true) {
-                        if (!cyclic && j - 2 < lo && j + 3 <= hi) {
-                            // one-sided forward (N-terminal end)
-                            const p0 = at(j);
-                            const pa = at(j + 1);
-                            const pb = at(j + 2);
-                            const pc = at(j + 3);
-                            return [
-                                HT1_A * (pa.x - p0.x) + HT1_B * (pb.x - p0.x) + HT1_C * (pc.x - p0.x),
-                                HT1_A * (pa.y - p0.y) + HT1_B * (pb.y - p0.y) + HT1_C * (pc.y - p0.y),
-                                HT1_A * (pa.z - p0.z) + HT1_B * (pb.z - p0.z) + HT1_C * (pc.z - p0.z),
-                            ];
-                        }
-                        if (!cyclic && j + 2 > hi && j - 3 >= lo) {
-                            // one-sided backward (C-terminal end)
-                            const p0 = at(j);
-                            const pa = at(j - 1);
-                            const pb = at(j - 2);
-                            const pc = at(j - 3);
-                            return [
-                                -(HT1_A * (pa.x - p0.x) + HT1_B * (pb.x - p0.x) + HT1_C * (pc.x - p0.x)),
-                                -(HT1_A * (pa.y - p0.y) + HT1_B * (pb.y - p0.y) + HT1_C * (pc.y - p0.y)),
-                                -(HT1_A * (pa.z - p0.z) + HT1_B * (pb.z - p0.z) + HT1_C * (pc.z - p0.z)),
-                            ];
-                        }
-                        const q0w = at(wrapIdx(j - 2));
-                        const q3w = at(wrapIdx(j + 2));
+                    if (!cyclic && j - 2 < lo && j + 3 <= hi) {
+                        // one-sided forward (N-terminal end)
+                        const p0 = at(j);
+                        const pa = at(j + 1);
+                        const pb = at(j + 2);
+                        const pc = at(j + 3);
                         return [
-                            HTAN_A * (q2.x - q1.x) + HTAN_B * (q3w.x - q0w.x),
-                            HTAN_A * (q2.y - q1.y) + HTAN_B * (q3w.y - q0w.y),
-                            HTAN_A * (q2.z - q1.z) + HTAN_B * (q3w.z - q0w.z),
+                            HT1_A * (pa.x - p0.x) + HT1_B * (pb.x - p0.x) + HT1_C * (pc.x - p0.x),
+                            HT1_A * (pa.y - p0.y) + HT1_B * (pb.y - p0.y) + HT1_C * (pc.y - p0.y),
+                            HT1_A * (pa.z - p0.z) + HT1_B * (pb.z - p0.z) + HT1_C * (pc.z - p0.z),
                         ];
                     }
+                    if (!cyclic && j + 2 > hi && j - 3 >= lo) {
+                        // one-sided backward (C-terminal end)
+                        const p0 = at(j);
+                        const pa = at(j - 1);
+                        const pb = at(j - 2);
+                        const pc = at(j - 3);
+                        return [
+                            -(HT1_A * (pa.x - p0.x) + HT1_B * (pb.x - p0.x) + HT1_C * (pc.x - p0.x)),
+                            -(HT1_A * (pa.y - p0.y) + HT1_B * (pb.y - p0.y) + HT1_C * (pc.y - p0.y)),
+                            -(HT1_A * (pa.z - p0.z) + HT1_B * (pb.z - p0.z) + HT1_C * (pc.z - p0.z)),
+                        ];
+                    }
+                    const q0w = at(wrapIdx(j - 2));
+                    const q3w = at(wrapIdx(j + 2));
                     return [
-                        0.5 * (q2.x - q1.x),
-                        0.5 * (q2.y - q1.y),
-                        0.5 * (q2.z - q1.z),
+                        HTAN_A * (q2.x - q1.x) + HTAN_B * (q3w.x - q0w.x),
+                        HTAN_A * (q2.y - q1.y) + HTAN_B * (q3w.y - q0w.y),
+                        HTAN_A * (q2.z - q1.z) + HTAN_B * (q3w.z - q0w.z),
                     ];
                 };
                 const mA = tanAt(i);
