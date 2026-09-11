@@ -7762,10 +7762,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
-            // Create the definitive chain index map for this dataset.
-            this.chainIndexMap = new Map();
-            // Track which chains contain only ligands (no P/D/R atoms)
-            this.ligandOnlyChains = new Set();
             // ...keyed by SOURCE AND CHAIN when several objects are merged, so
             // 🔴 THE CHAIN TABLES ARE NOT A FUNCTION OF THE COORDINATES, and
             // this whole section was rebuilt on every setCoords - which is
@@ -7797,6 +7793,26 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 || this._chainTablesMs !== __msNow
                 || !this.perChainIndices || this.perChainIndices.length !== n;
             if (__chainsFresh) {
+                // 🔴 AND THE TABLES ARE EMPTIED INSIDE THE GUARD, NOT ABOVE IT.
+                // These two lines stood before the freshness test, so EVERY
+                // setCoords wiped them and only a fresh frame filled them in
+                // again - which is fine while every frame is fresh, and is a
+                // silent failure the moment one is not. Keep SSE makes frames
+                // that are not: with the tables held across a step, the map was
+                // cleared and never rebuilt, every chainIndexMap.get missed,
+                // and getAtomColor fell through to `colorArray[0]`. Ten chains
+                // of a nucleosome all came out the same green. Measured on
+                // _traj_1aoi.pdb: ten distinct segment colours before a
+                // playback and one after, with chainKeyAt still answering
+                // 'A', 'B', 'E', 'H' correctly the whole time - the keys were
+                // never the problem, the map they were looked up in was empty.
+                //
+                // A cache that is CLEARED outside the test that refills it is
+                // not a cache; it is a way of losing data on the exact path the
+                // test was added to make fast.
+                this.chainIndexMap = new Map();
+                // Track which chains contain only ligands (no P/D/R atoms)
+                this.ligandOnlyChains = new Set();
                 this._chainTablesFor = this.chains;
                 this._chainTablesTypes = this.positionTypes;
                 this._chainTablesGroups = __groupsNow;

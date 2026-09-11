@@ -44,6 +44,23 @@ SETUP = """
 window.__ready = false;
 window.addEventListener('load', () => {
   //HELPERS
+  // 🔴 WHETHER THE RENDERER HID IT, which is not the same as whether it is on
+  // screen. This read `b.style.display === 'none'` on the control itself, which
+  // was right while Keep SSE was a <button> in the play bar. It is a toggle in
+  // the style panel now - a label wrapping a checkbox - and two things changed
+  // with it: the renderer hides the LABEL (hiding the input would hide nothing
+  // anyone can see), and the panel it sits in is CLOSED until the Style button
+  // is pressed. So `offsetParent === null` answers "the panel is shut" just as
+  // readily as "there is one frame", and a trajectory failed on it.
+  //
+  // What this leg is about is the renderer's own rule - hide it where there is
+  // no next frame - so it asks the face's computed display, which the panel
+  // being shut does not touch.
+  const sseHidden = (el) => {
+    if (!el) return true;
+    const face = (el.closest && el.closest('.btn-toggle')) || el;
+    return getComputedStyle(face).display === 'none';
+  };
   window.__run = async (file) => {
     const txt = await (await fetch('/' + file)).text();
     await window.processFiles(
@@ -152,7 +169,7 @@ window.addEventListener('load', () => {
     if (!b) return {found: false};
     const lit = () => b.classList.contains('btn-primary');
     const before = {flag: !!r.stableTopology, lit: lit(),
-                    hidden: b.style.display === 'none', disabled: !!b.disabled};
+                    hidden: sseHidden(b), disabled: !!b.disabled};
     b.click(); await settle(3);
     const on = {flag: !!r.stableTopology, lit: lit()};
     // ...and it keeps the assignment now, which is the point of the button.
@@ -271,7 +288,7 @@ window.addEventListener('load', () => {
       [{name: '1UBQ.cif', readAsync: () => Promise.resolve(one)}], true);
     await until(() => r.coords && r.coords.length > 0, 60000);
     await settle(5);
-    const still = {hidden: b.style.display === 'none', disabled: !!b.disabled};
+    const still = {hidden: sseHidden(b), disabled: !!b.disabled};
     return {found: true, frames, before, on, off, rebuilds, backRebuilds, still, path, bonds};
   };
   window.__ready = true;
