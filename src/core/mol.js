@@ -6007,7 +6007,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // object - and the flag may not be what the button last said.
             if (this.keepSseButton) {
                 this.keepSseButton.disabled = (total <= 1);
-                this.keepSseButton.style.display = (total <= 1) ? 'none' : '';
+                // 🔴 THE FACE, NOT THE CHECKBOX. Keep SSE is a toggle in the
+                // style panel now - a label wrapping a hidden input - so
+                // hiding the input hides nothing a reader can see. The
+                // fallback is the element itself, for any shell that still
+                // gives it as a plain button.
+                const face = (this.keepSseButton.closest
+                    && this.keepSseButton.closest('.btn-toggle')) || this.keepSseButton;
+                face.style.display = (total <= 1) ? 'none' : '';
                 this._syncKeepSseButton();
             }
 
@@ -6535,6 +6542,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         _syncKeepSseButton() {
             if (!this.keepSseButton) return;
             const on = this.stableTopology === true;
+            // A toggle shows its state through :checked; a button through its
+            // class. Both are set, so either shape is right.
+            if (this.keepSseButton.type === 'checkbox') this.keepSseButton.checked = on;
             this.keepSseButton.classList.toggle('btn-primary', on);
             this.keepSseButton.classList.toggle('btn-secondary', !on);
         }

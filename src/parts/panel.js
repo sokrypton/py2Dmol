@@ -157,7 +157,20 @@ const STYLE_PANEL_ROWS = [
      { kind: 'toggle', id: 'darkCheckbox', label: 'Dark',
        title: 'Black background (white ink, fade toward black)' },
      { kind: 'toggle', id: 'cyclicCheckbox', label: 'Cyclic',
-       title: 'Join a chain end-to-end when its termini are within bonding range' }],
+       title: 'Join a chain end-to-end when its termini are within bonding range' },
+     // 🔴 KEEP SSE LIVES HERE NOW, NOT ON THE PLAY BAR. It was a button in the
+     // frame strip, labelled with the bare acronym because spelling it out
+     // pushed the bar onto a second line at 320-390px (tests/mobile_layout.py).
+     // It is not a transport control - it says something about the STRUCTURE,
+     // like Cyclic beside it - and in the panel there is room to say what it
+     // is. core/mol.js still hides it when there is only one frame, and hides
+     // the toggle's FACE rather than the checkbox, which is what shows.
+     { kind: 'toggle', id: 'keepSseButton', label: 'Keep SSE',
+       title: 'Assign secondary structure once and keep it for every frame.'
+            + ' Stops helix ends flickering, and lets a trajectory step upload'
+            + ' new coordinates instead of rebuilding the whole ribbon - about'
+            + ' 3x. Wrong for a folding trajectory, where the structure really'
+            + ' does change.' }],
      // NO FOCUS ROW. It was one here and it is a top-level BUTTON now, beside
      // Orient and Clip: it is a mode that changes what a click does, and a
      // reader looking for that does not open a style panel to find it.
@@ -179,6 +192,28 @@ function caption(item) {
     return el('label', { for: item.kind === 'slot' ? null : item.id,
                          title: item.title, text: item.label + ':' });
 }
+
+// WHAT SITS BEHIND "ADVANCED". A prototype: the panel has grown to five rows of
+// sliders and most of them are set once and never touched again, while Style,
+// Color and Outline are reached for constantly. These nine move behind a
+// disclosure so the panel opens short.
+//
+// Held as a SET OF IDS rather than a flag on each row, because the rows are
+// paired two-across and the split cuts across that pairing - Width is advanced
+// and Outline, its partner, is not. Splitting by id lets the survivors repack
+// themselves, which is what the layout does anyway.
+const ADVANCED_IDS = new Set([
+    'lineWidthSlider',      // Width
+    'outlineWidthSlider',   // Outline, which belongs beside Width
+    'thicknessSlider',      // Thick
+    'highlightSlider',      // Hilite
+    'sheetFlatSlider',      // Flat
+    'shadeSlider',          // Shade
+    'pencilSlider',         // Pencil
+    'outlineTintSlider',    // Ink
+    'arrowsCheckbox',       // Arrows
+    'smoothCheckbox',       // Smooth
+]);
 
 function buildItem(item) {
     if (item.kind === 'toggle') {
@@ -233,18 +268,79 @@ function buildStylePanel() {
     // the same question core/mol.js asks to derive useGPU, and the same one the
     // Save panel asks before offering SVG.
     const has2d = typeof window !== 'undefined' && !!window.py2dmolCartoonPaint;
-    for (const all of STYLE_PANEL_ROWS) {
-        const items = all.filter((i) => !(i.needs2d && !has2d));
-        if (!items.length) continue;
+    const mkRow = (items) => {
         const styles = new Set(items.map((i) => i.style || ''));
         const row = el('div', {
             class: 'toggle-item',
             'data-style': styles.size === 1 ? [...styles][0] || null : null,
         });
         for (const item of items) row.appendChild(buildItem(item));
-        panel.appendChild(row);
+        return row;
+    };
+    // ...the advanced cells are pulled out of their rows as they are met, so
+    // they keep the order the panel already had.
+    const advRows = [];
+    for (const all of STYLE_PANEL_ROWS) {
+        const items = all.filter((i) => !(i.needs2d && !has2d));
+        if (!items.length) continue;
+        const plain = items.filter((i) => !ADVANCED_IDS.has(i.id));
+        const adv = items.filter((i) => ADVANCED_IDS.has(i.id));
+        if (plain.length) panel.appendChild(mkRow(plain));
+        if (adv.length) advRows.push(adv);
+    }
+    if (advRows.length) {
+        const { cell, block } = buildAdvanced(advRows, mkRow);
+        // ...the switch rides in the LAST row, which is the toggles, so it
+        // lands beside Cyclic and Keep SSE - three to a line, the way that row
+        // already wraps. The block it opens comes after every row.
+        const last = panel.lastElementChild;
+        if (last && last.classList.contains('toggle-item')) last.appendChild(cell);
+        else panel.appendChild(cell);
+        panel.appendChild(block);
     }
     return panel;
+}
+
+/**
+ * The Advanced disclosure: a full-width switch and the block it opens.
+ *
+ * 🔴 IT COLLAPSES BY `display`, NOT BY `hidden`. syncStylePanel sets
+ * `row.hidden = false` on every direct child of the panel on each style change
+ * - that is how it un-hides rows a previous style had collapsed - so a block
+ * closed with `hidden` would reopen the moment the style changed. The rows
+ * INSIDE it keep using `hidden`, which is what lets syncStylePanel go on hiding
+ * the cartoon-only cells in tube exactly as before.
+ *
+ * 🔴 AND IT IS STYLED INLINE, WHICH IS THE PROTOTYPE'S ONE COMPROMISE. The
+ * panel's rule is "one panel, two skins": index.html and viewer.html dress the
+ * shared markup with their own CSS. A new class would have to be added to both
+ * and to the embed, so this borrows `toggle-item` and `btn-toggle`, which every
+ * skin already dresses, and states only the few things no skin can know.
+ */
+function buildAdvanced(advRows, mkRow) {
+    const sw = el('label', { class: 'btn-toggle',
+        title: 'Width, Outline, Thick, Flat, Hilite, Shade, Pencil, Ink,'
+             + ' Smooth and Arrows. Set once and rarely touched again.' });
+    const box = el('input', { type: 'checkbox', id: 'advancedToggle' });
+    sw.appendChild(box);
+    const face = el('span', { text: 'Advanced \u25be' });
+    sw.appendChild(face);
+
+    const block = el('div');
+    block.id = 'stylePanelAdvanced';
+    block.style.display = 'none';
+    block.style.flexDirection = 'column';
+    block.style.gap = 'inherit';
+    for (const items of advRows) block.appendChild(mkRow(items));
+
+    // Presentation only - no renderer state, so it is wired here rather than in
+    // parts/ui.js. If it graduates it wants to be remembered in the session.
+    box.addEventListener('change', () => {
+        const open = !!box.checked;
+        block.style.display = open ? 'flex' : 'none';
+        face.textContent = open ? 'Advanced \u25b4' : 'Advanced \u25be';
+    });
+    return { cell: sw, block };
 }
 
 // ============================================================================

@@ -74,6 +74,23 @@ window.addEventListener('load', () => {
       // ...visible rows, so a panel that collapsed to nothing is not "fine"
       R.visibleRows = [...p.children]
           .filter((r) => getComputedStyle(r).display !== 'none').length;
+      // ...AND THE ROWS BEHIND "ADVANCED", which is most of the sliders. The
+      // floor below was 5 rows and the disclosure legitimately took it to 4:
+      // the count alone can no longer tell a panel that collapsed from a panel
+      // that is merely closed. So the switch is pressed and the rows are
+      // counted again - a panel that is really there gains several, and one
+      // that is broken gains none.
+      const advSwitch = p.querySelector('#advancedToggle');
+      R.hasAdvanced = !!advSwitch;
+      if (advSwitch) {
+          advSwitch.click();
+          const block = p.querySelector('#stylePanelAdvanced');
+          R.advOpenRows = block
+              ? [...block.children].filter((r) => getComputedStyle(r).display !== 'none').length
+              : 0;
+          R.advVisible = !!(block && block.getBoundingClientRect().height > 0);
+          advSwitch.click();
+      }
       // ...AND THE TEXT FITS ITS BOX VERTICALLY. Width is not the only way a
       // control can be wrong: #colorSelect fell back to a 14px font with 8px of
       // padding inside a 28px box, so the descenders were cut off - and every
@@ -152,6 +169,8 @@ R = box[0] if box else {"threw": "the page never posted a result"}
 if R.get("threw"):
     sys.exit("FAIL: " + R["threw"])
 
+print(f"  Advanced: switch={R.get('hasAdvanced')},"
+      f" rows when open={R.get('advOpenRows')}, visible={R.get('advVisible')}")
 print(f"  panel {R['panelW']}x{R['panelH']}, {R['visibleRows']} rows visible,"
       f" display {R['rowDisplay']}")
 print(f"  sliders {R['sliders']}")
@@ -164,8 +183,15 @@ bad = []
 if R['panelW'] < 200:
     bad.append(f"the panel is {R['panelW']}px wide - it is mounted somewhere too"
                " narrow for it")
-if R['visibleRows'] < 5:
+if R['visibleRows'] < 4:
     bad.append(f"only {R['visibleRows']} rows are visible")
+# ...and the sliders behind the disclosure, which is where most of them went.
+if not R.get('hasAdvanced'):
+    bad.append("there is no Advanced switch - the rows it holds are unreachable")
+elif not R.get('advVisible') or (R.get('advOpenRows') or 0) < 3:
+    bad.append(f"pressing Advanced showed {R.get('advOpenRows')} row(s),"
+               f" visible={R.get('advVisible')} - the disclosure is there and"
+               " opens onto nothing")
 if R['rowDisplay'] != ['flex']:
     bad.append(f"rows render as {R['rowDisplay']} - the page has no CSS for the"
                " classes the builder emits, so the panel is unstyled")

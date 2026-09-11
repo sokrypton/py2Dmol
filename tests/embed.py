@@ -507,7 +507,18 @@ setTimeout(finish, 80000);
         R.panelOpenHeight = Math.round(p.height);
         R.panelSpillDown = Math.round(p.bottom - h.bottom);
         R.panelSpillRight = Math.round(p.right - h.right);
-        R.panelScrolls = col.scrollHeight > col.clientHeight + 1;
+        // 🔴 SCROLLABLE, NOT SCROLLING. This read `scrollHeight > clientHeight`
+        // - it required the column to actually OVERFLOW, which only held while
+        // the panel was tall enough to. Putting most of the sliders behind the
+        // Advanced disclosure took the closed panel from 268px to 170 and it
+        // fits, so the guard failed on the panel getting SHORTER. What the
+        // embed has to promise is that a panel too tall for the host's box
+        // scrolls inside it instead of spilling out - which is a property of
+        // the column, true whether or not today's panel reaches the bottom.
+        const colStyle = getComputedStyle(col);
+        R.panelOverflowY = colStyle.overflowY;
+        R.panelScrolls = (colStyle.overflowY === 'auto' || colStyle.overflowY === 'scroll')
+            || col.scrollHeight > col.clientHeight + 1;
         // ...and the narrow case wraps rather than sticking out sideways
         const narrow = document.getElementById('narrowbox');
         py2Dmol.show('narrowbox', PDB_TEXT, {controls: true, width: 180, height: 180});
@@ -1849,8 +1860,12 @@ if R.get('narrowSpillRight') is None or R.get('narrowSpillRight') > 1:
                ' of wrapping under the canvas')
 if not R.get('narrowWrapped'):
     bad.append('the narrow container did not wrap the panel under the canvas')
+print(f"  embed panel: open {R.get('panelOpenHeight')}px,"
+      f" spill down {R.get('panelSpillDown')}, right {R.get('panelSpillRight')},"
+      f" column overflow-y {R.get('panelOverflowY')}")
 if not R.get('panelScrolls'):
-    bad.append('the panel was clamped to the container without becoming'
+    bad.append(f"the panel column is overflow-y: {R.get('panelOverflowY')} -"
+               ' it was clamped to the container without becoming'
                ' scrollable, so the controls below the fold cannot be reached')
 if R.get('visKept') != R.get('visAsked'):
     bad.append(f"setVisibility({{positions: {R.get('visAsked')} of"
