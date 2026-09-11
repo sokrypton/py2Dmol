@@ -5237,8 +5237,16 @@ What that buys, all measured:
     crease of the old boundary. On a fast step against the same frame rebuilt,
     **0 of the differing pixels are grey** now; the 76 that remain are coloured,
     which is the shading residual that predates all of this.
-  * and the rows cost nothing measurable: 5.80 ms a step against 6.30 with the
-    strand set in the key, with +56% edge rows on 3PTB.
+  * and the rows cost nothing measurable per FRAME: 5.80 ms a step against 6.30
+    with the strand set in the key, with +56% edge rows on 3PTB.
+
+🔴 **WHAT THEY DO COST IS THE BUILD, AND IT IS WORTH KNOWING.** Measured on
+1AOI by turning the revival off and on, in the `table` phase of a rebuild -
+which is where the rows are emitted: **7.1 ms against 10.3**. So a rebuild pays
+about +3 ms on a 19,748-face structure for an outline that never rebuilds
+again. Rebuilds were the thing being removed, so this is the right side of the
+trade; the number is here so the next person does not have to rediscover which
+phase moved.
 
 Two gates had to learn that rebuilds are rare now, and neither was a regression:
 `dev_rebuild_light` compared Keep SSE against the ordinary path on their build
