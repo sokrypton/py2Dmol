@@ -2459,6 +2459,7 @@ function tmCollect() {
 let progStations = null;        // VS3D fed by stations; see VS3D_STATIONS
 let residentStations = null;    // { buf, stationTex, pieceTex, count, ... }
 let residentEdges = null;       // { ed, edSrc } - the outline and its provenance
+let edgeRichPreset = false;     // ...and whether it was built in the rich preset
 let lastEdgeRefresh = null;     // what refreshEdgesFromStations last did
 // The station table's buffers, grown once and written into every frame.
 const stationScratch = {
@@ -2533,8 +2534,8 @@ let edgeNormals = null;         // Float32Array(faces * 3)
 let edgeNormalOk = null;        // Uint8Array(faces), 0 for a cap
 let oneSided = null;            // Int32Array: rows that are a lone cross edge
 let oneSidedAt = null;          // ...and the station each one's cross-section is at
-let oneSidedHead = null;        // station -> first lone row there, and its chain
-let oneSidedNext = null;
+let allRowHead = null;          // station -> first row whose face sits there
+let allRowNext = null;
 let stationDraw = false;        // off until a caller asks; see setStationDraw
 let stationRefusal = null;      // why installStations said no
 // 🔴 WHY THIS FRAME DID NOT TAKE THE STATION PATH, and it survives the rebuild
@@ -2657,6 +2658,8 @@ let occOk = false;              // false = no float render target; draw unshaded
 const HANDOFF_TOL = 0.0;
 const RICH_CREASE_DEG = 60;
 const RICH_CREASE_COS = Math.cos(RICH_CREASE_DEG * Math.PI / 180);
+// ...in the millionths the edge provenance is written in
+const RICH_CREASE_M = Math.round(RICH_CREASE_COS * 1e6);
 // 0.05 A, AND THE OUTLINE IS WHY. At exactly 0 a ribbon piece has no outward
 // direction, so it is carried as one double-sided face - and the silhouette
 // rule needs TWO faces to compare, so the edge table came out with no boundary
@@ -4623,6 +4626,11 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused) {
         // the fully-outlined surfaces' own threshold
         const richDeg = RICH_CREASE_DEG;
         const richCos = RICH_CREASE_COS;
+        // WHICH PRESET THIS MESH WAS BUILT UNDER. The rich crease rule applies
+        // to a strand and only in the Richardson preset; the preset cannot
+        // change without a rebuild, the letter can, so this is baked and the
+        // letter is not.
+        edgeRichPreset = !!P0.rich;
         const edgeTotal = eN;
         const edgeFlipFirst = !!window.__edgeFlipFirst;
         const ed = new Float32Array((edgeTotal + contactEdges.length * 2) * ED_FLOATS);
@@ -4688,6 +4696,7 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused) {
             if (!revive && (!eIn[eb] || (bits & EB_NOINK) || (bits & EB_SEAM))) {
                 nGhostOnly++; continue;
             }
+
             if (bits & EB_N0) {
                 eA[0] = eF[ef + 6]; eA[1] = eF[ef + 7]; eA[2] = eF[ef + 8];
             } else { eA[0] = 0; eA[1] = 0; eA[2] = 1; }
@@ -4784,15 +4793,24 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused) {
                 edgeSrc[so++] = eIn[eb + 5]; edgeSrc[so++] = eIn[eb + 6];
                 edgeSrc[so++] = eIn[eb + 7]; edgeSrc[so++] = eIn[eb + 8];
                 edgeSrc[so++] = eIn[eb + 2];
-                // ...and the crease threshold this edge is judged by. A cross
-                // edge is judged by the RICH one whether or not a face inked it
-                // at build: the frame that turns it on is a frame where its
-                // piece is a strand, and a strand's creases are the whole
-                // reason the rule has two thresholds.
-                const rich2 = (bits & EB_FULL) !== 0 || byLetter;
-                const cD = rich2 ? richDeg : creaseDeg;
-                const cC = rich2 ? richCos : creaseCos;
-                edgeSrc[so++] = cD < 180 ? Math.round(cC * 1e6) : -1;
+                // ...and the crease threshold this edge is judged by, WITHOUT
+                // the letter in it.
+                //
+                // 🔴 THIS USED TO BAKE `(bits & EB_FULL) || byLetter`, and
+                // EB_FULL is `rich && ss === 'E'` - a LETTER, decided at build
+                // and then frozen. So a residue that was a strand kept the rich
+                // 60-degree crease rule for the life of the mesh: it went on
+                // drawing a strand's creases after it stopped being a strand,
+                // while a fresh build turned the rule off and drew nothing.
+                // That is 80 of the 107 outline rows a stepped frame of
+                // _traj_3ptb.pdb draws that a rebuild of it does not - the
+                // biggest single source of the lines left on a merged sheet.
+                //
+                // The PLAIN threshold is the look's and does not move; the rich
+                // one is a constant. So only the plain one is recorded, and
+                // refreshEdgesFromStations picks between them from the letter
+                // THIS frame.
+                edgeSrc[so++] = creaseDeg < 180 ? Math.round(creaseCos * 1e6) : -1;
                 // ...and whether the letter decides it at all. 1 = a strip's
                 // cross edge, drawn while its piece is a Richardson strand and
                 // clipped otherwise; 0 = an edge whose existence is geometry.
@@ -6137,7 +6155,12 @@ function refreshEdgesFromStations(mesh) {
     if (!oneSided || oneSided.length < rows) {
         oneSided = new Int32Array(rows);
         oneSidedAt = new Int32Array(rows);
+        allRowNext = new Int32Array(rows);
     }
+    if (!allRowHead || allRowHead.length < stationN + 2) {
+        allRowHead = new Int32Array(stationN + 2);
+    }
+    allRowHead.fill(-1, 0, stationN + 2);
     let oneSidedN = 0;
     let touched = 0;
     let worstMoved = 0;
@@ -6210,11 +6233,29 @@ function refreshEdgesFromStations(mesh) {
         //
         // The edge SET does not change - only this flag - so the topology the
         // whole path depends on is untouched.
-        if (nCount >= 2 && cCosM >= 0) {
-            const d2 = Math.abs(ed[base + 6] * ed[base + 9]
-                + ed[base + 7] * ed[base + 10] + ed[base + 8] * ed[base + 11]);
+        // 🔴 AND THE THRESHOLD FOLLOWS THE LETTER, THIS FRAME. A strand's
+        // broad face and its pale side meet at 90 degrees and that corner has
+        // to be inked; a loop bends a few degrees between stations and must not
+        // be. Which rule applies is therefore a question about the letter, and
+        // the letter moves - so it is asked here rather than baked. `cCosM` is
+        // the look's plain threshold, or -1 where the plain rule is off.
+        const richNow = edgeRichPreset
+            && (pieceIsStrand(mesh, faceA) || pieceIsStrand(mesh, faceB));
+        const cM = richNow ? RICH_CREASE_M : cCosM;
+        // 🔴 AND "NO RULE" IS A VERDICT, NOT A REASON TO KEEP THE OLD ONE.
+        // This was gated on `cCosM >= 0`, so an edge whose crease rule is off
+        // this frame was simply not revisited and kept whatever the build
+        // frame decided - which for a residue that WAS a strand is 2, an inked
+        // crease, on a loop. The rule being off means there is no crease here;
+        // that is 0, and it has to be written.
+        if (nCount >= 2) {
             const was = ed[base + 12];
-            const now = (d2 < cCosM / 1e6) ? 2 : 0;
+            let now = 0;
+            if (cM >= 0) {
+                const d2 = Math.abs(ed[base + 6] * ed[base + 9]
+                    + ed[base + 7] * ed[base + 10] + ed[base + 8] * ed[base + 11]);
+                now = (d2 < cM / 1e6) ? 2 : 0;
+            }
             if (was !== now) alwaysMoved += 1;
             ed[base + 12] = now;
         }
@@ -6243,6 +6284,15 @@ function refreshEdgesFromStations(mesh) {
                 oneSided[oneSidedN++] = r;
             }
         }
+        // ...and every row is filed under its face's station, so a lone edge can
+        // find whatever else lies where it does without comparing itself
+        // against all seven thousand.
+        {
+            const st0 = mesh.faceStation[faceA];
+            if (st0 >= 0 && st0 < stationN) {
+                allRowNext[r] = allRowHead[st0]; allRowHead[st0] = r;
+            } else { allRowNext[r] = -1; }
+        }
         touched += 1;
     }
     // 🔴 A LONE CROSS EDGE ASKS WHETHER THE OTHER SLAB HAS ARRIVED, THIS FRAME.
@@ -6265,7 +6315,7 @@ function refreshEdgesFromStations(mesh) {
     // not a close call, and only the lone cross edges are compared - 240 of
     // 7,016 rows here - so the pass is a few thousand distance tests and no
     // allocation.
-    if (oneSidedN > 1) {
+    if (oneSidedN > 0) {
         const TOL = 0.02;
         // 🔴 BUCKETED BY STATION, because a pair that coincides is a pair at a
         // piece boundary and the two halves are one station apart - so the
@@ -6274,28 +6324,17 @@ function refreshEdgesFromStations(mesh) {
         // other is 228 of them on _traj_3ptb.pdb and fine; it is quadratic, and
         // the count follows the number of secondary-structure elements, so a
         // thousand-residue cartoon would pay for it.
-        if (!oneSidedHead || oneSidedHead.length < stationN + 2) {
-            oneSidedHead = new Int32Array(stationN + 2);
-            oneSidedNext = new Int32Array(rows);
-        }
-        oneSidedHead.fill(-1, 0, stationN + 2);
-        for (let x = 0; x < oneSidedN; x += 1) {
-            const at = oneSidedAt[x];
-            if (at < 0 || at >= stationN) { oneSidedNext[x] = -1; continue; }
-            oneSidedNext[x] = oneSidedHead[at];
-            oneSidedHead[at] = x;
-        }
         for (let x = 0; x < oneSidedN; x += 1) {
             const rx = oneSided[x]; const bx = rx * ED_FLOATS;
             if (ed[bx + 12] < 0) continue;              // already clipped
             const at = oneSidedAt[x];
             let found = false;
-            for (let dz = -1; dz <= 1 && !found; dz += 1) {
+            for (let dz = -2; dz <= 2 && !found; dz += 1) {
                 const cell = at + dz;
                 if (cell < 0 || cell >= stationN) continue;
-                for (let y = oneSidedHead[cell]; y >= 0; y = oneSidedNext[y]) {
-                if (y === x) continue;
-                const by = oneSided[y] * ED_FLOATS;
+                for (let ry = allRowHead[cell]; ry >= 0; ry = allRowNext[ry]) {
+                if (ry === rx) continue;
+                const by = ry * ED_FLOATS;
                 // either orientation - the two halves are wound opposite ways
                 const s0 = Math.max(
                     Math.abs(ed[bx] - ed[by]), Math.abs(ed[bx + 1] - ed[by + 1]),
@@ -8026,6 +8065,7 @@ function captureMesh(sig) {
         // pixels where the same frame drawn forward has 9,442, a fifth of it
         // simply missing.
         edSrc: residentEdges ? residentEdges.edSrc : null,
+        edgeRich: edgeRichPreset,
         spans: residentPartSpans,
         hasContacts: residentHasContacts,
         bytes: lastFill.byteLength + (lastEdges ? lastEdges.byteLength : 0),
@@ -8044,6 +8084,7 @@ function activateMesh(m) {
     // ...and the two things the edge refresh reads, which travel with the mesh
     // they describe. See the note in captureMesh.
     residentEdges = (m.edges && m.edSrc) ? { ed: m.edges, edSrc: m.edSrc } : null;
+    edgeRichPreset = !!m.edgeRich;
     residentPartSpans = m.spans || [];
     residentHasContacts = !!m.hasContacts;
     resident = m.resident;
@@ -10127,6 +10168,7 @@ window.py2dmolCartoonGPU = {
             // outlineMode off and concluded "it is not the outline" was
             // comparing pictures that both still had one.
             inkBuf: readBuf(bufInk, edgeCount * ED_FLOATS),
+            edSrc: residentEdges && residentEdges.edSrc ? Array.from(residentEdges.edSrc) : null,
         };
     },
     // A PROBE'S SCALPEL: write one lane of the station rows and re-upload.
