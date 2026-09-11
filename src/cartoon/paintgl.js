@@ -4535,7 +4535,19 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused) {
             // incident faces, and the non-manifold rule then dropped it - the
             // helices lost their outline to the fix for the junction triangle
             // rather than to the weld.
-            if (nLenOf[fi] < 1e-6) continue;   // zero area, measured above
+            //
+            // 🔴 WHICH IS A STATEMENT ABOUT THE WIDTH FACES, AND ONLY THEM. It
+            // is the two SIDE faces (surf >= 2) that collapse to a line at zero
+            // thickness; a BROAD face at a duplicate station - the arrow's seam,
+            // the blunt end's rim - has no longitudinal length either, and a
+            // perfectly good cross-section. Dropping those too meant they never
+            // registered their cross edges, so the slab on the other side of the
+            // boundary had one incident face, counted as a boundary, and drew a
+            // line unconditionally. That is the line left across a sheet whose
+            // gap has closed: with the face present the cross edges weld,
+            // nCount is 2, and the ordinary crease test reads the two parallel
+            // normals and says nothing. See tests/sheet_merge.py.
+            if ((f.surf === undefined || f.surf >= 2) && nLenOf[fi] < 1e-6) continue;   // zero area, measured above
             // ...and belt and braces: one face may not count one edge twice.
             // FOUR SLOTS, NOT A SET. A quad registers at most four edges, and
             // one Set per face is one allocation per face - a couple of million
