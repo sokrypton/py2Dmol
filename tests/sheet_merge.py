@@ -33,10 +33,11 @@ unconditionally - right while the ribbon really does step down, and stale the
 moment the letter removes the step. The per-frame crease test cannot correct it
 because that test is gated on having two faces.
 
-🔴 AND THE TWO FACES THAT OUGHT TO MEET ARE FINDABLE, which is what the repair
-needs. Reading them off a FRESH build of the same frame, where the edge does
-have two: they are the same SURFACE, in CONSECUTIVE PIECES, at station indices
-two apart - a piece boundary carries its own copy of the station.
+🔴 AND THE TWO FACES THAT OUGHT TO MEET ARE FINDABLE. Reading them off a FRESH
+build of the same frame, where the edge does have two: they are the same
+SURFACE, in CONSECUTIVE PIECES, at station indices two apart - a piece boundary
+carries its own copy of the station, and the two cross-sections meet at the
+station between them.
 
     kept: face 2173 (st1086 su0 pc543)  ->  fresh: 2173 (st1086 su0 pc543)
                                                  + 2177 (st1088 su0 pc544)
@@ -48,14 +49,33 @@ of by the positions of its corners, and then both faces are recorded whatever
 the letters are, `nCount` is 2 in every frame, and the decision moves to the
 frame - which is where the goal of building once per object needs it.
 
-🔴 TWO REPAIRS WERE MEASURED AND ARE WRONG, so they are written down rather than
-retried. Clipping every one-sided cross edge - sacrificing the shoulder line
-when a sheet IS broken - costs 49,759 pixels on this structure and makes the
-merged frame WORSE (139 -> 392), because a "broken sheet" junction is
-indistinguishable from an ordinary strand end: both are a one-sided cross edge
-on a strand slab. And recomputing the same corner at the NEIGHBOURING station
-and clipping when it coincides costs 48,057 pixels, because coincidence there is
-the rule and not the exception - it fires on about 232 of the 240 one-sided rows.
+🔴 SEED THE PAPER BEFORE COMPARING TWO RUNS. geom.js builds its tooth tile from
+Math.random() once per page load, so two runs of the IDENTICAL tree differ by
+about 17.9% of the frame. Two candidate repairs were rejected here on
+"49,759 pixels lost" and "48,057 pixels lost" and BOTH numbers were that noise -
+with the paper seeded the same change moves a fresh build by ZERO. Any number in
+this file comparing one run against another is worthless without first replacing
+Math.random with a fixed LCG, before the page loads. The comparison of rows, below, never had this problem,
+which is the second reason it is the assertion.
+
+🔴 WHAT IS KNOWN ABOUT THE REPAIR, from five attempts that all failed the same
+way. The rows a fresh build draws that a fast one does not split cleanly:
+
+    (nCount 2, always 2, byLetter 0) x 32   pre-existing, nothing to do with this
+    (nCount 1, always 2, byLetter 1) x 42   one-sided in a FRESH build too
+
+Every rule tried - clip one-sided rows; clip when the corner at the neighbouring
+station coincides; require a partner face; require the partner's piece to be a
+strand; pair at station +-2 rather than +-1 - removes the 8 rows of the artifact
+and clips those 42 with them, taking the frame from 139 pixels to 360. So the
+flush test as written does not separate "the neighbour became a strand" from
+"the neighbour is still a loop", and the next attempt should find out why before
+writing another rule: for the 42, a fresh build sees ONE face where the test
+says two slabs coincide, and that contradiction is the whole problem.
+
+The pairing itself is known and is not the difficulty: the two faces that ought
+to meet are the same SURFACE in CONSECUTIVE PIECES at station indices two apart,
+their cross-sections meeting at the station between them.
 """
 import json, os, sys, shutil, http.server, socketserver, threading
 
