@@ -5425,3 +5425,17 @@ array, and the change was reverted rather than kept for looking right.
 **Each arm is three loads and the arms were run back to back**, because this
 machine drifts: the same configuration measured 8931 and 9180 ms in consecutive
 runs. Single numbers from this probe mean nothing.
+
+🔴 **AND THE STRIP'S REMAINING SECOND IS NOT ITS STRINGS.** The capsid's
+sequence panel is ~1.0 s (`window.__seqMs`), and two things in it look like the
+cause and are not. The sort of 2,081,520 entries by chain is **23 ms** - the
+entries are built in position order and V8's TimSort finds the runs - so the
+comparator is not worth replacing with a bucket pass. And `detectSequenceType`
+and `positionLetter` each normalise every residue name with
+`.toString().trim().toUpperCase()`, which looks like four million allocations;
+replacing both with a scan that returns the string unchanged when it is already
+trimmed and upper-case, and dropping the
+`entries.slice(lo, hi + 1).map(r => r.resName)` copy per chain, measured
+953 / 1015 / 1247 ms against 970 / 1061 / 1039. Reverted. What is left is the
+2,081,520 six-field entry objects themselves and the per-cell layout, and those
+are the panel's design rather than a cost inside it.
