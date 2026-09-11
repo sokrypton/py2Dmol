@@ -5277,3 +5277,71 @@ loads `py2Dmol/resources/bundles/py2Dmol.embed.min.js`, which is only rebuilt by
 `tools/bundle.py build` (the node lane does it). Three reverts in a row "failed
 to fix" a bug they had not touched. Check out the BUNDLE at a commit, or rebuild
 after editing, or measure nothing.
+
+## A night on the hot paths: what moved, and what measured as nothing
+
+Four wins, five rejections. The rejections are here because each one looked
+obviously right and cost an hour to disprove.
+
+### What moved
+
+| | before | after |
+|---|---:|---:|
+| the SS assignment, 151 chains | 226 ms | **136 ms** (1.66x) |
+| a cartoon step, 1TIM (min of 3 interleaved rounds) | 6.3 ms | **5.7 ms** |
+| a tube step, _traj_9fog.pdb | 1.92 ms | **1.46 ms** (1.3x) |
+| the edge refresh, per frame on 1TIM | 1.200 ms | 1.100 ms |
+
+  * **The hydrogen-bond search** was nine tenths of the assignment and a Map of
+    arrays. Counting sort instead - count per cell, prefix-sum, fill one
+    Int32Array - and the three x-neighbours become ONE contiguous run. 176 ms to
+    88. `dihedral` lost its four per-call array arguments and its three len3
+    calls. Proved identical by digesting the assignment of all 151 chains.
+
+  * **The chain tables** - `_chainColorKeys`, `chainIndexMap`,
+    `perChainIndices`, the rainbow scales - are not a function of the
+    coordinates and were rebuilt on every setCoords, which is every frame. Keyed
+    on their inputs by identity now. With them, `new Set(this.chains)`, which
+    existed to answer "is there more than one chain".
+
+  * **The sequence panel** added every index of the structure to a Set to find
+    out how many there were, on every frame, and read the set for its `size`
+    and nothing else.
+
+  * **The edge refresh's self-check** - six reads, six absolute values and six
+    comparisons a row - is only meaningful at install and ran on every row of
+    every frame.
+
+### What measured as nothing, and is not in the tree
+
+  * **A smaller H-bond cell.** The energy test is O...N at 5.5 A and the grid is
+    9 A, which looks like four fifths of the candidates wasted. The grid is on
+    C-ALPHAS: over the 151 chains, the longest alpha separation of an accepted
+    bond is **8.502 A**, so a cell below that stops guaranteeing the pair is
+    among the 27 neighbours. At 7.0 the assignment is identical and at 6.5 it is
+    not - and the identical one is luck, not a bound.
+
+  * **Skipping the corner projection on a station-only capture.** Measured first
+    as 1.7 ms of a 7 ms step, which is why it looked like the prize of the
+    night. Interleaved four rounds instead of measured once: **5.1 -> 4.8 ms**,
+    and allocating four arrays without projecting costs the same as projecting -
+    so it is the allocation, not the arithmetic, and the win is 6% for a change
+    that runs through the capture path. Not taken.
+
+  * **A sign table for `cornerOf`**, replacing four branches: 1.200 ms either
+    way. The loop is memory-bound on a 16-float-strided station table, not
+    branch-bound.
+
+  * **Hoisting the four corner arrays out of `stationBoundsInto`** (39,000
+    allocations a frame): 0.200 ms either way. V8 stack-allocates what does not
+    escape.
+
+  * **Inlining the four distances in the bond energy test**: no change. The
+    13.7% the profile attributed to `len3` is in the amide and dihedral passes,
+    not there.
+
+🔴 **AND THIS MACHINE MAKES A SINGLE MEASUREMENT WORTHLESS.** The same
+configuration timed back to back read **7.1 ms and 5.3 ms** - a third of the
+number - which is how the corner projection came to look like a 1.7 ms win.
+Every number above is a minimum over interleaved rounds, and the two node-level
+ones are minima of three runs in both orders.
