@@ -6017,7 +6017,11 @@ function pieceIsStrand(mesh, face) {
 }
 
 function refreshEdgesFromStations(mesh) {
-    lastEdgeRefresh = {why: null, rows: 0, touched: 0};
+    // ...and what it cost, because this pass is a per-frame walk of every edge
+    // row and a profile of a step puts a fifth of itself in here. Two clock
+    // reads a frame; `lastEdgeRefresh.ms` is where a probe finds it.
+    const __t0 = (typeof performance !== 'undefined') ? performance.now() : 0;
+    lastEdgeRefresh = {why: null, rows: 0, touched: 0, ms: 0};
     if (!gl || !residentEdges || !residentStations || !mesh) {
         lastEdgeRefresh.why = !residentEdges ? 'no residentEdges'
             : !residentStations ? 'no residentStations' : 'no gl or mesh';
@@ -6085,6 +6089,7 @@ function refreshEdgesFromStations(mesh) {
     let touched = 0;
     let worstMoved = 0;
     let alwaysMoved = 0;
+    const selfCheck = (typeof window !== 'undefined') && !!window.__edgeSelfCheck;
     for (let r = 0; r < rows; r += 1) {
         const oa = edSrc[r * ED_SRC];
         if (oa < 0) continue;                       // a contact, not a surface edge
@@ -6100,25 +6105,39 @@ function refreshEdgesFromStations(mesh) {
         cornerOf(faceA, ((oa % 12) / 3) | 0, pa);
         cornerOf(faceB, ((ob % 12) / 3) | 0, pb);
         const base = r * ED_FLOATS;
-        for (let a = 0; a < 3; a += 1) {
-            const d0 = Math.abs(ed[base + a] - pa[a]);
-            const d1 = Math.abs(ed[base + 3 + a] - pb[a]);
-            if (d0 > worstMoved) worstMoved = d0;
-            if (d1 > worstMoved) worstMoved = d1;
+        // 🔴 THE SELF-CHECK IS OFF UNLESS ASKED FOR. `worstMoved` is how far
+        // this rule moved what the edge pass had written, and it is only
+        // MEANINGFUL at install - refreshed against the very mesh it was built
+        // from it must be zero, and on any other frame it is whatever the
+        // geometry moved. It was being computed on every row of every frame: six
+        // reads, six absolute values and six comparisons a row, 15,688 rows on
+        // 1TIM, for a number nothing reads unless a probe asks. `window
+        // .__edgeSelfCheck = 1` turns it back on.
+        if (selfCheck) {
+            for (let a = 0; a < 3; a += 1) {
+                const d0 = Math.abs(ed[base + a] - pa[a]);
+                const d1 = Math.abs(ed[base + 3 + a] - pb[a]);
+                if (d0 > worstMoved) worstMoved = d0;
+                if (d1 > worstMoved) worstMoved = d1;
+            }
         }
         ed[base] = pa[0]; ed[base + 1] = pa[1]; ed[base + 2] = pa[2];
         ed[base + 3] = pb[0]; ed[base + 4] = pb[1]; ed[base + 5] = pb[2];
         if (fa >= 0 && fa < residentStations.count && normalOf(fa, na)) {
-            for (let a = 0; a < 3; a += 1) {
-                const d = Math.abs(ed[base + 6 + a] - na[a]);
-                if (d > worstMoved) worstMoved = d;
+            if (selfCheck) {
+                for (let a = 0; a < 3; a += 1) {
+                    const d = Math.abs(ed[base + 6 + a] - na[a]);
+                    if (d > worstMoved) worstMoved = d;
+                }
             }
             ed[base + 6] = na[0]; ed[base + 7] = na[1]; ed[base + 8] = na[2];
         }
         if (fb >= 0 && fb < residentStations.count && normalOf(fb, nb)) {
-            for (let a = 0; a < 3; a += 1) {
-                const d = Math.abs(ed[base + 9 + a] - nb[a]);
-                if (d > worstMoved) worstMoved = d;
+            if (selfCheck) {
+                for (let a = 0; a < 3; a += 1) {
+                    const d = Math.abs(ed[base + 9 + a] - nb[a]);
+                    if (d > worstMoved) worstMoved = d;
+                }
             }
             ed[base + 9] = nb[0]; ed[base + 10] = nb[1]; ed[base + 11] = nb[2];
         }
@@ -6166,6 +6185,8 @@ function refreshEdgesFromStations(mesh) {
     // whatever the geometry moved, so the check is only meaningful at install -
     // which is exactly where a probe can make it.
     lastEdgeRefresh.worst = worstMoved;
+    lastEdgeRefresh.ms = (typeof performance !== 'undefined')
+        ? performance.now() - __t0 : 0;
     // ...and how many edges changed class, which at install must be none.
     lastEdgeRefresh.reclassified = alwaysMoved;
     if (!touched) { lastEdgeRefresh.why = 'no row named a source'; return false; }
