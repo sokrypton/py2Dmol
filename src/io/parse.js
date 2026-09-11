@@ -2889,6 +2889,8 @@ function extractBiounitOperations(text, isCIF, cachedLoops = null) {
  */
 function applyBiounitOperationsToAtoms(atoms, operations) {
     if (!operations || operations.length === 0) return atoms;
+    const __buT0 = (typeof performance !== 'undefined') ? performance.now() : 0;
+    try {
 
     // Get chains from operations, or use all chains if none specified
     let targetChains = new Set();
@@ -2905,25 +2907,59 @@ function applyBiounitOperationsToAtoms(atoms, operations) {
         });
     }
 
-    const out = [];
+    // WHICH ATOMS ARE COPIED IS DECIDED ONCE, NOT ONCE PER OPERATION. The test
+    // does not mention the operation, and a capsid runs sixty of them over the
+    // same atoms: that was sixty million set lookups to reach the same verdict
+    // sixty times about each atom.
+    const taking = (targetChains.size === 0)
+        ? atoms
+        : atoms.filter((a) => targetChains.has(a.chain));
+    if (!taking.length) return atoms;
+
+    const out = new Array(taking.length * operations.length);
+    let k = 0;
     for (const op of operations) {
-        for (const atom of atoms) {
-            if (targetChains.size === 0 || targetChains.has(atom.chain)) {
-                const transformed = {
-                    ...atom,
-                    x: op.R[0] * atom.x + op.R[1] * atom.y + op.R[2] * atom.z + op.t[0],
-                    y: op.R[3] * atom.x + op.R[4] * atom.y + op.R[5] * atom.z + op.t[1],
-                    z: op.R[6] * atom.x + op.R[7] * atom.y + op.R[8] * atom.z + op.t[2],
-                    chain: (op.id === '1') ?
-                        String(atom.chain || '') :
-                        (String(atom.chain || '') + '|' + op.id)
-                };
-                out.push(transformed);
+        const R = op.R, t = op.t;
+        const r0 = R[0], r1 = R[1], r2 = R[2];
+        const r3 = R[3], r4 = R[4], r5 = R[5];
+        const r6 = R[6], r7 = R[7], r8 = R[8];
+        const t0 = t[0], t1 = t[1], t2 = t[2];
+        // ...AND THE COPY'S CHAIN NAME IS BUILT ONCE PER CHAIN, not once per
+        // atom. It is a function of the chain and the operation alone, and a
+        // structure has a handful of chains and millions of atoms - so this was
+        // eight million string concatenations to produce sixty distinct
+        // strings, every one of them a fresh allocation for the collector to
+        // take back.
+        const plain = op.id === '1';
+        const named = new Map();
+        for (const atom of taking) {
+            const c0 = atom.chain;
+            let chain = named.get(c0);
+            if (chain === undefined) {
+                const base = String(c0 || '');
+                chain = plain ? base : (base + '|' + op.id);
+                named.set(c0, chain);
             }
+            const x = atom.x, y = atom.y, z = atom.z;
+            out[k++] = {
+                ...atom,
+                x: r0 * x + r1 * y + r2 * z + t0,
+                y: r3 * x + r4 * y + r5 * z + t1,
+                z: r6 * x + r7 * y + r8 * z + t2,
+                chain,
+            };
         }
     }
 
     return out.length > 0 ? out : atoms;
+    } finally {
+        // WHAT THE ASSEMBLY EXPANSION COSTS, as `window.__biounitMs`. It is a
+        // copy of every atom per operation, so it is the load's largest
+        // allocator and the collector's bill arrives elsewhere in the profile.
+        if (typeof window !== 'undefined' && typeof performance !== 'undefined') {
+            window.__biounitMs = (window.__biounitMs || 0) + (performance.now() - __buT0);
+        }
+    }
 }
 // ============================================================================
 // RESIDUE MAPPING UTILITIES
