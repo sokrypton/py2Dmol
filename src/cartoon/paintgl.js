@@ -2531,6 +2531,10 @@ for (let surf = 0; surf < CORNER_SURFS; surf += 1) {
 // frame - this runs on every step of a playback.
 let edgeNormals = null;         // Float32Array(faces * 3)
 let edgeNormalOk = null;        // Uint8Array(faces), 0 for a cap
+let oneSided = null;            // Int32Array: rows that are a lone cross edge
+let oneSidedAt = null;          // ...and the station each one's cross-section is at
+let oneSidedHead = null;        // station -> first lone row there, and its chain
+let oneSidedNext = null;
 let stationDraw = false;        // off until a caller asks; see setStationDraw
 let stationRefusal = null;      // why installStations said no
 // 🔴 WHY THIS FRAME DID NOT TAKE THE STATION PATH, and it survives the rebuild
@@ -6104,6 +6108,7 @@ function refreshEdgesFromStations(mesh) {
     // cover the normals too.
     const faceCount = Math.min(residentStations.count,
         mesh.faceSurf.length, mesh.faceStation.length);
+    const stationN = residentStations.stationCount || 0;
     if (!edgeNormals || edgeNormalOk.length < faceCount) {
         edgeNormals = new Float32Array(faceCount * 3);
         edgeNormalOk = new Uint8Array(faceCount);
@@ -6126,6 +6131,14 @@ function refreshEdgesFromStations(mesh) {
         }
     }
     const pa = [0, 0, 0]; const pb = [0, 0, 0];
+    // WHICH ROWS ARE A STRIP'S CROSS EDGE WITH ONLY ONE FACE BEHIND THEM.
+    // Collected here and settled in a second pass, because the question they
+    // ask is about the OTHER rows and those are not all written yet.
+    if (!oneSided || oneSided.length < rows) {
+        oneSided = new Int32Array(rows);
+        oneSidedAt = new Int32Array(rows);
+    }
+    let oneSidedN = 0;
     let touched = 0;
     let worstMoved = 0;
     let alwaysMoved = 0;
@@ -6221,9 +6234,86 @@ function refreshEdgesFromStations(mesh) {
             const now2 = strand ? (ed[base + 12] < 0 ? 2 : ed[base + 12]) : -1;
             if (was2 !== now2) alwaysMoved += 1;
             ed[base + 12] = now2;
+            // ...and the one-sided ones are looked at again below, once every
+            // row's geometry for this frame is written.
+            if (nCount < 2) {
+                const ia = ((oa % 12) / 3) | 0;
+                oneSidedAt[oneSidedN] = mesh.faceStation[faceA]
+                    + CORNER_DK[mesh.faceSurf[faceA] * 4 + ia];
+                oneSided[oneSidedN++] = r;
+            }
         }
         touched += 1;
     }
+    // 🔴 A LONE CROSS EDGE ASKS WHETHER THE OTHER SLAB HAS ARRIVED, THIS FRAME.
+    //
+    // A strip's cross edge gets two incident faces only where the two slabs'
+    // corners COINCIDE, because the edge table is keyed by position. A piece
+    // boundary normally carries a real gap - measured over every lone cross
+    // edge on _traj_3ptb.pdb, the nearest opposing row is 0.08 to 0.73 A away,
+    // median 0.25 - so the slab really does step and the line at the shoulder
+    // is right. One face means boundary, and a boundary is drawn.
+    //
+    // The letter can close that gap. When the loop between two strands becomes
+    // a strand the two halves land on each other, the surface is continuous,
+    // and the line should go - but the verdict was baked at build and the crease
+    // test cannot revisit it, being gated on having two faces. That is a line
+    // across a merged sheet, at the gap that closed.
+    //
+    // So ask the build's own question again, against this frame's geometry: is
+    // there another row in the same place? Zero against a median of 0.25 A is
+    // not a close call, and only the lone cross edges are compared - 240 of
+    // 7,016 rows here - so the pass is a few thousand distance tests and no
+    // allocation.
+    if (oneSidedN > 1) {
+        const TOL = 0.02;
+        // 🔴 BUCKETED BY STATION, because a pair that coincides is a pair at a
+        // piece boundary and the two halves are one station apart - so the
+        // candidates for a row at station S are the lone rows at S-1, S and
+        // S+1, and never the whole list. Comparing every lone row against every
+        // other is 228 of them on _traj_3ptb.pdb and fine; it is quadratic, and
+        // the count follows the number of secondary-structure elements, so a
+        // thousand-residue cartoon would pay for it.
+        if (!oneSidedHead || oneSidedHead.length < stationN + 2) {
+            oneSidedHead = new Int32Array(stationN + 2);
+            oneSidedNext = new Int32Array(rows);
+        }
+        oneSidedHead.fill(-1, 0, stationN + 2);
+        for (let x = 0; x < oneSidedN; x += 1) {
+            const at = oneSidedAt[x];
+            if (at < 0 || at >= stationN) { oneSidedNext[x] = -1; continue; }
+            oneSidedNext[x] = oneSidedHead[at];
+            oneSidedHead[at] = x;
+        }
+        for (let x = 0; x < oneSidedN; x += 1) {
+            const rx = oneSided[x]; const bx = rx * ED_FLOATS;
+            if (ed[bx + 12] < 0) continue;              // already clipped
+            const at = oneSidedAt[x];
+            let found = false;
+            for (let dz = -1; dz <= 1 && !found; dz += 1) {
+                const cell = at + dz;
+                if (cell < 0 || cell >= stationN) continue;
+                for (let y = oneSidedHead[cell]; y >= 0; y = oneSidedNext[y]) {
+                if (y === x) continue;
+                const by = oneSided[y] * ED_FLOATS;
+                // either orientation - the two halves are wound opposite ways
+                const s0 = Math.max(
+                    Math.abs(ed[bx] - ed[by]), Math.abs(ed[bx + 1] - ed[by + 1]),
+                    Math.abs(ed[bx + 2] - ed[by + 2]), Math.abs(ed[bx + 3] - ed[by + 3]),
+                    Math.abs(ed[bx + 4] - ed[by + 4]), Math.abs(ed[bx + 5] - ed[by + 5]));
+                const s1 = Math.max(
+                    Math.abs(ed[bx] - ed[by + 3]), Math.abs(ed[bx + 1] - ed[by + 4]),
+                    Math.abs(ed[bx + 2] - ed[by + 5]), Math.abs(ed[bx + 3] - ed[by]),
+                    Math.abs(ed[bx + 4] - ed[by + 1]), Math.abs(ed[bx + 5] - ed[by + 2]));
+                if (s0 < TOL || s1 < TOL) {
+                    ed[bx + 12] = -1; alwaysMoved += 1;
+                    found = true; break;
+                }
+                }
+            }
+        }
+    }
+    lastEdgeRefresh.oneSided = oneSidedN;
     lastEdgeRefresh.touched = touched;
     // 🔴 AND HOW FAR IT MOVED WHAT WAS THERE. Refreshed against the very mesh
     // it was built from, this must be zero: the rule reproduces the numbers the

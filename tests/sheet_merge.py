@@ -58,24 +58,48 @@ this file comparing one run against another is worthless without first replacing
 Math.random with a fixed LCG, before the page loads. The comparison of rows, below, never had this problem,
 which is the second reason it is the assertion.
 
-🔴 WHAT IS KNOWN ABOUT THE REPAIR, from five attempts that all failed the same
-way. The rows a fresh build draws that a fast one does not split cleanly:
+🔴 HALF OF IT IS FIXED, AND THE COUNT HERE IS 8 -> 4.
+refreshEdgesFromStations asks the BUILD'S OWN QUESTION again, against this
+frame's geometry: a lone cross edge is clipped when another lone cross edge
+lands in the same place. A piece boundary normally carries a real gap - measured
+over every lone cross edge on this structure, the nearest opposing row is 0.08
+to 0.73 A away, median 0.25 - so the slab really does step and the shoulder line
+is right. The letter can close that gap to zero, and zero against a median of
+0.25 is not a close call.
+
+It costs nothing (0.8 / 0.9 ms against 0.9 / 0.9 on _traj_1tim.pdb): candidates
+are bucketed by station, since the two halves of a boundary are one station
+apart, and only the lone rows are compared - 180 of 15,688. And it changes
+nothing else: the broken frame and a fresh build are both 0 pixels different
+from before.
+
+🔴 THE REMAINING 4 ARE A DIFFERENT BUG. They have no coincident partner at all -
+the nearest row is 0.57 to 0.65 A away - so the kept mesh has a REAL seam there:
+a piece boundary cut when the letters were different, now leaving a genuine step
+in the ribbon. Outlining a real step is not wrong; the step should not be there.
+That is a question about where geom.js cuts its pieces, not about which rows the
+outline draws, and it wants its own measurement.
+
+🔴 AND FIVE EARLIER RULES ARE WRITTEN DOWN SO THEY ARE NOT RETRIED. The rows a
+fresh build draws that a fast one does not split cleanly:
 
     (nCount 2, always 2, byLetter 0) x 32   pre-existing, nothing to do with this
     (nCount 1, always 2, byLetter 1) x 42   one-sided in a FRESH build too
 
-Every rule tried - clip one-sided rows; clip when the corner at the neighbouring
-station coincides; require a partner face; require the partner's piece to be a
-strand; pair at station +-2 rather than +-1 - removes the 8 rows of the artifact
-and clips those 42 with them, taking the frame from 139 pixels to 360. So the
-flush test as written does not separate "the neighbour became a strand" from
-"the neighbour is still a loop", and the next attempt should find out why before
-writing another rule: for the 42, a fresh build sees ONE face where the test
-says two slabs coincide, and that contradiction is the whole problem.
+Clip one-sided rows; clip when the corner at the neighbouring STATION coincides;
+require a partner face; require the partner's piece to be a strand; pair at
+station +-2 rather than +-1 - every one removes the 8 rows of the artifact and
+clips those 42 with them, 139 pixels to 360.
 
-The pairing itself is known and is not the difficulty: the two faces that ought
-to meet are the same SURFACE in CONSECUTIVE PIECES at station indices two apart,
-their cross-sections meeting at the station between them.
+All five asked about a STATION, and the station is the wrong thing to ask about:
+two stations at a piece boundary can hold identical numbers while the two faces'
+corners do not coincide, which is why those tests fired on 84 rows where the
+build had merged nothing. Asking about the other ROW - the thing the build
+actually hashed - separates them and leaves the 42 alone.
+
+The pairing, for whoever takes the remaining 4: the two faces that ought to meet
+are the same SURFACE in CONSECUTIVE PIECES at station indices two apart, their
+cross-sections meeting at the station between them.
 """
 import json, os, sys, shutil, http.server, socketserver, threading
 
