@@ -389,6 +389,14 @@ function buildSidechainTable(coords, entries) {
         adj[i * cap + adjN[i]++] = j;
         adj[j * cap + adjN[j]++] = i;
     };
+    // 🔴 AND A MAP IS SLOWER THAN THIS SCAN, MEASURED. `rowIdx` is 113 ms of a
+    // capsid load and looks like the obvious hashing candidate: the bond table
+    // is walked twice a bond, so this is up to fourteen string compares an
+    // endpoint. Replacing it with one reused Map, cleared and refilled per
+    // residue, cost 1161 / 1245 / 1246 ms against 1017 / 1058 / 1070 - hashing
+    // fourteen strings to save scanning them does not pay at fourteen. The
+    // group filter above says the same thing about its own scan, and it was
+    // right.
     const rowIdx = (nm) => {
         // last match wins, as Map.set did when two atoms alias to one name
         for (let i = gn - 1; i >= 0; i--) if (rowName[i] === nm) return i;
