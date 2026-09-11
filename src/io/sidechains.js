@@ -240,23 +240,44 @@ function buildSidechainTable(coords, entries) {
     // A nucleic trace steps 5.5-6.5 A, not the peptide's 3.8 - see localFrame.
     const stepMin = C ? C.NUCLEIC_STEP_MIN : 4.5;
     const stepMax = C ? C.NUCLEIC_STEP_MAX : 7.5;
-    const frameArgs = (isNucleic) => (isNucleic ? [stepMin, stepMax] : [undefined, undefined]);
 
     const n = coords.length;
     const at = (i) => ({ x: coords[i][0], y: coords[i][1], z: coords[i][2] });
-    // which residues can carry a frame at all
+    // WHICH POSITIONS ARE EVEN CANDIDATES, and under which step bounds. A
+    // nucleic trace steps 5.5-6.5 A, not the peptide's 3.8 (see localFrame), so
+    // the bounds belong to the position and not to the residue asking about it:
+    // 0 no entry here, 1 protein, 2 nucleic.
+    const kindAt = new Uint8Array(n);
+    for (const e of entries) kindAt[e.pos] = e.nucleic ? 2 : 1;
+
+    // 🔴 THE FRAME IS COMPUTED ONCE PER RESIDUE, NOT TWICE. This used to be a
+    // whole pass filling a `hasFrame` bitmap - localFrame over every entry -
+    // followed by a second localFrame on the anchor the bitmap pointed at.
+    // Every position in a capsid paid for two frames to keep one, and each
+    // localFrame reads three points through `at`, which allocates: 2,081,520
+    // positions, six short-lived objects each, and the garbage collector was
+    // 16% of the load.
+    //
+    // Asking directly is the same answer. The bitmap's only reader searched
+    // outward from the residue's own position and took the first that framed;
+    // doing that with localFrame itself visits the candidates in the same order
+    // and stops at the same one - and the frame it stopped at is the frame the
+    // caller wanted, so there is nothing left to recompute.
     const fr = [0, 0, 0, 0, 0, 0, 0, 0, 0];
-    const hasFrame = new Uint8Array(n);
-    for (const e of entries) {
-        const [lo, hi] = frameArgs(e.nucleic);
-        if (localFrame(at, n, e.pos, fr, null, lo, hi)) hasFrame[e.pos] = 1;
-    }
-    // nearest framed position, searching outward - only used at chain ends
+    const frameAt = (pos) => {
+        const k = kindAt[pos];
+        if (!k) return false;
+        return k === 2
+            ? localFrame(at, n, pos, fr, null, stepMin, stepMax)
+            : localFrame(at, n, pos, fr, null, undefined, undefined);
+    };
+    // nearest framable position, searching outward - only used at chain ends.
+    // `fr` holds that position's frame on return.
     const framedNear = (pos) => {
-        if (hasFrame[pos]) return pos;
+        if (frameAt(pos)) return pos;
         for (let d = 1; d <= 3; d++) {
-            if (pos - d >= 0 && hasFrame[pos - d]) return pos - d;
-            if (pos + d < n && hasFrame[pos + d]) return pos + d;
+            if (pos - d >= 0 && frameAt(pos - d)) return pos - d;
+            if (pos + d < n && frameAt(pos + d)) return pos + d;
         }
         return -1;
     };
@@ -321,14 +342,70 @@ function buildSidechainTable(coords, entries) {
     let reach = new Uint8Array(cap);           // 1 once walked to from the CA
     let stack = new Int16Array(cap);
     let rowOf = new Int32Array(cap);
+    // ...and each group member's name with its PDB v2 asterisks normalised,
+    // which the filter below works out anyway. It used to be worked out again
+    // for the CA reorder and a third time per emitted row - three calls an atom
+    // over 8,033,760 rows on a capsid, and `primed` is 137 ms of the load.
+    let gname = new Array(cap);
+    // ...and the names the bond table is looked up under, which are gname with
+    // this residue's aliases applied.
+    let rowName = new Array(cap);
+    // THE BONDS THIS RESIDUE MADE, as flat pairs. A JS array pushed into and
+    // thrown away once per residue is 313,000 arrays on a capsid; this is one,
+    // reused, holding at most one pair per bond a residue can have.
+    let linkCap = 64;
+    let link = new Int32Array(linkCap);
+    let linkN = 0;
+    const growLink = () => {
+        linkCap *= 2;
+        const l2 = new Int32Array(linkCap); l2.set(link); link = l2;
+    };
     const growScratch = (need) => {
         while (cap < need) cap *= 2;
         group = new Array(cap);
+        gname = new Array(cap);
+        rowName = new Array(cap);
         adjN = new Uint8Array(cap);
         adj = new Int16Array(cap * cap);
         reach = new Uint8Array(cap);
         stack = new Int16Array(cap);
         rowOf = new Int32Array(cap);
+    };
+
+    const isHydrogen = (a) => (a.element
+        ? (a.element === 'H' || a.element === 'D')
+        : /^[0-9]?[HD]/.test(a.atomName || ''));
+
+    // 🔴 THE HELPERS ARE DECLARED ONCE, NOT ONCE PER RESIDUE. `join`, `grow`
+    // and `rowIdx` were written inside the loop, which builds three closure
+    // objects for every residue in the file - 939,000 of them on a capsid, to
+    // describe side chains of at most fourteen atoms. The state they close
+    // over lives out here with them; nothing else reads it.
+    let gn = 0;
+    let reachN = 0;
+    const join = (i, j) => {
+        if (linkN + 2 > linkCap) growLink();
+        link[linkN++] = i; link[linkN++] = j;
+        adj[i * cap + adjN[i]++] = j;
+        adj[j * cap + adjN[j]++] = i;
+    };
+    const rowIdx = (nm) => {
+        // last match wins, as Map.set did when two atoms alias to one name
+        for (let i = gn - 1; i >= 0; i--) if (rowName[i] === nm) return i;
+        return undefined;
+    };
+    const grow = (from) => {
+        let sp = 0;
+        stack[sp++] = from;
+        while (sp) {
+            const at0 = stack[--sp];
+            const deg = adjN[at0]; const row = at0 * cap;
+            for (let k = 0; k < deg; k++) {
+                const nb = adj[row + k];
+                if (reach[nb]) continue;
+                reach[nb] = 1; reachN++; stack[sp++] = nb;
+            }
+        }
     };
 
     for (const e of entries) {
@@ -344,10 +421,9 @@ function buildSidechainTable(coords, entries) {
                 || e.residue.atoms.find((a) => primed(a.atomName) === "C4'"))
             : e.residue.caAtom;
         if (!ca) continue;
+        // ...and `fr` is already the anchor's frame - framedNear left it there.
         const anchor = framedNear(e.pos);
         if (anchor < 0) continue;                 // too short to frame: skip
-        const [flo, fhi] = frameArgs(e.nucleic);
-        if (!localFrame(at, n, anchor, fr, null, flo, fhi)) continue;
         const o = at(anchor);
 
         // ONE CONFORMER, THE FIRST. A residue modelled in two positions writes
@@ -373,17 +449,17 @@ function buildSidechainTable(coords, entries) {
         // consulted when `element` is empty, so a ligand atom that really is
         // mercury keeps its element, and only inside a residue already
         // classified as protein, where an H-name cannot be anything else.
-        const isHydrogen = (a) => (a.element
-            ? (a.element === 'H' || a.element === 'D')
-            : /^[0-9]?[HD]/.test(a.atomName || ''));
         const atoms = e.residue.atoms;
         if (atoms.length > cap) growScratch(atoms.length);
-        let gn = 0;
+        // ONE BACKBONE ATOM A RESIDUE MAY KEEP - proline's ring-closing N, and
+        // nothing else today. It is a property of the residue, so it is read
+        // once here rather than once per atom and again per emitted row.
+        const keepBB = SIDECHAIN_KEEP_BACKBONE[e.residue.resName];
+        gn = 0;
         for (let ai = 0; ai < atoms.length; ai++) {
             const a = atoms[ai];
             if (isHydrogen(a)) continue;
             const nm0 = primed(a.atomName);
-            const keepBB = SIDECHAIN_KEEP_BACKBONE[e.residue.resName];
             if (nm0 !== anchorName && nm0 !== keepBB && backboneOf.has(a.atomName)) continue;
             // first-wins by name, over a handful of entries - a linear scan
             // beats hashing at this size, and there is nothing to allocate
@@ -392,29 +468,25 @@ function buildSidechainTable(coords, entries) {
                 if (group[k].atomName === a.atomName) { dup = true; break; }
             }
             if (dup) continue;
+            gname[gn] = nm0;
             group[gn++] = a;
         }
         // CA first, so index 0 of every group is the anchor. Moved rather than
         // swapped: the rows are emitted in group order, so the atoms after it
         // have to keep the order the file gave them.
         for (let k = 1; k < gn; k++) {
-            if (primed(group[k].atomName) !== anchorName) continue;
-            const ca0 = group[k];
-            for (let m = k; m > 0; m--) group[m] = group[m - 1];
-            group[0] = ca0;
+            if (gname[k] !== anchorName) continue;
+            const ca0 = group[k]; const cn0 = gname[k];
+            for (let m = k; m > 0; m--) { group[m] = group[m - 1]; gname[m] = gname[m - 1]; }
+            group[0] = ca0; gname[0] = cn0;
             break;
         }
         if (gn < 2) continue;                     // glycine: nothing to draw
         const base = rowN;
         // CONNECTIVITY. From the residue's chemistry where we recognise it,
         // and only otherwise from distances.
-        const link = [];
+        linkN = 0;
         for (let k = 0; k < gn; k++) adjN[k] = 0;
-        const join = (i, j) => {
-            link.push(i, j);
-            adj[i * cap + adjN[i]++] = j;
-            adj[j * cap + adjN[j]++] = i;
-        };
         // ...from the right table. A base has its own, and a modified one that
         // is in neither falls to the distance rule.
         const rn = (e.residue.resName || '').trim().toUpperCase();
@@ -424,18 +496,12 @@ function buildSidechainTable(coords, entries) {
         if (known) {
             const alias = e.nucleic
                 ? NUCLEIC_ATOM_ALIASES : SIDECHAIN_ATOM_ALIASES[e.residue.resName];
-            const rowName = [];
             for (let i = 0; i < gn; i++) {
                 // primes normalised for a base, so a file written with
                 // asterisks matches the table's C1'
-                const n0 = e.nucleic ? primed(group[i].atomName) : group[i].atomName;
-                rowName.push((alias && alias[n0]) || n0);
+                const n0 = e.nucleic ? gname[i] : group[i].atomName;
+                rowName[i] = (alias && alias[n0]) || n0;
             }
-            const rowIdx = (nm) => {
-                // last match wins, as Map.set did when two atoms alias to one name
-                for (let i = gn - 1; i >= 0; i--) if (rowName[i] === nm) return i;
-                return undefined;
-            };
             for (const [n1, n2] of known) {
                 const i = rowIdx(n1); const j = rowIdx(n2);
                 // an atom the file never modelled simply has no bond to make
@@ -461,20 +527,7 @@ function buildSidechainTable(coords, entries) {
         // the honest thing: nothing is drawn where nothing was measured.
         for (let k = 0; k < gn; k++) reach[k] = 0;
         reach[0] = 1;                        // index 0 is the CA anchor
-        let reachN = 1;
-        const grow = (from) => {
-            let sp = 0;
-            stack[sp++] = from;
-            while (sp) {
-                const at0 = stack[--sp];
-                const deg = adjN[at0]; const row = at0 * cap;
-                for (let k = 0; k < deg; k++) {
-                    const nb = adj[row + k];
-                    if (reach[nb]) continue;
-                    reach[nb] = 1; reachN++; stack[sp++] = nb;
-                }
-            }
-        };
+        reachN = 1;
         grow(0);
         // REPAIR, FALLBACK RESIDUES ONLY. Where the chemistry is known a
         // detached fragment means an atom the file never modelled, and guessing
@@ -500,9 +553,7 @@ function buildSidechainTable(coords, entries) {
                 }
             }
             if (bi < 0) break;
-            link.push(bi, bj);
-            adj[bi * cap + adjN[bi]++] = bj;
-            adj[bj * cap + adjN[bj]++] = bi;
+            join(bi, bj);
             reach[bj] = 1; reachN++;
             grow(bj);
         }
@@ -523,13 +574,12 @@ function buildSidechainTable(coords, entries) {
             coef[c0] = dx * fr[0] + dy * fr[1] + dz * fr[2];
             coef[c0 + 1] = dx * fr[3] + dy * fr[4] + dz * fr[5];
             coef[c0 + 2] = dx * fr[6] + dy * fr[7] + dz * fr[8];
-            onBackbone[rowN] = primed(a.atomName) === SIDECHAIN_KEEP_BACKBONE[e.residue.resName]
-                ? 1 : 0;
+            onBackbone[rowN] = (keepBB !== undefined && gname[i] === keepBB) ? 1 : 0;
             rowN += 1;
             names.push(a.atomName);
             elements.push(a.element || '');
         }
-        for (let k = 0; k + 1 < link.length; k += 2) {
+        for (let k = 0; k + 1 < linkN; k += 2) {
             const p1 = link[k]; const p2 = link[k + 1];
             // a bond touching the CA becomes a bond to the OWNING POSITION,
             // recorded separately because it crosses out of the table

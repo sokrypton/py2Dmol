@@ -1835,7 +1835,15 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
     }
 
     yield 0.75;
+    // WHAT THE SIDE-CHAIN TABLE COSTS, as `window.__sidechainMs`. It is a
+    // second of a capsid load and none of it is visible, so it is the kind of
+    // cost that has to be a number before it can be argued about. Accumulated
+    // rather than assigned: a session loads more than one thing.
+    const __scT0 = (typeof performance !== 'undefined') ? performance.now() : 0;
     const sidechains = buildSidechainTable(coords, sidechainEntries);
+    if (typeof window !== 'undefined' && typeof performance !== 'undefined') {
+        window.__sidechainMs = (window.__sidechainMs || 0) + (performance.now() - __scT0);
+    }
     if (sidechains) {
         result.sidechains = sidechains;
     }
