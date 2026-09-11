@@ -14,6 +14,7 @@ const vm = require('vm');
 
 const TRUTH = path.resolve(__dirname, 'out/ss_truth.json');
 const SRC = path.resolve(__dirname, '../src/cartoon/geom.js');
+const LEGACY = path.resolve(__dirname, 'ss_legacy.js');
 
 function loadCartoon() {
     const sandbox = {
@@ -26,6 +27,10 @@ function loadCartoon() {
     sandbox.window.window = sandbox.window;
     vm.createContext(sandbox);
     vm.runInContext(fs.readFileSync(SRC, 'utf8'), sandbox, { filename: SRC });
+    // ...and the baseline this scores against, which is not in geom.js and not
+    // in any bundle: it is a benchmark's code, so it lives beside the benchmark.
+    // Same context, so it reads SS_PARAMS out of the scope geom.js just made.
+    vm.runInContext(fs.readFileSync(LEGACY, 'utf8'), sandbox, { filename: LEGACY });
     return sandbox.window.py2dmolCartoon;
 }
 

@@ -182,6 +182,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `ss_axis.py` | gpu | DOES A SECONDARY-STRUCTURE CHANGE MOVE THE TOPOLOGY? |
 | `ss_bench.js` | tool | Score the renderer's CA-only secondary structure against pydssp. |
 | `ss_bench.py` | tool | Score the renderer's secondary-structure assignment against pydssp. |
+| `ss_legacy.js` | tool | THE SUPERSEDED C-ALPHA-ONLY SECONDARY STRUCTURE, kept as a baseline. |
 | `ss_tune.js` | tool | Tune the CA-only SS parameters against pydssp by coordinate descent. |
 | `stable_topology.py` | gpu | `renderer.stableTopology` keeps the fold's answers across frames - and is |
 | `station_controls.py` | gpu | DOES THE STATION PATH DRAW WHAT A REBUILD DRAWS, CONTROL BY CONTROL? |
