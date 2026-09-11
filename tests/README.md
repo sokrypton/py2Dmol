@@ -174,6 +174,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `sequence_connectivity.py` | gpu | A chain break is a gap in the numbering, not a distance. |
 | `sheet_bench.js` | tool | Score the strand frames the cartoon draws sheets with. |
 | `sheet_bench.py` | tool | Fit the peptide table the cartoon rebuilds backbones with, and score the frames. |
+| `sheet_merge.py` | tool | A GAP IN A SHEET CLOSING MUST NOT LEAVE A LINE ACROSS IT. |
 | `sidechain_chain.js` | node | Side chains, end to end through the WEB APP's own chain: |
 | `sidechain_toggle.py` | ui | Side chains survive the eyes: toggling one object must not strip another's. |
 | `smoke.js` | node | Node smoke test for the cartoon renderer: loads cartoon/geom.js with |
