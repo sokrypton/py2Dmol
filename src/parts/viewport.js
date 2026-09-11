@@ -176,5 +176,211 @@ function setupViewport(containerElement, config) {
         observer.observe(canvasContainer);
     };
 
+    installFullscreen(containerElement, canvasContainer);
+
     return { canvas, ctx, dpr, width, height, attach, settle };
+}
+
+// ============================================================================
+// FULL SCREEN: the viewer, its panels and the sequence strip, and nothing else
+// ----------------------------------------------------------------------------
+// The button is built HERE rather than written into index.html, because the
+// same markup would then have to be written into viewer.html and the embed's
+// shell as well - the mistake the style panel was rescued from, which had
+// already gone wrong in both directions before anyone noticed. One place
+// builds it, every shell gets it.
+//
+// 🔴 AND THE SKIN TRAVELS WITH IT, for the same reason parts/panel.js ships
+// its own stylesheet. A rule added to src/app/style.css dresses the website and
+// leaves the notebook with a button that works and a layout that does not.
+// ============================================================================
+
+const FS_CLASS = 'py2dmol-fs';
+const FS_CSS = `
+/* The element that actually goes full screen. It holds the viewer instance and
+   the sequence strip; everything else in the page is hidden while it is up. */
+.${FS_CLASS} {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    box-sizing: border-box;
+    height: 100%;
+    width: 100%;
+    padding: 8px;
+    overflow: auto;
+    background: var(--color-bg, #f9fafb);
+}
+/* 🔴 AND THE PAGE WIDTH COMES OFF, which is the thing that actually makes the
+   molecule bigger. .page-width is a flat width:948px, and it is on the
+   element that goes full screen AND on the sequence strip inside it - so
+   without this the canvas sat at 600px on a 1600px screen with the row already
+   full, and every flex rule above it was correct and had nothing to
+   distribute. */
+.${FS_CLASS}, .${FS_CLASS} .page-width { width: 100%; max-width: none; }
+/* The viewer takes the room the strip does not want. min-height: 0 is what
+   lets a flex child shrink below its content - without it the canvas keeps its
+   600px and the strip is pushed off the bottom. */
+/* ...and the viewer instance states its own 948px too (600 canvas + 8 + 340
+   panel), so that comes off as well. Between them, .page-width and this were
+   the whole reason a 1600px screen still drew a 600px molecule. */
+.${FS_CLASS} > .py2dmol-viewer-instance {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: auto;
+    max-width: none;
+    /* 🔴 AND THE AUTO MARGINS COME OFF, which is the one that cost the most to
+       find. .py2dmol-viewer-instance is margin:0 auto to centre the column
+       on the page, and an auto margin in the cross axis SUPPRESSES a flex
+       item's stretch - so the box kept its content width, width:auto and all,
+       and every rule inside it had nothing to fill. getComputedStyle is no help
+       here either: width reports the USED value, so the box reads 948px
+       whichever rule won. */
+    margin: 0;
+}
+/* #viewer-container is given display:flex INLINE by the JS that reveals it, so
+   #mainContainer is a flex ITEM and sizes to its content - 948px, whatever the
+   screen is. It has to grow instead. */
+.${FS_CLASS} .py2dmol-viewer-instance #mainContainer,
+.${FS_CLASS} #mainContainer {
+    height: 100%;
+    align-items: stretch;
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+}
+.${FS_CLASS} #viewerColumn { flex: 1 1 auto; min-width: 0; min-height: 0; }
+/* 🔴 !important, AND ONLY HERE. #canvasContainer carries resize:both, so a
+   reader who has dragged its corner has an INLINE width and height on it, and
+   nothing but !important beats those. Scoped to the full-screen class, so the
+   moment it is dropped the reader's own size is back untouched. */
+.${FS_CLASS} #canvasContainer {
+    /* 🔴 display: block, AND THAT IS THE WHOLE TRICK. The box is an
+       inline-block, so width:auto shrink-wraps it to the canvas inside it -
+       and the canvas only resizes when the ResizeObserver sees the BOX change,
+       which it never does. The container has to take its width from the column
+       instead, and then the canvas follows it. Measured: 600x590 before this
+       line, 1182x724 after, on a 1600x900 screen. */
+    display: block;
+    align-self: stretch;
+    width: auto !important;
+    height: auto !important;
+    flex: 1 1 auto;
+    min-height: 0;
+    resize: none;
+}
+.${FS_CLASS} #canvasContainer .resize-handle { display: none; }
+.${FS_CLASS} > .sequence-section-container { flex: 0 0 auto; max-height: 40%; margin: 0; }
+
+/* The button itself, in the corner of the canvas box. */
+.py2dmol-fs-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    z-index: 5;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    border: 1px solid var(--color-gray-200, #e5e7eb);
+    border-radius: var(--btn-radius, 6px);
+    background: rgba(255, 255, 255, 0.82);
+    color: var(--color-gray-600, #4b5563);
+    font-size: 13px;
+    line-height: 1;
+    /* 🔴 ALWAYS VISIBLE, NOT ON HOVER. It was revealed by hovering the canvas,
+       which hides the one control that is not reachable any other way: nothing
+       else on the page says full screen exists, and a reader on a touch screen
+       has no hover at all. It is small and it sits over the paper margin rather
+       than over the molecule, so it costs nothing to leave up. */
+    transition: background 120ms ease, color 120ms ease;
+}
+.py2dmol-fs-btn:hover { background: #fff; color: var(--color-gray-800, #1f2937); }
+`;
+
+function fsStyleOnce() {
+    if (typeof document === 'undefined') return;
+    if (document.getElementById('py2dmol-fs-css')) return;
+    const st = document.createElement('style');
+    st.id = 'py2dmol-fs-css';
+    st.textContent = FS_CSS;
+    document.head.appendChild(st);
+}
+
+/**
+ * WHAT GOES FULL SCREEN. The viewer instance and the sequence strip are
+ * SIBLINGS on the website - neither contains the other - so the element that
+ * goes full screen is their parent, and its other children are hidden while it
+ * is up. Where there is no strip beside the viewer (the notebook, the embed)
+ * the viewer instance goes on its own, which is the whole of what is there.
+ */
+function fsTargetOf(viewer) {
+    const parent = viewer && viewer.parentElement;
+    if (!parent) return { target: viewer, hide: [] };
+    const strip = parent.querySelector(':scope > .sequence-section-container');
+    if (!strip) return { target: viewer, hide: [] };
+    const keep = new Set([viewer, strip]);
+    // ...and everything else the parent holds: the topbar, the upload box, the
+    // MSA buttons. Hidden by inline display, remembered so it goes back.
+    const hide = Array.prototype.filter.call(parent.children, (c) => !keep.has(c));
+    return { target: parent, hide };
+}
+
+function installFullscreen(containerElement, canvasContainer) {
+    if (typeof document === 'undefined' || !canvasContainer) return;
+    if (!document.fullscreenEnabled && !document.webkitFullscreenEnabled) return;
+    if (canvasContainer.querySelector('.py2dmol-fs-btn')) return;
+    fsStyleOnce();
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'py2dmol-fs-btn';
+    btn.title = 'Full screen (Esc to leave)';
+    btn.setAttribute('aria-label', 'Full screen');
+    // A glyph, not an icon font: index.html loads Font Awesome and the notebook
+    // does not, and a button whose label is an empty <i> is an invisible button.
+    btn.textContent = '\u26F6';
+    canvasContainer.appendChild(btn);
+
+    const viewer = containerElement
+        && (containerElement.closest ? containerElement.closest('.py2dmol-viewer-instance') : null);
+    let hidden = [];
+
+    const enter = () => {
+        const { target, hide } = fsTargetOf(viewer || containerElement);
+        if (!target) return;
+        hidden = hide.map((el) => ({ el, was: el.style.display }));
+        for (const h of hidden) h.el.style.display = 'none';
+        target.classList.add(FS_CLASS);
+        const req = target.requestFullscreen || target.webkitRequestFullscreen;
+        if (req) {
+            const p = req.call(target);
+            if (p && p.catch) p.catch(() => leave());
+        }
+    };
+    const leave = () => {
+        for (const h of hidden) h.el.style.display = h.was;
+        hidden = [];
+        document.querySelectorAll('.' + FS_CLASS)
+            .forEach((el) => el.classList.remove(FS_CLASS));
+    };
+    btn.addEventListener('click', () => {
+        const on = document.fullscreenElement || document.webkitFullscreenElement;
+        if (on) {
+            const ex = document.exitFullscreen || document.webkitExitFullscreen;
+            if (ex) ex.call(document);
+        } else {
+            enter();
+        }
+    });
+    // 🔴 THE EXIT IS THE EVENT, NOT THE BUTTON. Escape and the browser's own
+    // chrome leave full screen without going near this button, so the tidy-up
+    // hangs off the event - which fires for every way out, the button included.
+    document.addEventListener('fullscreenchange', () => {
+        const on = document.fullscreenElement || document.webkitFullscreenElement;
+        btn.textContent = on ? '\u2716' : '\u26F6';
+        btn.title = on ? 'Leave full screen (Esc)' : 'Full screen (Esc to leave)';
+        if (!on) leave();
+    });
 }
