@@ -175,7 +175,14 @@ const NUCLEIC_BACKBONE_ATOMS = new Set([
     'O5*', 'C5*', 'C4*', 'C3*', 'O3*', 'C2*', 'O2*',
 ]);
 // The primes normalised, so one name answers for either spelling.
-const primed = (nm) => (nm ? nm.replace(/\*/g, "'") : nm);
+//
+// 🔴 THE TEST BEFORE THE REPLACE, and it is worth 651 ms on a capsid. This is
+// called several times per ATOM while the side-chain table is built, and
+// String.replace with a regex allocates and scans whether or not there is
+// anything to replace - while the asterisk spelling is a PDB v2 relic that
+// almost no atom in almost any file uses. indexOf is a scan with no allocation
+// and it answers "nothing to do" for essentially every name.
+const primed = (nm) => ((nm && nm.indexOf('*') >= 0) ? nm.replace(/\*/g, "'") : nm);
 
 const SIDECHAIN_BOND_MAX = 2.0;
 const SIDECHAIN_BOND_MAX_SQ = SIDECHAIN_BOND_MAX * SIDECHAIN_BOND_MAX;
@@ -254,16 +261,51 @@ function buildSidechainTable(coords, entries) {
         return -1;
     };
 
-    const pos = []; const frameOf = []; const coef = [];
-    const names = []; const elements = []; const bonds = [];
-    // WHICH ROWS ARE BACKBONE ATOMS KEPT ON PURPOSE - proline's ring-closing N,
-    // and nothing else today. The drawing needs to know: that atom is inside
-    // the ribbon, which draws the backbone as a solid, so the arm that closes
-    // the ring has to meet the SURFACE rather than disappear into it.
-    const onBackbone = [];
-    // table rows bonded to their residue's own backbone position, not to
-    // another row - the CA end of the side chain
-    const toBackbone = [];
+    // 🔴 WRITTEN INTO TYPED ARRAYS, NOT PUSHED INTO JS ONES AND COPIED. These
+    // used to be plain arrays, filled by push and then handed to
+    // `new Int32Array(pos)` and friends at the end - so every row was built
+    // twice and the first copy thrown away. On 1M4X that is 8,033,760 rows:
+    // `coef` alone reached 24,101,280 numbers in a JS array, about 190 MB of
+    // backing store, copied into a 96 MB Float32Array and discarded. The pass
+    // is 2.04 s of an 11.8 s load and the garbage collector is 13.8% of it.
+    //
+    // The row count is not known in advance - it depends on which atoms each
+    // residue actually modelled - so they double, starting from a guess of six
+    // rows a residue. Doubling copies about as much again as the final size,
+    // ONCE, against a JS array that does the same and then copies a second time
+    // into the typed array it should have been all along.
+    let rowCap = Math.max(1024, entries.length * 6);
+    let bondCap = 1024;
+    let backCap = 1024;
+    let pos = new Int32Array(rowCap);
+    let frameOf = new Int32Array(rowCap);
+    let coef = new Float32Array(rowCap * 3);
+    let onBackbone = new Uint8Array(rowCap);
+    let bonds = new Int32Array(bondCap);
+    let toBackbone = new Int32Array(backCap);
+    let rowN = 0; let bondN = 0; let backN = 0;
+    const growRows = () => {
+        rowCap *= 2;
+        const p2 = new Int32Array(rowCap); p2.set(pos); pos = p2;
+        const f2 = new Int32Array(rowCap); f2.set(frameOf); frameOf = f2;
+        const c2 = new Float32Array(rowCap * 3); c2.set(coef); coef = c2;
+        const b2 = new Uint8Array(rowCap); b2.set(onBackbone); onBackbone = b2;
+    };
+    const growBonds = () => {
+        bondCap *= 2;
+        const b2 = new Int32Array(bondCap); b2.set(bonds); bonds = b2;
+    };
+    const growBack = () => {
+        backCap *= 2;
+        const b2 = new Int32Array(backCap); b2.set(toBackbone); toBackbone = b2;
+    };
+    const names = []; const elements = [];
+    // (WHICH ROWS ARE BACKBONE ATOMS KEPT ON PURPOSE - proline's ring-closing N,
+    // and nothing else today - is `onBackbone` above. The drawing needs to
+    // know: that atom is inside the ribbon, which draws the backbone as a
+    // solid, so the arm that closes the ring has to meet the SURFACE rather
+    // than disappear into it. `toBackbone` is the rows bonded to their
+    // residue's own backbone position rather than to another row.)
 
     // SCRATCH, REUSED BY EVERY RESIDUE. A side chain is at most a couple of
     // dozen heavy atoms, and the loop below used to allocate ten containers to
@@ -363,7 +405,7 @@ function buildSidechainTable(coords, entries) {
             break;
         }
         if (gn < 2) continue;                     // glycine: nothing to draw
-        const base = pos.length;
+        const base = rowN;
         // CONNECTIVITY. From the residue's chemistry where we recognise it,
         // and only otherwise from distances.
         const link = [];
@@ -474,15 +516,18 @@ function buildSidechainTable(coords, entries) {
             if (!reach[i]) continue;
             const a = group[i];
             const dx = a.x - o.x, dy = a.y - o.y, dz = a.z - o.z;
-            pos.push(e.pos);
-            frameOf.push(anchor);
-            coef.push(dx * fr[0] + dy * fr[1] + dz * fr[2]);
-            coef.push(dx * fr[3] + dy * fr[4] + dz * fr[5]);
-            coef.push(dx * fr[6] + dy * fr[7] + dz * fr[8]);
+            if (rowN >= rowCap) growRows();
+            const c0 = rowN * 3;
+            pos[rowN] = e.pos;
+            frameOf[rowN] = anchor;
+            coef[c0] = dx * fr[0] + dy * fr[1] + dz * fr[2];
+            coef[c0 + 1] = dx * fr[3] + dy * fr[4] + dz * fr[5];
+            coef[c0 + 2] = dx * fr[6] + dy * fr[7] + dz * fr[8];
+            onBackbone[rowN] = primed(a.atomName) === SIDECHAIN_KEEP_BACKBONE[e.residue.resName]
+                ? 1 : 0;
+            rowN += 1;
             names.push(a.atomName);
             elements.push(a.element || '');
-            onBackbone.push(primed(a.atomName) === SIDECHAIN_KEEP_BACKBONE[e.residue.resName]
-                ? 1 : 0);
         }
         for (let k = 0; k + 1 < link.length; k += 2) {
             const p1 = link[k]; const p2 = link[k + 1];
@@ -492,21 +537,30 @@ function buildSidechainTable(coords, entries) {
                 // rowOf holds stale entries from earlier residues, so a row
                 // number only counts when this residue actually reached it
                 const o = p1 === 0 ? p2 : p1;
-                if (o !== 0 && reach[o]) toBackbone.push(rowOf[o]);
+                if (o !== 0 && reach[o]) {
+                    if (backN >= backCap) growBack();
+                    toBackbone[backN++] = rowOf[o];
+                }
                 continue;
             }
-            if (reach[p1] && reach[p2]) bonds.push(rowOf[p1], rowOf[p2]);
+            if (reach[p1] && reach[p2]) {
+                if (bondN + 2 > bondCap) growBonds();
+                bonds[bondN++] = rowOf[p1]; bonds[bondN++] = rowOf[p2];
+            }
         }
     }
-    if (!pos.length) return null;
+    if (!rowN) return null;
+    // ...and the views are COPIES, not subarrays: the scratch above is up to
+    // twice the size it needed to be, and a subarray would hold all of it alive
+    // for the life of the structure.
     return {
-        pos: new Int32Array(pos),
-        frameOf: new Int32Array(frameOf),
-        coef: new Float32Array(coef),
-        bonds: new Int32Array(bonds),
-        toBackbone: new Int32Array(toBackbone),
+        pos: pos.slice(0, rowN),
+        frameOf: frameOf.slice(0, rowN),
+        coef: coef.slice(0, rowN * 3),
+        bonds: bonds.slice(0, bondN),
+        toBackbone: toBackbone.slice(0, backN),
         names,
         elements,
-        onBackbone: new Uint8Array(onBackbone),
+        onBackbone: onBackbone.slice(0, rowN),
     };
 }

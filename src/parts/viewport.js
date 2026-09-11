@@ -69,6 +69,14 @@ function setupViewport(containerElement, config) {
     // parent measures 0, which is the state index.html starts in. The
     // observer corrects it the moment the viewer is shown.
     const asked = [config.display?.size[0] || 300, config.display?.size[1] || 300];
+    // 🔴 IS THIS A MEASUREMENT OR A GUESS? One definition, used three times: for
+    // the size below, for the flag the renderer reads, and by the observer.
+    //
+    // index.html keeps the viewer inside a `display: none` parent until a
+    // structure arrives, so the container measures 0 for the whole of that and
+    // `asked` is config.display.size - a number nobody chose for this page.
+    // Everything built at it is thrown away when the viewer is shown.
+    const boxIsReal = (b) => !!(b && b.width >= 1 && b.height >= 1);
     const box = cssSized ? canvasContainer.getBoundingClientRect() : null;
     const width = (box && box.width >= 1) ? box.width : asked[0];
     const height = (box && box.height >= 1) ? box.height : asked[1];
@@ -79,12 +87,72 @@ function setupViewport(containerElement, config) {
     canvas.style.height = height + 'px';
     const ctx = canvas.getContext('2d');
     ctx.scale(dpr, dpr);
+    // ON THE CANVAS, NOT ON THE RENDERER, because of WHEN each exists: the
+    // renderer is not built yet and `attach` runs after it has already drawn.
+    // The canvas element is the one thing both sides hold, and paintgl is
+    // handed its 2D context, so it reads this with no plumbing at all.
+    canvas.__viewportProvisional = !!(cssSized && !boxIsReal(box));
+    // ...and it is cleared by a REAL measurement and nothing else. The observer
+    // fires while the viewer is still hidden - contentRect 0, clamped to 1 -
+    // and clearing on that would put the flag down before the size it exists
+    // for has arrived.
+    const markReal = (b) => {
+        if (boxIsReal(b)) canvas.__viewportProvisional = false;
+    };
 
     if (canvasContainer && !cssSized) {
         canvasContainer.style.width = width + 'px';
         canvasContainer.style.height = height + 'px';
         if (viewerWrapper) viewerWrapper.style.width = width + 'px';
     }
+
+    // 🔴 MEASURE AND APPLY, IN ONE PLACE, BECAUSE IT HAPPENS THREE TIMES.
+    //
+    // The size was decided once above, then again by the ResizeObserver, with
+    // the two bodies written out separately - and the first of them runs before
+    // ui.js has built the style and selection panels, which are most of the
+    // shell's width. So the canvas was measured against an unfinished DOM,
+    // everything drawn at that size, and everything built again when the panels
+    // landed and the observer noticed. On 1UBQ that is the two mesh builds a
+    // page load costs, at 100x600 and then 706x706; on a large structure it is
+    // a whole mesh nobody ever saw.
+    //
+    // `settle()` is the same measurement, exported so the caller can take it
+    // once the DOM it is measuring is actually complete. It returns whether
+    // anything moved, so a caller that has not drawn yet can stay silent.
+    const applySize = (newWidth, newHeight) => {
+        canvas.width = newWidth * dpr;
+        canvas.height = newHeight * dpr;
+        canvas.style.width = newWidth + 'px';
+        canvas.style.height = newHeight + 'px';
+        if (viewerWrapper) viewerWrapper.style.width = newWidth + 'px';
+        const c = canvas.getContext('2d');
+        c.setTransform(1, 0, 0, 1, 0, 0);
+        c.scale(dpr, dpr);
+    };
+    let lastWidth = width;
+    let lastHeight = height;
+    const measure = () => {
+        if (!canvasContainer || !cssSized) return null;
+        const r = canvasContainer.getBoundingClientRect();
+        if (!(r.width >= 1 && r.height >= 1)) return null;
+        return [r.width, r.height];
+    };
+    // ...and the same 0.5px guard the observer uses: sub-pixel jitter is not a
+    // resize, and treating it as one rebuilds on every frame a layout settles.
+    const moved = (w2, h2) => Math.abs(w2 - lastWidth) >= 0.5
+        || Math.abs(h2 - lastHeight) >= 0.5;
+    const settle = (renderer) => {
+        const m = measure();
+        if (m) markReal({ width: m[0], height: m[1] });
+        if (!m || !moved(m[0], m[1])) return false;
+        lastWidth = m[0]; lastHeight = m[1];
+        applySize(m[0], m[1]);
+        if (renderer && renderer._updateCanvasDimensions) {
+            renderer._updateCanvasDimensions();
+        }
+        return true;
+    };
 
     const attach = (renderer) => {
         if (!canvasContainer) return;
@@ -93,34 +161,20 @@ function setupViewport(containerElement, config) {
                 + ' Canvas resizing will not work.');
             return;
         }
-        let lastWidth = width;
-        let lastHeight = height;
         const observer = new ResizeObserver((entries) => {
             if (!entries || entries.length === 0) return;
+            markReal(entries[0].contentRect);
             const newWidth = Math.max(entries[0].contentRect.width, 1);
             const newHeight = Math.max(entries[0].contentRect.height, 1);
-            // ...sub-pixel jitter is not a resize, and treating it as one
-            // rebuilds the projection on every frame the layout settles for.
-            if (Math.abs(newWidth - lastWidth) < 0.5
-                && Math.abs(newHeight - lastHeight) < 0.5) return;
+            if (!moved(newWidth, newHeight)) return;
             lastWidth = newWidth;
             lastHeight = newHeight;
-
-            canvas.width = newWidth * dpr;
-            canvas.height = newHeight * dpr;
-            canvas.style.width = newWidth + 'px';
-            canvas.style.height = newHeight + 'px';
-            if (viewerWrapper) viewerWrapper.style.width = newWidth + 'px';
-
-            const c = canvas.getContext('2d');
-            c.setTransform(1, 0, 0, 1, 0, 0);
-            c.scale(dpr, dpr);
-
+            applySize(newWidth, newHeight);
             renderer._updateCanvasDimensions();
             renderer.render('ResizeObserver');
         });
         observer.observe(canvasContainer);
     };
 
-    return { canvas, ctx, dpr, width, height, attach };
+    return { canvas, ctx, dpr, width, height, attach, settle };
 }

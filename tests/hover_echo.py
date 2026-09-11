@@ -53,7 +53,7 @@ window.addEventListener('load', () => {
       await until(() => window.py2dmol_viewers
         && Object.keys(window.py2dmol_viewers).length, 30000);
       const r = window.py2dmol_viewers[Object.keys(window.py2dmol_viewers)[0]].renderer;
-      await until(() => r.coords && r.coords.length > 30, 30000);
+      await until(() => r.coords && r.coords.length > 0, 30000);
       await until(() => document.getElementById('sequenceCanvas') && window.SEQ
         && window.SEQ.layout()
         && (window.SEQ.layout().residuePositions || []).length, 30000);

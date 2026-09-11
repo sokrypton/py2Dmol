@@ -30,6 +30,20 @@ Import it and interpolate it into the page script:
     JS = "<script>window.addEventListener('load', () => {" + HELPERS + " ... "
 """
 
+# 🔴 WAITING FOR COORDINATES IS `length > 0`, NEVER A SIZE GUESS.
+#
+# Eighteen files here waited on `r.coords.length > 30`, copied from one another,
+# and the number was a guess at "a real structure has arrived". 1BNA is a 12-bp
+# duplex with 24 residues, so on that structure the condition can never be true:
+# every one of those probes sat through the full 60-second timeout before
+# carrying on, and the ones with a shorter cap were killed and reported as a
+# product failure. It cost two separate investigations into a page that turned
+# out to load 1BNA in under three seconds.
+#
+# `until(loaded)` already says the file has been read. What this adds is that
+# the renderer has coordinates, and one is enough to know that.
+
+
 HELPERS = """
   const settle = async (n = 3) => {
     for (let k = 0; k < n; k++) {

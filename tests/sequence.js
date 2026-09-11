@@ -597,8 +597,13 @@ test('a rebuild forgets every set of position indices', () => {
     // ...FROM THE REBUILD, not only from clear(): Cut rebuilds without
     // clearing (src/app/main.js), and the deferred build is two frames late,
     // so it forgets at SCHEDULE time.
+    // ...AND IT IS buildSequenceViewInner, NOT buildSequenceView, that does the
+    // replacing. The outer one is a timer around it (window.__seqMs), and the
+    // body it wraps is where the strip is torn down and rebuilt - inside
+    // `wipe()`, which is deliberately NOT run on the calls that find the strip
+    // unchanged: the indices are only meaningless once the DOM has gone.
     for (const [caller, end] of [
-        ['function buildSequenceView()', '\n}'],
+        ['function buildSequenceViewInner()', '\n}'],
         ['function buildSequenceViewDeferred()', '\n}'],
         ['clear: function', '\n    },'],
     ]) {

@@ -63,6 +63,36 @@ window.addEventListener('load', () => {
       await load('3CHY.cif'); await until(loaded); await settle();
       const [A, B] = Object.keys(r.objectsData);
       R.names = [A, B];
+      // 🔴 THE TABLE IS TYPED AND EXACTLY AS LONG AS IT NEEDS TO BE. It is
+      // built into growable typed arrays now - the JS arrays it used to push
+      // into reached 24,101,280 numbers for `coef` alone on a capsid, then
+      // were copied into the typed arrays they should have been all along.
+      // The mistake that change can make is handing back a SUBARRAY of the
+      // scratch, which reads correctly and holds up to twice the memory alive
+      // for the life of the structure. So each array's own buffer has to be
+      // its own size.
+      R.table = (() => {
+        const o = r.objectsData[A];
+        const sc = o && o.frames && o.frames[0] && o.frames[0].sidechains;
+        if (!sc || !sc.pos) return {rows: 0};
+        const rows = sc.pos.length;
+        const shape = {};
+        for (const [k, per] of [['pos', 1], ['frameOf', 1], ['coef', 3],
+          ['onBackbone', 1]]) {
+          const a = sc[k];
+          // 🔴 GUARDED, because a PLAIN array has no .buffer and reading
+          // through it threw - which the harness reports as "page error" with
+          // a line number instead of as the failure it is.
+          const typed = !!(a && a.BYTES_PER_ELEMENT);
+          shape[k] = {
+            typed,
+            len: a ? a.length : -1,
+            want: rows * per,
+            slack: typed ? (a.buffer.byteLength / a.BYTES_PER_ELEMENT) - a.length : 0,
+          };
+        }
+        return {rows, shape};
+      })();
       r.setShownObjects([A, B]); await settle();
       R.inkBare = ink(r.canvas);
 
@@ -116,6 +146,30 @@ if R.get("error"): sys.exit("page error: " + R["error"])
 
 A, B = R["names"]
 bad=[]
+
+# 🔴 THE SIDE-CHAIN TABLE'S SHAPE. See the note where R.table is built.
+tab = R.get("table") or {}
+if not tab.get("rows"):
+    bad.append("the first object has no side-chain table, so the shape check"
+               " below examined nothing")
+else:
+    print(f"  table    {tab['rows']} rows, "
+          + ", ".join(f"{k}:{'typed' if v['typed'] else 'PLAIN'}"
+                      f" {v['len']}/{v['want']} slack {v['slack']}"
+                      for k, v in tab["shape"].items()))
+    for k, v in tab["shape"].items():
+        if not v["typed"]:
+            bad.append(f"sidechains.{k} is a plain array, not a typed one -"
+                       " it is built by push and copied at the end again")
+        elif v["len"] != v["want"]:
+            bad.append(f"sidechains.{k} is {v['len']} long where {v['rows']}"
+                       f" rows want {v['want']}")
+        elif v["slack"] > 0:
+            bad.append(f"sidechains.{k} is a view onto a buffer {v['slack']}"
+                       " elements longer than itself - the growable scratch is"
+                       " being handed back instead of a copy, so up to twice"
+                       " the table stays alive for the life of the structure")
+
 first = R["steps"][0]
 for s in R["steps"]:
     print(f"  {s['tag']:9s} drawn={s['drawn']} atoms={s['atoms']} in the mask={s['vis']}"

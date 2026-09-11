@@ -37,3 +37,12 @@ dist/
 # _pypage.html, _ligweb.html and so on. One survived a crash and was committed
 # (_panelpic2.html, 1,022 lines of nothing).
 _*.html
+
+# ...and the same lesson twice more. A probe run by hand writes its dumps into
+# whatever directory it was started from, which is the repository root, and
+# `git add -A` sweeps them into the branch: resize-fast.png and resize-full.png
+# went in that way, and notes.txt was a one-line scratchpad nobody meant to
+# keep. Write dumps somewhere outside the tree; if one lands here anyway, it
+# does not become a commit.
+/*.png
+/notes.txt

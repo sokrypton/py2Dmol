@@ -280,13 +280,85 @@ function setViewSpan(viewerState, half) {
 }
 if (typeof window !== 'undefined') window.py2dmolSetViewSpan = setViewSpan;
 
+// 'object' only means anything with more than one object merged in, and is what
+// 'auto' resolves to there - see setCoords.
+//
+// 🔴 AT MODULE SCOPE, AND RETURNED AS IT STANDS WHERE THERE ARE NO CUSTOM
+// COLOURS. This was two array literals and a concat per call, and the call is
+// inside resolveColorHierarchy's applySpec - which runs up to six times per
+// POSITION. On a capsid that is twelve million rebuilds of a constant list, and
+// it cost 208 ms of a load.
+//
+// Not memoised against window.py2dmol_customColors, deliberately: that is a
+// user-facing extension point and nothing stops it being MUTATED rather than
+// reassigned, so a cache keyed on its identity would go stale in exactly the
+// way this codebase has already been bitten by three times. Where it is absent
+// - which is almost always - there is nothing to build.
+// 🔴 LEFT EXACTLY AS IT WAS, AND THAT IS A MEASUREMENT RATHER THAN NEGLECT.
+//
+// The profile puts 208 ms here on a capsid load, because resolveColorHierarchy
+// runs per POSITION and its applySpec asks this on every string spec. Two ways
+// to make it cheaper were tried and BOTH were worse:
+//
+//   the list at module scope, returned frozen where there are no custom
+//   colours - avoids the two literals and the concat, and cost 537 ms. The
+//   `typeof window` and the global property read are slower than letting V8
+//   allocate a small literal array it can see the lifetime of.
+//
+//   the answer hoisted to the top of resolveColorHierarchy - one call per
+//   position instead of up to six. 318 ms, because applySpec sees a string
+//   about once per position anyway, so it bought nothing and cost the calls
+//   where no spec exists at all.
+//
+// Restored, and 211 ms - the number it started at. A memo per resolution is
+// still in the history if anyone wants it; it measured as noise.
+//
+// 🔴 AND IT CANNOT USE A MODULE-LEVEL CONSTANT EVEN IF SOMEONE WANTS TO.
+// tests/interaction.js LIFTS this function on its own - L.topFunction pulls
+// the source out and evals it into a sandbox - so a const beside it is not
+// there, and the attempt failed two node tests with
+// "BUILTIN_COLOR_MODES is not defined".
+/**
+ * 🔴 CALLED TWO MILLION TIMES ON A CAPSID LOAD, AND IT BUILT THREE ARRAYS EACH
+ * TIME. `_getEffectiveColorMode(atIndex)` asks for the list on every call and
+ * is asked once per POSITION, so a 2,081,520-residue load made 2,077,432 calls
+ * of a function that allocates a literal, an Object.keys and a concat - about
+ * six million arrays, which is a good share of the 13.8% the garbage collector
+ * took of that load.
+ *
+ * The answer only changes when something registers or removes a custom mode,
+ * and cartoon/geom.js registers `ss` once on load. Cached against the table's
+ * IDENTITY and its key COUNT, so replacing the table or adding to it is
+ * noticed; the count is taken with a for-in rather than Object.keys, because
+ * Object.keys is itself the allocation being avoided.
+ *
+ * 🔴 THE CACHE HANGS ON THE FUNCTION OBJECT ON PURPOSE. tests/interaction.js
+ * LIFTS this function on its own - `L.topFunction(name)` evaluated into a bare
+ * global - so a module-scope variable beside it does not exist in that scope,
+ * and referring to one is how an earlier attempt at this broke with
+ * "BUILTIN_COLOR_MODES is not defined".
+ *
+ * 🔴 AND THE ARRAY IS SHARED, so no caller may mutate it. None does today:
+ * every reader asks `.includes` or `.length`.
+ */
 function getAllValidColorModes() {
-    // 'object' only means anything with more than one object merged in, and
-    // is what 'auto' resolves to there - see setCoords.
+    const custom = (typeof window !== 'undefined' && window.py2dmol_customColors)
+        ? window.py2dmol_customColors : null;
+    let n = 0;
+    if (custom) {
+        for (const k in custom) {
+            if (Object.prototype.hasOwnProperty.call(custom, k)) n += 1;
+        }
+    }
+    const self = getAllValidColorModes;
+    if (self._modes && self._src === custom && self._n === n) return self._modes;
     const builtinModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind',
         'entropy', 'object', 'hydrophobicity'];
-    const customModes = window.py2dmol_customColors ? Object.keys(window.py2dmol_customColors) : [];
-    return builtinModes.concat(customModes);
+    const customModes = custom ? Object.keys(custom) : [];
+    self._src = custom;
+    self._n = n;
+    self._modes = builtinModes.concat(customModes);
+    return self._modes;
 }
 
 
@@ -1536,6 +1608,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.cachedSegmentIndicesCoords = null;
             this.cachedSegmentIndicesFrame = -1;
             this.cachedSegmentIndicesObjectName = null;
+            this.cachedSegmentIndicesCount = -1;
+            this.cachedCyclicChains = null;
 
             // Playback
             this.isPlaying = false;
@@ -1886,6 +1960,26 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const explicit = !!(st && st.visibilityMode === 'explicit');
             if (!st || (!hasPos && !hasChains && !boxes.length && !explicit)) return null;
 
+            // 🔴 AND THE SAME ANSWER WITHOUT BUILDING IT, where the record
+            // already says it covers everything. `positions` is in the object's
+            // own numbering and the span is its length, so a set at least that
+            // big names every local index there is - which is "all of this
+            // object", which is null. Nothing else may be restricting: a chain
+            // set or a heatmap box would cut it down again.
+            //
+            // This is the common case, not a corner: setVisibility normalises
+            // default mode by filling `positions` with every index, so an
+            // object nobody has touched arrives here with a full set. Building
+            // it out cost 395 ms on a capsid, for null.
+            //
+            // An OVERLAY does not take this path and must not: `positions` is
+            // in frame 0's numbering while the span covers every frame, so the
+            // comparison is false and the loop below runs, which is right.
+            if (hasPos && !hasChains && !boxes.length
+                && (end - off) > 0 && st.positions.size >= (end - off)) {
+                return null;
+            }
+
             const out = new Set();
             // ...THE FRAMES OF AN OVERLAY ARE ONE OBJECT. The record is in
             // frame 0's numbering and the array holds every frame end to end,
@@ -1933,6 +2027,28 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     add(local);
                 }
             }
+            // 🔴 A SET THAT COVERS THE WHOLE OBJECT IS "ALL OF THIS OBJECT",
+            // WHICH IS WHAT NULL MEANS. Saying it as a set rather than as null
+            // is the same answer at ten times the price, and the caller then
+            // discovers it covers everything and produces a null mask anyway.
+            //
+            // It is reached constantly, not rarely: setVisibility normalises
+            // default mode by populating `positions` with EVERY index - "this
+            // ensures default mode always has positions filled, simplifying all
+            // selection logic" - so hasPos is true for an object nobody has
+            // touched, and this builds one entry per position to say so.
+            //
+            // Measured inside _composeAndApplyMask on a 2,081,520-position
+            // capsid, which ends with visiblePositions === null either way:
+            //
+            //     this loop            395 ms -> 0
+            //     copying it into vis  204 ms -> 0
+            //
+            // The span is finite here - the caller passes the next object's
+            // offset, or the base count for the last - so this is a count, not
+            // a guess.
+            const span = end - off;
+            if (out.size >= span && span > 0) return null;
             if (out.size) return out;
             // nothing asked for: everything, or nothing, per the mode
             return explicit ? out : null;
@@ -1949,6 +2065,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * translating the old one.
          */
         _composeAndApplyMask(skip3DRender = false) {
+            const maskT0 = (typeof window !== 'undefined') ? performance.now() : 0;
+            if (typeof window !== 'undefined') {
+                window.__maskComposes = (window.__maskComposes || 0) + 1;
+            }
             const n = this.coords ? this.coords.length : 0;
             if (n === 0) {
                 this.visiblePositions = null;
@@ -1964,24 +2084,46 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const offsets = merged ? ms.sourceOffsets : [0];
             const base = this._baseCount();
 
-            const vis = new Set();
+            // 🔴 ASK WHETHER ANYTHING IS HIDDEN BEFORE BUILDING A SET THAT SAYS
+            // NOTHING IS. _visibleForObject returns null for an object with no
+            // restriction at all, and where every object answers null the mask
+            // below is null too - "everything" - so the Set that was built to
+            // reach that answer was filled with every position and thrown away.
+            // On a capsid that is 2,081,520 additions to a hash set, and the
+            // set itself, for a value of null: 353 ms in _composeAndApplyMask
+            // and 237 ms in Set.add on the load profile.
+            //
+            // One pass over the OBJECTS first - there are a handful of them -
+            // and the common case never allocates.
+            const owns = [];
             let everything = true;
             for (let s = 0; s < names.length; s++) {
                 const off = offsets[s];
                 const end = (s + 1 < offsets.length) ? offsets[s + 1] : base;
                 const own = this._visibleForObject(names[s], off, end);
-                if (own === null) {
-                    for (let i = off; i < end; i++) vis.add(i);
-                    continue;
+                owns.push(own);
+                if (own !== null) everything = false;
+            }
+            const vis = new Set();
+            if (!everything) {
+                for (let s = 0; s < names.length; s++) {
+                    const off = offsets[s];
+                    const end = (s + 1 < offsets.length) ? offsets[s + 1] : base;
+                    const own = owns[s];
+                    if (own === null) {
+                        for (let i = off; i < end; i++) vis.add(i);
+                        continue;
+                    }
+                    for (const i of own) vis.add(i);
                 }
-                everything = false;
-                for (const i of own) vis.add(i);
             }
             // ...AND THE SIDE-CHAIN ATOMS, which are positions too and are in
             // nobody's record: they are not residues of any object. Left out,
             // every side chain in the picture went out the moment the array
             // was rebuilt - including on objects nobody had touched.
-            this.withSidechainAtoms(vis, true);
+            // ...and only where there IS a mask: with nothing hidden the mask
+            // is null, which already includes every side-chain atom.
+            if (!everything) this.withSidechainAtoms(vis, true);
 
             const oldVisiblePositions = this.visiblePositions;
             // NULL IS "EVERYTHING", and it is worth reaching: every drawing
@@ -1995,6 +2137,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // ...and NOT-A-MASK is null OR undefined: a renderer that has
             // never composed one has neither, and `=== null` alone read the
             // size of undefined.
+            if (typeof window !== 'undefined') {
+                window.__maskMs = (window.__maskMs || 0) + (performance.now() - maskT0);
+                window.__maskEverything = everything;
+            }
             const visibilityChanged = (
                 oldVisiblePositions !== this.visiblePositions
                 && (!oldVisiblePositions || !this.visiblePositions
@@ -2646,7 +2792,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         this._widthByStyle[this.style] = this.lineWidth;
                     }
                     if (!this.isPlaying) {
-                        this.render('updateUIControls: lineWidthSlider');
+                        this.renderSoon('updateUIControls: lineWidthSlider');
                     }
                 });
             }
@@ -2788,16 +2934,34 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         // Helper to set data field with inheritance from cache
         _setDataField(fieldName, cacheFieldName, value, n, defaultFn) {
+            // 🔴 THE DEFAULT IS BUILT ONCE PER SHAPE, NOT ONCE PER FRAME. A
+            // field the frames do not carry - position_elements on a CA-only
+            // trajectory, say - took a fresh n-element array on every step, so
+            // its contents never changed and its IDENTITY changed every time.
+            // That is an allocation a frame, and it defeats every cache that
+            // asks "is this the same data?" the cheap way: the segment colour
+            // key compared six arrays by identity and one of them was new each
+            // step, so the key never matched once.
+            //
+            // Cached per field and per length, and only for the DEFAULT - a
+            // real array is passed through exactly as before.
+            const def = () => {
+                const c = (this._defaultFields || (this._defaultFields = {}))[fieldName];
+                if (c && c.n === n) return c.arr;
+                const arr = defaultFn(n);
+                this._defaultFields[fieldName] = { n, arr };
+                return arr;
+            };
             if (value && value.length === n) {
                 this[fieldName] = value;
                 this[cacheFieldName] = value;
             } else if (value === null) {
                 // Explicit null: use defaults, don't cache
-                this[fieldName] = defaultFn(n);
+                this[fieldName] = def();
             } else if (this[cacheFieldName] && this[cacheFieldName].length === n) {
                 this[fieldName] = this[cacheFieldName];
             } else {
-                this[fieldName] = defaultFn(n);
+                this[fieldName] = def();
             }
         }
 
@@ -2820,6 +2984,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.cachedSegmentIndicesCoords = null;
             this.cachedSegmentIndicesFrame = -1;
             this.cachedSegmentIndicesObjectName = null;
+            this.cachedSegmentIndicesCount = -1;
+            this.cachedCyclicChains = null;
             // Everything the cartoon path derives from the unrotated coordinates
             // goes stale whenever segments do. All three caches are keyed on
             // object|frame|n|overlay, which a live-mode replace() leaves
@@ -2829,16 +2995,42 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             //   _ssColorSec   SS assignment behind the 'ss' color mode
             //   _cartoonLadder / _cartoonSheet  beta ladders, and the strand
             //                 frames built on them
-            this._cartoonSec = null;
-            this._cartoonSecKey = null;
-            this._cartoonPair = null;
-            this._cartoonPairKey = null;
-            this._cartoonLadder = null;
-            this._cartoonLadderKey = null;
-            this._cartoonSheet = null;
-            this._cartoonSheetKey = null;
-            this._ssColorSec = null;
-            this._ssColorKey = null;
+            //
+            // 🔴 ...EXCEPT UNDER Keep SSE, WHERE DROPPING THEM IS THE WHOLE
+            // FAULT. The reasoning above is that the key - object|frame|n -
+            // cannot catch a coordinate swap, so the caches are cleared
+            // outright. Under stableTopology the key is _topologyKey() instead,
+            // which names the object, the drawn set, the side-chain count and
+            // the position count and DELIBERATELY not the frame: that is what
+            // pinning the assignment means. A key that strong does not need the
+            // blanket clear, and the blanket clear destroys it.
+            //
+            // It mattered because _materialiseSidechains ends by calling this,
+            // and it runs EVERY FRAME - side-chain indices are reissued each
+            // time, so it cannot be skipped. So with side chains showing, the
+            // secondary structure was re-derived from every frame's geometry
+            // while Keep SSE claimed to be holding it. Measured on
+            // _traj_1tim.pdb between two frames: three intervals moved C -> H
+            // and a fourth resubdivided, the ribbon went 1452 -> 1460 prims,
+            // and the station table refused every step because its
+            // face-to-station mapping had moved. The mode's own promise, broken
+            // by its own cache invalidation.
+            //
+            // Anything that genuinely changes the topology changes
+            // _topologyKey() and misses on the key, which is the check these
+            // caches already carry.
+            if (this.stableTopology !== true) {
+                this._cartoonSec = null;
+                this._cartoonSecKey = null;
+                this._cartoonPair = null;
+                this._cartoonPairKey = null;
+                this._cartoonLadder = null;
+                this._cartoonLadderKey = null;
+                this._cartoonSheet = null;
+                this._cartoonSheetKey = null;
+                this._ssColorSec = null;
+                this._ssColorKey = null;
+            }
         }
 
         /**
@@ -3338,14 +3530,41 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // the frames, and then drawn ONCE.
             this._switchQuiet = true;
             if (typeof requestAnimationFrame === 'function') {
-                requestAnimationFrame(() => {
-                    this._switchQuiet = false;
-                    this.render('object switch settled');
+                // 🔴 ONE SETTLE, HOWEVER MANY SWITCHES ARRIVE IN ONE TASK.
+                //
+                // "One draw per switch" is not the same rule as one draw per
+                // BATCH, and loading a single file makes two switches -
+                // addObject makes one and applyPendingObjects makes another
+                // for the object it decided to show. Both queued their own
+                // frame callback, both fired in the same animation frame, and
+                // the first drew a full picture that the second overwrote
+                // before anything could see it. Measured on 1AOI at the
+                // provisional 100x100 canvas the load starts at: 129.6 ms and
+                // 101.4 ms of 2D painting in a 581 ms load, one of them for
+                // nothing.
+                //
+                // The TAIL is re-bound rather than dropped, so the focus
+                // recall belongs to the LAST switch and reads that switch's
+                // own `mergedMask` - which is why it is a closure and not two
+                // saved arguments: `mergedMask` is declared below this point,
+                // and reading it here would be a temporal dead zone.
+                this._switchSettleTail = () => {
                     // ...then the focus mode's memory - see parts/focus.js.
                     if (this._focusRecallAfterSwitch) {
                         this._focusRecallAfterSwitch(newObjectName, mergedMask);
                     }
-                });
+                };
+                if (!this._switchSettlePending) {
+                    this._switchSettlePending = true;
+                    requestAnimationFrame(() => {
+                        this._switchSettlePending = false;
+                        this._switchQuiet = false;
+                        this.render('object switch settled');
+                        const tail = this._switchSettleTail;
+                        this._switchSettleTail = null;
+                        if (tail) tail();
+                    });
+                }
             } else {
                 this._switchQuiet = false;
             }
@@ -3835,6 +4054,44 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
+            // 🔴 A TRAJECTORY'S FRAMES DESCRIBE ONE MOLECULE, AND ONLY ITS
+            // COORDINATES MOVE. Every model of a multi-model file is parsed on
+            // its own, so each frame arrived carrying its OWN chains, names,
+            // residue numbers, types and elements - thirty copies of five
+            // identical arrays on a thirty-frame trajectory. Beyond the memory,
+            // nothing downstream could tell that two frames' metadata were the
+            // same thing, because they were not the same object: every cache
+            // that could have compared them by identity had to compare them by
+            // content, or give up and recompute.
+            //
+            // Shared here, at the one funnel every frame arrives through, and
+            // only where the contents are equal - so this cannot change what
+            // any frame says, only how many arrays say it. Chained through the
+            // previous frame, so a whole trajectory collapses onto frame 0's.
+            //
+            // 🔴 IT IS SAFE BECAUSE THESE ARRAYS ARE READ AND NEVER WRITTEN.
+            // Both writers copy first: _materialiseSidechains slices before it
+            // appends, and the length padding in the segment build now builds a
+            // new array instead of pushing into this one - which it had no
+            // right to do even when the array belonged to one frame.
+            const prevFrame = newFrameIndex > 0
+                ? this.objectsData[targetObjectName].frames[newFrameIndex - 1]
+                : null;
+            if (prevFrame && data) {
+                const sameContents = (a, b) => {
+                    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+                    return true;
+                };
+                for (const f of ['chains', 'position_types', 'position_names',
+                    'residue_numbers', 'position_elements', 'plddts']) {
+                    const a = data[f]; const b = prevFrame[f];
+                    if (a && b && a !== b && a.length === b.length
+                        && a.length > 0 && sameContents(a, b)) {
+                        data[f] = b;
+                    }
+                }
+            }
+
             // Add frame to object
             this.objectsData[targetObjectName].frames.push(data);
 
@@ -3850,6 +4107,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Store explicit bonds if provided in data (object-level)
             if (data.bonds !== undefined && data.bonds !== null) {
                 object.bonds = data.bonds;
+            }
+            // ...and the file's own disulfides, BY RESIDUE. Object-level and
+            // not per frame, which is the whole point: a disulfide is a fact
+            // about the molecule, and re-deciding it from this frame's
+            // geometry is what made the count flicker. See
+            // _materialiseSidechains.
+            if (data.disulfideResidues !== undefined
+                && data.disulfideResidues !== null) {
+                object.disulfideResidues = data.disulfideResidues;
             }
 
             // Store frame-level color if provided in data
@@ -4098,9 +4364,71 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // clicking clear background stops deselecting.
             const PICK_W = PICK_WIDTH_SCALE;
 
+            // 🔴 THE CANDIDATES, FROM THE INDEX WHERE THERE IS ONE. Three lists
+            // instead of three whole-structure scans; `null` means take
+            // everything, which is what the escape hatch and a cursor outside
+            // the canvas both fall back to. See _pickIndex.
+            const rectW = rect.width; const rectH = rect.height;
+            let candSeg = null; let candPt = null; let candNa = null;
+            // 🔴 THE INDEX IS EARNED BY THE SECOND PICK OF A PROJECTION, and
+            // that is not a tuning detail - without it this is a REGRESSION on
+            // the very structure it was written for.
+            //
+            // The index is keyed on screenFrameId, which bumps on every drawn
+            // frame. Building it walks every position and every segment: 146 ms
+            // on a 2,081,520-position capsid, against 44 ms for the scan it
+            // replaces. So one pick per projection - which is exactly what
+            // hovering over a view that is auto-rotating gives you, a new frame
+            // between every mouse move - would build an index, use it once,
+            // and throw it away, three times slower than scanning.
+            //
+            // Counting picks per projection separates the two cases with no
+            // guessing: a still view being hovered picks many times against one
+            // projection and the build is repaid on the second pick; a moving
+            // view picks once per projection and never builds at all.
+            if (this._pickFid !== fid) {
+                this._pickFid = fid;
+                this._pickRuns = 1;
+            } else {
+                this._pickRuns = (this._pickRuns || 1) + 1;
+            }
+            const worthIndexing = this._pickRuns > 1;
+            if (worthIndexing && this._pickIndexOff !== true && px >= 0 && py >= 0
+                && px <= rectW && py <= rectH) {
+                const ix = this._pickIndex(rectW, rectH);
+                const cx = Math.max(0, Math.min(ix.cols - 1, Math.floor(px / ix.cell)));
+                const cy = Math.max(0, Math.min(ix.rows - 1, Math.floor(py / ix.cell)));
+                const k = cy * ix.cols + cx;
+                // 🔴 IN INDEX ORDER, BY MERGING - NOT BY SORTING. Both lists
+                // are built by walking items in ascending order, so each is
+                // already ascending and a sort only rediscovers that. On a
+                // capsid a cell holds ~15,000 segments and the sort ran on
+                // every query: 1.97 ms a pick, of which the sort was most.
+                // Where there is nothing to merge - the usual case, since a
+                // `big` item is one spanning more than SEG_CELL_LIMIT cells -
+                // the cell's own array is used as it stands, with no copy.
+                const merge = (cell, big) => {
+                    if (!big.length) return cell || [];
+                    if (!cell || !cell.length) return big;
+                    const outM = new Array(cell.length + big.length);
+                    let i2 = 0; let j2 = 0; let o2 = 0;
+                    while (i2 < cell.length && j2 < big.length) {
+                        outM[o2++] = (cell[i2] <= big[j2]) ? cell[i2++] : big[j2++];
+                    }
+                    while (i2 < cell.length) outM[o2++] = cell[i2++];
+                    while (j2 < big.length) outM[o2++] = big[j2++];
+                    return outM;
+                };
+                candSeg = merge(ix.segCells[k], ix.bigSegs);
+                candPt = (ix.pts[k] || []);
+                candNa = merge(ix.naCells[k], ix.bigNa);
+            }
+
             const segs = this.segmentIndices;
             if (segs) {
-                for (let s = 0; s < segs.length; s++) {
+                const nSeg = candSeg ? candSeg.length : segs.length;
+                for (let si = 0; si < nSeg; si++) {
+                    const s = candSeg ? candSeg[si] : si;
                     const a = segs[s].idx1; const b = segs[s].idx2;
                     if (this.screenValid[a] !== fid || this.screenValid[b] !== fid) continue;
                     const ax = this.screenX[a]; const ay = this.screenY[a];
@@ -4125,7 +4453,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             // Positions no segment covers: chain termini, ligands, lone atoms.
-            for (let i = 0; i < this.screenX.length; i++) {
+            const nPt = candPt ? candPt.length : this.screenX.length;
+            for (let pi = 0; pi < nPt; pi++) {
+                const i = candPt ? candPt[pi] : pi;
                 if (this.screenValid[i] !== fid) continue;
                 const rad = Math.max(4, this.screenRadius[i]) * PICK_W;
                 const dx = this.screenX[i] - px;
@@ -4144,7 +4474,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // positions came from - see _naPickId, set where they are built.
             const naPick = (this._naPickId === fid) ? this._naPick : null;
             if (naPick && naPick.length) {
-                for (let k = 0; k < naPick.length; k++) {
+                const nNa = candNa ? candNa.length : naPick.length;
+                for (let ki = 0; ki < nNa; ki++) {
+                    const k = candNa ? candNa[ki] : ki;
                     const e = naPick[k];
                     const q = e.poly;
                     let inside = false;
@@ -4621,6 +4953,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             object.frames = frames;
+            // 🔴 HOISTED FROM THE FRAME TO THE OBJECT, because that is what it
+            // describes. src/io/parse.js reads the file's disulf records and
+            // keeps them as RESIDUE pairs; they ride in on frame 0 because that
+            // is the shape the ingestion path has, but a disulfide is a fact
+            // about the molecule and every frame's is the same. Kept here so
+            // _materialiseSidechains can find it without knowing which frame it
+            // came from - and so a later frame that happens to omit it does not
+            // take it away.
+            for (const f of frames) {
+                if (f && f.disulfideResidues && f.disulfideResidues.length) {
+                    object.disulfideResidues = f.disulfideResidues;
+                    break;
+                }
+            }
             this._recomputeObjectStats(object, false);        // ...but do not move the camera
             // ...AND THE LIGAND GROUPS, which are position indices like
             // everything else here and are computed nowhere but addFrame - so
@@ -5181,7 +5527,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Just update display and render
             if (this.overlayState.enabled) {
                 // Overlay mode: keep merged data, just update display focus
-                this._composeAndApplyMask(skipRender);
+                // 🔴 COMPOSE QUIETLY: _composeAndApplyMask RENDERS unless told
+                // not to, so passing skipRender through drew the frame twice
+                // on every step - once from inside the compose and once below.
+                // See the branch after this one for the measurement.
+                this._composeAndApplyMask(true);
 
                 if (!skipRender) {
                     this.render('setFrame-overlay');
@@ -5201,7 +5551,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this._loadFrameData(frameIndex, true); // Load without render
 
                 // Apply selection mask after frame data is loaded
-                this._composeAndApplyMask(skipRender);
+                // 🔴 QUIETLY, AND THE COMMENT BELOW USED TO BE WRONG BECAUSE OF
+                // IT. _composeAndApplyMask renders unless told not to, so
+                // "render once unless skipped" was two renders a frame - every
+                // step of every trajectory drew the picture twice. Counted by
+                // wrapping render() during playback of _traj_1tim.pdb:
+                // ["_composeAndApplyMask", "setFrame"] on every frame.
+                //
+                // The load beside it already knew: _loadFrameData is passed
+                // `true` on the line above, for exactly this reason.
+                //
+                // It also hid the reason a frame rebuilt: stationDecline is
+                // cleared at the top of each frame, so the second render wiped
+                // what the first had recorded and every decline read "no reason
+                // recorded".
+                this._composeAndApplyMask(true);
 
                 if (!skipRender) {
                     this.render('setFrame'); // Render once unless skipped
@@ -5631,6 +5995,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                 // Hide overlay button if only 1 frame
                 this.overlayButton.style.display = (total <= 1) ? 'none' : '';
+            }
+
+            // KEEP SSE IS A TRAJECTORY CONTROL, so it appears with the strip
+            // and not before: on a single frame there is nothing to keep the
+            // assignment ACROSS, and a lit button over a still picture is a
+            // question the reader cannot answer.
+            //
+            // ...and it is re-synced here rather than only on its own click,
+            // because this runs when the frames change - a new file, a switched
+            // object - and the flag may not be what the button last said.
+            if (this.keepSseButton) {
+                this.keepSseButton.disabled = (total <= 1);
+                this.keepSseButton.style.display = (total <= 1) ? 'none' : '';
+                this._syncKeepSseButton();
             }
 
             // Unified frame control state
@@ -6143,6 +6521,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const on = !!(this.overlayState && this.overlayState.enabled);
             this.overlayButton.classList.toggle('btn-primary', on);
             this.overlayButton.classList.toggle('btn-secondary', !on);
+        }
+
+        /**
+         * ...and the same for Keep SSE, lit while the assignment is being held.
+         *
+         * Written from the FLAG rather than from the click, for the reason the
+         * note above gives about overlay: the flag moves without the button
+         * being pressed - an embed that asked for it, a new file that resets
+         * it - and a button tracking only its own clicks then says the opposite
+         * of what is true.
+         */
+        _syncKeepSseButton() {
+            if (!this.keepSseButton) return;
+            const on = this.stableTopology === true;
+            this.keepSseButton.classList.toggle('btn-primary', on);
+            this.keepSseButton.classList.toggle('btn-secondary', !on);
         }
 
         /**
@@ -7067,7 +7461,53 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // atoms and both are about 2 A long - so without this the feature
             // cannot be tested or inspected at all.
             const ssFound = [];
-            for (let a = 0; a < sgIdx.length; a++) {
+            // 🔴 THE FILE FIRST, AND THEN NOTHING ELSE. A disulfide is a fact
+            // about the molecule, not about this frame's coordinates, and the
+            // mmCIF says so: `_struct_conn` carries disulf rows and src/io/parse.js
+            // now keeps them as RESIDUE pairs, because as atom pairs they never
+            // resolved - a protein residue is one position and there is no SG
+            // to look up.
+            //
+            // Deriving them from a 2.5 A distance is right on a still
+            // structure - over the corpus the bonded SG-SG pairs run 1.79-2.09 A
+            // and the next pair is at 3.36, so the threshold sits in a 1.3 A
+            // gap - and wrong the moment anything moves. On a 0.45 A breathing
+            // trajectory of 3PTB the count took FOUR DISTINCT VALUES IN SIX
+            // FRAMES, losing real bonds and finding them again, and the segment
+            // list, the ribbon and the sticks all moved with it. A sampler
+            // trajectory is the same fault with the volume up: its early steps
+            // are not a molecule yet.
+            //
+            // So where the file declares them, they are the answer, whole. A
+            // file that bothers to write disulf rows writes all of them, and
+            // supplementing a declared set from the geometry would put the
+            // flicker straight back.
+            const ssObj = this.objectsData
+                && this.objectsData[this.currentObjectName];
+            const declared = ssObj && ssObj.disulfideResidues;
+            const useDeclared = !!(declared && declared.length);
+            if (useDeclared) {
+                // residue -> the SG position it materialised as, this frame
+                const sgOfOwner = new Map();
+                for (const idx of sgIdx) {
+                    const o = map.get(idx);
+                    if (o && o.owner !== undefined) sgOfOwner.set(o.owner, idx);
+                }
+                for (const [r1, r2] of declared) {
+                    const a = sgOfOwner.get(r1);
+                    const b = sgOfOwner.get(r2);
+                    // ...and a partner whose side chain is not shown has no SG
+                    // to bond to, which is the same rule the distance scan got
+                    // for free by only ever seeing materialised atoms.
+                    if (a === undefined || b === undefined) continue;
+                    bondsOut.push([a, b]);
+                    ssFound.push([a, b]);
+                }
+            }
+            // ...and the distance rule only where the file said nothing. Its
+            // own reasoning, and its 2.5 A, are below unchanged; what has
+            // changed is that it is now the FALLBACK rather than the rule.
+            for (let a = 0; !useDeclared && a < sgIdx.length; a++) {
                 for (let b = a + 1; b < sgIdx.length; b++) {
                     // [x, y, z] ARRAYS, which is what this function appends -
                     // not the Vector3 objects the base coords are. Reading .x
@@ -7187,6 +7627,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             // Mark colors as needing update when coordinates change
+            //
+            // 🔴 ...AND REMEMBER WHETHER ANYONE ELSE HAD ALREADY ASKED. The
+            // colours do not read a coordinate - every mode resolves from
+            // chains, names, pLDDTs, entropy or the palette - so a frame step
+            // of a trajectory recomputes an array identical to the one it
+            // replaces. Measured on _traj_9fog.pdb: 9 of 10 steps, 1.1 ms a
+            // step of a 4.2 ms step.
+            //
+            // The recompute at the end of this function can therefore be
+            // skipped when nothing the colours DO read has moved - but only
+            // when the flag was raised HERE and not by the colourblind toggle,
+            // an element edit, a mode switch or a reset, which have their own
+            // reasons and no key of ours would see. Reading it before setting
+            // it is what tells the two apart, and it needs no cooperation from
+            // any of those sites: a new one that sets the flag is HARD by
+            // default, which is the safe polarity.
+            const colorsAskedElsewhere = this.colorsNeedUpdate;
             this.colorsNeedUpdate = true;
             this.plddtColorsNeedUpdate = true;
 
@@ -7411,11 +7868,37 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // The explicit invalidations stay: they are for the other
             // direction, where the array is the same and the segments are not
             // - a contact added, a bond list changed, the backbone hidden.
-            const canUseCache = this.cachedSegmentIndices !== null &&
-                this.cachedSegmentIndicesCoords === this.coords &&
-                this.cachedSegmentIndicesFrame === this.currentFrame &&
-                this.cachedSegmentIndicesObjectName === this.currentObjectName &&
-                this.cachedSegmentIndices.length > 0;
+            // 🔴 AND KEEP SSE KEEPS THE BONDS TOO, for the same reason it keeps
+            // the assignment. Connectivity is inferred from a DISTANCE - 5.0 A
+            // between protein alpha carbons - and a pair sitting near that
+            // threshold crosses it as the structure breathes. Measured on a
+            // 3,348-residue trajectory: the segment count goes 3336 -> 3337 ->
+            // 3336, twice every fifteen frames.
+            //
+            // That is not a molecule making and breaking a bond. It is a
+            // threshold with no hysteresis, and it costs twice over: the ribbon
+            // visibly breaks and rejoins, and the face list changes, so every
+            // cache keyed on the geometry is thrown away and the frame rebuilds
+            // - 25 ms becoming 200.
+            //
+            // stableTopology is already the caller saying "these frames are one
+            // molecule moving". If that is true the bond list is a property of
+            // the molecule and not of the frame, so the cache outlives the
+            // frame. What is still checked is that it is the same object and
+            // the same number of positions: those are the things that would
+            // make the indices mean something else.
+            //
+            // 🔴 AND IT IS WRONG ON A FOLDING TRAJECTORY, exactly as pinning the
+            // assignment is. Same flag, same claim, same reason it is opt-in.
+            const segmentCacheHolds = this.stableTopology === true
+                ? (this.cachedSegmentIndicesObjectName === this.currentObjectName
+                    && this.cachedSegmentIndicesCount === this.coords.length)
+                : (this.cachedSegmentIndicesCoords === this.coords
+                    && this.cachedSegmentIndicesFrame === this.currentFrame
+                    && this.cachedSegmentIndicesObjectName === this.currentObjectName);
+            const canUseCache = this.cachedSegmentIndices !== null
+                && segmentCacheHolds
+                && this.cachedSegmentIndices.length > 0;
 
             // Expand rotatedCoords to match coords array BEFORE any segment operations
             // This must happen whether using cache or generating new segments
@@ -7424,10 +7907,30 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.rotatedCoords.push(new Vec3(0, 0, 0));
             }
 
+            // declared out here because the timer is stopped hundreds of lines
+            // below, past the end of the branch that starts it
+            let segT0 = 0;
             if (canUseCache) {
                 // Reuse cached segment indices (deep copy to avoid mutation)
                 this.segmentIndices = this.cachedSegmentIndices.map(seg => ({ ...seg }));
+                // ...and the cyclic set with them. It is rebuilt beside the
+                // segments in the branch below and was never restored here,
+                // which did not show while the cache only ever hit within one
+                // frame - the set was already this frame's. Kept across frames
+                // it would be whatever the last rebuild left.
+                if (this.cachedCyclicChains) {
+                    this.cyclicChains = new Set(this.cachedCyclicChains);
+                }
             } else {
+                // HOW OFTEN THE SEGMENT LIST IS ACTUALLY REBUILT, beside
+                // window.__faceBuilds for the mesh. This carries the secondary
+                // structure assignment and the base pairing with it, so it is
+                // the other expensive thing a frame can be made to redo, and it
+                // was not countable at all.
+                segT0 = (typeof window !== 'undefined') ? performance.now() : 0;
+                if (typeof window !== 'undefined') {
+                    window.__segmentBuilds = (window.__segmentBuilds || 0) + 1;
+                }
                 // Generate Segment Definitions ONCE
                 this.segmentIndices = [];
                 // rebuilt alongside them: which chains close head to tail
@@ -7463,6 +7966,47 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     ? ((a, b, d2) => d2 < Math.pow(
                         bondMaxFor(ligElems[a], ligElems[b], ligandBondFlat), 2))
                     : ((a, b, d2) => d2 < ligandBondFlat * ligandBondFlat);
+                // 🔴 A CHAIN BREAK IS A FACT ABOUT THE SEQUENCE, NOT A DISTANCE.
+                //
+                // Residue i is bonded to i+1 because they are consecutive in a
+                // chain. The distance test exists to catch the case where they
+                // are NOT consecutive - missing density, an unmodelled loop -
+                // and the residue NUMBERING already names that: a gap in the
+                // numbering is the break, and it says so whatever the atoms are
+                // doing.
+                //
+                // Deciding it from geometry instead is wrong exactly where the
+                // geometry is not a molecule yet. On the x_t track of a sampler
+                // trajectory (tests/make_traj.py --diffusion) every one of the
+                // 127 consecutive CA-CA distances at step 0 is over the 5.0 A
+                // line, so the chain shatters into 128 pieces and the first four
+                // steps draw no cartoon at all; the segment count then takes ten
+                // distinct values over sixteen steps and every step is a full
+                // rebuild.
+                //
+                // OFF BY DEFAULT, and the reason is the same as everywhere else
+                // here: it changes what is drawn, so it is measured and opted
+                // into rather than assumed. renderer.sequenceConnectivity, or
+                // config.cutoffs.chainbreak = 'sequence'.
+                //
+                // 🔴 AND IT FALLS BACK PER PAIR, not per structure. A file with
+                // no usable numbering - a synthetic trace, a format that drops
+                // it - would otherwise bond its whole chain into one line
+                // regardless of what the coordinates say. Where either number
+                // is missing, that pair is decided by distance exactly as
+                // before.
+                const bySequence = this.sequenceConnectivity === true
+                    || cutoffs.chainbreak === 'sequence';
+                const resNums = this.residueNumbers;
+                const consecutive = (a, b) => {
+                    if (!resNums) return null;
+                    const p1 = resNums[a];
+                    const p2 = resNums[b];
+                    if (!Number.isFinite(p1) || !Number.isFinite(p2)) return null;
+                    // ...and EQUAL counts as consecutive, because an insertion
+                    // code puts 100 and 100A side by side under one number.
+                    return (p2 - p1) === 1 || p2 === p1;
+                };
                 const proteinChainbreakSq = proteinChainbreak * proteinChainbreak;
                 const nucleicChainbreakSq = nucleicChainbreak * nucleicChainbreak;
                 const ligandBondCutoffSq = ligandBondCutoff * ligandBondCutoff;
@@ -7518,8 +8062,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                                     const end = this.coords[i + 1];
                                     const distSq = start.distanceToSq(end);
                                     const chainbreakDistSq = getChainbreakDistSq(type1, type2);
+                                    const bySeq = bySequence ? consecutive(i, i + 1) : null;
+                                    const joined = bySeq === null
+                                        ? distSq < chainbreakDistSq : bySeq;
 
-                                    if (distSq < chainbreakDistSq) {
+                                    if (joined) {
                                         this.segmentIndices.push({
                                             idx1: i,
                                             idx2: i + 1,
@@ -7881,26 +8428,31 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
 
                 // Make sure all data arrays are the same length
+                //
+                // 🔴 PADDED INTO A COPY, NOT INTO THE ARRAY ITSELF. These are
+                // the FRAME'S arrays - _setDataField assigns them straight
+                // through - so pushing into one wrote a default into the file's
+                // own data, where it outlived the render that needed it. It was
+                // invisible while each frame owned its arrays; addFrame now
+                // shares equal metadata between the frames of a trajectory, and
+                // one padded array would be every frame's. Copy-on-write, and
+                // only when something is actually short, which _setDataField
+                // makes rare.
                 const finalN = this.coords.length;
-                while (this.plddts.length < finalN) {
-                    this.plddts.push(50.0);
-                }
-                while (this.chains.length < finalN) {
-                    this.chains.push('A');
-                }
-                while (this.positionTypes.length < finalN) {
-                    this.positionTypes.push('P'); // Default to protein type for intermediate positions
-                }
-                while (this.positionNames.length < finalN) {
-                    this.positionNames.push('UNK');
-                }
-                while (this.residueNumbers.length < finalN) {
-                    this.residueNumbers.push(-1);
-                }
+                const padTo = (arr, fill) => {
+                    if (!arr || arr.length >= finalN) return arr;
+                    const out = arr.slice();
+                    while (out.length < finalN) out.push(fill);
+                    return out;
+                };
+                this.plddts = padTo(this.plddts, 50.0);
+                this.chains = padTo(this.chains, 'A');
+                // Default to protein type for intermediate positions
+                this.positionTypes = padTo(this.positionTypes, 'P');
+                this.positionNames = padTo(this.positionNames, 'UNK');
+                this.residueNumbers = padTo(this.residueNumbers, -1);
                 if (this.perChainIndices) {
-                    while (this.perChainIndices.length < finalN) {
-                        this.perChainIndices.push(0);
-                    }
+                    this.perChainIndices = padTo(this.perChainIndices, 0);
                 }
             }
 
@@ -7913,6 +8465,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.cachedSegmentIndicesCoords = this.coords;
                 this.cachedSegmentIndicesFrame = this.currentFrame;
                 this.cachedSegmentIndicesObjectName = this.currentObjectName;
+                // ...and what the stableTopology form of the check reads.
+                this.cachedSegmentIndicesCount = this.coords.length;
+                this.cachedCyclicChains = this.cyclicChains
+                    ? new Set(this.cyclicChains) : null;
             }
 
             // WHICH POSITIONS ARE LONE ATOMS - bonded to nothing, so drawn as a
@@ -7937,6 +8493,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Rebuild if:
             // 1. adjList is missing or wrong size (coords changed)
             // 2. segmentOrder is missing or too small (segments increased)
+            if (!canUseCache && typeof window !== 'undefined') {
+                window.__segmentMs = (window.__segmentMs || 0)
+                    + (performance.now() - segT0);
+            }
             // 3. We just generated new segments (canUseCache was false)
 
             const needBuild = !this.adjList ||
@@ -7987,7 +8547,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Pre-calculate colors ONCE (if not plddt)
             // effectiveColorMode is not available yet during setCoords, so it will be calculated on demand
-            this.colors = this._calculateSegmentColors();
+            //
+            // ...or keep the ones we have, when the key says every input the
+            // colours read is the one they were computed from. See
+            // _segmentColourKey, which answers null whenever it cannot be sure
+            // and so falls back to computing them.
+            const colourKey = colorsAskedElsewhere ? null : this._segmentColourKey();
+            if (colourKey === null || colourKey !== this._segmentColourKeyValue
+                || !this.colors || this.colors.length !== m) {
+                this.colors = this._calculateSegmentColors();
+                this._segmentColourKeyValue = colourKey;
+                if (typeof window !== 'undefined') {
+                    window.__colourBuilds = (window.__colourBuilds || 0) + 1;
+                }
+            } else if (typeof window !== 'undefined') {
+                window.__colourKept = (window.__colourKept || 0) + 1;
+            }
             this.colorsNeedUpdate = false;
 
             // NOT THE pLDDT COLOURS. The draw path builds them itself the
@@ -9220,10 +9795,57 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const sel = set || this._selectionPreview
                 || (this.selectionInk ? this.selectionInk() : this.residueSelection);
             if (!sel || !sel.size) return;
+            // WHAT WILL BE MARKED, WORKED OUT BEFORE ANYTHING IS PROJECTED.
+            // It used to be computed after, which was fine while the projection
+            // was all-or-nothing; _projectMarks needs to be told what to
+            // project, so the marks have to exist first. Nothing here reads a
+            // screen position - it is the selection plus the side chains those
+            // residues own.
+            const scOwned0 = this.sidechainMap;
+            let marks = sel;
+            if (scOwned0 && scOwned0.size) {
+                let extra = null;
+                for (const [idx0, e] of scOwned0) {
+                    if (!e || !sel.has(e.owner) || sel.has(idx0)) continue;
+                    if (!extra) extra = new Set(sel);
+                    extra.add(idx0);
+                }
+                if (extra) marks = extra;
+            }
+
             // Only now, and only because there IS a selection to place. On the
             // GPU tube path the frame did not project anything; this is where
             // that debt is settled, and it is settled once per frame at most.
-            this._ensurePickProjection();
+            //
+            // 🔴 AND ONLY FOR WHAT IS MARKED, WHERE THAT IS THE SMALLER JOB.
+            // The full projection is O(positions) and runs every frame a
+            // selection is on screen: 70.87 ms a frame against 0.13 with
+            // nothing selected, on a capsid. _projectMarks does the same
+            // arithmetic for the marks alone and leaves the pending frame
+            // standing, so a later CLICK still gets the whole structure
+            // projected. See the note there.
+            //
+            // The threshold is not a tuning knob so much as "is there anything
+            // to save": below it the full projection is already cheap, and
+            // taking the partial path would leave a debt for the next pick to
+            // settle for no gain.
+            // `_haloFullProjection` forces the old path, which is what
+            // tests/halo_partial.py compares against - a halo that lands one
+            // pixel off is a wrong picture, not a slow one.
+            // 🔴 BOTH SWITCHES EXIST FOR tests/halo_partial.py, and the second
+            // one is not optional: the threshold keeps SMALL structures on the
+            // full path, which is right - the projection is already cheap there
+            // - and it means a gate that only compared the two paths where the
+            // threshold allows would compare the full path with itself on every
+            // structure small enough to test quickly. `_haloMarksProjection`
+            // forces the partial path so the arithmetic is checked everywhere,
+            // and the file asserts the path was actually taken.
+            const npAll = this.coords ? this.coords.length : 0;
+            const wantPartial = this._haloMarksProjection === true
+                || (this._haloFullProjection !== true && marks.size * 8 < npAll);
+            if (!(wantPartial && this._projectMarks(marks))) {
+                this._ensurePickProjection();
+            }
             const fid = this.screenFrameId;
             const sx = this.screenX; const sy = this.screenY;
             const sr = this.screenRadius; const sv = this.screenValid;
@@ -9235,17 +9857,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // one part of it left unmarked. Marked here rather than added to
             // the SELECTION, which stays what was picked: Copy, Delete and the
             // panel all read that, and they mean the residue.
-            const scOwned = this.sidechainMap;
-            let marks = sel;
-            if (scOwned && scOwned.size) {
-                let extra = null;
-                for (const [idx0, e] of scOwned) {
-                    if (!e || !sel.has(e.owner) || sel.has(idx0)) continue;
-                    if (!extra) extra = new Set(sel);
-                    extra.add(idx0);
-                }
-                if (extra) marks = extra;
-            }
             const drawn = (i) => i >= 0 && i < sv.length && sv[i] === fid && marks.has(i);
             const idx = Array.from(marks).filter(drawn);
             if (!idx.length) return;
@@ -9829,6 +10440,111 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         // Calculate segment colors (chain or rainbow)
         // Uses getAtomColor() as single source of truth for all color logic
+        /**
+         * A KEY OVER EVERYTHING THE SEGMENT COLOURS READ, or null for "do not
+         * try".
+         *
+         * The colours are a pure function of the palette and of per-position
+         * data - chains, names, types, elements, pLDDTs, entropy, the per-chain
+         * indices and rainbow scales, the cyclic set - plus the segment list
+         * they are indexed by. None of it is a coordinate. So a frame step of a
+         * trajectory recomputes an array identical to the one it replaces, and
+         * this is what lets setCoords notice.
+         *
+         * 🔴 IT ANSWERS null RATHER THAN GUESSING. Everything below the bail-out
+         * list resolves per POSITION through a hierarchy that can name a mode or
+         * a literal at object, frame, chain or position scope, and a custom mode
+         * is an arbitrary function of the renderer. A key over those would be a
+         * list that goes stale - the failure mode this file has been bitten by
+         * twice - so they are refused outright and the colours are computed, as
+         * they always were. What is left is the ordinary case: one object, one
+         * mode, no overrides, which is nearly every page.
+         *
+         * 🔴 AND THE ARRAYS ARE COMPARED BY IDENTITY, WHICH ONLY MEANS ANYTHING
+         * BECAUSE addFrame SHARES THEM. Before that, every frame of a
+         * trajectory carried its own equal-but-distinct chains and names, and
+         * this key changed on every step for no reason. See tests/frame_share.py.
+         */
+        _segmentColourKey() {
+            // Merged and overlay views resolve a mode per atom; a custom mode
+            // is a function we cannot key on; a colour spec anywhere resolves
+            // per position through the hierarchy, and a FRAME may carry one, so
+            // a frame step can legitimately repaint.
+            if (this.sourceGroups()) return null;
+            const objectName = this.currentObjectName;
+            const object = this.objectsData && this.objectsData[objectName];
+            if (!object || object.color) return null;
+            const frames = object.frames || [];
+            for (const fr of frames) if (fr && fr.color) return null;
+            const mode = this._getEffectiveColorMode();
+            // Entropy is rebuilt from the alignment on every setCoords, so its
+            // identity says nothing about its contents.
+            if (mode === 'entropy') return null;
+            // 🔴 THE MODE IN USE, NOT WHETHER ANY CUSTOM MODE EXISTS. cartoon/
+            // geom.js registers `ss` on load, unconditionally and on every
+            // page, so "are there custom modes?" is always yes and this key
+            // never once matched. `ss` in particular MUST bail - it reads the
+            // secondary-structure assignment, which is derived from the
+            // coordinates and is the one thing here that a frame step does
+            // move - but only when it is the mode being drawn.
+            const custom = (typeof window !== 'undefined') && window.py2dmol_customColors;
+            if (custom && custom[mode]) return null;
+
+            // Identity tokens, so an array can be compared in O(1).
+            if (!this._idTokens) { this._idTokens = new WeakMap(); this._idNext = 1; }
+            const idOf = (v) => {
+                if (v === null || v === undefined) return 0;
+                if (typeof v !== 'object') return 0;
+                let t = this._idTokens.get(v);
+                if (!t) { t = this._idNext += 1; this._idTokens.set(v, t); }
+                return t;
+            };
+
+            let h = 2166136261 >>> 0;
+            const mix = (x) => { h = (((h * 16777619) >>> 0) ^ (x >>> 0)) >>> 0; };
+            const mixStr = (v) => {
+                const t = String(v); mix(t.length);
+                for (let i = 0; i < t.length; i++) mix(t.charCodeAt(i));
+            };
+
+            mixStr(mode);
+            mixStr(objectName || '');
+            mix(this.colorblindMode ? 1 : 0);
+            // 'object' mode colours by LOAD ORDER, so the set and its order count.
+            mixStr(Object.keys(this.objectsData || {}).join('\u0001'));
+            for (const a of [this.chains, this.positionNames, this.positionTypes,
+                this.positionElements, this.plddts, this.entropy]) {
+                mix(idOf(a));
+            }
+            // Derived per position from the chains and the coordinates - the
+            // rainbow ramp's domain, and whether a chain closes on itself.
+            const pci = this.perChainIndices;
+            mix(pci ? pci.length : 0);
+            if (pci) for (let i = 0; i < pci.length; i++) mix(pci[i] | 0);
+            const cyc = this.cyclicChains;
+            mix(cyc ? cyc.size : 0);
+            if (cyc) for (const k of cyc) mixStr(k);
+            const scales = this.chainRainbowScales;
+            if (scales) {
+                for (const k of Object.keys(scales).sort()) {
+                    mixStr(k);
+                    mix((scales[k].min * 1000) | 0);
+                    mix((scales[k].max * 1000) | 0);
+                }
+            }
+            // ...and the list they are indexed BY. A pair breaking or forming
+            // changes which position each colour describes.
+            const segs = this.segmentIndices || [];
+            mix(segs.length);
+            for (let i = 0; i < segs.length; i++) {
+                const g = segs[i];
+                mix(g.idx1 | 0); mix(g.idx2 | 0); mix(g.colorIndex | 0);
+                mix(g.type ? g.type.charCodeAt(0) : 0);
+                mix(g.contactColor ? 1 : 0);
+            }
+            return String(h) + ':' + segs.length;
+        }
+
         _calculateSegmentColors(effectiveColorMode = null) {
             const m = this.segmentIndices.length;
             if (m === 0) return [];
@@ -10386,36 +11102,57 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._ribbonTrace = out;
         }
 
-        _rotateCoords(object, c) {
-            this._rotPending = false;
+        /* WHAT A ROTATION NEEDS THAT DOES NOT CHANGE PER POSITION. Taken once
+         * so the full loop and the partial one below cannot disagree about the
+         * matrices or the centre - which is the only way a halo could land
+         * somewhere the picture is not.
+         */
+        _rotationCtx(object, c) {
+            return {
+                m: this.viewerState.rotation,
+                objectRotation: (object && object.rotation_matrix && object.center)
+                    ? object.rotation_matrix : null,
+                objectCenter: (object && object.center) ? object.center : null,
+                c,
+            };
+        }
+
+        /* ONE POSITION INTO VIEW SPACE. Both rotation paths call this; there is
+         * no second copy of the arithmetic to drift.
+         */
+        _rotateAt(i, R) {
+            let v = this.coords[i];
+            // Step 1: Apply object-level rotation (best_view) if present
+            if (R.objectRotation && R.objectCenter) {
+                const oc = R.objectCenter; const orr = R.objectRotation;
+                const cx = v.x - oc[0];
+                const cy = v.y - oc[1];
+                const cz = v.z - oc[2];
+                const rotX = orr[0][0] * cx + orr[0][1] * cy + orr[0][2] * cz;
+                const rotY = orr[1][0] * cx + orr[1][1] * cy + orr[1][2] * cz;
+                const rotZ = orr[2][0] * cx + orr[2][1] * cy + orr[2][2] * cz;
+                v = new Vec3(rotX + oc[0], rotY + oc[1], rotZ + oc[2]);
+            }
+            // Step 2: Apply user rotation
+            const c = R.c; const m = R.m;
+            const subX = v.x - c.x, subY = v.y - c.y, subZ = v.z - c.z;
+            const out = this.rotatedCoords[i];
+            out.x = m[0][0] * subX + m[0][1] * subY + m[0][2] * subZ;
+            out.y = m[1][0] * subX + m[1][1] * subY + m[1][2] * subZ;
+            out.z = m[2][0] * subX + m[2][1] * subY + m[2][2] * subZ;
+        }
+
+        _growRotated() {
             while (this.rotatedCoords.length < this.coords.length) {
                 this.rotatedCoords.push(new Vec3(0, 0, 0));
             }
-            const m = this.viewerState.rotation;
-            const objectRotation = (object && object.rotation_matrix && object.center)
-                ? object.rotation_matrix : null;
-            const objectCenter = (object && object.center) ? object.center : null;
-            for (let i = 0; i < this.coords.length; i++) {
-                let v = this.coords[i];
+        }
 
-                // Step 1: Apply object-level rotation (best_view) if present
-                if (objectRotation && objectCenter) {
-                    const cx = v.x - objectCenter[0];
-                    const cy = v.y - objectCenter[1];
-                    const cz = v.z - objectCenter[2];
-                    const rotX = objectRotation[0][0] * cx + objectRotation[0][1] * cy + objectRotation[0][2] * cz;
-                    const rotY = objectRotation[1][0] * cx + objectRotation[1][1] * cy + objectRotation[1][2] * cz;
-                    const rotZ = objectRotation[2][0] * cx + objectRotation[2][1] * cy + objectRotation[2][2] * cz;
-                    v = new Vec3(rotX + objectCenter[0], rotY + objectCenter[1], rotZ + objectCenter[2]);
-                }
-
-                // Step 2: Apply user rotation
-                const subX = v.x - c.x, subY = v.y - c.y, subZ = v.z - c.z;
-                const out = this.rotatedCoords[i];
-                out.x = m[0][0] * subX + m[0][1] * subY + m[0][2] * subZ;
-                out.y = m[1][0] * subX + m[1][1] * subY + m[1][2] * subZ;
-                out.z = m[2][0] * subX + m[2][1] * subY + m[2][2] * subZ;
-            }
+        _rotateCoords(object, c) {
+            this._rotPending = false;
+            this._growRotated();
+            const R = this._rotationCtx(object, c);
+            for (let i = 0; i < this.coords.length; i++) this._rotateAt(i, R);
         }
 
         /* SETTLE A DEFERRED ROTATION. Called by everything that reads
@@ -10425,9 +11162,162 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         _ensureRotated() {
             if (!this._rotPending) return;
+            // HOW OFTEN THE WHOLE STRUCTURE IS ROTATED ON THE CPU, and what it
+            // costs. It is O(positions) and the GPU path does not draw from it
+            // - the mesh is model space and the camera is a uniform - so every
+            // one of these is a debt some reader created: a capture, a pick, a
+            // halo. Counted so "which reader, and does it have to" is a
+            // question with an answer.
+            const rotT0 = (typeof window !== 'undefined') ? performance.now() : 0;
+            if (typeof window !== 'undefined') {
+                window.__rotations = (window.__rotations || 0) + 1;
+            }
             const object = this.objectsData[this.currentObjectName];
             if (object) this._rotateCoords(object, this._computeViewCentre(object));
             else this._rotPending = false;
+            if (typeof window !== 'undefined') {
+                window.__rotMs = (window.__rotMs || 0) + (performance.now() - rotT0);
+            }
+        }
+
+        /**
+         * A SCREEN-SPACE INDEX FOR PICKING, so a hover is not a scan of the
+         * whole structure.
+         *
+         * pickResidueAt walks every segment and every position on every call,
+         * and the mousemove handler calls it on every move to keep the sequence
+         * panel's hover readout current. That is fine at a few thousand
+         * positions and it is not fine at two million:
+         *
+         *     1AOI   1,103 positions      0.14 ms a pick
+         *     9FOG   3,559                0.10 ms
+         *     1M4X   2,081,520           44.3 ms a pick, 3.9 s per 100 moves
+         *
+         * A capsid froze the page while the pointer was over it, to update a
+         * readout - and threw the answer away unchanged most of the time, since
+         * the handler only acts when the picked residue CHANGES.
+         *
+         * THE INDEX IS A UNIFORM GRID OVER THE CANVAS, and the trick that makes
+         * a query one cell lookup rather than a neighbourhood search is that
+         * each item is inserted into every cell its own PICK RADIUS reaches.
+         * So a point is a candidate exactly when the cursor's cell is one it
+         * was inserted into, and the exact test that follows is unchanged.
+         *
+         * 🔴 A SEGMENT CAN BE LONGER THAN THE SCREEN. At high zoom one CA-CA
+         * bond spans many cells, and inserting it into all of them is worse
+         * than not indexing it. Anything covering more than SEG_CELL_LIMIT
+         * cells goes in a `big` list that every query checks - bounded work,
+         * and correct rather than clever.
+         *
+         * 🔴 AND THE CANDIDATES ARE SORTED BACK INTO INDEX ORDER. `offer`
+         * resolves an exact tie - same depth to 1e-6, same distance - by
+         * keeping the first it saw, so visiting candidates in cell order rather
+         * than index order could pick the other one of a tied pair. Sorting
+         * costs nothing on a handful of candidates and makes the indexed answer
+         * identical to the exhaustive one, which tests/pick_index.py checks
+         * point by point rather than trusting this paragraph.
+         */
+        _pickIndex(w, h) {
+            const fid = this.screenFrameId;
+            const cached = this._pickIdx;
+            if (cached && cached.fid === fid && cached.w === w && cached.h === h) {
+                return cached;
+            }
+            const CELL = 32;
+            const SEG_CELL_LIMIT = 24;
+            const cols = Math.max(1, Math.ceil(w / CELL));
+            const rows = Math.max(1, Math.ceil(h / CELL));
+            const pts = new Array(cols * rows);
+            const segCells = new Array(cols * rows);
+            const naCells = new Array(cols * rows);
+            const bigSegs = [];
+            const bigNa = [];
+            const PICK_W = PICK_WIDTH_SCALE;
+            const sx = this.screenX; const sy = this.screenY;
+            const sr = this.screenRadius; const sv = this.screenValid;
+
+            // which cells a screen-space box touches, clipped to the grid
+            const c0 = (v) => Math.max(0, Math.min(cols - 1, Math.floor(v / CELL)));
+            const r0 = (v) => Math.max(0, Math.min(rows - 1, Math.floor(v / CELL)));
+            const touches = (x0, y0, x1, y1) => (x1 >= 0 && y1 >= 0 && x0 <= w && y0 <= h);
+
+            if (sx && sv) {
+                for (let i = 0; i < sx.length; i++) {
+                    if (sv[i] !== fid) continue;
+                    const rad = Math.max(4, sr[i]) * PICK_W;
+                    const x0 = sx[i] - rad; const y0 = sy[i] - rad;
+                    const x1 = sx[i] + rad; const y1 = sy[i] + rad;
+                    if (!touches(x0, y0, x1, y1)) continue;
+                    const ca = c0(x0); const cb = c0(x1);
+                    const ra = r0(y0); const rb = r0(y1);
+                    for (let cy = ra; cy <= rb; cy++) {
+                        for (let cx = ca; cx <= cb; cx++) {
+                            const k = cy * cols + cx;
+                            (pts[k] || (pts[k] = [])).push(i);
+                        }
+                    }
+                }
+            }
+            const segs = this.segmentIndices;
+            if (segs && sx && sv) {
+                for (let s2 = 0; s2 < segs.length; s2++) {
+                    const a = segs[s2].idx1; const b = segs[s2].idx2;
+                    if (sv[a] !== fid || sv[b] !== fid) continue;
+                    const rad = Math.max(Math.max(4, sr[a]), Math.max(4, sr[b])) * PICK_W;
+                    const x0 = Math.min(sx[a], sx[b]) - rad;
+                    const y0 = Math.min(sy[a], sy[b]) - rad;
+                    const x1 = Math.max(sx[a], sx[b]) + rad;
+                    const y1 = Math.max(sy[a], sy[b]) + rad;
+                    if (!touches(x0, y0, x1, y1)) continue;
+                    const ca = c0(x0); const cb = c0(x1);
+                    const ra = r0(y0); const rb = r0(y1);
+                    if ((cb - ca + 1) * (rb - ra + 1) > SEG_CELL_LIMIT) {
+                        bigSegs.push(s2);
+                        continue;
+                    }
+                    for (let cy = ra; cy <= rb; cy++) {
+                        for (let cx = ca; cx <= cb; cx++) {
+                            const k = cy * cols + cx;
+                            (segCells[k] || (segCells[k] = [])).push(s2);
+                        }
+                    }
+                }
+            }
+            const naPick = (this._naPickId === fid) ? this._naPick : null;
+            if (naPick) {
+                for (let k2 = 0; k2 < naPick.length; k2++) {
+                    const q = naPick[k2].poly;
+                    if (!q || !q.length) continue;
+                    let x0 = Infinity; let y0 = Infinity;
+                    let x1 = -Infinity; let y1 = -Infinity;
+                    for (let v = 0; v < q.length; v++) {
+                        if (q[v][0] < x0) x0 = q[v][0];
+                        if (q[v][0] > x1) x1 = q[v][0];
+                        if (q[v][1] < y0) y0 = q[v][1];
+                        if (q[v][1] > y1) y1 = q[v][1];
+                    }
+                    if (!touches(x0, y0, x1, y1)) continue;
+                    const ca = c0(x0); const cb = c0(x1);
+                    const ra = r0(y0); const rb = r0(y1);
+                    if ((cb - ca + 1) * (rb - ra + 1) > SEG_CELL_LIMIT) {
+                        bigNa.push(k2);
+                        continue;
+                    }
+                    for (let cy = ra; cy <= rb; cy++) {
+                        for (let cx = ca; cx <= cb; cx++) {
+                            const k = cy * cols + cx;
+                            (naCells[k] || (naCells[k] = [])).push(k2);
+                        }
+                    }
+                }
+            }
+            const idx = { fid, w, h, cell: CELL, cols, rows, pts, segCells,
+                naCells, bigSegs, bigNa };
+            this._pickIdx = idx;
+            if (typeof window !== 'undefined') {
+                window.__pickIndexBuilds = (window.__pickIndexBuilds || 0) + 1;
+            }
+            return idx;
         }
 
         /* PAY FOR THE SCREEN POSITIONS AT THE MOMENT SOMETHING READS THEM.
@@ -10751,7 +11641,109 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._pickPending = null;
         }
 
+        /* WHAT A PROJECTION NEEDS THAT DOES NOT CHANGE PER POSITION. Same
+         * argument as _rotationCtx: the full loop and _projectMarks share it,
+         * so they cannot disagree about the camera.
+         */
+        _projectionCtx(displayWidth, displayHeight, scale) {
+            return {
+                cx: displayWidth / 2,
+                cy: displayHeight / 2,
+                persp: isPerspective(this.viewerState),
+                fl: this.viewerState.focalLength,
+                base: this.lineWidth * scale,
+                types: this.positionTypes,
+                tw: this.typeWidthMultipliers,
+                scale,
+            };
+        }
+
+        /* ONE POSITION ONTO THE SCREEN. */
+        _projectAt(i, P, fid) {
+            const sx = this.screenX; const sy = this.screenY;
+            const sr = this.screenRadius; const sv = this.screenValid;
+            const sdr = this.screenDrawRadius;
+            const v = this.rotatedCoords[i];
+            let pe = 1;
+            if (P.persp) {
+                const dz = P.fl - v.z;
+                if (dz <= 0.1) { sv[i] = 0; return; }
+                pe = P.fl / dz;
+            }
+            const wm = (P.types && P.tw && P.tw[P.types[i]]) || 0.5;
+            sx[i] = P.cx + v.x * P.scale * pe;
+            sy[i] = P.cy - v.y * P.scale * pe;
+            const rr = this._positionRadiiPx(i, P.base, wm, pe, P.scale);
+            sr[i] = rr.pick;
+            if (sdr) sdr[i] = rr.drawn;
+            sv[i] = fid;
+        }
+
+        /**
+         * PROJECT A HANDFUL OF POSITIONS, FOR THE SELECTION HALO.
+         *
+         * The halo needs screen positions for what is MARKED - a few residues
+         * and their side chains - and got them by rotating and projecting the
+         * whole structure, every frame. On a 2,081,520-position capsid,
+         * rotating with five residues selected:
+         *
+         *     nothing selected     0.13 ms a frame
+         *     five selected       70.87 ms a frame   (31.6 rotating, 34.0 projecting)
+         *
+         * a 560x slowdown to draw a ring around five things. This does the same
+         * arithmetic - literally, through _rotateAt and _projectAt - for the
+         * marks alone.
+         *
+         * 🔴 IT LEAVES BOTH DEBTS STANDING. _pickPending and _rotPending are
+         * NOT cleared, because the arrays are now partial: only the marks carry
+         * the new frame id, and everything else carries an older one, so
+         * `sv[i] === fid` is false for them - which is exactly what the halo
+         * wants and exactly what picking must not be given. pickResidueAt calls
+         * _ensurePickProjection, which finds the pending frame still there and
+         * projects the lot. So a frame pays for the marks and a CLICK pays for
+         * the structure, which is the right way round: one happens sixty times
+         * a second and the other when a person does something.
+         *
+         * Returns false when it cannot - no pending frame, arrays not sized -
+         * and the caller falls back to the full projection.
+         */
+        _projectMarks(marks) {
+            const p = this._pickPending;
+            if (!p || !marks || !marks.size) return false;
+            const np = this.coords.length;
+            const sx = this.screenX; const sv = this.screenValid;
+            if (!sx || !sv || sx.length < np) return false;
+            const object = this.objectsData[this.currentObjectName];
+            if (!object) return false;
+            this._growRotated();
+            const R = this._rotationCtx(object, this._computeViewCentre(object));
+            const P = this._projectionCtx(p.dw, p.dh, p.scale);
+            this.screenFrameId++;
+            const fid = this.screenFrameId;
+            const mask = this.visiblePositions;
+            // the same rule the full loop applies: a SELECTED position is
+            // projected whether or not it is drawn
+            const marked = this.selectionInk ? this.selectionInk() : this.residueSelection;
+            for (const i of marks) {
+                if (!(i >= 0 && i < np)) continue;
+                if (mask && !mask.has(i) && !(marked && marked.has(i))) {
+                    sv[i] = 0;
+                    continue;
+                }
+                this._rotateAt(i, R);
+                this._projectAt(i, P, fid);
+            }
+            if (typeof window !== 'undefined') {
+                window.__markProjections = (window.__markProjections || 0) + 1;
+            }
+            return true;
+        }
+
         _projectForPicking(displayWidth, displayHeight, scale) {
+            const projT0 = (typeof window !== 'undefined') ? performance.now() : 0;
+            if (typeof window !== 'undefined') {
+                window.__projections = (window.__projections || 0) + 1;
+            }
             const np = this.coords.length;
             const sx = this.screenX; const sy = this.screenY;
             const sr = this.screenRadius; const sv = this.screenValid;
@@ -10760,13 +11752,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const rotated = this.rotatedCoords;
             this.screenFrameId++;
             const fid = this.screenFrameId;
-            const cx = displayWidth / 2;
-            const cy = displayHeight / 2;
-            const persp = isPerspective(this.viewerState);
-            const fl = this.viewerState.focalLength;
-            const base = this.lineWidth * scale;
-            const types = this.positionTypes;
-            const tw = this.typeWidthMultipliers;
+            const P = this._projectionCtx(displayWidth, displayHeight, scale);
             const mask = this.visiblePositions;
             // A SELECTED POSITION IS PROJECTED WHETHER OR NOT IT IS DRAWN. The
             // band over it is a UI indicator, not part of the molecule: it says
@@ -10777,20 +11763,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const wanted = (i) => !mask || mask.has(i) || (marked && marked.has(i));
             for (let i = 0; i < np; i++) {
                 if (!wanted(i)) { sv[i] = 0; continue; }
-                const v = rotated[i];
-                let pe = 1;
-                if (persp) {
-                    const dz = fl - v.z;
-                    if (dz <= 0.1) { sv[i] = 0; continue; }
-                    pe = fl / dz;
-                }
-                const wm = (types && tw && tw[types[i]]) || 0.5;
-                sx[i] = cx + v.x * scale * pe;
-                sy[i] = cy - v.y * scale * pe;
-                const rr = this._positionRadiiPx(i, base, wm, pe, scale);
-                sr[i] = rr.pick;
-                if (sdr) sdr[i] = rr.drawn;
-                sv[i] = fid;
+                this._projectAt(i, P, fid);
+            }
+            if (typeof window !== 'undefined') {
+                window.__projectMs = (window.__projectMs || 0)
+                    + (performance.now() - projT0);
             }
         }
 
@@ -11009,12 +11986,64 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }, 140);
         }
 
+        /**
+         * ONE RENDER A FRAME, FOR A CONTROL THAT FIRES ON EVERY STEP.
+         *
+         * A range input fires `input` for every pixel of the drag, and four of
+         * the style panel's sliders change GEOMETRY - detail, thickness, sheet
+         * flat and width, which is the ribbon's own half-width. Each of those
+         * events rebuilt the mesh synchronously: measured on 1UBQ, twelve
+         * events gave twelve rebuilds, and on the structures the GPU path
+         * exists for that is seconds of work for frames nobody sees, with the
+         * slider frozen until they are done.
+         *
+         * Coalescing to one render per animation frame draws the value the
+         * slider actually stopped at and nothing in between. The LAST event
+         * always lands, because a frame is always scheduled when none is
+         * pending and the callback reads the tag written most recently.
+         *
+         * 🔴 render() ITSELF STAYS SYNCHRONOUS, and that is deliberate. Dozens
+         * of probes call render() and read pixels on the next line, and they
+         * are right to - making the common path async to fix a slider would
+         * trade a real cost for a much larger one. This is opt-in, and only the
+         * handlers that fire in bursts use it.
+         */
+        renderSoon(reason = 'Unknown') {
+            this._soonReason = reason;
+            if (this._soonFrame) return;
+            this._soonFrame = requestAnimationFrame(() => {
+                this._soonFrame = 0;
+                // ...and not into a viewer that has gone away between the
+                // event and the frame.
+                if (!this.canvas) return;
+                this.render(this._soonReason);
+            });
+        }
+
         render(reason = 'Unknown') {
             // A STYLE BEING SET WITHOUT DRAWING. _switchToObject restores an
             // object's style before its frames are loaded, so anything drawn
             // here is built out of the PREVIOUS object's coordinates and thrown
             // away a moment later - see setStyle's quiet flag.
             if (this._quietStyle || this._switchQuiet) return;
+            // ...AND A SIZE NOBODY CHOSE IS THE SAME KIND OF HOLD.
+            //
+            // index.html keeps the viewer inside a `display: none` parent until
+            // a structure arrives, so the container measures nothing and
+            // parts/viewport.js sizes the canvas from config.display.size -
+            // 100x100 - and marks it provisional. The GPU painter has declined
+            // that canvas since it was written ("do not build a mesh for a size
+            // nobody chose"), which left the whole structure being painted by
+            // the 2D path instead, at the wrong size, and thrown away when the
+            // observer measures the real box a moment later. Measured on 1AOI,
+            // 1103 residues: 122 ms of a 440 ms load, for a picture that exists
+            // for one animation frame at a seventh of its final width.
+            //
+            // The flag is cleared by a REAL measurement and by nothing else,
+            // and only index.html sets it - `cssSized` is opt-in markup, so an
+            // embed and the notebook, which size the canvas themselves, never
+            // see this branch. The frame they need still gets drawn.
+            if (this.canvas && this.canvas.__viewportProvisional) return;
             // An auto slab follows its selection through a rotation; everything
             // below reads the planes, so it is brought up to date first.
             this._refreshAutoClip();

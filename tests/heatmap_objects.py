@@ -9,11 +9,20 @@ load a prediction that has one, then hide the prediction: the matrix stayed on
 screen describing residues that were not, and a box drawn on it selected the
 other object's.
 
-The rule (paeObjectName in core/mol.js): in Multi there is no panel, because
-the matrix belongs to one structure and Multi is the mode for looking at
-several; outside Multi it is the object on screen, when that object has a
-matrix. The probe gives the second object a synthetic matrix, so it needs no
-network.
+The rule (heatmapObjectName in parts/multi.js): the panel belongs to the ONE
+object on screen, when that object has a matrix. Several on screen and there is
+no panel, because a row of the square means a residue only once you know which
+structure it counts from. The probe gives the second object a synthetic matrix,
+so it needs no network.
+
+🔴 EXACTLY ONE ON SCREEN IS ONE, HOWEVER IT GOT THERE. A shown set of one is not
+Multi: switching the others off with the eyes, or a host narrowing the set to
+the object it just opened, both leave a viewer showing one structure, and the
+panel belongs to it. This file used to assert the opposite - "in Multi there is
+no panel at all", refusing any Set - and db883b6 changed the rule because that
+version hid the panel on a restored session and not on a live one, which is a
+difference in HOW the viewer arrived at one object rather than in what it is
+showing. The commit did not update this file, so it has been failing since.
 """
 import http.server, json, os, re, shutil, socketserver, subprocess, threading, time, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -69,9 +78,10 @@ window.addEventListener('load', () => {
       R.mergedDrawn = r.drawnObjects();
       R.offset = r.sourceOffsetOf(withPae);
 
-      // ...and Multi with ONLY the prediction on screen: still no panel. One
-      // object drawn is not the same as one object loaded, and a square that
-      // comes and goes with an eye is the confusion this rule removes.
+      // ...and a shown set of ONE: the panel is back, because one object on
+      // screen is one object on screen. See heatmapObjectName - this is the
+      // case that hid the panel on a restored session when any Set answered
+      // null.
       r.setShownObjects([withPae]);
       await settle();
       R.multiOne = panel(r);
@@ -156,10 +166,15 @@ bad = []
 if not (R['alone']['shown'] and R['alone']['n'] == R['paeN']):
     bad.append(f"the prediction's own matrix does not show on its own: {R['alone']}")
 for k, what in (('merged', 'with both objects in Multi'),
-                ('multiOne', 'in Multi with only the prediction on screen'),
                 ('off', 'with everything switched off')):
     if R[k]['shown'] or R[k]['has']:
         bad.append(f"the matrix is still there {what}: {R[k]}")
+# ...and the one that is NOT a refusal: a shown set of one is one object on
+# screen, and the panel belongs to it.
+if not (R['multiOne']['shown'] and R['multiOne']['n'] == R['paeN']):
+    bad.append("a shown set of one object left no panel, so the matrix depends"
+               f" on HOW the viewer got to one rather than on what is on"
+               f" screen: {R['multiOne']}")
 if not (R['back']['shown'] and R['back']['n'] == R['paeN']):
     bad.append(f"leaving Multi did not bring the matrix back: {R['back']}")
 if R['otherPicked']['shown'] or R['otherPicked']['has']:

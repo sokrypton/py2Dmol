@@ -14,6 +14,33 @@
 # profile, so they do not interact - except the GPU ones, which MEASURE TIME
 # ("the reused toggles are not faster than the builds") and would be timing
 # each other's contention. Those run one at a time, after the rest.
+# 🔴 THE UI LANE FAILS ABOUT ONE RUN IN SIX, AND IT IS NOT THE PARALLELISM.
+#
+# A probe reports "page error: no result posted" or is KILLED, passes on its own
+# a moment later, and a different probe fails next time. The obvious reading is
+# contention between six Chromes, and it was asserted several times before it
+# was measured. It is wrong. Alternating whole-lane runs on the same machine:
+#
+#     JOBS=6   0, 0, 0 failures     68s, 78s, 77s
+#     JOBS=1   1, 0, 0 failures     70s, 76s, 65s
+#     JOBS=3   2, 0                 79s, 77s
+#     JOBS=2   0                    69s
+#
+# Same failure rate serial as six-way, and the same wall time - the lane is
+# ~70s either way, so the parallelism is not buying much either. Whatever the
+# cause is, it is not how many browsers are running.
+#
+# WHAT TO DO WITH A FAILURE, THEN: run that probe on its own. If it passes, it
+# is this. If it fails, it is real. Do not lower JOBS and conclude anything
+# from one green run, and do not attribute it to load without measuring - that
+# reasoning cost most of a session.
+#
+# 🔴 AND station_integrated FAILS ON DRIFT, NOT ONLY ON CONTENTION. It asserts
+# the fast path is FASTER, and on _traj_1ehz.pdb - 85 residues - both arms are
+# under 2 ms, so a 5% wobble reads as "2.00 ms against 1.90 - it is not
+# faster". Run it alone and look at the MARGIN: 1.4x to 2.0x is healthy, and a
+# genuine regression takes the ratio to about 1.0 on every structure it tests,
+# not on the smallest one only.
 set -u
 cd "$(dirname "$0")/.."
 LANE="${1:-all}"
@@ -33,7 +60,7 @@ if [[ "$LANE" == "all" || "$LANE" == "node" ]]; then
   # error, a missing file - prints a stack trace containing no such line, and
   # was reported as passing. tests/interaction.js died on startup for a whole
   # commit that way, and the suite said ALL GREEN.
-  for f in interaction smoke sequence copy_selection sidechain_chain na_frame align paint_trace cartoon_station math config msa_paired heatmap_resolve cyclic_partner cyclic_bench; do
+  for f in interaction smoke sequence copy_selection sidechain_chain na_frame align paint_trace cartoon_station station_faces math config msa_paired heatmap_resolve cyclic_partner cyclic_bench; do
     out=$(node tests/$f.js 2>&1); rc=$?
     if (( rc != 0 )); then
       fail=1; print "NODE $f: exit $rc"
@@ -78,6 +105,17 @@ if [[ "$LANE" == "all" || "$LANE" == "node" ]]; then
     print "node parse_ligand: ok"
   else
     fail=1; print "NODE parse_ligand:"; python3 tests/parse_ligand.py 2>&1 | grep -E '^FAIL|^  -' | head -3
+  fi
+
+  # ...and every probe in tests/ is named in tests/README.md, with the lane
+  # that runs it. Sixty-nine of about ninety were in it nowhere, which is how a
+  # gate can sit outside run.sh for a session while three files measure the
+  # same property. Generated and checked, because a hand-written index of
+  # ninety files is wrong within a week.
+  if python3 tests/index.py --check >/dev/null 2>&1; then
+    print "node index: ok"
+  else
+    fail=1; print "NODE index:"; python3 tests/index.py --check 2>&1 | head -4
   fi
 
   # ...and every path a comment or a doc points a reader at still exists. The
@@ -129,6 +167,35 @@ CAP="${CAP:-60}"
 probe_cap () {
   case $1 in
     (embed) print 240 ;;
+    # both build a mesh per value of several controls, so they are long by
+    # construction rather than by being slow
+    (topology_survey) print 300 ;;
+    (station_controls) print 300 ;;
+    (rebuild_actions) print 240 ;;
+    (rebuild_returns) print 300 ;;
+    (render_counts) print 240 ;;
+    (diffusion_connectivity) print 300 ;;
+    # 10,800 points, each picked twice, on three structures
+    (pick_index) print 400 ;;
+    (halo_partial) print 300 ;;
+    (load_work) print 200 ;;
+    (station_unpinned) print 400 ;;
+    (panel_idle) print 200 ;;
+    (frame_share) print 240 ;;
+    (colour_cache) print 300 ;;
+    (ss_agree) print 300 ;;
+    (splice_window) print 300 ;;
+    (station_rows) print 300 ;;
+    (station_edges) print 300 ;;
+    (outline_sync) print 400 ;;
+    (capture_once) print 240 ;;
+    (arrow_rebuilds) print 300 ;;
+    # three structures, and a mesh built per letter edit on each
+    (ss_axis) print 300 ;;
+    # three sizes, each with a reuse, a floor, a control and a rebuild
+    (resize_reuse) print 300 ;;
+    # six frames out and back, a picture captured at every step
+    (frame_revisit) print 300 ;;
     (colab) print 160 ;;
     (focus_mode) print 120 ;;
     (mobile_layout) print 120 ;;
@@ -181,9 +248,13 @@ if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "gpu" ]]; then
-  for t in gpu_recolour gpu_mesh_reuse gpu_tube_reuse gpu_mixed_style gpu_stick_flat; do
+  for t in gpu_recolour gpu_mesh_reuse gpu_tube_reuse gpu_mixed_style gpu_stick_flat stable_topology disulfides sequence_connectivity dev_rebuild_light colour_repaint station_shader station_corners station_pixels station_frames station_foldcuts station_integrated station_overlay station_sidechains topology_survey station_controls rebuild_actions rebuild_returns render_counts diffusion_connectivity pick_index halo_partial load_work station_unpinned panel_idle frame_share colour_cache ss_agree splice_window station_rows station_edges outline_sync capture_once arrow_rebuilds ss_axis resize_reuse frame_revisit; do
     run_probe $t || fail=1
   done
+  # ...and the same file again with a TAIL in it: 1EHZ's nine ions are rebuilt
+  # at the mesh's own scale and cannot follow a canvas change, so the path has
+  # to stand down there. Both directions of that are the claim.
+  run_probe resize_reuse 1EHZ.cif || fail=1
 fi
 
 print "=== $( (( fail == 0 )) && print ALL GREEN || print SOMETHING FAILED )"

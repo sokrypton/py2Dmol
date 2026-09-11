@@ -263,7 +263,9 @@ const commitContacts = (renderer, obj, contacts) => {
     // nothing at all: the contact is stored correctly, resolves correctly,
     // and never appears. Same trap the side-chain toggle hit.
     if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
-    if (renderer.reloadDrawn) renderer.reloadDrawn();
+    // reloadDrawn renders on its own unless told not to - see the cyclic
+    // checkbox in parts/ui.js for the whole argument
+    if (renderer.reloadDrawn) renderer.reloadDrawn(true);
     renderer.render('selection contact');
     if (window.updateSelectionToolsState) window.updateSelectionToolsState();
 };
@@ -299,7 +301,7 @@ function addCrossObjectContact(positions) {
         [ends[0], ends[1], 1.0],
     ]);
     if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
-    if (renderer.reloadDrawn) renderer.reloadDrawn();
+    if (renderer.reloadDrawn) renderer.reloadDrawn(true);
     renderer.render('cross contact');
     if (window.updateSelectionToolsState) window.updateSelectionToolsState();
 }

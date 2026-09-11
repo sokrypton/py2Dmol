@@ -200,6 +200,22 @@ if (renderer.selectionEnabled
         mount.appendChild(window.py2dmolPanel.buildSelectionPanel());
     }
 }
+
+// 🔴 AND NOW THE CANVAS IS MEASURED AGAINST THE FINISHED SHELL.
+//
+// setupViewport sized it above, before either panel existed - and the panels
+// are most of the shell's width, so that measurement was of a DOM that was
+// still being built. Nothing had drawn yet, so nothing was wrong to look at;
+// what it cost was the first draw happening at one size and everything being
+// thrown away and built again when the ResizeObserver noticed the real one.
+// Measured on 1UBQ, two mesh builds a page load, at 100x600 and then 706x706.
+//
+// This is the same measurement the observer makes, called once here where the
+// DOM it measures is complete. It is silent - no render - because the first
+// draw has not happened yet, so there is nothing to correct, only something to
+// avoid. The observer stays for what it is actually for: the window changing
+// afterwards.
+viewport.settle(renderer);
 // The listeners, once the panel is somewhere - whether this built it or the
 // page shipped its own. A shell that mounted neither wires nothing.
 //
@@ -813,7 +829,12 @@ if (cyclicCheckbox) {
         renderer.config.rendering.cyclic = e.target.checked;
         if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
         renderer.cachedSegmentIndices = null;
-        if (renderer.reloadDrawn) renderer.reloadDrawn();
+        // 🔴 reloadDrawn(true), BECAUSE IT RENDERS ON ITS OWN. It ends in
+        // _composeAndApplyMask, which renders unless told not to - so
+        // "reload, then render" draws the frame twice, once from inside the
+        // reload and once here. The flag exists for exactly this; the render
+        // stays here, where it can say what asked for it.
+        if (renderer.reloadDrawn) renderer.reloadDrawn(true);
         renderer.render('cyclicCheckbox');
     });
 }
@@ -996,11 +1017,39 @@ const pencilSlider = containerElement.querySelector('#pencilSlider');
 
 // Set defaults for width, rotation, and shadow
 if (lineWidthSlider) lineWidthSlider.value = renderer.lineWidth;
+// 🔴 A STATION TABLE, EARNED BY THE GESTURE RATHER THAN TAXED ON EVERYONE.
+//
+// Thickness and flatness move coordinates and the two per-station scalars
+// and nothing else - 201 ribbon prims, 454 stations and 1019 mesh faces at
+// every value of either - so the station table can update them instead of
+// rebuilding. But the table is only BUILT when stationDraw is on, and that
+// costs 3-5% on every mesh build (15.2 ms against 16.0 at 494 residues,
+// 79.1 against 81.4 at 2,500), which is why it is gated in the first place.
+//
+// So it is switched on by touching one of these sliders. The first change
+// rebuilds and builds the table with it; every one after is a station
+// update. Someone who never touches them never pays, and someone who does
+// pays once.
+//
+// 🔴 stationDraw ALONE, NOT stableTopology. The table is the machinery; the
+// pin is the promise that the secondary structure holds still across
+// frames, which is a trajectory's business and emphatically not a slider's.
+// Turning that on here would freeze the assignment of a structure nobody
+// asked to freeze. Verified apart: with stations on and stableTopology
+// false, a flatness change takes the fast path and draws what a rebuild
+// draws.
+const wantStationTable = () => {
+    const G = window.py2dmolCartoonGPU;
+    if (G && G.setStationDraw) G.setStationDraw(true);
+};
+
 if (thicknessSlider) {
     thicknessSlider.value = renderer.cartoonThickness !== undefined
         ? renderer.cartoonThickness : 0;
+
     thicknessSlider.addEventListener('input', (e) => {
         renderer.cartoonThickness = parseFloat(e.target.value);
+        wantStationTable();
         // Same rule as the Width slider: only a real gesture takes the
         // control over. Nothing dispatches a synthetic 'input' at this
         // slider today, but the two latches are siblings and drifted once
@@ -1009,7 +1058,7 @@ if (thicknessSlider) {
         // from the look's own default, which a drag makes true by itself -
         // where the Width slider beside this one has a real per-style memory
         // to keep. See thicknessIsChosen in cartoon/geom.js.
-        renderer.render('thicknessSlider');
+        renderer.renderSoon('thicknessSlider');
     });
 }
 if (pencilSlider) {
@@ -1022,10 +1071,23 @@ if (pencilSlider) {
 if (sheetFlatSlider) {
     sheetFlatSlider.value = renderer.cartoonSheetFlat;
     sheetFlatSlider.addEventListener('input', (e) => {
+        wantStationTable();
         renderer.cartoonSheetFlat = parseFloat(e.target.value);
-        // strand geometry changes, so cached segment geometry is stale
-        if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
-        renderer.render('sheetFlatSlider');
+        // 🔴 NO CACHE INVALIDATION HERE, AND THE COMMENT THAT WAS SAID "strand
+        // geometry changes, so cached segment geometry is stale". The first
+        // half is true and the second does not follow: _invalidateSegmentCache
+        // drops which residues form segments, the cyclic chains, the secondary
+        // structure assignment and the nucleic base pairing, and not one of
+        // those depends on how flat a strand is drawn. Its key does not even
+        // mention it - object, frame, count, overlay - so keeping the cache is
+        // correct by construction rather than by luck.
+        //
+        // It cost a third of a drag. On 1AOI, 1103 positions, eight steps, with
+        // the station path taking every one of them and no mesh rebuilt either
+        // way: 173.9 ms against 117.7, medians of six interleaved runs in both
+        // orders. The picture is identical - 0.0000% of pixels, worst channel
+        // 0 - which is what makes this a removal rather than a trade.
+        renderer.renderSoon('sheetFlatSlider');
     });
 }
 const shadeSlider = containerElement.querySelector('#shadeSlider');
@@ -1042,7 +1104,7 @@ if (detailSlider) {
         ? renderer.cartoonDetail : 4;
     detailSlider.addEventListener('input', (e) => {
         renderer.cartoonDetail = parseInt(e.target.value, 10);
-        renderer.render('detailSlider');
+        renderer.renderSoon('detailSlider');
     });
 }
 const smoothCheckbox = containerElement.querySelector('#smoothCheckbox');
@@ -1051,7 +1113,14 @@ if (arrowsCheckbox) {
     arrowsCheckbox.checked = renderer.cartoonArrows !== false;
     arrowsCheckbox.addEventListener('change', (e) => {
         renderer.cartoonArrows = e.target.checked;
-        if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
+        // NO CACHE INVALIDATION, for the reason the sheet-flat slider above
+        // gives: an arrowhead is ribbon geometry and this cache holds which
+        // residues form segments, the cyclic chains, the SS assignment and the
+        // base pairing. Arrows change the mesh - they are topology, 196 pieces
+        // against 186 on 1UBQ, so a rebuild happens either way - but the
+        // rebuild can start from the assignment it already has. 418.6 ms
+        // against 377.8 on 1AOI over eight toggles, same eight rebuilds, and
+        // the same picture to the last channel.
         renderer.render('arrowsCheckbox');
     });
 }
@@ -1260,6 +1329,53 @@ if (drawCheckbox) {
     drawCheckbox.addEventListener('change', () => {
         renderer.setDrawMode(drawCheckbox.checked);
     });
+}
+
+// KEEP SSE. Assign the secondary structure once and keep it for every frame,
+// rather than recomputing it - and the base pairing, and the sheet frames - for
+// each one. See cartoon/geom.js:secCacheKey and parts/multi.js:_topologyKey;
+// measured at 1.18-1.19x a frame in tests/PERF_NOTES.md.
+//
+// 🔴 A BUTTON AND NOT A DEFAULT, because it is a claim about the DATA that only
+// a reader can make. Right for one molecule moving - MD, an NMR ensemble, a
+// morph - and wrong for a folding trajectory, where the fold in the last frame
+// is not the fold in the first: tests/stable_topology.py measures that case at
+// 64% of residues assigned wrong.
+//
+// 🔴 AND SWITCHING IT HAS TO INVALIDATE, BOTH WAYS. The caches hold an
+// assignment made under the other key and nothing else would move it, so the
+// picture would keep the stale structure until something unrelated cleared it -
+// which reads as the button not working. The MESH holds the ribbon built from
+// that assignment too, so the frame on screen must be rebuilt and not redrawn.
+const keepSseButton = containerElement.querySelector('#keepSseButton');
+if (keepSseButton) {
+    renderer.keepSseButton = keepSseButton;
+    keepSseButton.addEventListener('click', () => {
+        const on = !renderer.stableTopology;
+        renderer.stableTopology = on;
+        // 🔴 AND IT TURNS ON THE WHOLE TRAJECTORY PATH, because a stable
+        // assignment is exactly what that path needs and nothing else does.
+        // With the fold cuts off and the assignment pinned, the face list holds
+        // still between frames, so a step uploads two textures instead of
+        // rebuilding the mesh: 12.8 ms to 4.0 on a 494-residue trajectory, with
+        // the picture the same to 0.0018% of pixels. See tests/PERF_NOTES.md.
+        //
+        // 🔴 THE FOLD CUTS ARE NOT SET HERE ANY MORE. This line read
+        // `renderer._noFoldCuts = on`, and that flag is read by geom.js on BOTH
+        // paths - so pressing this button also took the cuts away from the 2D
+        // painter, which sorts and genuinely needs them. The mesh path now
+        // drops them inside captureFrom, where it reaches the mesh and nothing
+        // else, and it does so on every build rather than only under this
+        // button. See the note there.
+        const G = window.py2dmolCartoonGPU;
+        if (G && G.setStationDraw) G.setStationDraw(on);
+        if (!on && G && G.clearResidentStations) G.clearResidentStations();
+        if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
+        if (G && G.invalidate) G.invalidate();
+        renderer._syncKeepSseButton();
+        renderer.render('keepSseButton');
+    });
+    if (renderer._syncKeepSseButton) renderer._syncKeepSseButton();
 }
 
 // Pass ALL controls to the renderer

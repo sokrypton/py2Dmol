@@ -130,9 +130,19 @@ const STYLE_PANEL_ROWS = [
     // with the first the moment either was used.
     [{ kind: 'toggle', id: 'smoothCheckbox', label: 'Smooth', style: 'cartoon',
        title: 'Smooth shading gradients (off = flat tone bands)' },
+     // 🔴 AND IT IS THE ONE CONTROL THAT DECIDES WHETHER A TRAJECTORY
+     // REBUILDS. An arrowhead is the only thing a secondary-structure letter
+     // CREATES rather than resizes - one station and five faces at even
+     // sampling - so it is the only letter change the station table cannot
+     // absorb. Measured on _traj_1tim.pdb, 29 steps: with arrows ON, ten
+     // rebuilds, nine of them a strand letter; with arrows OFF, ZERO, and all
+     // fifteen assignment changes go through the fast path. The tooltip says
+     // so, because nobody would guess it. See tests/arrow_rebuilds.py.
      { kind: 'toggle', id: 'arrowsCheckbox', label: 'Arrows', style: 'cartoon',
        checked: true,
-       title: 'Arrowheads on the C-terminal end of each beta strand' },
+       title: 'Arrowheads on the C-terminal end of each beta strand.'
+         + ' Turning them off lets a trajectory animate without rebuilding the'
+         + ' mesh when the assignment drifts' },
      // DRAW IS THE 2D PAINTER'S, and outside the website that painter is
      // usually not in the download at all. _gpuWillTake returns false while
      // drawMode is on - the pencil, the wash and the grain have no WebGL2

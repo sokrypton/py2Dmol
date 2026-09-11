@@ -457,7 +457,7 @@ function initializeViewerConfig() {
             if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
             renderer.cachedSegmentIndices = null;
             // ...of whatever is DRAWN, which may be several objects
-            if (renderer.reloadDrawn) renderer.reloadDrawn();
+            if (renderer.reloadDrawn) renderer.reloadDrawn(true);
             renderer.render('detect cyclic');
         });
     }
@@ -1560,6 +1560,9 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
             models = parseResult.models;
             modresMap = parseResult.modresMap;
             conectMap = parseResult.conectMap;
+            // ...and SSBOND, which parsePDB shapes as struct_conn disulf rows
+            // so both formats resolve by the same rule downstream.
+            structConn = parseResult.structConn || null;
         }
 
         if (!models || models.length === 0 || models.every(m => m.length === 0)) {
@@ -1996,6 +1999,15 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
             position_types: frameData.position_types ? [...frameData.position_types] : undefined,
             plddts: frameData.plddts ? [...frameData.plddts] : undefined,
             position_names: frameData.position_names ? [...frameData.position_names] : undefined,
+            // 🔴 THE FILE'S OWN DISULFIDES, BY RESIDUE, and named here because
+            // this copy is field by field: a field nobody writes down is
+            // silently dropped, which is the trap this file keeps falling into
+            // (see _remapObjectState's note, and extractedFrame). Without this
+            // line the renderer never learns the file declared any, falls back
+            // to its 2.5 A distance rule, and the count flickers frame to
+            // frame on anything that moves.
+            disulfideResidues: frameData.disulfideResidues
+                ? frameData.disulfideResidues.map((q) => [...q]) : undefined,
             // A LIGAND ATOM'S OWN NAME AND ELEMENT, present only where the file
             // had a ligand in it. The element is what colour-by-element reads;
             // the name is what the atom is called.

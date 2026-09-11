@@ -2099,3 +2099,28 @@ table.layout-table td {
        .sequence-section-container pinned it to 600. */
     .sequence-section-container { min-width: 0; }
 }
+
+/* 🔴 KEEP SSE DOES NOT FIT ON A PHONE'S PLAY BAR AT ALL. The arithmetic in the
+   980px block above leaves ONE pixel of slack at 320 - 253 of controls and gaps
+   in a 254px content box - so there is no room for a sixth control at any
+   label. Shortening it does not help: "Keep SSE" and the bare acronym "SSE"
+   both wrapped the bar at 320 and 360, measured by tests/mobile_layout.py.
+
+   Hidden, therefore, rather than shrunk. It is a trajectory optimisation on the
+   device least likely to be animating one, and the price of forcing it in is a
+   play bar that wraps on every structure.
+
+   🔴 ITS OWN BREAKPOINT, NOT THE 980 ABOVE. Written in that block first, which
+   hides the control on any window under 980px - a laptop with a half-width
+   window - to solve a problem that only exists under about 400. 480 is a phone;
+   the probe measures the bar intact at 520.
+
+   🔴 AND IT WORKS BECAUSE NOTHING SETS AN INLINE display HERE. mol.js hides the
+   button on a single frame with style.display = 'none' and brings it back with
+   '' - the empty string REMOVES the inline value rather than setting one, so at
+   these widths this rule is what applies. An inline 'block' there would outrank
+   it and the bar would wrap again. */
+@media (max-width: 480px) {
+    .py2dmol-viewer-instance #controlsContainer #keepSseButton { display: none; }
+}
+

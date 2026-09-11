@@ -3378,7 +3378,7 @@ t('hiding a base rebuilds the GPU mesh, because a plate is geometry', () => {
     // screen and each carries its own set in its own numbering
     // (what an absent set means is the field's own business now - see
     // OBJECT_STATE - so the caller names the field and nothing else)
-    if (!/mergedObjectSet\('bases'\)/.test(sig) || !/idOf\(b\)/.test(sig)) {
+    if (!/mergedObjectSet\('bases'\)/.test(sig) || !/setKeyOf\(b\)/.test(sig)) {
         throw new Error('the mesh signature does not name the base set');
     }
     if (!/cartoonBasePlates === false \? 'noplates'/.test(sig)) {
@@ -3393,9 +3393,23 @@ t('hiding a base rebuilds the GPU mesh, because a plate is geometry', () => {
     // in the same signature gives: a bond whose ends differ is CUT at its
     // midpoint when the mesh is captured. The halves term is a LENGTH, and the
     // array keeps its length whatever is in it, so it cannot see the uncut.
-    if (!/mergedObjectSet\('elements'\)/.test(sig) || !/idOf\(e\)/.test(sig)) {
+    if (!/mergedObjectSet\('elements'\)/.test(sig) || !/setKeyOf\(e\)/.test(sig)) {
         throw new Error('the mesh signature does not name the element set, so'
             + ' switching element colours off leaves the cut mesh on screen');
+    }
+    // 🔴 BY CONTENT, AND NOT BY IDENTITY EVER AGAIN. These two and the hidden
+    // backbone were keyed on idOf(), a stable integer per object, which answers
+    // "is this the same Set" - and the app builds a NEW Set with the same
+    // members whenever the drawn set changes, so an identical picture read as a
+    // different one and threw the spare mesh away. Measured on two objects,
+    // hiding one and showing it again: 0 rebuilds bare, 1 with a hidden
+    // backbone in play (tests/rebuild_returns.py). idOf is gone; this is what
+    // stops it coming back, here rather than in a comment, because the comment
+    // on the element term said "by identity, like the visibility mask" for a
+    // long time after the mask had been moved off identity for this reason.
+    if (/idOf\(/.test(sig)) {
+        throw new Error('the mesh signature is keying a set by IDENTITY again -'
+            + ' use setKeyOf, which asks what is in it');
     }
 });
 
@@ -3416,8 +3430,12 @@ t('the backbone hides per selection, and the side chains keep their CA', () => {
     if (v.setBackboneHiddenFor([1], true)) {
         throw new Error('hiding what is already hidden asks for a redraw');
     }
-    // a NEW set each time, or the mesh signatures compare it by identity and
-    // never see the change
+    // 🔴 A NEW SET EACH TIME, AND THE REASON CHANGED WITHOUT THE REQUIREMENT.
+    // It used to be that the signature compared these by identity, so editing
+    // one in place was invisible. The signature asks what is IN the set now -
+    // but setKeyOf caches its digest against the Set object in a WeakMap, so a
+    // set mutated in place hands back the digest it had before. Same rule, and
+    // it matters just as much: assign, never edit.
     const first = v.objectsData.obj.hiddenBackbone;
     v.setBackboneHiddenFor([2], true);
     if (v.objectsData.obj.hiddenBackbone === first) {
@@ -3472,7 +3490,12 @@ t('the backbone hides per selection, and the side chains keep their CA', () => {
     }
     for (const fn of ['function signatureOf', 'function tubeKeyOf']) {
         const body = gpu.slice(gpu.indexOf(fn), gpu.indexOf('\n}', gpu.indexOf(fn)));
-        if (!/sharedGeometryKey\(r(enderer)?\)\.concat\(/.test(body)) {
+        // ...and an ARGUMENT is allowed, because the point is that it
+        // delegates and not that it delegates with an empty hand. signatureOf
+        // takes a `topological` flag now - the same key without the coordinate
+        // term, for the trajectory fast path - and passes it straight through.
+        // What this still refuses is a second hand-written copy of the list.
+        if (!/sharedGeometryKey\(r(enderer)?(, *\w+)?\)\.concat\(/.test(body)) {
             throw new Error(fn + ' lists the shared terms by hand again');
         }
     }
@@ -6072,7 +6095,11 @@ t('an object switch draws once, and after the frames are in', () => {
     // a picture of 68 - and 38 ms for the whole switch once held.
     const mol = L.src;
     const sw = mol.slice(mol.indexOf('_switchToObject(newObjectName) {'));
-    const head = sw.slice(0, 1800);
+    // 🔴 WIDE ENOUGH FOR THE COMMENTS, which is why this is 3600 and not the
+    // 1800 it was: the settle carries the argument for why there is ONE of it
+    // per batch, and a window sized to the code as it stood fails on the next
+    // person who explains themselves.
+    const head = sw.slice(0, 3600);
     if (!/this\._switchQuiet = true/.test(head)) {
         throw new Error('nothing holds the renders back over a switch');
     }
@@ -6093,6 +6120,122 @@ t('an object switch draws once, and after the frames are in', () => {
     }
     if (!/if \(this\._quietStyle \|\| this\._switchQuiet\) return;/.test(mol)) {
         throw new Error('render does not honour the hold');
+    }
+    // ...AND ONE SETTLE PER BATCH, not one per switch. Loading a single file
+    // switches twice - addObject's switch and applyPendingObjects' - so an
+    // unguarded queue fires two frame callbacks in the same animation frame
+    // and the first draws a picture the second overwrites. On a provisional
+    // 100x100 canvas that is two full 2D paints of the whole structure: 122
+    // and 79 ms of a 520 ms load on 1AOI. tests/load_work.py counts them.
+    if (!/if \(!this\._switchSettlePending\)/.test(head)
+        || !/_switchSettlePending = true/.test(head)) {
+        throw new Error('every switch queues its own settle, so a load that'
+            + ' switches twice draws the whole structure twice into the same'
+            + ' animation frame');
+    }
+    // ...and the LAST switch is the one whose focus recall runs, which is what
+    // makes dropping the earlier callbacks safe.
+    if (!/_switchSettleTail = \(\) => \{/.test(head)
+        || !/const tail = this\._switchSettleTail/.test(head)) {
+        throw new Error('the settle does not carry a tail, so the focus recall'
+            + ' either runs for the wrong switch or not at all');
+    }
+});
+
+t('the polymer atom-id keys are only built when struct_conn will read them', () => {
+    // Three things read atomIdToIndex: struct_conn, which needs a POLYMER
+    // residue's CA or C4'; the chem_comp bond pass, which walks
+    // multiAtomResidues and so only asks about LIGAND atoms; and
+    // extractLigandBondsFromAtoms, which drops every hit whose position is not
+    // of type 'L'. CONECT does not read it at all - it goes through
+    // atomSerialToIndex.
+    //
+    // So on a file with no struct_conn the polymer entries are written and
+    // never read: measured on 1M4X, 2,081,520 sets and ZERO gets, which is two
+    // million template literals and two million Map inserts in a load whose
+    // garbage collector share is 11.6%.
+    //
+    // 🔴 THE LIGAND BRANCH MUST NOT BE GUARDED, because it is the branch the
+    // other two readers need. tests/parse_ligand.py and tests/cut_ligands.py
+    // are what say so from the outside; this says it from the source, where
+    // the difference between the three branches is visible at all.
+    const src = fs.readFileSync('src/io/parse.js', 'utf8');
+    if (!/const wantPolymerIds = !!\(structConn && structConn\.length > 0\);/.test(src)) {
+        throw new Error('wantPolymerIds is gone, or no longer derived from'
+            + ' structConn - the polymer keys are either always built (slow on'
+            + ' every large structure) or never (disulfides stop resolving)');
+    }
+    const fn = src.slice(src.indexOf('function* convertParsedToFrameDataSteps'),
+        src.indexOf('function extractLigandBondsFromAtoms'));
+    const sets = fn.match(/atomIdToIndex\.set\(/g) || [];
+    if (sets.length !== 3) {
+        throw new Error('expected three atomIdToIndex.set sites - the CA'
+            + ' branch, the C4\' branch and the ligand branch - and found '
+            + sets.length);
+    }
+    // ...the two polymer ones guarded, the ligand one not.
+    const guarded = (fn.match(/if \(wantPolymerIds\) \{\n\s*atomIdToIndex\.set\(/g) || []).length
+        + (fn.match(/if \(wantPolymerIds\) \{\n\s*atomIdToIndex\.set\(\n/g) || []).length;
+    if (!/if \(wantPolymerIds\) \{[\s\S]{0,120}\$\{ca\.chain\}/.test(fn)) {
+        throw new Error('the CA branch writes its id key unguarded');
+    }
+    if (!/if \(wantPolymerIds\) \{[\s\S]{0,160}\$\{c4_atom\.chain\}/.test(fn)) {
+        throw new Error("the C4' branch writes its id key unguarded");
+    }
+    if (/if \(wantPolymerIds\) \{[\s\S]{0,160}\$\{atom\.chain\}/.test(fn)) {
+        throw new Error('the LIGAND branch is guarded by wantPolymerIds - it'
+            + ' must not be: the chem_comp bond pass and'
+            + ' extractLigandBondsFromAtoms both read exactly those entries');
+    }
+});
+
+t('nothing writes into a frame\'s metadata arrays', () => {
+    // addFrame SHARES chains, names, residue numbers, types, elements and
+    // plddts between the frames of a trajectory whenever their contents are
+    // equal - fifteen copies of five identical arrays down to one on
+    // _traj_9fog.pdb, and identity becomes an O(1) test for "the same
+    // metadata" everywhere downstream. That is only sound while these arrays
+    // are read and never written, and there are exactly two places that grow
+    // them. Both must copy first.
+    //
+    // 🔴 THIS CANNOT BE CHECKED FROM INSIDE THE PAGE, which is why it is here.
+    // Three runtime versions were written and all three passed with a
+    // deliberate in-place write in the source: a snapshot taken after the load
+    // has already been written to, a second object parsed from the same text is
+    // corrupted identically and so agrees, and comparing the frames with each
+    // other is trivially true once they share an array. "Nobody writes to
+    // these" is a property of the source.
+    const mol = L.src;
+    const at = mol.indexOf('_materialiseSidechains(data) {');
+    if (at < 0) throw new Error('cannot find _materialiseSidechains');
+    const ms = mol.slice(at, mol.indexOf('\n        }', at));
+    for (const [name, field] of [['types', 'position_types'],
+        ['chains', 'chains'], ['names', 'position_names'],
+        ['numbers', 'residue_numbers'], ['atomEls', 'position_elements']]) {
+        const re = new RegExp('const ' + name
+            + ' = \\(data\\.' + field + ' \\|\\| \\[\\]\\)\\.slice\\(\\)');
+        if (!re.test(ms)) {
+            throw new Error('_materialiseSidechains appends to ' + field
+                + ' without slicing it first - it would be writing into the'
+                + ' frame\'s own array, and addFrame shares that array with'
+                + ' every other frame of the trajectory');
+        }
+    }
+    // ...and the length padding in the segment build, which used to push
+    // straight into whatever _setDataField had assigned.
+    const pad = mol.slice(mol.indexOf('// Make sure all data arrays are the same length'),
+        mol.indexOf('// Cache the calculated segment indices for this frame'));
+    if (!pad) throw new Error('cannot find the length padding');
+    if (!/const out = arr\.slice\(\);/.test(pad)) {
+        throw new Error('the length padding does not copy before it grows');
+    }
+    for (const f of ['plddts', 'chains', 'positionTypes', 'positionNames',
+        'residueNumbers', 'perChainIndices']) {
+        if (new RegExp('this\\.' + f + '\\.push\\(').test(pad)) {
+            throw new Error('the length padding pushes into this.' + f
+                + ' - that array is the FRAME\'S, and it is now shared with'
+                + ' every other frame of the trajectory');
+        }
     }
 });
 

@@ -187,7 +187,7 @@ window.addEventListener('load', () => {
       // Picking is asked at every step for the same reason it is asked above:
       // a mesh whose positions are one build behind looks perfect.
       {
-        const S = (R.sidechains = {table: !!r.sidechains}); window.__hashBisect = 1;
+        const S = (R.sidechains = {table: !!r.sidechains});
         r.setShownObjects(one); await settle();
         window.py2dmolCartoonGPU.invalidate();
         r.render('forced rebuild'); await settle();

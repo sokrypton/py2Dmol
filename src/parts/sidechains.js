@@ -59,7 +59,9 @@
             }
             if (!changed) return false;
             this._invalidateSegmentCache();
-            this.reloadDrawn();
+            // reloadDrawn renders on its own unless told not to, and this is
+            // the most-clicked of the five places that got this wrong
+            this.reloadDrawn(true);
             this.render('sidechains');
             return true;
         },

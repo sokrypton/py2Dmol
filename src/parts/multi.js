@@ -171,6 +171,41 @@
         },
 
         /**
+         * WHAT THE ARRAY HOLDS, WITHOUT WHERE IT IS - `_coordsKey` minus the
+         * frame and minus the coordinate samples.
+         *
+         * 🔴 IT IS FOR THE CACHES THAT ARE TOPOLOGICAL RATHER THAN GEOMETRIC.
+         * The secondary-structure assignment, the base pairing and the sheet
+         * frames are answers about which residues these are and how they are
+         * connected. On a trajectory whose fold does not change - an MD run, an
+         * NMR ensemble, a morph - those answers are the same in every frame,
+         * and keying them on `_coordsKey` recomputes all three for every one:
+         * measured at 12% of a step on 1TIM, tests/anim_profile.py.
+         *
+         * 🔴 AND IT IS NOT SAFE ON ITS OWN, WHICH IS WHY NOTHING USES IT BY
+         * DEFAULT. A FOLDING trajectory is the same objects, the same frame
+         * count and the same length with a different fold in every frame, and
+         * this key cannot tell that from an MD run - dropping exactly that
+         * information is what it is for. `renderer.stableTopology` is the
+         * caller stating which kind of trajectory this is; see secCacheKey in
+         * cartoon/geom.js.
+         *
+         * What it still names: which objects are drawn, whether they are
+         * merged, how many side-chain atoms have been materialised into the
+         * array, and how long it is. Each of those changes the CONTENTS in a
+         * way a kept assignment would be wrong about, and none of them is a
+         * frame.
+         */
+        _topologyKey() {
+            const ov = !!(this.overlayState && this.overlayState.enabled);
+            const sc = this.shownSidechainSet ? this.shownSidechainSet() : null;
+            const co = this.coords;
+            return (ov ? 'overlay|' : 'frames|') + this.drawnObjects().join(',')
+                + '|sc' + (sc ? sc.size : 0)
+                + '|' + (co ? co.length : 0);
+        },
+
+        /**
          * HOW LONG THE ARRAY IS BEFORE THE SIDE-CHAIN ATOMS. Everything keyed
          * by residue counts up to here; the atoms live past it.
          */

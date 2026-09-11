@@ -153,6 +153,16 @@ public downloads is exercised on every run.
 | `tools/extract_part.py` | cut a run of methods into a part file. |
 | `tests/lift.js` | how the node tests find shipped code across files, at any indent. |
 | `tests/paint_trace.js` | the drawing, as a diffable digest. |
+| `tests/cartoon_station.js` | a station is a model-space frame and two scalars, exactly. |
+| `tests/station_faces.js` | ...and a face is a piece, a station and a surface. |
+| `tests/station_corners.py` | the station table implies the mesh buildMeshPart uploaded. |
+| `tests/station_pixels.py` | ...and drawing from it gives the same picture. |
+| `tests/station_frames.py` | what a trajectory step costs when only the stations are uploaded. |
+| `tests/station_integrated.py` | renderApp taking that path by itself, and declining where it must. |
+| `tests/station_foldcuts.py` | what dropping the orientation-fold cuts costs, and what it buys. |
+| `tests/stable_topology.py` | Keep SSE: the fold's answers kept across frames, and wrong to keep on a folding one. |
+| `tests/make_traj.py` | the synthetic trajectories those read - one whose fold holds, one that unfolds. |
+| `tests/demo_keep_sse.py` | a trajectory that is slow without Keep SSE and fast with it, with the steps to see it by hand. |
 
 ## Rules
 

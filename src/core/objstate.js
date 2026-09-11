@@ -100,6 +100,17 @@ const OBJECT_STATE = [
     // and the object's list is rebuilt from them on load.
     { key: 'bonds', kind: 'plain', absent: 'none', json: null,
         remap: remapIndexPairs },
+    // [i, j] RESIDUE pairs, from the file's own disulf records (mmCIF
+    // _struct_conn) or SSBOND. Exactly the shape bonds has, and renumbered the
+    // same way - a pair whose partner fell outside the selection is dropped,
+    // which is right: half a disulfide is not one.
+    //
+    // json:null because it is not saved here either. It is read from the file
+    // and hoisted onto the object at load, so a session that reloads the
+    // structure gets it again; a copied selection needs it renumbered now, and
+    // that is what this line is for.
+    { key: 'disulfideResidues', kind: 'plain', absent: 'none', json: null,
+        remap: remapIndexPairs },
     // NOT REMAPPED, deliberately: a copy starts fully visible rather than
     // inheriting what was hidden in the original, and Delete renumbers the
     // record in place (it is the one piece of this that has a live twin).

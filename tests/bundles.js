@@ -174,7 +174,15 @@ try {
 // a number in prose is a promise like any other. Checked loosely - within a
 // tenth - because the point is catching a bundle that has changed shape, not
 // policing a rebuild that moved it by a kilobyte.
-for (const doc of ['README.md', 'embed.html', 'CHANGELOG.md']) {
+// 🔴 NOT CHANGELOG.md, AND THAT IS THE POINT OF THE `found` CHECK BELOW.
+// It quotes the size the 2.0.0 release shipped, under a `## 2.0.0` heading -
+// a fact about a version that is over, not a description of this working tree.
+// Holding it to the CURRENT bundle asks every future change to the bundle to
+// rewrite a released version's notes, which is falsifying a record to please a
+// test. README.md and embed.html describe what is here now and are still
+// checked; the changelog is dropped from the list rather than left as a check
+// that would be satisfied by editing history.
+for (const doc of ['README.md', 'embed.html']) {
     const text = fs.readFileSync(doc, 'utf8');
     let found = 0;
     for (const name of ['embed', 'embed.cpu']) {

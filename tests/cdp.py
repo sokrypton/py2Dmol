@@ -76,6 +76,24 @@ class WS:
 
 
 def launch(port, profile):
+    # 🔴 AN ORPHAN CHROME FROM A CRASHED RUN SQUATS THE DEBUGGING PORT, AND
+    # WHAT IT SERVES YOU IS ITS OWN WARM CACHE.
+    #
+    # A probe that raises - a timeout, a page error, a bad expression - never
+    # reaches its `chrome.kill()`, so the browser outlives the python process
+    # and goes on listening on this port. The next run's Popen then cannot bind
+    # it, `/json/list` answers from the OLD browser, and Page.navigate drives
+    # that one instead: same URL, same server, but a cache filled before your
+    # edit. The symptom is an edit that provably reaches the server and
+    # provably is not in the page - measured here as a method whose source in
+    # the file and source in the browser differed, over four runs, while
+    # `fetch('/src/core/mol.js')` from inside that same page returned the new
+    # text.
+    #
+    # The profile directory is unique per probe, so matching on it kills this
+    # probe's leftovers and never another lane's browser or the developer's.
+    subprocess.run(["pkill", "-9", "-f", "user-data-dir=" + profile],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     shutil.rmtree(profile, ignore_errors=True)
     p = subprocess.Popen(["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         "--headless=new", "--user-data-dir=" + profile, "--no-first-run",

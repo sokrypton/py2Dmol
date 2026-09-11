@@ -141,7 +141,10 @@ function eachStation(cap, fn) {
             const mid = cs[a0 + k];
             if (!mid || !p.wa[k] || !p.ub[k]) continue;
             fn(mid, p.wa[k], p.ub[k], p.tv ? p.tv[k] : null,
-                [p.Lp[k], p.Lm[k], p.Rp[k], p.Rm[k]]);
+                [p.Lp[k], p.Lm[k], p.Rp[k], p.Rm[k]],
+                // ...and the two scalars the renderer used, when it reports
+                // them. See the note at the fit below.
+                p.half ? p.half[k] : null);
         }
     }
 }
@@ -184,7 +187,8 @@ function cameraOf(cap) {
 function reconstruct(cap, bend) {
     const cam = cameraOf(cap);
     let worstFit = 0; let worstPredict = 0; let tested = 0; let singular = 0;
-    eachStation(cap, (mid0, wa0, ub0, tv, C) => {
+    let worstScalars = 0; let reported = 0;
+    eachStation(cap, (mid0, wa0, ub0, tv, C, rep) => {
         let wa = wa0; let ub = ub0; let mid = mid0;
         if (bend === 'tangent' && tv) ub = tv;
         if (bend === 'swap') { const q = wa; wa = ub; ub = q; }
@@ -212,9 +216,26 @@ function reconstruct(cap, bend) {
         // (b) ...and the other three corners, from those same two numbers
         worstPredict = Math.max(worstPredict, off(at(hw, -ht), C[1]),
             off(at(-hw, ht), C[2]), off(at(-hw, -ht), C[3]));
+        // (c) 🔴 ...AND AGAINST THE RENDERER'S OWN TWO NUMBERS. Everything
+        //     above solves for halfW and halfT out of the projected corners,
+        //     because for a long time there was no way to ask for them. There
+        //     is now - the frame probe carries them - so the fit can be checked
+        //     against the value that produced the corners instead of only
+        //     against itself. A fit that agrees with the geometry but not with
+        //     the renderer means the two have drifted apart, which is exactly
+        //     what a consumer placing corners from a station would then get
+        //     wrong.
+        if (rep) {
+            const scale = Math.max(Math.abs(rep[0]), Math.abs(rep[1]), 1e-9);
+            worstScalars = Math.max(worstScalars,
+                Math.abs(Math.abs(hw) - Math.abs(rep[0])) / scale,
+                Math.abs(Math.abs(ht) - Math.abs(rep[1])) / scale);
+            reported++;
+        }
         tested++;
     });
-    return { worstFit, worstPredict, tested, singular, camErr: cam.err };
+    return { worstFit, worstPredict, tested, singular, camErr: cam.err,
+        worstScalars, reported };
 }
 
 let bad = 0;
@@ -283,7 +304,8 @@ for (const [name, cas, opts] of CASES) {
         + `  camera fit ${R.camErr.toExponential(1)}`
         + `  fit ${(R.worstFit * 100).toFixed(4)}%`
         + `  predicted ${(R.worstPredict * 100).toFixed(4)}%`
-        + `  shear ${frameCheck(cap).shear.toFixed(3)}`);
+        + `  shear ${frameCheck(cap).shear.toFixed(3)}`
+        + `  scalars ${R.reported ? `${(R.worstScalars * 100).toFixed(4)}%` : 'not reported'}`);
     if (!hasH || !hasE) {
         fail(`${name} is assigned no ${hasH ? 'sheet' : 'helix'} - it exercises`
             + ' one profile and proves nothing about the others');
@@ -297,6 +319,19 @@ for (const [name, cas, opts] of CASES) {
             + ' - the corners are built from that pair');
     }
     if (R.singular) fail(`${name}: ${R.singular} singular stations`);
+    // 🔴 AND THE FIT AGREES WITH THE RENDERER'S OWN halfW/halfT. Until the frame
+    // probe carried them this could only be checked against itself. A drift
+    // here would not show up in `fit` or `predicted` at all - those solve for
+    // the scalars and would simply find different ones - and it is exactly what
+    // a consumer placing corners from a station would get wrong.
+    if (!R.reported) {
+        fail(`${name}: the frame probe reported no halfW/halfT, so the fitted`
+            + ' scalars were checked against nothing but themselves');
+    } else if (!(R.worstScalars < 1e-6)) {
+        fail(`${name}: the fitted halfW/halfT differ from the renderer's own by`
+            + ` ${(R.worstScalars * 100).toFixed(4)}% - the corners and the`
+            + ' numbers that made them have drifted apart');
+    }
     if (!(R.camErr < 1e-6)) {
         fail(`${name}: the camera is not the affine map this assumes`
             + ` (residual ${R.camErr}) - the comparison below is in the wrong space`);
@@ -365,9 +400,19 @@ for (const [name, cas, opts] of CASES) {
         fail('the second conformation has the same secondary structure, so the'
             + ' pinning result below is vacuous - perturb it further');
     }
-    if (!free) {
-        fail('the station counts agree even unpinned, so pinning them proves'
-            + ' nothing');
+    // 🔴 THE COUNTS AGREEING UNPINNED IS THE PROPERTY NOW, NOT A BROKEN
+    // CONTROL. This used to fail when `free` was zero, on the grounds that if
+    // the two conformations agreed anyway the pinned result said nothing - and
+    // that was right while a letter changed how many stations a residue
+    // carried. The ribbon is built one way for every letter now, and the
+    // arrowhead pays for its seam out of the interval's own sampling, so the
+    // counts hold across a letter WITHOUT pinning anything. That is strictly
+    // stronger than what this leg was asserting, so it is asserted instead.
+    if (free) {
+        fail(`${free} station counts differ between two conformations with the`
+            + ' assignment FREE. A letter is supposed to choose a profile and'
+            + ' nothing else - see tests/ss_axis.py, which is the gate on that'
+            + ' - so this is a trajectory that has to rebuild');
     }
     if (pinned) {
         fail(`${pinned} station counts still differ with the assignment pinned -`
@@ -379,19 +424,87 @@ for (const [name, cas, opts] of CASES) {
     // ribbon centre moved 0.0000 A and the PROFILE moved up to 5.8 A. A helix
     // and a loop are one curve at two widths, which is what lets an SS change
     // be a morph instead of a rebuild.
-    let worstCentre = 0; let profile = 0;
+    // 🔴 THE SAME CURVE, NOT THE SAME SAMPLES. Comparing station k with station
+    // k asks two questions at once - is it the same curve, and is it sampled at
+    // the same places - and only the first is the invariant. An arrowhead
+    // resamples its interval (the seam is sampled twice, at shaft width and at
+    // barb width) so that the step across the barbs is perpendicular, and it
+    // does that WITHIN the same number of stations. Station-for-station that
+    // reads as 1.6654 A of centre-line movement; as a curve it is nothing.
+    //
+    // So: the distance from every station to the OTHER arm's polyline. Both
+    // ways, because one polyline lying along a piece of the other would pass a
+    // one-way test. The bar is not zero - a resampled point sits on the curve
+    // and the polyline is its chords, so the sagitta is the floor - and at
+    // eight samples a residue that is a thousandth of an Angstrom.
+    const segDist = (p, q0, q1) => {
+        const vx = q1[0] - q0[0]; const vy = q1[1] - q0[1]; const vz = q1[2] - q0[2];
+        const L2 = vx * vx + vy * vy + vz * vz;
+        let t = L2 > 1e-12
+            ? ((p[0] - q0[0]) * vx + (p[1] - q0[1]) * vy + (p[2] - q0[2]) * vz) / L2
+            : 0;
+        t = Math.max(0, Math.min(1, t));
+        return Math.hypot(p[0] - (q0[0] + vx * t), p[1] - (q0[1] + vy * t),
+            p[2] - (q0[2] + vz * t));
+    };
+    const toPolyline = (p, poly) => {
+        let best = Infinity;
+        for (let k = 0; k + 1 < poly.length; k++) {
+            best = Math.min(best, segDist(p, poly[k], poly[k + 1]));
+        }
+        return poly.length === 1 ? Math.hypot(p[0] - poly[0][0],
+            p[1] - poly[0][1], p[2] - poly[0][2]) : best;
+    };
+    // 🔴 AND AN INTERVAL WHOSE LETTERS MOVED IS NOT HELD TO THE SAME BAR, for
+    // one reason: an arrowhead RESAMPLES its interval. The seam is sampled
+    // twice - once at shaft width, once at barb width - so that the step across
+    // the barbs is perpendicular rather than slanting, and the second sample is
+    // paid for out of the interval's own budget rather than added to it, which
+    // is what keeps the station count fixed and the frame off the rebuild path.
+    // The points still lie on the same curve; they lie at different places
+    // along it, and one chord of the barb replaces two.
+    //
+    // So: everywhere the letters agree, the curves must match to nothing. Where
+    // they do not, the interval is one that gained or lost a head, its profile
+    // has changed by design, and the bar is a chord error rather than zero.
+    let worstCentre = 0; let profile = 0; let worstSample = 0; let worstArrow = 0;
+    let armed = 0;
     for (let i = 0; i < B.n; i++) {
         const a = B.trace[i]; const b = Bpin.trace[i];
-        if (!a || !b) continue;
-        const m = Math.min(a.length, b.length);
-        for (let k = 0; k < m; k++) {
-            // the ends of an interval are the same two points however densely
-            // it is sampled, so they are comparable even when the counts differ
-            const ia = a.length === b.length ? k : (k === 0 ? 0 : a.length - 1);
-            const ib = a.length === b.length ? k : (k === 0 ? 0 : b.length - 1);
-            worstCentre = Math.max(worstCentre, Math.hypot(a[ia][0] - b[ib][0],
-                a[ia][1] - b[ib][1], a[ia][2] - b[ib][2]));
-            if (a.length !== b.length && k > 0) break;
+        if (!a || !b || !a.length || !b.length) continue;
+        // ...against A.sec, which is what Bpin was pinned TO. `capture().sec`
+        // reports the assignment the renderer worked out, and _forceSec does
+        // not change that report - so Bpin.sec reads like B.sec and comparing
+        // the two arms' own reports finds nothing, which is how this exemption
+        // first measured zero intervals while thirty had moved.
+        // ...over FOUR residues, i-1 to i+2, because that is the window an
+        // interval's own sampling depends on. Forward: isArrowInterval(j) reads
+        // sec[j], sec[j+1] AND sec[j+2] - the head sits on the LAST interval of
+        // a strand, and whether this interval is the last one is a question
+        // about the residue after the next. Backward: the blunt end sits on the
+        // FIRST interval of a strand, which is a question about the residue
+        // before it, and that interval duplicates its station at u = 0 to make
+        // the rim square.
+        //
+        // Both were found by widening: a two-residue window left 0.2043 A of
+        // "unexplained" curve movement that was an arrow appearing two residues
+        // along, and a three-residue one left 0.0683 A that was a strand
+        // starting one residue back.
+        let moved = false;
+        for (let w = -1; w <= 2; w++) {
+            const j = i + w;
+            if (j >= 0 && j < B.sec.length && B.sec[j] !== A.sec[j]) moved = true;
+        }
+        let worst = 0;
+        for (const p of b) worst = Math.max(worst, toPolyline(p, a));
+        for (const p of a) worst = Math.max(worst, toPolyline(p, b));
+        if (moved) { worstArrow = Math.max(worstArrow, worst); armed++; }
+        else worstCentre = Math.max(worstCentre, worst);
+        if (a.length === b.length && !moved) {
+            for (let k = 0; k < a.length; k++) {
+                worstSample = Math.max(worstSample, Math.hypot(a[k][0] - b[k][0],
+                    a[k][1] - b[k][1], a[k][2] - b[k][2]));
+            }
         }
     }
     const halves = (cap) => {
@@ -404,13 +517,31 @@ for (const [name, cas, opts] of CASES) {
     };
     const hb = halves(B); const hp = halves(Bpin);
     for (const [k, v] of hb) if (hp.has(k)) profile = Math.max(profile, Math.abs(v - hp.get(k)));
-    console.log(`pinning the assignment moved the centre line by`
-        + ` ${worstCentre.toFixed(4)} A and the width by ${profile.toFixed(3)} A`);
+    console.log(`pinning the assignment moved the centre CURVE by`
+        + ` ${worstCentre.toFixed(4)} A where the letters agree (station for`
+        + ` station ${worstSample.toFixed(4)} A), by ${worstArrow.toFixed(4)} A`
+        + ` in the ${armed} intervals where they do not, and the width by`
+        + ` ${profile.toFixed(3)} A`);
     if (!(worstCentre < 1e-6)) {
         fail(`pinning the secondary structure moved the ribbon CENTRE by`
-            + ` ${worstCentre.toFixed(4)} A. A helix and a loop are supposed to`
-            + ' differ only in profile; if the centre line moves too, an SS'
-            + ' change cannot be morphed and has to be rebuilt');
+            + ` ${worstCentre.toFixed(4)} A in an interval whose letters did not`
+            + ' change. A helix and a loop are supposed to differ only in'
+            + ' profile; if the centre line moves too, an SS change cannot be'
+            + ' morphed and has to be rebuilt');
+    }
+    if (!(worstSample < 1e-6)) {
+        fail(`the stations themselves moved by ${worstSample.toFixed(4)} A`
+            + ' where the letters agree - same curve, different samples, which'
+            + ' is the arrowhead resampling an interval it should not be in');
+    }
+    if (!(worstArrow < 0.3)) {
+        fail(`an interval whose letters changed moved its centre curve by`
+            + ` ${worstArrow.toFixed(4)} A. Redistributing an arrow interval's`
+            + ' own stations should cost a chord, not a shape');
+    }
+    if (!armed) {
+        fail('no interval changed its letters, so the exemption above was'
+            + ' never exercised and the bar it carries is untested');
     }
     if (!(profile > 0.1)) {
         fail('pinning the secondary structure changed no width at all, so this'

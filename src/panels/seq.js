@@ -112,9 +112,19 @@ function setLocalPreview(setOrNull) {
 function endPreviewOnRenderer() {
     const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
     if (!renderer || !renderer.endSelectionPreview) return;
-    const wasLive = renderer._previewLive;
+    // 🔴 WAS A PREVIEW BEING SHOWN - not "is there a snapshot". This read
+    // `_previewLive`, and those are two different questions: `_previewLive`
+    // means a clean-frame snapshot exists, and _snapshotCleanFrame sets it on
+    // EVERY render that reaches the overlay stage. So after any frame at all
+    // this was true, and forgetPositionState - which runs on every sequence
+    // rebuild, and so on every step of a trajectory - repainted the picture to
+    // undo a preview that was never on screen.
+    //
+    // `_selectionPreview` is the preview itself, null unless one is up. Ending
+    // one that was never shown changes nothing to draw.
+    const wasShowing = !!renderer._selectionPreview;
     renderer.endSelectionPreview();
-    if (wasLive) renderer.render('selection preview end');
+    if (wasShowing) renderer.render('selection preview end');
 }
 
 // Schedule render using requestAnimationFrame to throttle
@@ -1098,7 +1108,36 @@ if (chainType === 'dna') {
  *
  * @returns {Object|null} null when the object has nothing to show
  */
-function buildObjectSection(renderer, name) {
+// IDENTITY TOKENS FOR THE SECTION KEY. A WeakMap so a frame that goes away
+// takes its token with it; the counter only ever goes up.
+const sectionIds = new WeakMap();
+let sectionIdNext = 1;
+
+/**
+ * THE OBJECT'S LIGAND GROUPS, THROUGH THE ACCESSOR - and this is the ONE place
+ * in this file that names the field.
+ *
+ * The groups are derived from the frame and cached against it; an object no
+ * longer carries them, and tests/interaction.js allows exactly one reader here
+ * as the fallback for a renderer too old to have `ligandGroupsOf`. Both the key
+ * and the section want them, so one helper rather than two copies of the same
+ * fallback - the second copy is what that test caught.
+ */
+function ligandGroupsOfObject(renderer, object) {
+    return (renderer.ligandGroupsOf
+        ? renderer.ligandGroupsOf(object) : object.ligandGroups) || new Map();
+}
+
+/**
+ * WHICH FRAME OF AN OBJECT THE STRIP WOULD SHOW, and the arrays it would read.
+ * The head of buildObjectSection, factored out so the key below can be asked
+ * WITHOUT materialising a single entry - which on a capsid is 2,081,520
+ * objects to answer a question about four array identities.
+ *
+ * Answers null under exactly the conditions buildObjectSection answers null,
+ * so the two agree about which objects contribute a section at all.
+ */
+function sectionSourceOf(renderer, name) {
     const object = renderer.objectsData && renderer.objectsData[name];
     if (!object || !object.frames || !object.frames.length) return null;
 
@@ -1123,6 +1162,53 @@ function buildObjectSection(renderer, name) {
     if (n === 0) return null;
 
     const seqOffset = renderer.sourceOffsetOf ? renderer.sourceOffsetOf(name) : 0;
+    return { object, own, frame, positionNames, residueNumbers, chains,
+        positionTypes, n, seqOffset };
+}
+
+/** The key for one object's section, in constant time. See the note by `sig`. */
+function sectionKeyOf(renderer, name) {
+    const src = sectionSourceOf(renderer, name);
+    if (!src) return null;
+    const idOf = (v) => {
+        if (!v || typeof v !== 'object') return 0;
+        let t = sectionIds.get(v);
+        if (!t) { t = sectionIdNext += 1; sectionIds.set(v, t); }
+        return t;
+    };
+    const ownGroups = ligandGroupsOfObject(renderer, src.object);
+    let sig = (src.n * 31) >>> 0;
+    const mix = (v) => { sig = (((sig * 16777619) >>> 0) ^ (v >>> 0)) >>> 0; };
+    mix(idOf(src.positionNames)); mix(idOf(src.residueNumbers));
+    mix(idOf(src.chains)); mix(idOf(src.positionTypes));
+    mix(src.seqOffset | 0);
+    mix(ownGroups.size || 0);
+    if (ownGroups.forEach) {
+        ownGroups.forEach((v, k) => {
+            const t = String(k); mix(t.length);
+            for (let i = 0; i < t.length; i++) mix(t.charCodeAt(i));
+        });
+    }
+    return name + ':' + sig + ':' + src.n;
+}
+
+/** The whole strip's key, or null when something cannot be keyed. */
+function sequenceKeyOf(renderer) {
+    const drawn = (renderer.drawnObjects ? renderer.drawnObjects() : []).slice();
+    const parts = [];
+    for (const name of drawn) {
+        const k = sectionKeyOf(renderer, name);
+        if (k) parts.push(k);
+    }
+    if (!parts.length) return null;
+    return parts.join(',');
+}
+
+function buildObjectSection(renderer, name) {
+    const src = sectionSourceOf(renderer, name);
+    if (!src) return null;
+    const { object, own, frame, positionNames, residueNumbers, chains,
+        positionTypes, n, seqOffset } = src;
 
     const entries = [];
     for (let i = 0; i < n; i++) {
@@ -1136,12 +1222,20 @@ function buildObjectSection(renderer, name) {
         });
     }
 
+    // HOW MANY ENTRIES THE PANEL HAS MATERIALISED, which is one object per
+    // position per build - the number that made the double build visible.
+    const __t0 = (typeof performance !== 'undefined') ? performance.now() : 0;
     // Sort by chain, then by position index (maintains order within chain)
     entries.sort((a, b) => {
         if (a.chain < b.chain) return -1;
         if (a.chain > b.chain) return 1;
         return a.positionIndex - b.positionIndex;
     });
+    if (typeof window !== 'undefined') {
+        window.__seqSortMs = (window.__seqSortMs || 0)
+            + ((typeof performance !== 'undefined') ? performance.now() - __t0 : 0);
+        window.__seqEntries = (window.__seqEntries || 0) + entries.length;
+    }
 
     const boundaries = [];
     let currentChain = null;
@@ -1167,12 +1261,42 @@ function buildObjectSection(renderer, name) {
 
     // ...and this object's ligand groups, in the same index space the
     // entries speak. Offset once, here, rather than at each comparison.
-    const ownGroups = (renderer.ligandGroupsOf
-        ? renderer.ligandGroupsOf(object) : object.ligandGroups) || new Map();
+    const ownGroups = ligandGroupsOfObject(renderer, object);
     const ligandGroups = seqOffset
         ? new Map(Array.from(ownGroups, ([k, v]) => [k, v.map((i) => i + seqOffset)]))
         : ownGroups;
 
+    // 🔴 WHAT THE BUILD BELOW ACTUALLY READS, HASHED - not which frame it came
+    // from. The strip used to be keyed on `frameIndex`, so every step of a
+    // trajectory rebuilt it: a new canvas, a new layout, 494 cells re-measured
+    // and re-drawn, for a strip whose letters had not moved. Nothing the build
+    // reads is per-frame (grep `section.` between the guard and the end of the
+    // build: entries, boundaries, chainSequenceTypes, ligandGroups, name,
+    // hasPositionNames), and what IS per-frame - the colours and the selection
+    // - is applied by the two calls the guard makes instead.
+    //
+    // 🔴 THE KEY IS ASKED FOR SEPARATELY AND IN CONSTANT TIME. Everything
+    // above is a deterministic function of position_names, chains,
+    // residue_numbers and position_types plus `n` and the offset - the entries,
+    // their order, the boundaries and the per-chain sequence types alike - so
+    // sectionKeyOf answers the whole question from those four identities
+    // without materialising a single entry.
+    //
+    // The first version hashed every entry's chain, residue name, number, index
+    // and type, character by character. On a capsid that is 2,081,520 entries,
+    // and `mix` and `mixStr` came to 3.7% of a 12.9 s load - a cost this file
+    // introduced while removing a larger one.
+    //
+    // 🔴 IT ONLY WORKS BECAUSE addFrame SHARES THOSE ARRAYS between the frames
+    // of a trajectory (see tests/frame_share.py). Before that, every frame
+    // carried its own equal-but-distinct copies and identity would have said
+    // "different" on every step, which is the answer this key exists to avoid.
+    //
+    // 🔴 AND THE FOUR TERMS ARE NECESSARY TOGETHER AND UNFALSIFIABLE APART.
+    // Dropping any one of them leaves every gate passing, because the cases
+    // they run - a trajectory of one molecule, then a different structure -
+    // move all four at once or none. They are all here because the entries read
+    // all four, not because anything proves each one.
     return {
         name,
         frame,
@@ -1282,42 +1406,97 @@ function buildSequenceViewDeferred() {
     // that is being replaced.
     forgetPositionState();
     if (deferredBuild) return;
+    // 🔴 THE INNER HANDLE IS KEPT TOO. This was a nested pair with only the
+    // OUTER id stored, so once the outer frame had fired there was a build
+    // pending that nothing could cancel - and cancelling it is exactly what a
+    // direct build needs to do. Reassigning at each stage means `deferredBuild`
+    // always names the request that is actually outstanding.
     deferredBuild = requestAnimationFrame(() => {
-        requestAnimationFrame(() => { deferredBuild = 0; buildSequenceView(); });
+        deferredBuild = requestAnimationFrame(() => {
+            deferredBuild = 0;
+            buildSequenceView();
+        });
     });
 }
 
+/**
+ * WHAT THE WHOLE STRIP COSTS, asked from the outside so the answer includes
+ * the parts that are not in this file's own counters - the layout pass, the
+ * canvas, the colouring. `window.__seqMs` beside `window.__seqBuilds` and
+ * `window.__seqRebuilds`: calls, of which some are rebuilds, in some
+ * milliseconds. tests/panel_idle.py reads all three.
+ */
 function buildSequenceView() {
+    const __sqT0 = (typeof performance !== 'undefined') ? performance.now() : 0;
+    try { return buildSequenceViewInner(); } finally {
+        if (typeof window !== 'undefined') {
+            window.__seqMs = (window.__seqMs || 0)
+                + ((typeof performance !== 'undefined') ? performance.now() - __sqT0 : 0);
+        }
+    }
+}
+
+function buildSequenceViewInner() {
+    // 🔴 A DIRECT BUILD SETTLES A DEFERRED ONE, because it produces exactly
+    // what that build would have produced. Without this the two both run: on a
+    // load, checkFrameChange calls this directly while a deferred build is
+    // already queued, and the queued one then rebuilds the identical view.
+    // Every position is visited twice - 4,163,040 entries built for a
+    // 2,081,520-position capsid - and each entry is an object, so it is
+    // allocation as much as time.
+    if (deferredBuild) {
+        if (typeof cancelAnimationFrame === 'function') {
+            cancelAnimationFrame(deferredBuild);
+        }
+        deferredBuild = 0;
+    }
+    // HOW MANY TIMES THE WHOLE VIEW HAS BEEN BUILT. One per load is the answer;
+    // it was two, and on a capsid that is 4,163,040 entry objects instead of
+    // 2,081,520. window.__seqTrace = true also records where each build came
+    // from, which is how the second one was identified - off by default,
+    // because taking a stack is not free and builds are rare.
+    if (typeof window !== 'undefined') {
+        window.__seqBuilds = (window.__seqBuilds || 0) + 1;
+        if (window.__seqTrace) {
+            try {
+                const st = String(new Error().stack || '').split('\n').slice(1, 5)
+                    .map((l) => l.trim().split(' ')[1] || l.trim()).join(' <- ');
+                (window.__seqBuildFrom = window.__seqBuildFrom || []).push(st);
+            } catch (e) { /* stacks are a nicety */ }
+        }
+    }
     const sequenceViewEl = document.getElementById('sequenceView');
     if (!sequenceViewEl) return;
 
-    // Clear cache when rebuilding
-    lastSequenceUpdateHash = null;
-    sequenceCanvasData = null;
-    // ...AND THE INDICES, which the DOM below is about to make meaningless.
-    forgetPositionState();
-
-    sequenceViewEl.innerHTML = '';
+    // 🔴 NOTHING IS THROWN AWAY UNTIL THE STRIP IS KNOWN TO HAVE CHANGED.
+    // These four lines used to run HERE, above the "is this the same strip?"
+    // test below - and one of them nulls `sequenceCanvasData`, which is the
+    // first half of that test's condition. So the early-out could never fire:
+    // it had been dead since it was written, and the strip was rebuilt from
+    // nothing on every call. (It could not have worked where it stood in any
+    // case - `innerHTML = ''` has already removed the canvas it would have
+    // kept.) `wipe()` is the same four lines, moved past the decision.
+    const wipe = () => {
+        lastSequenceUpdateHash = null;
+        sequenceCanvasData = null;
+        // ...AND THE INDICES, which the DOM below is about to make meaningless.
+        forgetPositionState();
+        sequenceViewEl.innerHTML = '';
+    };
 
     // Get renderer instance
     const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
-    if (!renderer) return;
+    if (!renderer) { wipe(); return; }
 
     // Get object name from dropdown first, fallback to renderer's currentObjectName
     const objectSelect = callbacks.getObjectSelect ? callbacks.getObjectSelect() : null;
     const objectName = objectSelect?.value || renderer?.currentObjectName;
-    if (!objectName || !renderer) return;
+    if (!objectName || !renderer) { wipe(); return; }
 
     // ONE SECTION PER OBJECT ON SCREEN. With one object this is the strip
     // as it has always been; with several it is one after another, each
     // under its own name, because the canvas is showing all of them and a
     // strip that showed one was describing a third of the picture.
-    const sections = sequenceSections(renderer);
-    if (!sections.length) {
-        showEmptyStrip(sequenceViewEl);
-        return;
-    }
-    setStripEnabled(true);
     const currentFrameIndex = renderer.currentFrame >= 0 ? renderer.currentFrame : 0;
 
     // IS THIS THE SAME STRIP? The sections answer it completely: which
@@ -1330,8 +1509,50 @@ function buildSequenceView() {
     // whole strip - a new canvas, losing the scroll position and any
     // element a caller was holding - to draw exactly the same rows with a
     // different heading marked.
-    const shownKey = sections.map(
-        (x) => x.name + ':' + x.frameIndex + ':' + x.entries.length).join(',');
+    //
+    // 🔴 AND IT IS THE CONTENT, NOT THE FRAME NUMBER. `frameIndex` in this key
+    // meant every step of a trajectory was a different strip - and a
+    // trajectory's frames are the same molecule, so the rebuilt strip was
+    // letter for letter the one it replaced. sectionKeyOf keys on exactly what
+    // the build reads (see buildObjectSection); the per-frame part, which is
+    // the colouring and the selection, is what the two calls below apply.
+    // Measured on _traj_1tim.pdb, 494 residues: 1.29 ms a step, one build a
+    // step, and the strip's scroll position thrown away on each.
+    //
+    // 🔴 AND THE BOX IS AN INPUT TOO, WHICH THE DEAD GUARD WAS HIDING. The
+    // layout below divides the container's width into characters per line, so
+    // the same letters in a narrower box are a DIFFERENT strip - and while the
+    // early-out could never fire, every resize rebuilt by accident. With it
+    // alive, a resize that is not in this key leaves a bitmap of the old width
+    // stretched across the new box: tests/mobile_layout.py caught exactly that,
+    // at 0.78x, 1.40x and 2.57x. `sequenceObservedWidth` is what the resize
+    // observer already maintains, so this costs no layout read of its own.
+    // The mode is here for the same reason - it changes what the rows contain.
+    // ...and before the FIRST build there is no observer to have measured it.
+    // Left at its initial 0 the first key would name a width the strip was
+    // never laid out at, and the next call would rebuild once to correct it -
+    // harmless, and it shows up as a rebuild in tests/panel_idle.py, which is
+    // reason enough not to have it. One layout read, once, and never again:
+    // the observer owns the number from here on.
+    if (!sequenceWidthObserver) {
+        sequenceObservedWidth = Math.round(
+            sequenceViewEl.getBoundingClientRect().width);
+    }
+    //
+    // 🔴 AND THE KEY IS ASKED BEFORE THE SECTIONS ARE BUILT, not after. Every
+    // term of it comes from array identities and two numbers, so it costs
+    // nothing - while BUILDING the sections to ask is 2,081,520 entry objects
+    // on a capsid and 3,348 on every step of a 9FOG trajectory, thrown away
+    // the moment the key matches.
+    const objectsKey = sequenceKeyOf(renderer);
+    if (objectsKey === null) {
+        wipe();
+        showEmptyStrip(sequenceViewEl);
+        return;
+    }
+    setStripEnabled(true);
+    const shownKey = objectsKey
+        + '|w' + sequenceObservedWidth + '|m' + (sequenceViewMode ? 1 : 0);
     if (sequenceCanvasData && lastSequenceShownKey === shownKey) {
         // Sequence hasn't changed, just update colors and selection
         updateSequenceViewColors();
@@ -1340,6 +1561,21 @@ function buildSequenceView() {
         return;
     }
 
+    // ...and only now is there a reason to materialise them.
+    const sections = sequenceSections(renderer);
+    if (!sections.length) {
+        wipe();
+        showEmptyStrip(sequenceViewEl);
+        return;
+    }
+
+    // PAST HERE THE STRIP IS ACTUALLY REBUILT - the canvas, the layout and
+    // every cell. `__seqBuilds` counts the calls; this counts the ones that
+    // did the work, which is the number a frame step must not raise.
+    if (typeof window !== 'undefined') {
+        window.__seqRebuilds = (window.__seqRebuilds || 0) + 1;
+    }
+    wipe();
     lastSequenceFrameIndex = currentFrameIndex;
     lastSequenceShownKey = shownKey;
 

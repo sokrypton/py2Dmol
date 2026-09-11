@@ -345,7 +345,29 @@ const RICH_HALF_A = { H: 0.9667, E: 1.1, C: 0.35 };
 // to work, and thickness 0 still has to mean "flatten everything", so
 // these are ratios and the slider supplies the scale. Loops are ignored
 // here: they take thickness == width (square section) so they read round.
-const RICH_TH_REL = { H: 0, E: 1.0, C: 1.0 };
+// 🔴 THE HELIX IS THIN, NOT FLAT, AND THE DIFFERENCE IS NOT COSMETIC. It was
+// 0, and a zero-thickness slab is a DEGENERATE solid: its two broad faces are
+// coincident, its two width bands have no area, and everything downstream has
+// a special case for it - the interior weld's `flatPair` exemption, which
+// exists because welding coincident quads once deleted both faces of every
+// helix; the coincident pair the depth test has to break a tie on, which is
+// where the two-tone flicker lives; and `nLenOf < 1e-6`, the zero-area skip.
+// It is also a singularity in the middle of any interpolation between letters,
+// which is what an SS axis would have to cross - see the plan in
+// tests/PERF_NOTES.md.
+//
+// 0.2 of RICH_THICK_DEFAULT is 0.14 A against a 1.93 A width: an aspect of
+// about fourteen to one, which still reads as a flat streamer, and about one
+// pixel at the scale a ribbon is drawn at - enough for the depth test to have
+// an answer.
+//
+// 🔴 AND THERE IS NO SMALLER VALUE THAT COSTS LESS. Measured against the
+// zero-thickness drawing: 0.05 moves 6.6% of 1UBQ and 18.1% of 3CHY, 1.0 moves
+// 7.4% and 23.1%. The width bands are already in the face list - the count does
+// not change at any value - they are simply zero-area today, so ANY thickness
+// gives every helix two visible side faces and the outlines that go with them.
+// The cliff is at zero; past it the curve is nearly flat.
+const RICH_TH_REL = { H: 0.2, E: 1.0, C: 1.0 };
 // Default total thickness when the Richardson style is selected. The
 // global default is 0 (flat ribbons), which would cancel the preset
 // entirely, so selecting this style seeds the Thick control instead of
@@ -920,7 +942,29 @@ const HELIX_SUB = 8;
 // Strands drawn as flat plates (every cartoon convention flattens the
 // pleat because it competes with reading the packing).
 const FLAT_SHEETS = true;
-const SHEET_SUB = 6;
+// 🔴 AND THERE IS NO SECOND RATE ANY MORE: EVERYTHING IS SAMPLED AT
+// HELIX_SUB. There used to be a SHEET_SUB of 6 for a flat strand and a loop,
+// and the difference was the whole reason a letter could not change for free -
+// a residue carries as many STATIONS as its rate, so H <-> C moved 3 stations,
+// 2 pieces and 4 faces for one residue and 33/22/44 for a run of eleven, which
+// stationsMatch compares, which is a rebuild.
+//
+// One rate makes an H <-> C flip move NOTHING - +0 stations, +0 pieces, +0
+// faces, whole runs included - which is what tests/ss_axis.py measures, and it
+// is why a trajectory that only reassigns letters never rebuilds. The cost is
+// sampling everything at 8: measured at 823 -> 1021 stations on 3CHY.
+//
+// 🔴 AND HOLDING THE COUNTS STILL WAS NOT ENOUGH ON ITS OWN, which
+// tests/station_unpinned.py caught the first time this was tried. Invariance is
+// necessary and not sufficient: with the counts held the fast path REUSES the
+// mesh across a letter change, and the letters also drive data baked into the
+// instance row - the colour, the palette slot, the two-tone flag, `fullOutline`
+// for a Richardson strand. An unpinned fast step drew 0.1529% of the frame
+// differently from the same frame rebuilt. That data follows the frame now
+// (see the piece row's two-tone candidacy in paintgl.js), and the probe reads
+// 0.0287% at its worst - but the rule survives the fix: if you make a new
+// quantity depend on the letter, it has to ride the per-frame tables, or the
+// picture goes stale instead of the mesh going wrong, which is harder to see.
 const SHEET_SMOOTH = 3;   // half-window for averaging strand side vectors
 // ---- NUCLEIC BASE FRAME, PREDICTED FROM THE C4' TRACE -------------------
 //
@@ -1846,6 +1890,35 @@ const SS_PHI_PSI = {
  * geometry uses - so the SS pass and the ribbon cannot disagree about which
  * runs are rings.
  */
+/**
+ * WHICH RESIDUES ARE ONE POLYMER, from the segments the file gave us rather
+ * than guessed from distance - the same answer the draw stage computes from its
+ * own runs and hands to assignSecondary as `links`.
+ *
+ * 🔴 IT EXISTS BECAUSE secForColor WAS NOT MAKING THE SAME CALL, whatever its
+ * comment said. The draw stage passes `groups` and `links`; the colour path
+ * passed neither, so the assignment behind the COLOURS could bond across a
+ * chain break that the assignment behind the GEOMETRY knew about - which is
+ * exactly the "last residue of every helix tinted as coil while the ribbon drew
+ * it as helix" failure that comment was written about.
+ */
+function linksOf(segments, n) {
+    const bb = new Int8Array(n);
+    for (const seg of (segments || [])) {
+        const poly = (seg.type === 'P' || seg.type === 'D' || seg.type === 'R')
+            && seg.contactIdx1 === undefined;
+        if (poly && seg.idx2 === seg.idx1 + 1) bb[seg.idx1] = 1;
+    }
+    const out = new Int32Array(n).fill(-1);
+    let run = -1;
+    for (let i = 0; i < n; i++) {
+        if (run < 0) run += 1;                 // first residue opens run 0
+        out[i] = run;
+        if (!bb[i]) run += 1;                  // i does not reach i+1: new run
+    }
+    return out;
+}
+
 function ringsOf(segments, n) {
     const bb = new Int8Array(n);
     const cand = [];
@@ -2001,7 +2074,44 @@ function assignSecondary(coords, n, positionTypes, opts) {
     return { sec, ladders };
 }
 
+/**
+ * A SPATIAL-GRID CELL AS ONE NUMBER, NOT AS A STRING.
+ *
+ * Both neighbour searches here - the hydrogen bonds in assignSecondaryOpen and
+ * the base pairing in the nucleic pass - bin residues into cells and then read
+ * the twenty-seven cells around each one. Keyed by a template literal, that is
+ * twenty-seven string allocations and twenty-seven string hashes PER RESIDUE,
+ * every frame. Measured on _traj_1tim.pdb, 494 residues: the hydrogen-bond
+ * pass was 2.0-2.6 ms of a 2.3-3.0 ms assignment, and the assignment is 2.4 ms
+ * of an 11.5 ms unpinned step.
+ *
+ * 🔴 A BIJECTION, NOT A HASH. Seventeen bits an axis is 131,072 cells, and a
+ * cell is several Angstrom across, so that is hundreds of thousands of Angstrom
+ * in each direction; the offset carries negative coordinates. The largest key
+ * is about 2.25e15, inside the 2^53 a double holds exactly - so two different
+ * cells cannot share a key and there are no collisions to reason about.
+ *
+ * ONE FUNCTION FOR BOTH SEARCHES. They had a `bkey` each, identical but for the
+ * cell size, and this file has paid for hand-copied pairs often enough.
+ */
+const CELL_KEY_OFF = 65536;
+const CELL_KEY_SPAN = 131072;
+const cellKey = (bx, by, bz) => ((((bx + CELL_KEY_OFF) * CELL_KEY_SPAN)
+    + (by + CELL_KEY_OFF)) * CELL_KEY_SPAN) + (bz + CELL_KEY_OFF);
+
 function assignSecondaryOpen(coords, n, positionTypes, opts) {
+    // WHERE THE ASSIGNMENT'S TIME GOES, when someone asks. Off unless
+    // window.__ssTrace is set, like the sequence panel's build trace: three
+    // clock reads an assignment is nothing, but an accumulator nobody reads is
+    // still a thing to explain. It is what found the string cell keys - the
+    // hydrogen-bond pass was 2.0-2.6 ms of a 2.3-3.0 ms assignment, and
+    // everything else in it was rounding.
+    let __tp = 0;
+    const __trace = (typeof window !== 'undefined') && window.__ssTrace;
+    if (__trace) __tp = performance.now();
+    const __mk = (k) => { if (!__trace) return;
+        const M = (window.__ssPhase = window.__ssPhase || {});
+        M[k] = (M[k] || 0) + (performance.now() - __tp); __tp = performance.now(); };
     const cutoff = (opts && opts.hbCutoff !== undefined) ? opts.hbCutoff : HB_ENERGY_CUTOFF;
     // Positions that may NOT bond to each other, one id per index. Overlay
     // mode merges every frame of a trajectory into one coordinate array, so
@@ -2140,7 +2250,8 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
     const key = (i, j) => i * n + j;
     {   // cell grid over the C-alphas: only near neighbours can bond
         const bins = new Map();
-        const bkey = (x, y, z) => `${Math.floor(x / HB_SEARCH)},${Math.floor(y / HB_SEARCH)},${Math.floor(z / HB_SEARCH)}`;
+        const bkey = (x, y, z) => cellKey(Math.floor(x / HB_SEARCH),
+            Math.floor(y / HB_SEARCH), Math.floor(z / HB_SEARCH));
         for (let i = 0; i < n; i++) {
             if (!isProtein(i)) continue;
             const p = at(i);
@@ -2159,7 +2270,7 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
             for (let dx = -1; dx <= 1; dx++) {
                 for (let dy = -1; dy <= 1; dy++) {
                     for (let dz = -1; dz <= 1; dz++) {
-                        const arr = bins.get(`${bx + dx},${by + dy},${bz + dz}`);
+                        const arr = bins.get(cellKey(bx + dx, by + dy, bz + dz));
                         if (!arr) continue;
                         for (const j of arr) {      // j donates N-H
                             if (Math.abs(i - j) < 3) continue;
@@ -2168,8 +2279,21 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
                             const hq = j * 3;
                             if (!H[hq] && !H[hq + 1] && !H[hq + 2]) continue;
                             const jo = j * 9;
-                            const dON = len3(bb[o + 3] - bb[jo + 6], bb[o + 4] - bb[jo + 7], bb[o + 5] - bb[jo + 8]);
-                            if (dON > 5.5) continue;
+                            // 🔴 THE FIRST TEST REJECTS ALMOST EVERY CANDIDATE,
+                            // SO IT MUST NOT TAKE A SQUARE ROOT. The grid is 9 A
+                            // cells and the neighbourhood is 27 of them, which is
+                            // a 27 A box against a 5.5 A bond - so the overwhelming
+                            // majority of pairs reaching here fail this line, and
+                            // each of them was paying a Math.sqrt to find out. The
+                            // squared comparison is the same test (both sides are
+                            // non-negative) and the root is taken only for the
+                            // pairs that survive, which need the distance itself.
+                            const ox = bb[o + 3] - bb[jo + 6];
+                            const oy = bb[o + 4] - bb[jo + 7];
+                            const oz = bb[o + 5] - bb[jo + 8];
+                            const dON2 = ox * ox + oy * oy + oz * oz;
+                            if (dON2 > 30.25) continue;      // 5.5 * 5.5
+                            const dON = Math.sqrt(dON2);
                             const dCH = len3(bb[o] - H[hq], bb[o + 1] - H[hq + 1], bb[o + 2] - H[hq + 2]);
                             const dOH = len3(bb[o + 3] - H[hq], bb[o + 4] - H[hq + 1], bb[o + 5] - H[hq + 2]);
                             const dCN = len3(bb[o] - bb[jo + 6], bb[o + 1] - bb[jo + 7], bb[o + 2] - bb[jo + 8]);
@@ -2182,6 +2306,7 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
             }
         }
     }
+    __mk('hbonds');
     const bonded = (i, j) => (i >= 0 && j >= 0 && i < n && j < n && hb.has(key(i, j)));
     // helices: two consecutive n-turns. 4 wins, then 3 and 5 fill in.
     const helix = new Uint8Array(n);
@@ -2214,6 +2339,7 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
         const i = Math.floor(k / n), j = k % n;
         addNbr(i, j); addNbr(j, i);
     }
+    __mk('helix');
     const strand = new Uint8Array(n);
     const seen = new Set();
     const candidates = new Set();
@@ -2240,6 +2366,7 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
             if (!seen.has(k)) { seen.add(k); ladders.push([i, j]); }
         }
     }
+    __mk('sheet');
     // LADDER EXTENSION. A bridge needs two hydrogen bonds and this backbone
     // is predicted, so a rung whose bonds land just the wrong side of the
     // cutoff breaks the ladder there - and a strand can survive as a single
@@ -3451,6 +3578,22 @@ if (renderer.cartoonBasePlates !== false) {
             const Lp = []; const Lm = []; const Rp = []; const Rm = [];
             const oN = []; const oB = []; const oT = []; const oK = [];
             const oLb = []; const oLn = []; const oLt = [];
+            // 🔴 THE RUNG'S OWN FRAME, so a base plate can live in a station
+            // table like any other slab. It could not before: this emitter is
+            // not evalSlab - a rung's centre line is straight, so it never went
+            // through the Hermite path that carries the frame probe - and
+            // paintgl's stationMeshOf skips a rib prim with no ub/wa/tv/half.
+            // On a tRNA that is 84 of 237 prims, all of them plates, and they
+            // fall into the tail the fast path draws from the BUILD frame. So
+            // the backbone animated and the base pairs stood still.
+            //
+            // ...AND ITS OWN CENTRE LINE WITH IT. A backbone piece finds its
+            // midpoints in the renderer's _ribbonTrace, indexed by gs0; a rung
+            // is not on that curve and has no entry there, so it carries its
+            // own. Same space as the frames below - stationMeshOf un-rotates
+            // both, which is exactly what _storeRibbonTrace does to the trace.
+            const mUb = []; const mWa = []; const mTv = [];
+            const mHalf = []; const mMid = [];
             // the rung runs straight from the backbone face to the pair
             // centre, so its tangent is constant
             let ttx = midP.x - ncx; let tty = midP.y - ncy;
@@ -3558,6 +3701,27 @@ if (renderer.cartoonBasePlates !== false) {
                 oLb.push(fnx * LIGHT[0] + fny * LIGHT[1] + fnz * LIGHT[2]);
                 oLn.push(wax * LIGHT[0] + way * LIGHT[1] + waz * LIGHT[2]);
                 oLt.push(ttx * LIGHT[0] + tty * LIGHT[1] + ttz * LIGHT[2]);
+                if (frameProbe) {
+                    // 🔴 THE OFFSET DIRECTION, NOT THE FACE NORMAL, and its
+                    // length folded into the half-thickness. A station is
+                    //     corner = mid +- wa * halfW +- ub * halfT
+                    // with ub a UNIT vector, and the corners above are built
+                    // from `of` - which is fn everywhere except the first
+                    // station, where the joint with the backbone takes the
+                    // thickness offset in the face plane and `of` comes out
+                    // SHORTER than unit. Emitting fn there would square up an
+                    // end that is deliberately oblique; normalising `of` and
+                    // scaling halfT by what was removed reproduces `of * th`
+                    // exactly, at every station.
+                    const ofm = len3(ofx, ofy, ofz);
+                    const ok2 = ofm > 1e-9;
+                    mUb.push(ok2 ? [ofx / ofm, ofy / ofm, ofz / ofm]
+                        : [fnx, fny, fnz]);
+                    mHalf.push([hwU, th * (ok2 ? ofm : 1), 0]);
+                    mWa.push([wax, way, waz]);
+                    mTv.push([ttx, tty, ttz]);
+                    mMid.push([cx2, cy2, cz2]);
+                }
                 zSum += (lp[2] + lm[2] + rp[2] + rm[2]) / 4;
             }
             if (!okRung || Lp.length < 2) return;
@@ -3590,6 +3754,13 @@ if (renderer.cartoonBasePlates !== false) {
                     oT: oT.slice(s, s + 2), oK: oK.slice(s, s + 2),
                     oLb: oLb.slice(s, s + 2), oLn: oLn.slice(s, s + 2),
                     oLt: oLt.slice(s, s + 2),
+                    // the frame, when it was asked for - the four arrays a
+                    // station table needs, plus this rung's own midpoints
+                    ub: frameProbe ? mUb.slice(s, s + 2) : undefined,
+                    wa: frameProbe ? mWa.slice(s, s + 2) : undefined,
+                    tv: frameProbe ? mTv.slice(s, s + 2) : undefined,
+                    half: frameProbe ? mHalf.slice(s, s + 2) : undefined,
+                    mid: frameProbe ? mMid.slice(s, s + 2) : undefined,
                     z: zPiece,
                     zShade: zPiece,
                     c: col,
@@ -5546,6 +5717,44 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
         }
         return false;
     })();
+    // 🔴 AFTER hasColorOverrides, NOT BEFORE IT. This block reads it, and a
+    // const read above its declaration is a TDZ throw rather than an
+    // undefined - the same trap paintgl.js records twice.
+    // 🔴 WHAT THIS PASS RESOLVES, PUBLISHED, so the GPU can repaint from it.
+    //
+    // In ordinary modes a segment's colour IS colors[segIdx], so the palette
+    // texture already holds the right thing and a colour change is an upload.
+    // In ss mode, and where the object carries per-residue overrides, the
+    // colour drawn is NOT colors[segIdx] - it is ssPal[ssCls] or the override -
+    // so the face had to bake it, `ciPalette` said so, and every colour change
+    // from then on rebuilt the whole mesh. Selecting a different SS palette,
+    // which is one dropdown item to the next, cost a full rebuild.
+    //
+    // The resolution happens once, below, where both ends of an interval are
+    // known. Writing it into an array indexed the way the palette is means the
+    // texture can carry it and the face can stay a lookup - and the two cannot
+    // disagree, because the same lines produce both.
+    //
+    // ONLY WHEN IT DIFFERS FROM colors. Nothing is allocated on the ordinary
+    // path, which is every mode but this one.
+    // 🔴 RESOLVED BEFORE ANY GEOMETRY, by the function the repaint path calls.
+    // ss colouring needs the assignment, the palette and each segment's two
+    // residues - none of them geometry - so it is answered up here and read
+    // below. That is what lets a switch into ss mode be a texture upload: the
+    // colours no longer wait on a mesh being built to exist.
+    const resolvedNeeded = !!(ssColor || hasColorOverrides);
+    const preResolved = (ssColor && !hasColorOverrides && window.py2dmolCartoon
+        && window.py2dmolCartoon.resolveSegmentColors)
+        ? window.py2dmolCartoon.resolveSegmentColors(renderer, colors) : null;
+    const resolvedCols = preResolved
+        || ((resolvedNeeded && colors) ? colors.slice() : null);
+    // ...and the halves with it: an interval whose ends disagree is cut, and
+    // each half needs its own texel. The app's own halves are the starting
+    // point, not a replacement - a segment this pass does not touch keeps them.
+    const resolvedHalves = resolvedCols
+        ? ((colors.halves ? colors.halves.slice() : [])) : null;
+    if (resolvedCols) resolvedCols.halves = resolvedHalves;
+    renderer._cartoonPalette = resolvedCols;
     const legacyLoop = renderer._loopStyle;
     const loopSquare = legacyLoop === 'square';
     // 'continuous': the whole protein backbone is ONE strip whose
@@ -5650,6 +5859,16 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
     let ladders = renderer._cartoonLadder;
     if (!sec || renderer._cartoonSecKey !== secKey) {
         if (renderer._cartoonSecKey !== secKey) cacheRebuilt = true;
+        // HOW OFTEN THE ASSIGNMENT IS ACTUALLY RECOMPUTED, and what it costs.
+        // This is the expensive half of what _invalidateSegmentCache throws
+        // away - the segment list beside it is 0.7-2.3 ms even at 2,267
+        // positions - so it is the number that decides whether a cache is
+        // worth arguing about. Counted beside window.__faceBuilds and
+        // window.__segmentBuilds.
+        const secT0 = (typeof window !== 'undefined') ? performance.now() : 0;
+        if (typeof window !== 'undefined') {
+            window.__ssBuilds = (window.__ssBuilds || 0) + 1;
+        }
         // A merged view has more than one structure in `coords` at once -
         // every frame of a trajectory in overlay mode, or several objects
         // side by side - so the source each position came from is handed
@@ -5672,6 +5891,9 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
         renderer._cartoonSecKey = secKey;
         renderer._cartoonLadder = ladders;
         renderer._cartoonLadderKey = secKey;
+        if (typeof window !== 'undefined') {
+            window.__ssMs = (window.__ssMs || 0) + (performance.now() - secT0);
+        }
     }
     if (!ladders || renderer._cartoonLadderKey !== secKey) ladders = [];
     // Base frames, predicted from the C4' trace - see predictBaseFrames.
@@ -5769,7 +5991,8 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
         if (idx.length > 1) {
             const CELLA = NA_PAIR_MAX;
             const bins = new Map();
-            const bkey = (x, y, z) => `${Math.floor(x / CELLA)},${Math.floor(y / CELLA)},${Math.floor(z / CELLA)}`;
+            const bkey = (x, y, z) => cellKey(Math.floor(x / CELLA),
+                Math.floor(y / CELLA), Math.floor(z / CELLA));
             for (const i of idx) {
                 const c = coords[i];
                 const k = bkey(c.x, c.y, c.z);
@@ -5789,7 +6012,7 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
                 for (let dx = -1; dx <= 1; dx++) {
                     for (let dy = -1; dy <= 1; dy++) {
                         for (let dz = -1; dz <= 1; dz++) {
-                            const arr = bins.get(`${bx + dx},${by + dy},${bz + dz}`);
+                            const arr = bins.get(cellKey(bx + dx, by + dy, bz + dz));
                             if (!arr) continue;
                             for (const j of arr) {
                                 if (j <= i) continue;
@@ -6512,6 +6735,7 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
         protSide, q0, registerJoint, renderer, rich,
         rotated, runClose, runs, sec, selInk,
         sheetSides, sideOf, ssColor, ssPal, vis,
+        resolvedCols, resolvedHalves, preResolved,
         widthScale,
         naSlabHalfT,
         traceProbe,
@@ -6855,6 +7079,7 @@ function drawRun(runIdx, ctx) {
         protSide, q0, registerJoint, renderer, rich,
         rotated, runClose, runs, sec, selInk,
         sheetSides, sideOf, ssColor, ssPal, vis,
+        resolvedCols, resolvedHalves, preResolved,
         widthScale, traceProbe,
     } = ctx;
         const [lo, hi] = runs[runIdx];
@@ -7588,6 +7813,13 @@ function drawRun(runIdx, ctx) {
             // width. They are separate quantities and are now read from
             // separate controls; RICH_HALF_A.C is calibrated so the default
             // still draws the square section the preset is meant to have.
+            // 🔴 A LETTER PICKS A PROFILE AND NOTHING ELSE - a half-width
+            // here and a thickness ratio below. The station count, the piece
+            // cuts and the face list do not read it, which is why a letter
+            // CHANGING costs no rebuild while the ribbon is built one way for
+            // every letter: only these two numbers move. See tests/ss_axis.py,
+            // which is the gate on that, and the SS axis sections in
+            // tests/PERF_NOTES.md.
             return (WIDTHS[t] || WIDTHS.C) * widthScale;
         };
         // ARROWHEADS (Richardson preset). The head is HALF a CA-CA step
@@ -7863,7 +8095,15 @@ function drawRun(runIdx, ctx) {
                 // (selection tools, or set_color from Python) is not. Without
                 // this the palette overwrote it and manual colouring silently
                 // did nothing in ss mode.
-                const pal = ssPal[ssCls] || ssPal.C;
+                //
+                // 🔴 THE CLASS COLOUR COMES FROM resolveSegmentColors WHERE IT
+                // RESOLVED ONE, and is computed here only when it did not -
+                // which is when the object carries overrides, the case that has
+                // to rebuild anyway. Two places deciding what colour a helix is
+                // would drift, and the drift would be one interval at each
+                // element boundary: visible, and easy to live with for months.
+                const pal = (preResolved && preResolved[segIdx])
+                    || ssPal[ssCls] || ssPal.C;
                 col = ovI || pal || col;
                 colFar = ovN || pal || colors[segIdx];
             } else if (hasColorOverrides && renderer.getAtomColor) {
@@ -7873,6 +8113,13 @@ function drawRun(runIdx, ctx) {
             }
             const twoTone = !!(col && colFar && col !== colFar
                 && (col.r !== colFar.r || col.g !== colFar.g || col.b !== colFar.b));
+            // ...and into the published palette, base and both halves. Slot 0
+            // is what an uncut piece reads and slot a/b are the two sides of a
+            // cut, which is exactly how setPalette lays a segment out.
+            if (resolvedCols && segIdx >= 0 && segIdx < resolvedCols.length) {
+                resolvedCols[segIdx] = col;
+                if (twoTone) resolvedHalves[segIdx] = { a: col, b: colFar };
+            }
             if (!col) { flushTubeRun(); continue; }
             // Offscreen: contributes nothing on screen and cannot occlude
             // anything that is - skip before building any geometry. Ends
@@ -7953,6 +8200,26 @@ function drawRun(runIdx, ctx) {
                 // where the flat back face belongs (capped below).
                 const beforeStrand = arrowsOn && isProt && iN <= hi
                     && sec[iN] === 'E' && sec[i] !== 'E';
+                // ...and the interval that CARRIES THE BLUNT END, which is the
+                // strand's first. A strand begins at full width rather than
+                // ramping up to it, so its first cross-section is a real rim -
+                // "without it you see straight into the hollow back of the
+                // sheet at its N-terminus", which is why this used to be a cap
+                // FACE. A face a letter creates is a rebuild, so the rim is
+                // made the way the arrow's barb step is made instead: the
+                // station at u = 0 is DUPLICATED, one copy carrying the
+                // neighbour's profile and one the strand's, and the zero-length
+                // band between them is the rim. Its own four faces close it -
+                // there is nothing to cap.
+                //
+                // Not at `lo`: a chain that begins on a strand has a real
+                // terminus there, and that cap is a property of the chain
+                // rather than of the letter, so it stays.
+                const iPrev = cyclic ? wrapIdx(i - 1) : i - 1;
+                const startStep = arrowsOn && isProt && profiled
+                    && sec[i] === 'E'
+                    && (cyclic ? sec[iPrev] !== 'E'
+                        : (i > lo && sec[i - 1] !== 'E'));
                 const hwA = profiled
                     ? halfW(afterArrow ? iN : i) : hw;
                 const hwB = profiled
@@ -7961,6 +8228,11 @@ function drawRun(runIdx, ctx) {
                     ? halfT(afterArrow ? iN : i) : null;
                 const htB = profiled
                     ? halfT(beforeStrand ? i : iN) : null;
+                // ...and what the rim's own station holds: the residue BEFORE
+                // the strand, so the two copies differ by exactly the step the
+                // rim is.
+                const hwRim = startStep ? halfW(iPrev) : 0;
+                const htRim = startStep ? halfT(iPrev) : null;
                 const arrowHead = isArrowInterval(i);
                 const arrowBase = (WIDTHS.E || SS_HALF_A.E) * widthScale;
                 const s1 = sides[i - lo];
@@ -7996,15 +8268,67 @@ function drawRun(runIdx, ctx) {
                 // Sampling comes from the Detail control alone (see
                 // subFloor): the same subdivisions per residue at every
                 // canvas size, zoom and rotation.
-                let nsub = subFloor(t0 === 'H' ? HELIX_SUB
-                    : (FLAT_SHEETS ? SHEET_SUB : 2));
-                // Helix-exact tangents (two-term stencil) for helices;
-                // Catmull-Rom tangents for the nearly straight (and
-                // flattened) strands.
+                // 🔴 ONE PATH FOR EVERY LETTER. This branched on `t0 === 'H'`
+                // twice - here for the sampling and below for the tangent
+                // stencil - and those two branches were the whole difference
+                // between a helix and everything else. Everything downstream
+                // is shared: the same corner curves, the same frames, the same
+                // faces. A letter chose a CONSTRUCTION and then a profile;
+                // now it chooses only a profile.
+                //
+                // 🔴 AND THAT IS WHAT MAKES THE LETTER MOVABLE. Two branches
+                // meant two obstacles, both measured (tests/ss_axis.py and the
+                // centre-line assertion in tests/cartoon_station.js):
+                //
+                //   * a helix carried more STATIONS per residue than a loop, so
+                //     changing a letter changed the station, piece and face
+                //     counts - 3, 2 and 4 for a single residue - and every one
+                //     of those is a full rebuild;
+                //   * and the two stencils put the centre line in different
+                //     places, 0.3367 A apart over the same residues, so the
+                //     ribbon JUMPED when a letter changed.
+                //
+                // With one path both read zero. An H <-> C flip moves +0
+                // stations, +0 pieces, +0 faces, and pinning the assignment
+                // moves the centre line by 0.0000 A - and that zero is now a
+                // real one: the old test could only compare the ENDPOINTS
+                // while the sample counts differed, and endpoints always match.
+                //
+                // It costs sampling: everything is at HELIX_SUB now, 823 ->
+                // 1,021 stations on 3CHY and 449 -> 605 on 1UBQ. What it buys
+                // besides the axis is that the loops stop faceting - they were
+                // the ones sampled coarsely - which is visible.
+                let nsub = subFloor(HELIX_SUB);
+                // 🔴 THE DUPLICATES ARE DECIDED HERE, BEFORE evalSlab READS
+                // THEM, and both are paid for out of the interval's own
+                // sampling - see the note above the `us` construction below.
+                //
+                // WHAT EACH ONE COSTS, in sub-intervals of non-zero length.
+                // The rim needs ONE: its duplicate sits at u = 0 and everything
+                // after it is the strand, so [0, 0, 1] is a complete blunt-ended
+                // interval and three stations is enough - which is what the
+                // lowest Detail gives. The seam needs TWO, a shaft and a barb,
+                // and it sits in the middle, so it cannot be done in fewer.
+                // An interval can want both: a two-residue strand's one
+                // interval is its own first and its own last.
+                //
+                // 🔴 AND THE RIM'S THRESHOLD WAS 3 FOR NO REASON. At Detail 2 -
+                // nsub 2, three stations - it fell through to the width ramp
+                // and drew the chamfer this pays a station to avoid, while the
+                // stations to do it properly were already there. The arithmetic
+                // is stations, not a guess: seg = nsub - dups, and the rim
+                // wants seg >= 1 where the seam wants seg >= 2.
+                const nsub0 = nsub;
+                const dupSeam = arrowHead && nsub0 >= 3;
+                const dupRim = startStep && nsub0 >= (dupSeam ? 4 : 2);
+                // The helix-exact two-term stencil, for everything. It is a
+                // smoothing filter fitted to a helix's 100 degrees a residue;
+                // on a straight run it is very nearly linear, which is why the
+                // strands do not move and the loops only get smoother.
                 const tanAt = (j) => {
                     const q1 = at(wrapIdx(j - 1));
                     const q2 = at(wrapIdx(j + 1));
-                    if (t0 === 'H') {
+                    if (true) {
                         if (!cyclic && j - 2 < lo && j + 3 <= hi) {
                             // one-sided forward (N-terminal end)
                             const p0 = at(j);
@@ -8220,7 +8544,7 @@ function drawRun(runIdx, ctx) {
                             ? renderer.cartoonThickness / 2
                             : RIBBON_TH_A));
                 const ht = htFlat;
-                const evalSlab = (u, afterSeam) => {
+                const evalSlab = (u, afterSeam, atRim) => {
                     hermiteV(pa, pb, mA, mB, u, q0);
                     const t2 = u * u;
                     const t3 = t2 * u;
@@ -8288,6 +8612,21 @@ function drawRun(runIdx, ctx) {
                         const uu = u * u * (3 - 2 * u);
                         hwU = hwA + (hwB - hwA) * uu;
                         htU = htA + (htB - htA) * uu;
+                    }
+                    // ...and the rim's own copy of station 0, which holds the
+                    // profile of the residue BEFORE the strand. Everything
+                    // after it is the strand, so the step between the two
+                    // coincident stations IS the blunt end, square and
+                    // perpendicular, made of the band's own four faces. The
+                    // fallback below is for a subdivision too coarse to spare
+                    // the duplicate: there the width ramps over the first
+                    // sub-interval instead, which reads as a small chamfer.
+                    if (atRim) { hwU = hwRim; htU = htRim; }
+                    else if (startStep && !dupRim) {
+                        const uv = Math.min(1, u * nsub0);
+                        const uu = uv * uv * (3 - 2 * uv);
+                        hwU = hwRim + (hwU - hwRim) * uu;
+                        htU = htRim + (htU - htRim) * uu;
                     }
                     if (arrowHead) {
                         // Shaft width up to the seam, then a straight
@@ -8373,7 +8712,18 @@ function drawRun(runIdx, ctx) {
                         // what oN above is built from), t the tangent
                         cnr.push([ubx, uby, ubz],
                             [nx, ny, nz],
-                            [tx / tm, ty / tm, tz / tm]);
+                            [tx / tm, ty / tm, tz / tm],
+                            // 🔴 ...AND THE TWO SCALARS, which make this a
+                            // STATION rather than just a frame. A consumer
+                            // placing the corners needs
+                            //     Lp = mid + n*halfW + ub*halfT
+                            // and had no way to ask for halfW and halfT: they
+                            // are computed here, used three lines up, and were
+                            // thrown away. tests/cartoon_station.js FITS them
+                            // out of the projected corners for want of them,
+                            // which is a regression test doing arithmetic that
+                            // the renderer already did.
+                            [hwU, htU, 0]);
                     }
                     // THE CENTRE, IN THE SPACE THE CURVE WAS EVALUATED IN.
                     // Not derivable from the corners above: those are
@@ -8402,15 +8752,74 @@ function drawRun(runIdx, ctx) {
                 const mUb = [];
                 const mWa = [];
                 const mT = [];
+                const mHalf = [];      // [halfW, halfT] a station
                 let ok = true;
                 let zSum = 0;
                 // Station parameters. Uniform normally; an arrowhead needs
                 // the seam sampled TWICE - once at shaft width, once at
                 // full barb width - so the step across the barbs is exactly
                 // perpendicular instead of slanting over one sub-interval.
+                //
+                // 🔴 AND THE SECOND SAMPLE IS PAID FOR OUT OF THE INTERVAL'S
+                // OWN SAMPLING, NOT ADDED TO IT. A station is TOPOLOGY - it is
+                // what stationsMatch counts - so an interval that grows one
+                // when its residue becomes a strand is a rebuild, and the
+                // arrowhead was the last thing in the ribbon that a change of
+                // letter could CREATE rather than resize. Reallocating instead
+                // of adding leaves the count at nsub + 1 whatever the letter
+                // is: the duplicate costs one sub-interval of arc resolution
+                // in the one interval that carries a head, and the head is
+                // half a residue of nearly straight strand.
+                //
+                // 🔴 AND THE ODD SAMPLE GOES TO THE BARB, WHICH IS THE OPPOSITE
+                // OF WHAT IT LOOKS LIKE IT SHOULD. The barb's EDGES are a
+                // linear taper, so two stations describe them exactly, which
+                // argues for giving the shaft the remainder - but the centre
+                // line under them is the strand's, and a chord is a chord
+                // wherever it is. Measured on 1UBQ with tests/cartoon_station.js
+                // (the worst centre-curve movement in an interval that gains a
+                // head): the shaft taking the remainder is 0.2151 A, the barb
+                // taking it is 0.1146 A. Floor, not round, for that reason.
+                //
+                // 🔴 EXCEPT AT THE FLOOR, where there is nothing to reallocate:
+                // nsub 2 is three stations, and a shaft, a duplicated seam and
+                // a barb need four. Below three sub-intervals the head still
+                // adds its station and a letter change there still rebuilds -
+                // the alternative is an arrowhead with no shaft or no barb.
+                // 🔴 AND THE BLUNT START IS A DUPLICATE TOO, for the same
+                // reason and out of the same budget. Two coincident stations at
+                // u = 0, one holding the previous residue's profile and one the
+                // strand's: the band between them has no length and the step's
+                // worth of width, so its four faces ARE the flat end. The cap
+                // face that used to close it was a face a letter created, and
+                // that was a rebuild.
                 const us = [];
                 let seamIdx = -1;
-                if (arrowHead) {
+                let rimIdx = -1;
+                if (dupSeam || dupRim) {
+                    const dups = (dupSeam ? 1 : 0) + (dupRim ? 1 : 0);
+                    const seg = nsub0 - dups;      // sub-intervals with length
+                    const list = [];
+                    let seamPos = -1;
+                    if (dupSeam) {
+                        const shaftN = Math.max(1, Math.floor(seg / 2));
+                        const barbN = seg - shaftN;
+                        for (let k = 0; k <= shaftN; k++) {
+                            list.push(arrowU * k / shaftN);
+                        }
+                        seamPos = list.length - 1;
+                        for (let k = 1; k <= barbN; k++) {
+                            list.push(arrowU + (1 - arrowU) * k / barbN);
+                        }
+                    } else {
+                        for (let k = 0; k <= seg; k++) list.push(k / seg);
+                    }
+                    for (let k = 0; k < list.length; k++) {
+                        if (k === 0 && dupRim) { rimIdx = us.length; us.push(0); }
+                        us.push(list[k]);
+                        if (k === seamPos) { seamIdx = us.length - 1; us.push(list[k]); }
+                    }
+                } else if (arrowHead) {
                     const halfN = Math.max(2, Math.round(nsub / 2));
                     for (let k = 0; k <= halfN; k++) us.push(arrowU * k / halfN);
                     seamIdx = us.length - 1;
@@ -8422,7 +8831,8 @@ function drawRun(runIdx, ctx) {
                 }
                 nsub = us.length - 1;   // everything below indexes stations
                 for (let k = 0; k <= nsub; k++) {
-                    const st = evalSlab(us[k], arrowHead && k > seamIdx);
+                    const st = evalSlab(us[k], arrowHead && k > seamIdx,
+                        rimIdx >= 0 && k === rimIdx);
                     if (!st) { ok = false; break; }
                     Lp.push(st[0]);
                     Lm.push(st[1]);
@@ -8435,7 +8845,10 @@ function drawRun(runIdx, ctx) {
                     oLb.push(st[8]);
                     oLn.push(st[9]);
                     oLt.push(st[10]);
-                    if (frameProbe) { mUb.push(st[11]); mWa.push(st[12]); mT.push(st[13]); }
+                    if (frameProbe) {
+                        mUb.push(st[11]); mWa.push(st[12]); mT.push(st[13]);
+                        mHalf.push(st[14]);
+                    }
                     // ...and the centre line of the drawn ribbon at this
                     // station, which evalSlab hands back on `mid`.
                     if (traceProbe && st.mid) centres.push(st.mid);
@@ -8482,9 +8895,7 @@ function drawRun(runIdx, ctx) {
                 // seam, cutting a helix that runs straight through it. Fall
                 // back to the neighbour's class, which is what decides every
                 // other element boundary anyway.
-                const iP = cyclic ? wrapIdx(i - 1) : i - 1;
-                const strandStart = arrowsOn && isProt && sec[i] === 'E'
-                    && (cyclic ? sec[iP] !== 'E' : (i === lo || sec[i - 1] !== 'E'));
+                const iP = iPrev;
                 // A ring has no first or last residue, so lo and hi are
                 // not element ends and get no cap. Note this SUPPRESSES the
                 // profiled cap on a ring rather than switching to the
@@ -8492,8 +8903,19 @@ function drawRun(runIdx, ctx) {
                 // run, so consulting sameElem here put a cross-edge stroke
                 // at EVERY residue of a cyclic peptide - visible as lines
                 // ruled across the ribbon (5KX0).
-                const capStartV = strandStart
-                    || (profiled ? (i === lo && !cyclic) : !sameElem(iP, t0));
+                // 🔴 AND NO CAP AT THE STRAND'S START ANY MORE. It was
+                // `strandStart || ...`, and it was the one face a change of
+                // letter could still create: measured on _traj_1tim.pdb as 8
+                // rebuilds in 29 steps with everything else already free, and 0
+                // with it gone. The rim it covered is still there and still
+                // square - it is made of the zero-length band between the
+                // duplicated station at u = 0 and its neighbour, whose four
+                // trapezoids ARE the end wall, so there is nothing hollow to
+                // see into and nothing for a cap to close. See `startStep`.
+                // The non-profiled path caps at every element boundary through
+                // sameElem and always did.
+                const capStartV = profiled
+                    ? (i === lo && !cyclic) : !sameElem(iP, t0);
                 const capEndV = profiled
                     ? (iN === hi && !cyclic) : !sameElem(iN, t0);
                 // Quarter-interval pieces: the depth sort can only be as
@@ -8527,10 +8949,47 @@ function drawRun(runIdx, ctx) {
                     : (cutMode === 'half' || nsub < 4)
                         ? [0, Math.max(1, Math.floor(nsub / 2)), nsub]
                         : [0, q1, q2c, q3, nsub];
-                for (let k = 1; k < nsub; k++) {
-                    if ((oB[k - 1] < 0) !== (oB[k] < 0)
-                        || (oN[k - 1] < 0) !== (oN[k] < 0)) {
-                        cutSet.push(k);
+                // 🔴 THE FOLD CUTS ARE FOR A PAINTER THAT SORTS, and a depth
+                // buffer does not sort. They exist so each piece carries an
+                // honest depth key: a piece spanning a fold takes its near
+                // half's key and the painter hoists the whole footprint,
+                // including the folded-away part. A GPU frame resolves that per
+                // FRAGMENT and needs none of it.
+                //
+                // They are also the reason a trajectory step cannot reuse its
+                // face list: oB and oN follow the geometry, so a cut moves when
+                // the structure does, and the face-to-station mapping moves
+                // with it. Off, a step keeps its mapping and the mesh is only
+                // uploaded, not rebuilt.
+                //
+                // 🔴 NOT A FREE SWITCH, THOUGH: a cut is also a piece boundary,
+                // and piece boundaries are where the outline is drawn. That is
+                // why this is a flag with its own gate rather than a default -
+                // see tests/station_foldcuts.py for what it costs in pixels.
+                if (renderer._noFoldCuts !== true) {
+                    // 🔴 COUNTED, BECAUSE THE PIECE COUNT IS ONLY SOMETIMES
+                    // PROOF. tests/station_foldcuts.py and
+                    // tests/stable_topology.py both used "the cuts changed the
+                    // number of pieces" as their way of knowing the flag had
+                    // REACHED here. Raise the sampling and that stops being
+                    // true - 27 cuts found on 1UBQ and not one extra piece,
+                    // because they land where a cut already is - and "the
+                    // count did not change" then means both "the flag never
+                    // arrived" and "it arrived and found nothing", which are
+                    // opposite conclusions about opposite faults. These
+                    // separate them, and cost two increments on a path that
+                    // runs once per interval.
+                    if (typeof window !== 'undefined') {
+                        window.__foldCutScans = (window.__foldCutScans || 0) + 1;
+                    }
+                    for (let k = 1; k < nsub; k++) {
+                        if ((oB[k - 1] < 0) !== (oB[k] < 0)
+                            || (oN[k - 1] < 0) !== (oN[k] < 0)) {
+                            cutSet.push(k);
+                            if (typeof window !== 'undefined') {
+                                window.__foldCutsFound = (window.__foldCutsFound || 0) + 1;
+                            }
+                        }
                     }
                 }
                 // the barb step is a genuine discontinuity in the surface
@@ -8583,6 +9042,12 @@ function drawRun(runIdx, ctx) {
                     // wrong side of it
                     const far = twoTone && a0 >= midCut;
                     const pieceCol = far ? colFar : col;
+                    // WHICH PALETTE TEXEL THIS PIECE READS: 0 the segment's own
+                    // colour, 1 and 2 the two sides of a colour cut. Without it
+                    // both halves of a cut interval read slot 0 and the far one
+                    // draws the near one's colour, which is why a rib face
+                    // could not be a lookup at all while ss mode was on.
+                    const halfSlot = twoTone ? (far ? 2 : 1) : 0;
                     const pieceOv = far ? ovN : ovI;
                     const prim = {
                         kind: 'rib',
@@ -8647,6 +9112,7 @@ function drawRun(runIdx, ctx) {
                         // the model-space frame, when renderer._frameProbe
                         // asked for it - see evalSlab
                         ub: frameProbe ? mUb.slice(a0, e0 + 1) : undefined,
+                        half: frameProbe ? mHalf.slice(a0, e0 + 1) : undefined,
                         wa: frameProbe ? mWa.slice(a0, e0 + 1) : undefined,
                         tv: frameProbe ? mT.slice(a0, e0 + 1) : undefined,
                         z: zSort,
@@ -8659,9 +9125,21 @@ function drawRun(runIdx, ctx) {
                         // an override or an ss-mode colour did not, and says
                         // so, because a lookup would then be wrong.
                         ci: frameProbe ? segIdx : undefined,
-                        ciPalette: frameProbe
-                            ? !(ssColor && isProt) && !hasColorOverrides
-                            : undefined,
+                        // ALWAYS a lookup now. It used to be false in ss mode
+                        // and under overrides because the colour drawn was not
+                        // colors[segIdx] - it is still not, but the palette
+                        // above carries the resolved value, so the lookup is
+                        // right again and a colour change stays an upload.
+                        ciPalette: frameProbe ? true : undefined,
+                        // 🔴 NOT `half`. That name is taken: the frame probe
+                        // puts [halfWidth, halfThickness] per station on
+                        // `p.half`, and stationMeshOf reads hf[0]/hf[1] off it
+                        // to place the corners. Writing a palette index there
+                        // made every rib prim look frameless, the station table
+                        // covered 0 of 6927 rows, and the whole fast path went
+                        // away - which tests/station_sidechains.py caught and
+                        // nothing about the colours would have.
+                        ciHalf: frameProbe ? halfSlot : undefined,
                         capStart: a0 === 0 && capStartV,
                         capEnd: e0 === nsub && capEndV,
                         gs0: i + a0 / nsub,
@@ -10722,13 +11200,31 @@ if (typeof window !== 'undefined' && window.py2dmolCartoon) {
 // move, so a live-mode replace() left the assignment in place and
 // _invalidateSegmentCache had to clear it by hand. Plus the forced SSE,
 // which is this cache's own business.
+//
+// 🔴 UNLESS THE CALLER SAYS THE FOLD DOES NOT CHANGE. All three caches on this
+// key - the assignment, the base pairing, the sheet frames - answer questions
+// about which residues these are and how they are connected, not about where
+// they currently sit. On a trajectory whose topology is fixed they give the
+// same answer in every frame and are recomputed for every one anyway, because
+// `_coordsKey` names the frame. `stableTopology` swaps in a key that does not:
+// parts/multi.js:_topologyKey.
+//
+// 🔴 IT IS OPT-IN AND MUST STAY OPT-IN. A folding trajectory is the same
+// objects, the same length and a different fold every frame; kept across those,
+// the assignment would draw the last frame's helices on the first frame's
+// coordinates. There is no cheap way to tell the two apart from here either -
+// a fingerprint able to notice the fold changing costs about what
+// assignSecondary costs, since that is the same CA-CA distance set. So it is
+// the caller's statement about its own data, and the default is unchanged.
 const secCacheKey = (renderer, n) => (
-    (renderer._coordsKey ? renderer._coordsKey()
-        : `${renderer.currentObjectName}|${renderer.currentFrame}|${n}`
-          + `|${!!(renderer.overlayState && renderer.overlayState.enabled)}`
-          + `|${(renderer.multiState && renderer.multiState.enabled
-              && renderer.multiState.sourceNames)
-              ? renderer.multiState.sourceNames.join(',') : ''}`)
+    (renderer.stableTopology === true && renderer._topologyKey
+        ? renderer._topologyKey()
+        : (renderer._coordsKey ? renderer._coordsKey()
+            : `${renderer.currentObjectName}|${renderer.currentFrame}|${n}`
+              + `|${!!(renderer.overlayState && renderer.overlayState.enabled)}`
+              + `|${(renderer.multiState && renderer.multiState.enabled
+                  && renderer.multiState.sourceNames)
+                  ? renderer.multiState.sourceNames.join(',') : ''}`))
     + sseKey(renderer));
 
 const applySse = (sec, renderer) => {
@@ -10754,14 +11250,31 @@ const secForColor = (renderer) => {
     // Same call the draw stage makes, so the colours cannot disagree with
     // the geometry: colouring from a different pipeline used to tint the
     // last residue of every helix as coil while the ribbon drew it as helix.
+    const groupSrcC = renderer.sourceGroups ? renderer.sourceGroups() : null;
     const assigned = assignSecondary(renderer.coords, n, renderer.positionTypes,
         { names: renderer.positionNames,
-            rings: ringsOf(renderer.segmentIndices, n) });
+            rings: ringsOf(renderer.segmentIndices, n),
+            groups: (groupSrcC && groupSrcC.length === n) ? groupSrcC : null,
+            links: linksOf(renderer.segmentIndices, n) });
     const sec = applySse(assigned.sec, renderer);
     renderer._ssColorSec = sec;
     renderer._ssColorKey = key;
     return sec;
 };
+// 🔴 ATTACHED HERE AND NOT IN THE EXPORT BLOCK ABOVE, which runs before this
+// const exists: assigning it there throws "Cannot access 'secCacheKey' before
+// initialization" the first time anything renders, which is the same trap the
+// sseKey note beside that block describes.
+//
+// paintgl's rebuild signature is the consumer: the outline's edge set is baked
+// per strand face, so the signature has to know which residues are strands THIS
+// frame. `renderer._cartoonSec` is the last frame the draw stage ran, and a
+// signature reading that notices a letter one frame late - it draws one stale
+// picture and rebuilds after. secForColor is keyed on the frame and caches, so
+// asking it costs the assignment once rather than twice.
+if (typeof window !== 'undefined' && window.py2dmolCartoon) {
+    window.py2dmolCartoon.secForColor = secForColor;
+}
 // ...AND ANYONE ELSE WHO NEEDS THE ASSIGNMENT CAN ASK FOR IT.
 //
 // The selection panel used to read renderer._cartoonSec directly and give
@@ -10773,6 +11286,102 @@ const secForColor = (renderer) => {
 // way the colour path does.
 if (typeof window !== 'undefined' && window.py2dmolCartoon) {
     window.py2dmolCartoon.secondaryFor = secForColor;
+
+    /**
+     * WHAT COLOUR EACH SEGMENT IS IN ss MODE, resolved WITHOUT drawing.
+     *
+     * ss colouring is not a palette lookup: the colour is `ssPal[ssCls]` for
+     * the interval, and that was computed inside the geometry pass, where the
+     * secondary structure and the interval's two residues were already to hand.
+     * So the resolved palette only existed after a mesh had been built, and
+     * entering or leaving ss mode had to rebuild one - not because the geometry
+     * differs (it does not: 1019 mesh faces and 201 ribbon prims in chain,
+     * rainbow and ss alike) but because the colours were computed in there.
+     *
+     * The rule needs three things and none of them are geometry: the SS
+     * assignment, which secForColor already caches; the palette; and each
+     * segment's two residues, which segmentIndices carries as idx1 and idx2.
+     * So it is resolvable here, and the draw pass READS this rather than
+     * computing its own - one answer, two callers, and no way for the picture
+     * and the texture to disagree about what colour a helix is.
+     *
+     * 🔴 NULL FOR ANYTHING BUT PLAIN ss. An override is per RESIDUE, so the two
+     * ends of an interval can differ, and that difference CUTS the ribbon at
+     * its midpoint - real geometry, which no repaint can produce. Those still
+     * rebuild, and `hasColorOverrides` stays in the mesh signature for them.
+     *
+     * 🔴 AND THE CLASS RULE IS THE DRAW PASS'S, COPIED EXACTLY: both ends agree
+     * -> that class; otherwise H if either end is H; else coil. A helix wins
+     * its transition intervals because the ribbon is still spiralling across
+     * them, where a strand stops dead at its arrow tip. Getting this wrong
+     * would tint one interval at each element boundary and nothing else, which
+     * is the kind of difference that survives a long time.
+     */
+    const resolveSegmentColors = (renderer, colors) => {
+        if (!renderer || !colors) return null;
+        const mode = renderer._getEffectiveColorMode
+            ? renderer._getEffectiveColorMode() : renderer.colorMode;
+        const ssMode = mode === 'ss';
+        const getOv = renderer.getColorOverride
+            ? renderer.getColorOverride.bind(renderer) : null;
+        // 🔴 OVERRIDES TOO, AND THAT IS NOT SCOPE CREEP - IT IS THE FIX.
+        // Resolving only ss left the OTHER resolution living on
+        // renderer._cartoonPalette, written by the draw pass. Leaving ss
+        // without a rebuild then repainted from that field, which still held
+        // the ss colours: 7.84% of the frame wrong, worst channel 152. A
+        // second, staler source of the same answer is exactly the thing this
+        // function exists to remove, so it answers for both and the field is
+        // never consulted on the repaint path at all.
+        const hasOv = !!(getOv && (() => {
+            const names = renderer.drawnObjects ? renderer.drawnObjects()
+                : [renderer.currentObjectName];
+            for (const nm of names) {
+                const c = (renderer.objectsData && renderer.objectsData[nm] || {}).color;
+                if (c && c.type === 'advanced' && c.value
+                    && (c.value.position || c.value.chain)) return true;
+            }
+            return false;
+        })());
+        if (!ssMode && !hasOv) return null;      // colors is already the answer
+        const segs = renderer.segmentIndices;
+        if (!segs || !segs.length) return null;
+        const sec = ssMode ? secForColor(renderer) : null;
+        if (ssMode && !sec) return null;
+        const ssPal = ssPaletteOf(renderer);
+        const types = renderer.positionTypes;
+        const out = colors.slice();
+        const halves = colors.halves ? colors.halves.slice() : [];
+        out.halves = halves;
+        for (let k = 0; k < segs.length && k < out.length; k++) {
+            const seg = segs[k];
+            if (!seg) continue;
+            const i = seg.idx1;
+            const iN = seg.idx2;
+            const isProt = !types || (types[i] === 'P' && types[iN] === 'P');
+            // the draw pass's own rule, copied: both ends agree -> that class;
+            // otherwise H if either end is H; else coil. A helix wins its
+            // transition intervals because the ribbon is still spiralling
+            // across them, where a strand stops dead at its arrow tip.
+            const pal = (ssMode && isProt)
+                ? (ssPal[(sec[i] === sec[iN]) ? sec[i]
+                    : ((sec[i] === 'H' || sec[iN] === 'H') ? 'H' : 'C')] || ssPal.C)
+                : null;
+            const ovI = hasOv ? getOv(i) : null;
+            const ovN = hasOv ? getOv(iN) : null;
+            const base = colors[k];
+            const col = ovI || pal || base;
+            const colFar = ovN || pal || base;
+            if (col) out[k] = col;
+            // ...and where the two ends disagree, each half takes its own end's
+            // colour - the same split the draw pass cuts the interval for.
+            if (col && colFar && (col.r !== colFar.r || col.g !== colFar.g
+                || col.b !== colFar.b)) {
+                halves[k] = { a: col, b: colFar };
+            }
+        }
+        return out;
+    };
+    window.py2dmolCartoon.resolveSegmentColors = resolveSegmentColors;
 }
 // WRITTEN DIRECTLY, AND core/mol.js IS NOT ASSUMED TO BE THERE. The old comment
 // here said the register helper was "module scoped ... and not exposed on

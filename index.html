@@ -277,6 +277,18 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                             title="Cycle playback speed">1x</button>
                         <button id="overlayButton" class="btn btn-secondary" title="Overlay all frames"
                             style="font-weight: 400;">⧉</button>
+                        <!-- KEEP SSE: assign the secondary structure once and keep it for
+                             every frame. Right for a trajectory that is one molecule
+                             moving - MD, an NMR ensemble, a morph - and wrong for one that
+                             FOLDS, which is why it is a button and not the default.
+                             See parts/multi.js:_topologyKey. -->
+                        <!-- btn-icon-only, and the label is the acronym: spelled out as
+                             "Keep SSE" it is wide enough to push itself onto a second
+                             line at 320-390px, which tests/mobile_layout.py fails the
+                             play bar for. speedButton's "1x" is the same shape. -->
+                        <button id="keepSseButton" class="btn btn-secondary btn-icon-only"
+                            title="Keep SSE: assign secondary structure once and keep it for every frame. Stops helix ends flickering, and lets a trajectory step upload new coordinates instead of rebuilding the whole ribbon - about 3x. Wrong for a folding trajectory, where the structure really does change."
+                            style="font-weight: 400;">SSE</button>
                     </div>
                 </div>
 

@@ -109,13 +109,33 @@ window.addEventListener('load', () => {
         r.reloadDrawn(); await settle();
       }
 
-      // ...AND THE TWO THAT MUST REBUILD, because the colour is geometry there:
-      // ss mode cuts an interval at the midpoint between two colours, and a
-      // per-residue override does the same.
+      // ...AND ss, WHICH REPAINTS LIKE THE REST. It reads as though it should
+      // not: the colour is not colors[segIdx], it is ssPal[ssCls]. But ss
+      // resolves ONE colour per interval - both ends take the same class - so
+      // col === colFar, no interval is cut, and the geometry is identical
+      // (1019 mesh faces in chain, rainbow and ss alike). What used to force a
+      // rebuild was that the ss colour was computed INSIDE the draw pass, so a
+      // repaint had nothing to upload; resolveSegmentColors answers it from the
+      // assignment, the palette and each segment's two residues instead.
+      //
+      // The picture is what is asserted, not the rebuild: a repaint that draws
+      // the wrong thing is the failure worth catching, and a repaint that draws
+      // the right thing is the point.
+      // the probe's own comparison, as used for the modes above: repaint,
+      // then force a rebuild of the same state and diff the two frames
+      const sameAsRebuild = async () => {
+        const cheap = shot();
+        window.py2dmolCartoonGPU.invalidate();
+        r.render('forced rebuild');
+        await settle();
+        return cheap === shot();
+      };
       let t0 = rebuiltAt();
       await setMode('ss');
       R.ssRebuilt = rebuiltAt() !== t0;
+      R.ssSame = await sameAsRebuild();
       await setMode('auto');
+      R.leftSsSame = await sameAsRebuild();
       t0 = rebuiltAt();
       const o = r.objectsData[r.currentObjectName];
       o.color = {type: 'advanced', value: {position: {3: '#ff0000'}}};
@@ -200,12 +220,19 @@ elif not asc.get("same"):
     bad.append("after showing side chains, a repaint differs from what a"
                " rebuild draws - the reused ribbon half is repainting from"
                " palette slots that the side chain moved")
-print(f"  ss mode rebuilt: {R.get('ssRebuilt')};"
+print(f"  ss mode rebuilt: {R.get('ssRebuilt')} (matches a rebuild:"
+      f" {R.get('ssSame')}; leaving it matches: {R.get('leftSsSame')});"
       f" an override rebuilt: {R.get('overrideRebuilt')}"
       f" (and matches a rebuild: {R.get('overrideSame')})")
-if not R.get("ssRebuilt"):
-    bad.append("ss mode did not rebuild - it cuts intervals at the midpoint"
-               " between two colours, so the geometry itself changes")
+# 🔴 THE PICTURE, NOT THE REBUILD. ss adds no cut, so it repaints - and what
+# has to hold is that the repainted frame is the one a rebuild would draw.
+# Both directions: leaving ss repainted from a stale renderer._cartoonPalette
+# once and put ss colours on a chain frame, 7.84% of the picture.
+if R.get("ssSame") is False:
+    bad.append("ss mode repainted a picture a rebuild does not draw")
+if R.get("leftSsSame") is False:
+    bad.append("leaving ss repainted a picture a rebuild does not draw - the"
+               " palette it uploaded is not this mode's")
 if not R.get("overrideRebuilt"):
     bad.append("a per-residue override did not rebuild, for the same reason")
 if not R.get("overrideSame"):
