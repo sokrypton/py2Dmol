@@ -2494,6 +2494,43 @@ const ED_FLOATS = 19;           // p0, p1, n0, n1, always, stick, pal, col, w
 // two faces whose normals it holds, how many faces are incident, the crease
 // cosine it is judged by in millionths, and whether the letter decides it.
 const ED_SRC = 7;
+
+// THE FOUR CORNER CURVES AS SIGNS, WORKED OUT ONCE. A corner is a sign on the
+// width axis, a sign on the thickness axis, and whether it sits at the near
+// station or the far one - and all three are decided by the SURFACE and the
+// corner index alone, which is twenty combinations. The per-frame edge refresh
+// was deriving them with a chain of branches twice per edge row, 31,376 times
+// a frame on 1TIM. Indexed `surf * 4 + idx`; surfaces 4 and up are the caps,
+// which sit at the near station whichever corner they are.
+const CORNER_SURFS = 16;                   // wider than any surface index in use
+const CORNER_SW = new Int8Array(CORNER_SURFS * 4);
+const CORNER_SG = new Int8Array(CORNER_SURFS * 4);
+const CORNER_DK = new Uint8Array(CORNER_SURFS * 4);  // 1 where the corner is the far station
+for (let surf = 0; surf < CORNER_SURFS; surf += 1) {
+    for (let idx = 0; idx < 4; idx += 1) {
+        const cap = surf >= 4;
+        const isA = (idx === 0 || idx === 3);
+        let sw; let sg;
+        if (cap) {                                   // Lp, Lm, Rm, Rp
+            sw = (idx <= 1) ? 1 : -1;
+            sg = isA ? 1 : -1;
+        } else if (surf === 0) { sw = isA ? 1 : -1; sg = 1; }
+        else if (surf === 1) { sw = isA ? 1 : -1; sg = -1; }
+        else if (surf === 2) { sw = 1; sg = isA ? 1 : -1; }
+        else { sw = -1; sg = isA ? 1 : -1; }
+        const at = surf * 4 + idx;
+        CORNER_SW[at] = sw; CORNER_SG[at] = sg;
+        CORNER_DK[at] = (cap || idx <= 1) ? 0 : 1;
+    }
+}
+
+// A FACE'S OUTWARD NORMAL IS A PROPERTY OF THE FACE, not of the edge rows that
+// meet there. Two rows an edge and roughly two rows a face meant the same
+// normal was derived about four times a frame; it is derived once here and
+// read back by index. Kept at module scope and resized, not allocated per
+// frame - this runs on every step of a playback.
+let edgeNormals = null;         // Float32Array(faces * 3)
+let edgeNormalOk = null;        // Uint8Array(faces), 0 for a cap
 let stationDraw = false;        // off until a caller asks; see setStationDraw
 let stationRefusal = null;      // why installStations said no
 // 🔴 WHY THIS FRAME DID NOT TAKE THE STATION PATH, and it survives the rebuild
@@ -6039,53 +6076,49 @@ function refreshEdgesFromStations(mesh) {
     // The four corner curves, as signs on the width and thickness axes, in the
     // order facesOf pushes them: q = [A[k], B[k], B[k+1], A[k+1]].
     const cornerOf = (face, idx, out) => {
-        const k = mesh.faceStation[face];
-        const surf = mesh.faceSurf[face];
-        const cap = surf >= 4;
-        // corners 0 and 1 sit at the near station, 2 and 3 at the far one
-        const at = (cap || idx <= 1) ? k : k + 1;
-        // ...and 0 and 3 run along the A curve, 1 and 2 along B
-        const isA = (idx === 0 || idx === 3);
-        let sw; let sg;
-        if (cap) {
-            // Lp, Lm, Rm, Rp
-            sw = (idx <= 1) ? 1 : -1;
-            sg = (idx === 0 || idx === 3) ? 1 : -1;
-        } else if (surf === 0) { sw = isA ? 1 : -1; sg = 1; }
-        else if (surf === 1) { sw = isA ? 1 : -1; sg = -1; }
-        else if (surf === 2) { sw = 1; sg = isA ? 1 : -1; }
-        else { sw = -1; sg = isA ? 1 : -1; }
-        const o = at * 16;
+        // ...the signs and which station, straight out of CORNER_SW/SG/DK
+        const t = mesh.faceSurf[face] * 4 + idx;
+        const sw = CORNER_SW[t]; const sg = CORNER_SG[t];
+        const o = (mesh.faceStation[face] + CORNER_DK[t]) * 16;
         const hw = st[o + 3]; const ht = st[o + 7];
         out[0] = st[o] + st[o + 8] * hw * sw + st[o + 4] * ht * sg;
         out[1] = st[o + 1] + st[o + 9] * hw * sw + st[o + 5] * ht * sg;
         out[2] = st[o + 2] + st[o + 10] * hw * sw + st[o + 6] * ht * sg;
     };
-    // ...and a face's OUTWARD normal, the same rule the shader uses.
-    const normalOf = (face, out) => {
-        const k = mesh.faceStation[face];
-        const surf = mesh.faceSurf[face];
-        const o = k * 16;
-        if (surf >= 4) { out[0] = 0; out[1] = 0; out[2] = 0; return false; }
-        const broad = surf < 2;
-        const sideSign = (surf === 2) ? -1 : 1;
-        // 🔴 OUTWARD, WHICH IS NOT THE SHADING NORMAL. A broad face's two sides
-        // share one ub and are told apart by the `top` flag - the fill shader
-        // does exactly this, and an edge carries f._outN, which is the same
-        // vector. Left unflipped, half the surface edges hand the silhouette
-        // test a normal pointing into the solid: the rule reproduces every
-        // POSITION to 3.7e-06 A and still draws the wrong outline, which is why
-        // the self-check had to cover the normals too.
-        const rows = residentStations.rows;
-        const top = rows ? rows[face * STATION_ROW + 7] : 1;
-        const flip = (broad && top < 0.5) ? -1 : 1;
-        for (let a = 0; a < 3; a += 1) {
-            out[a] = (broad ? st[o + 4 + a] : -st[o + 8 + a] * sideSign) * flip;
+    // ...and every face's OUTWARD normal, in one pass, before the rows that
+    // read them.
+    //
+    // 🔴 OUTWARD, WHICH IS NOT THE SHADING NORMAL. A broad face's two sides
+    // share one ub and are told apart by the `top` flag - the fill shader does
+    // exactly this, and an edge carries f._outN, which is the same vector. Left
+    // unflipped, half the surface edges hand the silhouette test a normal
+    // pointing into the solid: the rule reproduces every POSITION to 3.7e-06 A
+    // and still draws the wrong outline, which is why the self-check had to
+    // cover the normals too.
+    const faceCount = Math.min(residentStations.count,
+        mesh.faceSurf.length, mesh.faceStation.length);
+    if (!edgeNormals || edgeNormalOk.length < faceCount) {
+        edgeNormals = new Float32Array(faceCount * 3);
+        edgeNormalOk = new Uint8Array(faceCount);
+    }
+    {
+        const srows = residentStations.rows;
+        for (let f = 0; f < faceCount; f += 1) {
+            const surf = mesh.faceSurf[f];
+            if (surf >= 4) { edgeNormalOk[f] = 0; continue; }
+            const o = mesh.faceStation[f] * 16;
+            const broad = surf < 2;
+            const sideSign = (surf === 2) ? -1 : 1;
+            const top = srows ? srows[f * STATION_ROW + 7] : 1;
+            const flip = (broad && top < 0.5) ? -1 : 1;
+            const b = f * 3;
+            for (let a = 0; a < 3; a += 1) {
+                edgeNormals[b + a] = (broad ? st[o + 4 + a] : -st[o + 8 + a] * sideSign) * flip;
+            }
+            edgeNormalOk[f] = 1;
         }
-        return true;
-    };
+    }
     const pa = [0, 0, 0]; const pb = [0, 0, 0];
-    const na = [0, 0, 0]; const nb = [0, 0, 0];
     let touched = 0;
     let worstMoved = 0;
     let alwaysMoved = 0;
@@ -6101,7 +6134,7 @@ function refreshEdgesFromStations(mesh) {
         const byLetter = edSrc[r * ED_SRC + 6] > 0;
         const faceA = (oa / 12) | 0;
         const faceB = (ob / 12) | 0;
-        if (faceA >= residentStations.count || faceB >= residentStations.count) continue;
+        if (faceA >= faceCount || faceB >= faceCount) continue;
         cornerOf(faceA, ((oa % 12) / 3) | 0, pa);
         cornerOf(faceB, ((ob % 12) / 3) | 0, pb);
         const base = r * ED_FLOATS;
@@ -6123,23 +6156,29 @@ function refreshEdgesFromStations(mesh) {
         }
         ed[base] = pa[0]; ed[base + 1] = pa[1]; ed[base + 2] = pa[2];
         ed[base + 3] = pb[0]; ed[base + 4] = pb[1]; ed[base + 5] = pb[2];
-        if (fa >= 0 && fa < residentStations.count && normalOf(fa, na)) {
+        if (fa >= 0 && fa < faceCount && edgeNormalOk[fa]) {
+            const b = fa * 3;
             if (selfCheck) {
                 for (let a = 0; a < 3; a += 1) {
-                    const d = Math.abs(ed[base + 6 + a] - na[a]);
+                    const d = Math.abs(ed[base + 6 + a] - edgeNormals[b + a]);
                     if (d > worstMoved) worstMoved = d;
                 }
             }
-            ed[base + 6] = na[0]; ed[base + 7] = na[1]; ed[base + 8] = na[2];
+            ed[base + 6] = edgeNormals[b];
+            ed[base + 7] = edgeNormals[b + 1];
+            ed[base + 8] = edgeNormals[b + 2];
         }
-        if (fb >= 0 && fb < residentStations.count && normalOf(fb, nb)) {
+        if (fb >= 0 && fb < faceCount && edgeNormalOk[fb]) {
+            const b = fb * 3;
             if (selfCheck) {
                 for (let a = 0; a < 3; a += 1) {
-                    const d = Math.abs(ed[base + 9 + a] - nb[a]);
+                    const d = Math.abs(ed[base + 9 + a] - edgeNormals[b + a]);
                     if (d > worstMoved) worstMoved = d;
                 }
             }
-            ed[base + 9] = nb[0]; ed[base + 10] = nb[1]; ed[base + 11] = nb[2];
+            ed[base + 9] = edgeNormals[b];
+            ed[base + 10] = edgeNormals[b + 1];
+            ed[base + 11] = edgeNormals[b + 2];
         }
         // 🔴 AND THE CREASE TEST IS REDONE, because the angle between two faces
         // moves with them. A boundary is topological - fewer than two incident
