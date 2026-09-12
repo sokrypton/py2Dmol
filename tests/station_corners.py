@@ -51,6 +51,14 @@ window.addEventListener('load', () => {
     await until(() => !r._quietStyle && !r._switchQuiet, 20000);
     const G = window.py2dmolCartoonGPU;
     if (!G || !G.stationMeshOf) return {error: 'no stationMeshOf on the GPU API'};
+    // 🔴 AND THE SIDE CHAINS ARE OUT, because sticks have stations now and this
+    // gate had never seen one: 1,202 of 1,202 faces on 1UBQ were the ribbon's.
+    // A stationed stick is the half of the table with the most ways to be
+    // wrong - four sides, two caps and a flat case, against the ribbon's four
+    // surfaces - and until this line none of them was compared against the
+    // mesh the builder uploaded.
+    if (r.showSidechains) r.showSidechains();
+    await settle(8);
 
     // 1. THE SHIPPED MESH. __gpuDiag keeps the instance rows; the render after
     //    it has to actually rebuild, or __fill is from before the flag was set.
@@ -135,6 +143,53 @@ window.addEventListener('load', () => {
               m[1] + w[1] * hw * sw + u[1] * ht * stg,
               m[2] + w[2] * hw * sw + u[2] * ht * stg];
     };
+    // 🔴 AND THE STICK VOCABULARY, WHICH THIS FILE NEVER SAW. It checked
+    // surfaces 0-3 and treated everything at 4 or above as a ribbon CAP - true
+    // while the table described rib prims alone. Sticks have stations now, and
+    // theirs are 4 and 5 (the two caps), 6 (a flat stick, whose four corners
+    // are stored in the texels themselves) and 7-10 (the four sides). Read as
+    // caps, a side face reports an enormous disagreement that is the PROBE's
+    // and not the mesh's - so the surfaces are spelled out, once, in the order
+    // the shader writes them.
+    const STICK = {
+      4:  [[ 1, 1], [ 1,-1], [-1,-1], [-1, 1]],   // cap at this station
+      5:  [[ 1, 1], [-1, 1], [-1,-1], [ 1,-1]],   // cap at the far one (k+1)
+      7:  [[ 1, 1], [-1, 1]],                     // +u side, A then B
+      8:  [[-1, 1], [-1,-1]],                     // -w side
+      9:  [[-1,-1], [ 1,-1]],                     // -u side
+      10: [[ 1,-1], [ 1, 1]],                     // +w side
+    };
+    // 🔴 AND 4 AND 5 MEAN TWO DIFFERENT THINGS, which the table does not say.
+    // A ribbon cap has been surface 4 or 5 since the table existed; a stick cap
+    // took the same two numbers, with a different corner ORDER for 5. Nothing
+    // in the row distinguishes them, so this reads the one thing that does:
+    // makeResident concatenates ribbon faces FIRST, so a face index below the
+    // ribbon count is a rib and everything after it is a stick. That the probe
+    // has to know this is the finding - a self-describing table would give the
+    // stick caps their own numbers.
+    const nRib = (window.__rebuild && window.__rebuild.nRibbon) || 0;
+    const quadOf = (surf, k, f) => {
+      const stick = f >= nRib;
+      // a flat stick keeps its corners in the four texels, not a frame
+      if (surf === 6) return [at(k, 0).slice(0, 3), at(k, 1).slice(0, 3),
+                              at(k, 2).slice(0, 3), at(k, 3).slice(0, 3)];
+      const t = stick ? STICK[surf] : null;
+      if (t && (surf === 4 || surf === 5)) {
+        return t.map(([a, b]) => corner(k, a, b));
+      }
+      if (t) {
+        const [sA, sB] = t;
+        return [corner(k, sA[0], sA[1]), corner(k, sB[0], sB[1]),
+                corner(k + 1, sB[0], sB[1]), corner(k + 1, sA[0], sA[1])];
+      }
+      // ...the ribbon's own four, unchanged
+      if (surf >= 4) {
+        return [corner(k, 1, 1), corner(k, 1, -1), corner(k, -1, -1), corner(k, -1, 1)];
+      }
+      const [sA, sB] = SIGN[surf];
+      return [corner(k, sA[0], sA[1]), corner(k, sB[0], sB[1]),
+              corner(k + 1, sB[0], sB[1]), corner(k + 1, sA[0], sA[1])];
+    };
     // 🔴 A CONSTANT OFFSET IS A DIFFERENT FAULT FROM A WRONG CORNER, and the
     // worst-case number cannot tell them apart. _storeRibbonTrace adds the view
     // CENTRE back when it un-rotates, and buildMeshPart's unprojected corners
@@ -149,15 +204,7 @@ window.addEventListener('load', () => {
       for (let f = 0; f < rows; f++) {
         const surf = mesh.faceSurf[f];
         const k = mesh.faceStation[f] + shift;
-        let q;
-        if (surf >= 4) {
-          // a cap is the cross-section at its own station: Lp, Lm, Rm, Rp
-          q = [corner(k, 1, 1), corner(k, 1, -1), corner(k, -1, -1), corner(k, -1, 1)];
-        } else {
-          const [sA, sB] = SIGN[surf];
-          q = [corner(k, sA[0], sA[1]), corner(k, sB[0], sB[1]),
-               corner(k + 1, sB[0], sB[1]), corner(k + 1, sA[0], sA[1])];
-        }
+        const q = quadOf(surf, k, f);
         for (let c = 0; c < 4; c++) {
           for (let a = 0; a < 3; a++) {
             const got = q[c][a] - o[a];
@@ -191,14 +238,7 @@ window.addEventListener('load', () => {
         let sx = 0; let sy = 0; let sxx = 0; let sxy = 0; let n = 0;
         for (let f = 0; f < rows; f++) {
           const surf = mesh.faceSurf[f]; const k = mesh.faceStation[f];
-          let q;
-          if (surf >= 4) {
-            q = [corner(k, 1, 1), corner(k, 1, -1), corner(k, -1, -1), corner(k, -1, 1)];
-          } else {
-            const [sA, sB] = SIGN[surf];
-            q = [corner(k, sA[0], sA[1]), corner(k, sB[0], sB[1]),
-                 corner(k + 1, sB[0], sB[1]), corner(k + 1, sA[0], sA[1])];
-          }
+          const q = quadOf(surf, k, f);
           for (let c = 0; c < 4; c++) {
             const x = q[c][a]; const y = fill[f * 48 + c * 3 + a];
             sx += x; sy += y; sxx += x * x; sxy += x * y; n += 1;
@@ -215,14 +255,7 @@ window.addEventListener('load', () => {
       let worst = 0; let worstAt = -1;
       for (let f = 0; f < rows; f++) {
         const surf = mesh.faceSurf[f]; const k = mesh.faceStation[f];
-        let q;
-        if (surf >= 4) {
-          q = [corner(k, 1, 1), corner(k, 1, -1), corner(k, -1, -1), corner(k, -1, 1)];
-        } else {
-          const [sA, sB] = SIGN[surf];
-          q = [corner(k, sA[0], sA[1]), corner(k, sB[0], sB[1]),
-               corner(k + 1, sB[0], sB[1]), corner(k + 1, sA[0], sA[1])];
-        }
+        const q = quadOf(surf, k, f);
         for (let c = 0; c < 4; c++) {
           for (let a = 0; a < 3; a++) {
             const got = q[c][a] * fit[a].scale + fit[a].offset;
@@ -300,14 +333,7 @@ window.addEventListener('load', () => {
         const worstFaces = [];
         for (let f = 0; f < rows; f++) {
           const surf = mesh.faceSurf[f]; const k = mesh.faceStation[f];
-          let q;
-          if (surf >= 4) {
-            q = [corner(k, 1, 1), corner(k, 1, -1), corner(k, -1, -1), corner(k, -1, 1)];
-          } else {
-            const [sA, sB] = SIGN[surf];
-            q = [corner(k, sA[0], sA[1]), corner(k, sB[0], sB[1]),
-                 corner(k + 1, sB[0], sB[1]), corner(k + 1, sA[0], sA[1])];
-          }
+          const q = quadOf(surf, k, f);
           let d = 0;
           for (let c = 0; c < 4; c++) {
             for (let a = 0; a < 3; a++) {
@@ -395,6 +421,19 @@ print(f"  faces over 1e-3 A: {sp['over']} of {sp['rows']}")
 for k in sorted(sp["bySurf"]):
     v = sp["bySurf"][k]
     print(f"    {k}: {v['bad']}/{v['n']} bad, worst {v['worst']:.3e}")
+# 🔴 AND WHETHER A STICK WAS IN IT AT ALL, said out loud. The side chains are
+# shown above so that the stationed stick surfaces - 7 to 10, and the caps -
+# reach this comparison; if the table comes back holding only rib rows they
+# did not, and every number above is the ribbon's. A gap that is printed is a
+# gap somebody can close; one that is implied by an absent line is not.
+_stick = sum(v["n"] for k, v in sp["bySurf"].items()
+             if k.startswith("s") and k[1:].isdigit() and int(k[1:]) >= 7)
+if _stick:
+    print(f"  stationed stick faces compared: {_stick}")
+else:
+    print("  NOTE: no stationed stick face reached this comparison - the table"
+          " came back with rib rows only, so the stick vocabulary (surfaces 7-10"
+          " and the caps) is still unchecked here")
 print(f"    first few: {sp['worstFaces']}")
 print(f"  per frame: {out['bytesFaces'] / 1024:.0f} KB of faces"
       f" -> {out['bytesStations'] / 1024:.0f} KB of stations"
