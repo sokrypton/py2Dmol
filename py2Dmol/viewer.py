@@ -2275,47 +2275,87 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         
         return contacts
 
+    # WHERE THE COLOUR SITS DEPENDS ON THE FORM, and this is the one table
+    # that says so. A contact is written three ways, and each puts its weight
+    # and its colour in a different slot:
+    #
+    #   [idx1, idx2, weight, color?]                          indices
+    #   [chain1, res1, chain2, res2, weight, color?]          chain + residue
+    #   [{...}, {...}, weight, color?]                        addresses
+    #
+    # src/core/mol.js's _resolveContactToIndices reads exactly these, and it
+    # takes a colour only as an OBJECT - a string there is dropped without a
+    # word. So the string has to be parsed here, at the slot the form names.
+
+    def _contact_form(self, contact):
+        """(the colour's index, the two ends) for a contact, or None.
+
+        The ends come back as whatever was written - numbers, chain/residue
+        pairs, or address dicts - because the only thing asked of them here is
+        whether the two are the SAME, which needs no structure to answer.
+        """
+        if not isinstance(contact, (list, tuple)) or len(contact) < 3:
+            return None
+        if isinstance(contact[0], str) and len(contact) >= 5:
+            return 5, ((contact[0], contact[1]), (contact[2], contact[3]))
+        return 3, (contact[0], contact[1])
+
     def _process_contacts(self, contacts):
         """
         Process contacts input (filepath string or list of lists).
-        
+
         Args:
             contacts: Either a filepath (str) or list of contact arrays
-            
+
         Returns:
             list: List of contact arrays, or None if invalid
         """
         if contacts is None:
             return None
-        
+
         if isinstance(contacts, str):
             # Filepath - parse it
             return self._parse_contacts_file(contacts)
         elif isinstance(contacts, list):
-            # List of contacts - validate and parse colors
             validated = []
             for contact in contacts:
-                if isinstance(contact, list) and len(contact) >= 3:
-                    # Parse color if it's a string (4th element)
-                    if len(contact) >= 4:
-                        color_elem = contact[3]
-                        # If color is a string, parse it to RGB dict
-                        if isinstance(color_elem, str):
-                            parsed_color = self._parse_contact_color(color_elem)
-                            if parsed_color:
-                                # Replace string with parsed RGB dict
-                                validated.append([contact[0], contact[1], contact[2], parsed_color])
-                            else:
-                                # Invalid color string, skip color
-                                validated.append([contact[0], contact[1], contact[2]])
-                        else:
-                            # Color is already a dict or other format, keep as-is
-                            validated.append(contact)
-                    else:
-                        # No color specified
-                        validated.append(contact)
-                else:
+                form = self._contact_form(contact)
+                if form is None:
                     print(f"Warning: Skipping invalid contact: {contact}")
+                    continue
+                slot, (end1, end2) = form
+                # 🔴 A CONTACT FROM A RESIDUE TO ITSELF DRAWS NOTHING, and said
+                # nothing about it. src/core/mol.js refuses `idx1 === idx2`
+                # outright - a contact is a line between two points and there is
+                # no line here - so the record was carried all the way into the
+                # payload and dropped at the far end, invisibly. Reported by
+                # someone who tried every weight from 0.3 to 3.6 looking for the
+                # sphere they had been told it drew. It is refused here instead,
+                # by name, with the call that does what they wanted.
+                if end1 == end2:
+                    print(f"Warning: contact {contact} joins a position to"
+                          " itself, which draws nothing - a contact is a line"
+                          " between two points. To colour one residue, use"
+                          ' add_pdb(..., color={"position": {index: "#hex"}})'
+                          " or set_color(color, position=index).")
+                    continue
+                contact = list(contact)
+                # ...AND A NAMED COLOUR IS PARSED IN EVERY FORM, which it was
+                # not. The .cst file parser turns "A 10 B 50 0.5 yellow" into a
+                # dict; the same contact written as a list kept the string,
+                # because this looked for a colour at index 3 whatever the form
+                # - which is the chain+residue form's SECOND RESIDUE NUMBER.
+                # The renderer takes a colour only as an object, so the list
+                # spelling of a file that worked came out uncoloured.
+                if len(contact) > slot and isinstance(contact[slot], str):
+                    parsed = self._parse_contact_color(contact[slot])
+                    if parsed:
+                        contact[slot] = parsed
+                    else:
+                        print(f"Warning: contact colour {contact[slot]!r} was not"
+                              " understood - drawing it in the default colour.")
+                        contact = contact[:slot]
+                validated.append(contact)
             return validated if validated else None
         else:
             print(f"Error: contacts must be a filepath (str) or list of lists, got {type(contacts)}")
@@ -3884,6 +3924,14 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # Take them all off again - this REPLACES rather than appends, so
             # passing nothing is how you say "none"
             viewer.add_contacts([])
+
+        A contact is a LINE BETWEEN TWO POSITIONS. One naming the same position
+        at both ends draws nothing and is refused here by name - to colour a
+        single residue use `add_pdb(..., color={"position": {i: "#hex"}})` or
+        `set_color(color, position=i)`, which are a different path entirely.
+
+        A colour may be a name or a hex string in every form, as in a .cst
+        file, or the `{"r": .., "g": .., "b": ..}` the renderer reads.
         """
         # AN EMPTY LIST CLEARS. add_contacts has always REPLACED rather than
         # appended, so passing nothing is the natural way to say "none" - and

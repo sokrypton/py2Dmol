@@ -107,6 +107,16 @@ if [[ "$LANE" == "all" || "$LANE" == "node" ]]; then
     fail=1; print "NODE parse_ligand:"; python3 tests/parse_ligand.py 2>&1 | grep -E '^FAIL|^  -' | head -3
   fi
 
+  # ...and the three spellings of a contact agree, including the one that can
+  # only ever draw nothing. No browser: this is the Python side of the payload,
+  # and the fault was that nothing between the caller and mol.js knew which
+  # form it was looking at.
+  if python3 tests/contacts_forms.py >/dev/null 2>&1; then
+    print "node contacts_forms: ok"
+  else
+    fail=1; print "NODE contacts_forms:"; python3 tests/contacts_forms.py 2>&1 | grep -E '^FAIL|^  -' | head -3
+  fi
+
   # ...and every probe in tests/ is named in tests/README.md, with the lane
   # that runs it. Sixty-nine of about ninety were in it nowhere, which is how a
   # gate can sit outside run.sh for a session while three files measure the

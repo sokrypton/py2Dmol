@@ -97,6 +97,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `colour_cache.py` | gpu | THE SEGMENT COLOURS DO NOT READ A COORDINATE, SO A FRAME STEP NEED NOT |
 | `colour_repaint.py` | gpu | A colour change is a texture upload, and these are the exceptions. |
 | `config.js` | node | EVERY SETTING PYTHON SENDS HAS TO SURVIVE THE TRANSLATION. |
+| `contacts_forms.py` | node | The three spellings of a contact, and the one that draws nothing. |
 | `copy_selection.js` | node | What a COPY of part of a structure carries with it: |
 | `cut_ligands.py` | ui | What an edit leaves behind: the object's LIGAND GROUPS. |
 | `cyclic_bench.js` | node | Score the renderer's secondary structure on CYCLIC peptides. |
