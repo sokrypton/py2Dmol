@@ -502,6 +502,37 @@ _LENT_WHERE = None
 _BUNDLE_KEYS = {}
 
 
+def _missing_library_js(head):
+    """Say it, when the renderer is not there. See view.to_html.
+
+    🔴 A PAGE WITH NO LIBRARY DRAWS ITS CHROME AND NOTHING ELSE, which is the
+    worst shape a failure can take: buttons, a play bar, an object menu and an
+    empty box, so the reader believes the structure failed rather than the
+    page. `onerror` on the <script> is not enough for it either - it fires for
+    a 404 and not for a file that loaded and is the wrong thing, and a
+    document.write from it lands in a document the parser has moved past.
+
+    So this asks the only question that matters, at the end of the body where
+    the answer is settled: is `initializePy2DmolViewer` a function. It runs on
+    the inline path too, where it can only ever be silent.
+    """
+    if not head:
+        return ''
+    return ("<script>if(typeof initializePy2DmolViewer!=='function'){"
+            "document.body.insertAdjacentHTML('afterbegin',"
+            + json.dumps(
+                '<p style="font:14px/1.6 system-ui,sans-serif;color:#b91c1c;'
+                'margin:12px;padding:10px;border:1px solid #fca5a5;'
+                'border-radius:8px;background:#fef2f2">'
+                '<b>py2Dmol could not load its renderer.</b><br>'
+                'This page was exported with <code>bundle=&quot;external&quot;</code> '
+                'and the script it names is not reachable. The name carries the '
+                'bundle&#39;s content hash, so a rebuilt library is a missing file '
+                'rather than a wrong drawing: put that file beside this one, or '
+                're-export the page.</p>')
+            + ");}</script>\n")
+
+
 def _cell_identity():
     """(cell id, execution count) of the cell running now, or None.
 
@@ -521,6 +552,20 @@ def _cell_identity():
         return (cell, getattr(shell, 'execution_count', None))
     except Exception:
         return None
+
+
+# THE ONE NAME FOR THE NOTEBOOK BUNDLE. _display_viewer had it typed in and
+# so did the export path, which is two places for a string that must agree:
+# save_html names its external file after a hash of THIS bundle, and a viewer
+# inlining a different one would ship a page whose library is not the library
+# its name claims.
+_EXPORT_BUNDLE = "bundles/py2Dmol.notebook.min.js"
+
+
+def _html_escape(text):
+    """For the <title> only - everything else on the page is JSON or markup."""
+    return (str(text).replace('&', '&amp;').replace('<', '&lt;')
+            .replace('>', '&gt;'))
 
 
 def _share_key(bundle):
@@ -2003,7 +2048,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # with no WebGL2 has something to fall back on, and the cartoon can
             # export a vector - which needs the 2D painter, because a raster
             # has none to give.
-            bundle = "bundles/py2Dmol.notebook.min.js"
+            bundle = _EXPORT_BUNDLE
             # SHARE IT, IF ASKED, AND IF SOMEONE ELSE ALREADY CARRIES IT.
             #
             # The first viewer of a session writes the library and offers it on
@@ -4579,3 +4624,104 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         # State loaded - user must call show() to display
         if not self.objects:
             print("Warning: No objects loaded from state file.")
+
+    # --- STANDALONE EXPORT ------------------------------------------------
+    #
+    # 🔴 A FILE IS NOT A PAGE WITH A LENDER, AND ASSUMING IT IS DREW NOTHING.
+    # Library sharing is right for a notebook - the first show() of a session
+    # writes the bundle and every later one writes a two-line request for it,
+    # which is what stops a document carrying twenty copies. It is decided per
+    # KERNEL: `_LENT_BUNDLE` records that this process has already lent, so the
+    # second view() in the same process writes a request whoever reads it.
+    #
+    # Capture those four viewers into four separate .html files and three of
+    # them ask a page that has no lender on it. Nothing errors - the bootstrap
+    # waits for `initializePy2DmolViewer` to appear and it never does - so the
+    # file opens blank, and the only way anyone found out was opening it.
+    # Reported from a conference-talk build: three of four exports blank, and
+    # the caller's repair was to reach past the public API for
+    # `_share_library = False`, which is exactly the flag this should never
+    # have made them find.
+    #
+    # So: an export path that never borrows. to_html() and save_html() set the
+    # flag off for the duration of the call whatever the viewer was doing, and
+    # a live viewer stays live afterwards.
+
+    def to_html(self, title=None, bundle='inline'):
+        """The viewer as a complete HTML document that opens on its own.
+
+        Args:
+            title (str, optional): the document's <title>.
+            bundle (str): where the renderer comes from.
+                'inline'   - written into the file (default). One file, and it
+                             works from a file:// URL with no server.
+                'external' - referenced as <script src="py2Dmol-<hash>.min.js">,
+                             which save_html() writes beside the page. Several
+                             exports on one page then share one download
+                             instead of carrying 1.8 MB of library each.
+                Any other string is used as the src verbatim, for a bundle the
+                caller is hosting themselves.
+
+        Returns:
+            str: the document.
+
+        🔴 THE EXTERNAL NAME CARRIES THE BUNDLE'S HASH, and that is the guard
+        rather than a decoration. A page referencing a library that has since
+        been rebuilt is the failure #2 of the same report describes - today's
+        payload drawn by yesterday's renderer, silently missing whatever the
+        two disagree about. A hashed name cannot be stale: it is either there
+        or it is a 404, and the loader below turns the 404 into a sentence in
+        the box instead of an empty one.
+        """
+        if not self.objects:
+            print("Warning: exporting a viewer with nothing added to it.")
+        was_sharing, was_live = self._share_library, self._is_live
+        self._share_library = False
+        self._is_live = False
+        try:
+            if bundle == 'inline':
+                body = self._display_viewer(static_data=self.objects)
+                head = ''
+            else:
+                body = self._display_viewer(static_data=self.objects,
+                                            include_libs=False)
+                src = self._bundle_filename() if bundle == 'external' else bundle
+                head = '<script src="' + src + '"></script>\n'
+        finally:
+            self._share_library, self._is_live = was_sharing, was_live
+        name = title or (self.objects[0]["name"] if self.objects else 'py2Dmol')
+        return ('<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+                '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+                '<title>' + _html_escape(str(name)) + '</title>\n' + head
+                + '</head>\n<body style="margin:0">\n' + body
+                + '\n' + _missing_library_js(head) + '</body>\n</html>\n')
+
+    def _bundle_filename(self):
+        """`py2Dmol-<12 hex>.min.js` - the name IS the content hash. See to_html."""
+        return 'py2Dmol-' + _share_key(_EXPORT_BUNDLE).rsplit('@', 1)[1] + '.min.js'
+
+    def save_html(self, filepath, title=None, bundle='inline'):
+        """Write to_html() to a file, and the external bundle beside it if asked.
+
+        Args:
+            filepath (str): where to write the page.
+            title (str, optional): the document's <title>.
+            bundle (str): as to_html(). 'external' also writes
+                `py2Dmol-<hash>.min.js` into the same directory, skipping it if
+                a file of that name is already there - the name is a content
+                hash, so one that exists has the right bytes in it.
+
+        Returns:
+            str: the path written.
+        """
+        directory = os.path.dirname(os.path.abspath(filepath))
+        os.makedirs(directory, exist_ok=True)
+        html = self.to_html(title=title, bundle=bundle)
+        with open(filepath, 'w', encoding='utf-8') as fh:
+            fh.write(html)
+        if bundle == 'external':
+            beside = os.path.join(directory, self._bundle_filename())
+            if not os.path.exists(beside):
+                with open(beside, 'w', encoding='utf-8') as fh:
+                    fh.write(_resource_text(_EXPORT_BUNDLE))
+        return filepath

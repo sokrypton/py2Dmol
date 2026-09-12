@@ -292,6 +292,20 @@ Displays the viewer.
 - Called **before** `add()`: Creates empty live viewer
 - Called **after** `add()`: Creates static viewer with all data
 
+##### `to_html(title, bundle)` / `save_html(filepath, title, bundle)`
+
+A complete HTML document that opens on its own. `bundle='inline'` (the default)
+writes the renderer into the file; `bundle='external'` references
+`py2Dmol-<hash>.min.js`, which `save_html` writes once beside the pages;
+anything else is used as the `src` verbatim.
+
+🔴 **These never borrow a library.** Sharing is decided per kernel - the first
+`show()` of a process writes the bundle and every later one writes a request
+for it - which is right for a notebook and wrong for separate files, where
+three of four exports came up blank. The export path turns it off for the
+duration of the call and puts it back. See `tests/export_html.py`, whose
+control arm is the old behaviour and requires it to fail.
+
 ##### `save_state(filepath)` / `load_state(filepath)`
 
 Save/restore complete viewer state to JSON.
@@ -1541,6 +1555,8 @@ if self.config["scatter"]["enabled"]:
 | `set_color(color, name)` | Set object color | `color`, `name`, `chain`, `position`, `frame` |
 | `set_sse(sse, name)` | Override secondary structure | `sse` (`"H"`/`"E"`/`"C"`/`None`), `chain`, `position`; stored per object as `sse`, beside `color` |
 | `_send_incremental_update()` | Send incremental update to viewer (live mode) | Tracks new frames and changed metadata |
+| `to_html(title, bundle)` | Standalone document as a string | `bundle`: `inline` / `external` / a src |
+| `save_html(filepath, ...)` | Write one, plus the external bundle | `filepath`, `title`, `bundle` |
 | `save_state(filepath)` | Save to JSON | `filepath` |
 | `load_state(filepath)` | Load from JSON | `filepath` |
 | `kabsch(a, b)` | Kabsch alignment | Two Nx3 arrays |

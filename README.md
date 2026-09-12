@@ -489,6 +489,29 @@ for frame in range(60):
     viewer.add(coords)
 ```
 
+## Exporting a standalone page
+`save_html` writes a file that opens on its own - no notebook, no server, no
+kernel. Use it for a slide deck, a report, or anything that has to work from a
+`file://` URL.
+```python
+viewer = py2Dmol.view(size=(600, 600))
+viewer.add_pdb('protein.pdb')
+viewer.save_html('protein.html')                       # one self-contained file
+```
+Exporting several viewers from one script, `bundle='external'` writes the
+renderer **once** beside the pages and has each one reference it, which takes a
+page from about 600 KB to 30:
+```python
+for name in ('apo', 'holo'):
+    v = py2Dmol.view(size=(600, 600))
+    v.add_pdb(f'{name}.pdb')
+    v.save_html(f'{name}.html', bundle='external')     # + py2Dmol-<hash>.min.js
+```
+The bundle's filename carries a hash of its contents, so a page can never be
+drawn by a renderer it was not exported against: the file is either there or it
+is missing, and a missing one says so on the page instead of coming up blank.
+`to_html()` returns the same document as a string.
+
 ## Saving and loading
 Save or restore full viewer state (structures, settings, MSA, contacts, frame/object selection).
 ```python

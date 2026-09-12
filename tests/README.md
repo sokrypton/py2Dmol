@@ -108,6 +108,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `disulfides.py` | gpu | A disulfide comes from the file, and lands on two cysteines. |
 | `edge_phases.py` | tool | WHERE A RIBBON BUILD'S TIME GOES, phase by phase, medians over rounds. |
 | `embed.py` | ui | The embed bundle, in a browser, on a page that has nothing else. |
+| `export_html.py` | ui | Four exported files, opened one at a time: do they draw? |
 | `focus_mode.py` | ui | Focus is a MODE: it borrows the viewer and gives it back. |
 | `frame_revisit.py` | gpu | A FRAME DRAWN AGAIN IS THE SAME FRAME - including the outline. |
 | `frame_share.py` | gpu | A TRAJECTORY'S FRAMES DESCRIBE ONE MOLECULE, AND ONLY ITS COORDINATES MOVE. |
