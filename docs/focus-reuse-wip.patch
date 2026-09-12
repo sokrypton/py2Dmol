@@ -1,0 +1,202 @@
+diff --git a/src/cartoon/paintgl.js b/src/cartoon/paintgl.js
+index 2dd41fd..c74669f 100644
+--- a/src/cartoon/paintgl.js
++++ b/src/cartoon/paintgl.js
+@@ -5246,7 +5246,7 @@ let otherPart = null;            // ...and the ligands, plates and contacts
+  * ribbons that agree on 8,514 faces' sampled fields and differ elsewhere,
+  * which is not a thing geometry does. 0.6 ms against 10.
+  */
+-function ribbonHashOf(faces, scale, prm) {
++function ribbonHashOf(faces, scale, prm, centre) {
+     let h = 2166136261 >>> 0;
+     const mix = (v) => {
+         const q = Math.round(v * 1000) | 0;
+@@ -5254,7 +5254,46 @@ function ribbonHashOf(faces, scale, prm) {
+         h ^= (q >>> 8) & 255; h = Math.imul(h, 16777619) >>> 0;
+         h ^= (q >>> 16) & 255; h = Math.imul(h, 16777619) >>> 0;
+     };
+-    mix(scale);
++    // 🔴 NOT THE SCALE, AND NOT THE PROJECTED CORNERS. This mixed `scale` and
++    // then hashed each face's `f.q` as it stands, which is PROJECTED - so the
++    // key moved whenever the camera zoomed, and the part was rebuilt for a
++    // mesh that had not changed. Measured on 4HHB: every click inside focus
++    // mode re-captured and rebuilt all 9,128 ribbon faces, because a focus
++    // flight moves the capture scale on every frame it lands on -
++    // 9.827 -> 10.883 -> 11.272 -> 11.669 -> 12.412 -> 12.888 -> 13.315, with
++    // the face count constant at 9,128 and the key different every time.
++    //
++    // The CONTENT was never scale-dependent: buildMeshPart unprojects every
++    // corner into model space, and the mesh built at zoom 1.0 and at 1.6 is
++    // bit-identical - fill 3498732323 over 10,952 rows and edges 438750288,
++    // the same at both, with the station path off so the ribbon's own rows are
++    // built rather than skipped. Only the KEY was. So the key is taken in the
++    // space the content is in.
++    //
++    // `unproject` is the inverse and it factors: x_model * pe = (px - capW/2)
++    // / scale, where pe is the perspective term, which depends on the focal
++    // length and on z and NOT on the scale. So dividing the two screen axes by
++    // the scale is exactly scale-invariant, and costs two subtractions and two
++    // divisions a corner rather than a full unprojection. z survives
++    // projection untouched and needs nothing.
++    //
++    // The quantum suits the new units better than the old: at ~10 px/A a 1 A
++    // move was 5,120 steps of the old `* 512` on pixels and is 512 here, which
++    // is 0.002 A - finer than anything that can change a face without changing
++    // the face list.
++    const sInv = (typeof scale === 'number' && Math.abs(scale) > 1e-9)
++        ? 1 / scale : 1;
++    const cx = capW / 2; const cy = capH / 2;
++    // 🔴 AND WITHOUT A CENTRE IT IS EXACTLY WHAT IT WAS. `centre` is the view
++    // centre the capture was taken about, and it is passed ONLY where the
++    // part's positions are re-derived from the station table rather than read
++    // out of its own rows - see makeResident. Everywhere else the key stays
++    // camera-dependent, because there the corners in the part ARE the drawn
++    // geometry and a camera move really does change them.
++    const model = !!centre;
++    if (!model) mix(scale);
++    const fl = focalLength();
++    const persp = isPersp();
+     mix(faces.length);
+     // ...AND THE PARAMETERS, because thickness, the outline and the crease
+     // angle all change what a ribbon face becomes without moving one corner.
+@@ -5268,11 +5307,25 @@ function ribbonHashOf(faces, scale, prm) {
+         const f = faces[i];
+         const q = f.q;
+         const a = q[0]; const b = q[2] || a;
+-        h = (Math.imul(h, 31) + ((a[0] * 512) | 0)) | 0;
+-        h = (Math.imul(h, 31) + ((a[1] * 512) | 0)) | 0;
++        if (model) {
++            // unproject, written out so it allocates nothing: the perspective
++            // term is recoverable from z, which projection leaves untouched,
++            // and the centre puts the corner back where the structure is
++            // rather than where the camera is looking.
++            const ka = sInv / (persp ? (fl / Math.max(0.1, fl - a[2])) : 1);
++            const kb = sInv / (persp ? (fl / Math.max(0.1, fl - b[2])) : 1);
++            h = (Math.imul(h, 31) + ((((a[0] - cx) * ka + centre.x) * 512) | 0)) | 0;
++            h = (Math.imul(h, 31) + ((((cy - a[1]) * ka + centre.y) * 512) | 0)) | 0;
++            h = (Math.imul(h, 31) + (((a[2] + centre.z) * 512) | 0)) | 0;
++            h = (Math.imul(h, 31) + ((((b[0] - cx) * kb + centre.x) * 512) | 0)) | 0;
++            h = (Math.imul(h, 31) + ((((cy - b[1]) * kb + centre.y) * 512) | 0)) | 0;
++        } else {
++        h = (Math.imul(h, 31) + (((a[0] - cx) * sInv * 512) | 0)) | 0;
++        h = (Math.imul(h, 31) + (((cy - a[1]) * sInv * 512) | 0)) | 0;
+         h = (Math.imul(h, 31) + ((a[2] * 512) | 0)) | 0;
+-        h = (Math.imul(h, 31) + ((b[0] * 512) | 0)) | 0;
+-        h = (Math.imul(h, 31) + ((b[1] * 512) | 0)) | 0;
++        h = (Math.imul(h, 31) + (((b[0] - cx) * sInv * 512) | 0)) | 0;
++        h = (Math.imul(h, 31) + (((cy - b[1]) * sInv * 512) | 0)) | 0;
++        }
+         h = (Math.imul(h, 31) + (f.c ? (f.c.r | 0) : 0)) | 0;
+         h = (Math.imul(h, 31) + ((f.res || 0) | 0)) | 0;
+         h = (Math.imul(h, 31) + (f.two ? 1 : 0)) | 0;
+@@ -5685,6 +5738,9 @@ function stationMeshOf(prims, trace, rot, centre, rich, liveCentre) {
+ // slot is the first float of the third. Keep in step with the emit pass.
+ const FILL_STRIDE = 48;
+ const FILL_PAL_AT = 44;
++// ...and the same lane in an outline row: p0, p1, n0, n1 is twelve floats,
++// then `always` and the stick/outer bits, and the palette slot is next.
++const ED_PAL_AT = 14;
+ 
+ /**
+  * WHICH OF THE THREE PARTS A FACE BELONGS TO. 0 the ribbon, 1 everything else
+@@ -5708,7 +5764,7 @@ function faceGroup(f) {
+     return 0;
+ }
+ 
+-function makeResident(faces, scale, prm, lines) {
++function makeResident(faces, scale, prm, lines, capCentre) {
+     const P0 = prm || defaultParams();
+     // THREE GROUPS, AND EACH ONE CHANGES FOR ITS OWN REASONS.
+     //
+@@ -5805,7 +5861,15 @@ function makeResident(faces, scale, prm, lines) {
+             window.__ribbonRowsBuilt = (window.__ribbonRowsBuilt || 0)
+                 + (rowsUnused ? 0 : 1);
+         }
+-        const hash = ribbonHashOf(face, scale, P0)
++        // 🔴 THE KEY IS CAMERA-FREE ONLY WHERE THE POSITIONS ARE.  With the
++        // rows unused the ribbon's own 48-float rows are not built and not
++        // drawn - every corner the card sees comes from the station table,
++        // rewritten from THIS frame's capture - so what the part still carries
++        // is topology, colour and provenance, and none of those move with the
++        // camera. That is the case a focus click is: the geometry is the same
++        // and only the camera has moved. Without the rows skipped the corners
++        // in the part ARE what is drawn, and the key stays as it was.
++        const hash = ribbonHashOf(face, scale, P0, rowsUnused ? capCentre : null)
+             ^ (rowsUnused ? 0x5bf03635 : 0);
+         let part = (slot && slot.hash === hash) ? slot.part : null;
+         // REPORTED FROM WHAT HAPPENED, not from the comparison: a probe that
+@@ -5860,10 +5924,20 @@ function makeResident(faces, scale, prm, lines) {
+  * later colour change (which repaints from the palette without rebuilding)
+  * exact.
+  *
+- * The OUTLINE's slots are not patched: an edge takes its slot from whichever
+- * face claimed it first and the build does not record which that was. That is
+- * the one approximation here - an outline tint on a couple of faces after a
+- * palette change, never a fill and never a shape.
++ * 🔴 AND THE OUTLINE'S SLOTS ARE PATCHED TOO NOW. They were not, on the
++ * grounds that "an edge takes its slot from whichever face claimed it first and
++ * the build does not record which that was" - and the provenance row does
++ * record a face: `edgeSrc` lane 2 is the face whose normal the edge carries, a
++ * face of that edge by construction. Taking ITS slot is a choice rather than a
++ * reconstruction of the build's, so it is measured rather than argued: on a
++ * focus click that reuses the ribbon it takes the frame from 0.159-0.205% of
++ * the pixels against a rebuild to 0.0658%, which is what the same click costs
++ * with nothing reused at all.
++ *
++ * It mattered little while a kept part was rare. The ribbon is now kept across
++ * a camera move, so it is kept on every focus click, and an unpatched outline
++ * tint went from a curiosity to the difference a reader sees while clicking
++ * around a pocket.
+  */
+ function patchPalette(part, face, RB) {
+     let patched = 0;
+@@ -5872,6 +5946,17 @@ function patchPalette(part, face, RB) {
+         const at = i * FILL_STRIDE + FILL_PAL_AT;
+         if (part.fill[at] !== want) { part.fill[at] = want; patched++; }
+     }
++    const ed = part.edges; const es = part.edgeSrc;
++    if (ed && es) {
++        const rows = Math.min(ed.length / ED_FLOATS, es.length / ED_SRC);
++        for (let r = 0; r < rows; r++) {
++            const fa = es[r * ED_SRC + 2];
++            if (fa < 0 || fa >= face.length) continue;   // a contact, or no face
++            const want = face[fa].pal === undefined ? -1 : face[fa].pal;
++            const at = r * ED_FLOATS + ED_PAL_AT;
++            if (ed[at] !== want) { ed[at] = want; patched++; }
++        }
++    }
+     if (RB) RB.palPatched = (RB.palPatched || 0) + patched;
+ }
+ 
+@@ -6465,6 +6550,22 @@ function installStations(mesh, fill) {
+     }
+     residentStations = makeResidentStations(mesh, fill);
+     if (residentStations) residentStations.stale = false;
++    // 🔴 AND A KEPT PART'S EDGE ENDPOINTS ARE A CAMERA MOVE OUT OF DATE.
++    // The ribbon's part is now reused across a camera move - its key is taken
++    // in model space where its rows are not drawn (see ribbonHashOf) - and its
++    // FILL is empty there, so nothing stale reaches the card that way. Its
++    // EDGES are not empty: `ed` carries two endpoints a row, written when the
++    // part was built, at the camera of that build. Only the station fast path
++    // rewrote them, so on the rebuild frame itself they were the old camera's:
++    // measured on 4HHB, a focus click that reused the ribbon drew 0.159-0.205%
++    // of the frame differently from the same state rebuilt, against 0.066% for
++    // a click that did not reuse it.
++    //
++    // The pass that fixes it is the one the fast path already runs every frame
++    // and costs 1.8-3.4 ms on this structure. It is idempotent - it derives
++    // every endpoint from the station table - so running it on a build frame
++    // where nothing was reused writes back what was just written.
++    if (residentStations && residentEdges) refreshEdgesFromStations(mesh);
+     // WHICH PRIMS THE TABLE COULD NOT DESCRIBE, kept for the same reason
+     // stationDecline is: a prefix that stops short blocks the fast path for the
+     // whole structure, and "9 rows in the tail" is not an answer until it says
+@@ -9480,7 +9581,7 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose)
+             prims.length = 0;
+             hm('primsDropped');
+             RB.facesOf = +(performance.now() - RB.t0).toFixed(1);
+-            makeResident(faces, scale, prm, lines);
++            makeResident(faces, scale, prm, lines, viewSpanOf(renderer).centre);
+             hm('afterMesh');
+             // ...and the stage-1 measurement, when a probe asks. Here as well
+             // as after a station update, because a structure that never moves
