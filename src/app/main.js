@@ -2381,6 +2381,15 @@ function applyPendingObjects() {
 
     const existing = new Set(Object.keys(r?.objectsData || {}));
     const newNames = [];
+    // 🔴 AND THE ONES THAT ARE ACTUALLY NEW, WHICH newNames IS NOT. It also
+    // carries an object already in the renderer that this batch names again
+    // (see `_appliedToRenderer` below), so choosing what to show from it would
+    // let a structure that is ALREADY on the page win against the file just
+    // dropped - which is how a new static file dropped onto a page holding a
+    // trajectory stopped being shown at all. Caught by tests/station_rows.py,
+    // whose tail arm loads 1EHZ over a trajectory and measured the ions never
+    // being drawn: 4 draws with a tail span became 0.
+    const freshNames = [];
 
     if (r) r._batchLoading = true;
 
@@ -2423,6 +2432,7 @@ function applyPendingObjects() {
         r.addObject(obj.name);
         obj._appliedToRenderer = true;
         newNames.push(obj.name);
+        freshNames.push(obj.name);
         for (const frame of obj.frames) {
             r.addFrame(frame, obj.name);
         }
@@ -2492,7 +2502,7 @@ function applyPendingObjects() {
         // on whichever was last, and a viewer showing the static one has no
         // play controls to say the other exists.
         const show = r?.mostFramesOf
-            ? r.mostFramesOf(newNames, newNames[newNames.length - 1])
+            ? r.mostFramesOf(freshNames, newNames[newNames.length - 1])
             : newNames[newNames.length - 1];
         if (r?._switchToObject) r._switchToObject(show);
         tubeByDefaultIfBig(r, show);

@@ -1385,6 +1385,21 @@
         localRangeOf(name) {
             const ms = this.multiState;
             const total = this._positionCount();
+            // 🔴 AND IT IS LENIENT ON PURPOSE, WHICH IS NOT THE SAME AS
+            // RIGHT. For any name at all, while nothing is merged, this
+            // answers with the whole array - so a selector naming an object
+            // that is not drawn addresses the one that is. That is how
+            // `showSidechains({object: '1UBQ', ...})` came to write onto 6MRR.
+            //
+            // Refusing here was tried and is WRONG AT THIS LEVEL: returning an
+            // empty window for a name that is not current broke five gates at
+            // once, because the load path resolves selectors - the clip, the
+            // focus - at moments when the object they name is not yet the
+            // current one, and "not current right now" is not the same
+            // question as "not this object". A caller that knows it is writing
+            // to ONE NAMED OBJECT can ask addressesObject and take
+            // objectPositions instead, which is what parts/sidechains.js does.
+            // Everything else keeps the behaviour it was built against.
             // A LONE OBJECT OWNS EVERYTHING, however long the array turns out
             // to be. Answering with a counted length instead means every path
             // that runs before the coordinates are in - the panel's, in
@@ -1397,6 +1412,117 @@
                 off: ms.sourceOffsets[s],
                 end: (s + 1 < ms.sourceOffsets.length) ? ms.sourceOffsets[s + 1] : total
             };
+        },
+
+        /**
+         * Is this object part of what the drawn arrays describe?
+         *
+         * The one question behind "does a selector naming it mean anything
+         * here". Merged: it is one of the sources. Not merged: it is the
+         * object being drawn, and nothing else is.
+         */
+        addressesObject(name) {
+            const ms = this.multiState;
+            return (ms && ms.enabled && ms.sourceNames)
+                ? ms.sourceNames.indexOf(name) >= 0
+                : name === this.currentObjectName;
+        },
+
+        /**
+         * A selector resolved inside ONE object's own numbering, from that
+         * object's own data - whether or not it is on screen.
+         *
+         * For the per-object sets: side chains, their colours, elements. Those
+         * are stored against the object in its own indices and are read back
+         * through ownerOf, so they never needed the drawn arrays - the only
+         * reason they went through positionsFor is that it was the only
+         * resolver there was, and it answers in the DRAWN array's space.
+         *
+         * 🔴 THE SPATIAL AND RELATIVE KEYS ARE REFUSED HERE, LOUDLY. `near` is
+         * a search over the drawn coordinates and `not` is the complement of a
+         * drawn set; neither means anything for an object that is not on
+         * screen, and answering "nothing" for them would be a wrong answer
+         * rather than an empty one.
+         */
+        objectPositions(name, sel) {
+            const object = this.objectsData ? this.objectsData[name] : null;
+            if (!object) return new Set();
+            const frames = object.frames || [];
+            const f0 = frames[0] || {};
+            const n = (f0.coords || []).length;
+            const out = new Set();
+            if (sel === undefined || sel === null || sel === 'all') {
+                for (let i = 0; i < n; i += 1) out.add(i);
+                return out;
+            }
+            if (typeof sel === 'string') sel = { chain: sel };
+            else if (Array.isArray(sel) || sel instanceof Set) sel = { positions: sel };
+            if (typeof sel !== 'object') {
+                throw new Error('py2Dmol: a selector is a chain id, a list of'
+                    + ' positions, or an object - got ' + typeof sel);
+            }
+            // A TYPO MUST NOT SELECT EVERYTHING - the same rule positionsFor
+            // states and for the same reason: {chian: 'B'} matches no key,
+            // narrows nothing, and would quietly mean the whole object.
+            if (typeof SELECTOR_KEYS !== 'undefined') {
+                for (const k of Object.keys(sel)) {
+                    if (!SELECTOR_KEYS.includes(k)) {
+                        throw new Error('py2Dmol: unknown selector key '
+                            + JSON.stringify(k) + ' - expected '
+                            + SELECTOR_KEYS.join(', '));
+                    }
+                }
+            }
+            for (const k of ['near', 'not']) {
+                if (sel[k] !== undefined) {
+                    throw new Error(`py2Dmol: ${JSON.stringify(k)} needs the object`
+                        + ` on screen - ${JSON.stringify(name)} is not drawn`);
+                }
+            }
+            if (sel.positions || sel.range) {
+                const push = (i) => { if (i >= 0 && i < n) out.add(i); };
+                if (sel.positions) for (const i of sel.positions) push(i);
+                if (sel.range) {
+                    for (let i = sel.range[0]; i < sel.range[1]; i += 1) push(i);
+                }
+            } else {
+                for (let i = 0; i < n; i += 1) out.add(i);
+            }
+            // ...AND THE FIELD FILTERS, from the object's OWN frame. A frame
+            // that omits one inherits it, so the first frame carrying it is
+            // the answer - the same rule the renderer applies when it draws.
+            //
+            // 🔴 A FRAME IS SNAKE_CASE AND THE RENDERER'S ARRAYS ARE NOT. The
+            // stored frame carries `residue_numbers` and `position_types`; the
+            // renderer's own arrays, which positionsFor reads, are
+            // `residueNumbers` and `positionTypes`. Written against the
+            // renderer's spelling, this threw "carries no residue numbers" at
+            // an object that carries them - a wrong answer wearing an error
+            // message. Both spellings are tried, because a frame that came in
+            // through a different door may use either.
+            const field = (...keys) => {
+                for (const f of frames) {
+                    if (!f) continue;
+                    for (const k of keys) if (f[k]) return f[k];
+                }
+                return null;
+            };
+            const narrow = (keys, want, label) => {
+                if (want === undefined) return;
+                const arr = field(...keys);
+                if (!arr) {
+                    throw new Error(`py2Dmol: ${JSON.stringify(name)} carries no`
+                        + ` ${label}, so a selector cannot narrow by it`);
+                }
+                const set = new Set([].concat(want));
+                for (const i of [...out]) if (!set.has(arr[i])) out.delete(i);
+            };
+            narrow(['chains'], sel.chain, 'chains');
+            narrow(['residue_numbers', 'residueNumbers'], sel.residues,
+                'residue numbers');
+            narrow(['position_types', 'positionTypes'], sel.type,
+                'position types');
+            return out;
         },
 
         /** Forget the merge, without touching what is loaded. */

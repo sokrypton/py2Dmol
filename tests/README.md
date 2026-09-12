@@ -103,14 +103,14 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `cyclic_bench.js` | node | Score the renderer's secondary structure on CYCLIC peptides. |
 | `cyclic_bench.py` | node | Build the cyclic-peptide secondary-structure benchmark. |
 | `cyclic_partner.js` | node | A CYCLIC PEPTIDE BOUND TO SOMETHING ELSE MUST NOT LOSE ITS STRANDS. |
-| `default_object.py` | ui | Which object a viewer opens on when several arrive together. |
+| `default_object.py` | gpu | Which object a viewer opens on when several arrive together. |
 | `demo_keep_sse.py` | tool | A trajectory that is slow without Keep SSE and fast with it - measured, and |
 | `dev_rebuild_light.py` | gpu | The dev page says when the cartoon mesh was rebuilt, and only then. |
 | `diffusion_connectivity.py` | gpu | A SAMPLER TRAJECTORY IS NOT A MOLECULE YET, AND THE DISTANCE TEST KNOWS IT. |
 | `disulfides.py` | gpu | A disulfide comes from the file, and lands on two cysteines. |
 | `edge_phases.py` | tool | WHERE A RIBBON BUILD'S TIME GOES, phase by phase, medians over rounds. |
 | `embed.py` | ui | The embed bundle, in a browser, on a page that has nothing else. |
-| `export_html.py` | ui | Four exported files, opened one at a time: do they draw? |
+| `export_html.py` | gpu | Four exported files, opened one at a time: do they draw? |
 | `focus_mode.py` | ui | Focus is a MODE: it borrows the viewer and gives it back. |
 | `frame_revisit.py` | gpu | A FRAME DRAWN AGAIN IS THE SAME FRAME - including the outline. |
 | `frame_share.py` | gpu | A TRAJECTORY'S FRAMES DESCRIBE ONE MOLECULE, AND ONLY ITS COORDINATES MOVE. |
@@ -148,10 +148,11 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `na_bench.py` | tool | Benchmark: does the nucleic backbone's ribbon face point at the BASE? |
 | `na_frame.js` | node | Score the NUCLEIC RAIL FRAME the renderer ends up with. |
 | `na_table.py` | tool | Fit the base-frame table the cartoon predicts nucleotide bases with. |
+| `named_object.py` | ui | A request that NAMES an object must reach that object, drawn or not. |
 | `notebook_narrow.py` | ui | The notebook shell in a cell too narrow for canvas-plus-panel. |
 | `nucleic_multi.py` | ui | A nucleic object keeps its atoms when the viewer drops out of Multi. |
 | `object_reload.py` | ui | Loading another file must not disturb the objects already loaded. |
-| `opacity.py` | ui | Ghosting a selection: it must change the picture and rebuild nothing. |
+| `opacity.py` | gpu | Ghosting a selection: it must change the picture and rebuild nothing. |
 | `outline_sync.py` | gpu | DOES THE OUTLINE MOVE WITH THE SURFACE, FRAME BY FRAME THROUGH A PLAY? |
 | `packaging.py` | node | Every resource viewer.py opens must be in the wheel. |
 | `paint_order_audit.js` | tool | Paint-order audit, written once and plainly. |
