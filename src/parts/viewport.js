@@ -248,7 +248,16 @@ const FS_CSS = `
     width: auto;
     min-width: 0;
 }
-.${FS_CLASS} #viewerColumn { flex: 1 1 auto; min-width: 0; min-height: 0; }
+/* 🔴 WHATEVER WRAPS THE CANVAS, NOT ONE SHELL'S NAME FOR IT. This named
+   #viewerColumn, which is index.html's id and index.html's alone: the notebook
+   calls the same box #viewerWrapper, so the rule matched nothing there and the
+   canvas filled the height and not the width - 570x852 on a 1440x900 screen,
+   against 1188x608 on the website. The :has() form says what is meant and
+   survives a third shell; the two ids are named after it so that a browser
+   without :has() still lays the two we ship out correctly. */
+.${FS_CLASS} *:has(> #canvasContainer) { flex: 1 1 auto; min-width: 0; min-height: 0; }
+.${FS_CLASS} #viewerColumn,
+.${FS_CLASS} #viewerWrapper { flex: 1 1 auto; min-width: 0; min-height: 0; }
 /* 🔴 !important, AND ONLY HERE. #canvasContainer carries resize:both, so a
    reader who has dragged its corner has an INLINE width and height on it, and
    nothing but !important beats those. Scoped to the full-screen class, so the

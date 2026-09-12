@@ -1,7 +1,17 @@
 <style>
 #mainContainer * { box-sizing: border-box; }
+/* WRAPS WHEN THERE IS NO ROOM, which parts/embed.js's shell has done since it
+   was written and this one never did. The canvas is a fixed 600px (and
+   resizable past that), the panel column a fixed 180px, and `nowrap` is the
+   flex default - so in a notebook cell narrower than the two together the
+   panel was pushed off the right-hand side with nothing to say it was there.
+   Wrapping puts it under the canvas instead. min-width:0 on the wrapper is
+   what lets the row actually break: a flex item's default min-width is its
+   content, so a 600px canvas refuses to shrink and the line never overflows
+   enough to wrap. */
 #mainContainer {
     display: flex; flex-direction: row; align-items: flex-start; gap: 15px;
+    flex-wrap: wrap;
     background: transparent; padding: 8px; margin: 0;
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }

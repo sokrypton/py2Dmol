@@ -145,6 +145,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `na_bench.py` | tool | Benchmark: does the nucleic backbone's ribbon face point at the BASE? |
 | `na_frame.js` | node | Score the NUCLEIC RAIL FRAME the renderer ends up with. |
 | `na_table.py` | tool | Fit the base-frame table the cartoon predicts nucleotide bases with. |
+| `notebook_narrow.py` | ui | The notebook shell in a cell too narrow for canvas-plus-panel. |
 | `nucleic_multi.py` | ui | A nucleic object keeps its atoms when the viewer drops out of Multi. |
 | `object_reload.py` | ui | Loading another file must not disturb the objects already loaded. |
 | `outline_sync.py` | gpu | DOES THE OUTLINE MOVE WITH THE SURFACE, FRAME BY FRAME THROUGH A PLAY? |
