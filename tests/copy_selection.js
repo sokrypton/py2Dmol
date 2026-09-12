@@ -175,6 +175,21 @@ test('a forced secondary structure follows its residues', () => {
     if (!eq(dst.sse, { 1: 'H', 2: 'E' })) throw new Error('got ' + JSON.stringify(dst.sse));
 });
 
+test('base pairs renumber, and a pair with one end outside is dropped', () => {
+    // SEL is [1, 2, 3, 5] -> map: 1->0, 2->1, 3->2, 5->3
+    // pair 2:5 -> 1:3; pair 1:7 -> dropped (7 not in SEL)
+    const src = { pairs: { 2: 5, 5: 2, 1: 7, 7: 1 } };
+    const dst = {};
+    remap(src, dst, SEL);
+    if (!eq(dst.pairs, { 1: 3, 3: 1 })) throw new Error('got ' + JSON.stringify(dst.pairs));
+});
+
+test('a base pair map with nothing left becomes null', () => {
+    const dst = {};
+    remap({ pairs: { 0: 7, 7: 0 } }, dst, SEL);
+    if (dst.pairs !== null) throw new Error('got ' + JSON.stringify(dst.pairs));
+});
+
 test('per-residue colours follow their residues, and the base under them is kept', () => {
     // Only `position` inside an advanced colour is keyed by index. An
     // object-wide mode underneath it is what the overrides sit on, and a copy
@@ -248,6 +263,7 @@ test('every per-object key is in the field list or excluded on purpose', () => {
     const written = new Set();
     for (const m of app.matchAll(/\bobj\.([A-Za-z_][A-Za-z0-9_]*)\s*=/g)) written.add(m[1]);
     for (const m of SRC.matchAll(/\bobject\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s/g)) written.add(m[1]);
+    for (const m of SRC.matchAll(/\bobj\.([A-Za-z_][A-Za-z0-9_]*)\s*=/g)) written.add(m[1]);
     // Not per-position state: frames and geometry, bookkeeping, and caches.
     const NOT_DISPLAY = new Set([
         'frames', 'maxExtent', 'stdDev', 'globalCenterSum', 'totalPositions',
@@ -263,6 +279,8 @@ test('every per-object key is in the field list or excluded on purpose', () => {
         // been handed to the renderer, do not rebuild it". Nothing to do with
         // an object in objectsData, and an extracted copy was never pending.
         '_appliedToRenderer',
+        // per-object camera / view transform, not keyed by position
+        'viewerState',
     ]);
     const registered = new Set(OBJECT_STATE.map((f) => f.key));
     const missed = [...written].filter((k) => !NOT_DISPLAY.has(k) && !registered.has(k));

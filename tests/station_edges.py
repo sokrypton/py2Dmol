@@ -123,7 +123,7 @@ window.addEventListener('load', () => {
       if (r.setStyle) r.setStyle('cartoon'); else r.style = 'cartoon';
       await settle(10);
       // edSrc is only WRITTEN while the station path is on - it is 3-5% of a
-      // rebuild and a reader who never presses Keep SSE does not pay it - so
+      // rebuild and a reader who never presses the station table does not pay it - so
       // without this half of what is compared here does not exist.
       if (G.setStationDraw) G.setStationDraw(true);
       r.outlineMode = 'on'; r.relativeOutlineWidth = 3;

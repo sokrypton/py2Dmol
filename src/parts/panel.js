@@ -157,20 +157,7 @@ const STYLE_PANEL_ROWS = [
      { kind: 'toggle', id: 'darkCheckbox', label: 'Dark',
        title: 'Black background (white ink, fade toward black)' },
      { kind: 'toggle', id: 'cyclicCheckbox', label: 'Cyclic',
-       title: 'Join a chain end-to-end when its termini are within bonding range' },
-     // 🔴 KEEP SSE LIVES HERE NOW, NOT ON THE PLAY BAR. It was a button in the
-     // frame strip, labelled with the bare acronym because spelling it out
-     // pushed the bar onto a second line at 320-390px (tests/mobile_layout.py).
-     // It is not a transport control - it says something about the STRUCTURE,
-     // like Cyclic beside it - and in the panel there is room to say what it
-     // is. core/mol.js still hides it when there is only one frame, and hides
-     // the toggle's FACE rather than the checkbox, which is what shows.
-     { kind: 'toggle', id: 'keepSseButton', label: 'Keep SSE',
-       title: 'Assign secondary structure once and keep it for every frame.'
-            + ' Stops helix ends flickering, and lets a trajectory step upload'
-            + ' new coordinates instead of rebuilding the whole ribbon - about'
-            + ' 3x. Wrong for a folding trajectory, where the structure really'
-            + ' does change.' }],
+       title: 'Join a chain end-to-end when its termini are within bonding range' }],
      // NO FOCUS ROW. It was one here and it is a top-level BUTTON now, beside
      // Orient and Clip: it is a mode that changes what a click does, and a
      // reader looking for that does not open a style panel to find it.
@@ -291,7 +278,7 @@ function buildStylePanel() {
     if (advRows.length) {
         const { cell, block } = buildAdvanced(advRows, mkRow);
         // ...the switch rides in the LAST row, which is the toggles, so it
-        // lands beside Cyclic and Keep SSE - three to a line, the way that row
+        // lands beside Cyclic, the way that row
         // already wraps. The block it opens comes after every row.
         const last = panel.lastElementChild;
         if (last && last.classList.contains('toggle-item')) last.appendChild(cell);

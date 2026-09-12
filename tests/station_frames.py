@@ -50,7 +50,7 @@ window.addEventListener('load', () => {
     const G = window.py2dmolCartoonGPU;
     const obj = r.objectsData[r.currentObjectName];
     const frames = (obj && obj.frames) ? obj.frames.length : 1;
-    // 🔴 KEEP SSE ON, WITHOUT WHICH THERE IS NO CONSTANT TOPOLOGY TO UPLOAD
+    // 🔴 THE TABLE ON, WITHOUT WHICH THERE IS NO ROW TO UPLOAD
     // INTO. The station count follows the assignment - a residue drawn as
     // strand is a different width and a different number of stations from the
     // same residue drawn as coil - so an unpinned trajectory changes the shape
@@ -60,10 +60,9 @@ window.addEventListener('load', () => {
     // one frame now, so setStationDraw(false) below is undone on the next
     // frame and the "rebuild" arm becomes the station path measured against
     // itself: it reported a station step at 4.80 ms against a rebuild's 4.80,
-    // which is the file working. Same switch tests/station_integrated.py and
-    // tests/stable_topology.py use.
+    // which is the file working. Same switch tests/station_integrated.py uses.
     r._autoStationTable = false;
-    r.stableTopology = true;
+    if (window.py2dmolCartoonGPU) window.py2dmolCartoonGPU.setStationDraw(true);
     // 🔴 AND THE FOLD CUTS OFF, WHEN ASKED. They are what moves the
     // face-to-station mapping between frames - oB and oN follow the geometry -
     // and tests/station_foldcuts.py measures the GPU picture as unchanged
@@ -144,7 +143,7 @@ window.addEventListener('load', () => {
           // 🔴 A SHAPE CHANGE IS A REBUILD, NOT A STALE FRAME. The piece
           // cutting is not purely topological: geom.js cuts at every
           // ORIENTATION FOLD, where the face or width normal crosses zero, and
-          // those follow the geometry. Keep SSE pins the assignment and cannot
+          // those follow the geometry. the station table pins the assignment and cannot
           // pin that. So the fast path handles the frames where the table keeps
           // its shape and hands the rest back - which is the correct behaviour
           // and has to be TIMED, not excluded, or the number is a best case
@@ -159,7 +158,7 @@ window.addEventListener('load', () => {
           const m2 = captureStations();
           if (f2 && m2) ok = G.installStations(m2, f2);
           // 🔴 WHAT CHANGED SHAPE, not just that something did. The station
-          // count following the assignment is the case Keep SSE covers; the
+          // count following the assignment is the case the station table covers; the
           // PIECE count moving is a different animal, because pieces are cut
           // by the renderer and a cut that moves with the geometry means the
           // face list is not purely topological after all.
@@ -197,7 +196,6 @@ window.addEventListener('load', () => {
       }
     }
     G.setStationDraw(false); G.clearResidentStations();
-    r.stableTopology = false;
     r._autoStationTable = true;
     r._noFoldCuts = false;
     return {

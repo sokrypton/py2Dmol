@@ -185,8 +185,8 @@ if declines and not planned:
 # through a whole trajectory without the face list changing at all
 # (tests/ss_axis.py, tests/arrow_rebuilds.py). What still declines is a change
 # of TOPOLOGY proper - a segment splitting when a CA-CA distance crosses the
-# connectivity threshold, which tests/demo_keep_sse.py describes on 9FOG at an
-# amplitude of 0.45 - so that is what this file wants pointed at it.
+# connectivity threshold, which 9FOG shows at an amplitude of 0.45 - so that is
+# what this file wants pointed at it.
 if key_only:
     print(f"  {key_only} step(s) declined on the topological KEY with the"
           " mapping untouched - the strand set, for the outline's baked edge"

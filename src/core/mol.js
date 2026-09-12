@@ -1608,7 +1608,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.cachedSegmentIndicesCoords = null;
             this.cachedSegmentIndicesFrame = -1;
             this.cachedSegmentIndicesObjectName = null;
-            this.cachedSegmentIndicesCount = -1;
             this.cachedCyclicChains = null;
 
             // Playback
@@ -2984,7 +2983,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.cachedSegmentIndicesCoords = null;
             this.cachedSegmentIndicesFrame = -1;
             this.cachedSegmentIndicesObjectName = null;
-            this.cachedSegmentIndicesCount = -1;
             this.cachedCyclicChains = null;
             // Everything the cartoon path derives from the unrotated coordinates
             // goes stale whenever segments do. All three caches are keyed on
@@ -2996,10 +2994,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             //   _cartoonLadder / _cartoonSheet  beta ladders, and the strand
             //                 frames built on them
             //
-            // 🔴 ...EXCEPT UNDER Keep SSE, WHERE DROPPING THEM IS THE WHOLE
+            // 🔴 ...AND KEEP SSE ONCE MADE AN EXCEPTION HERE, WHERE DROPPING
             // FAULT. The reasoning above is that the key - object|frame|n -
             // cannot catch a coordinate swap, so the caches are cleared
-            // outright. Under stableTopology the key is _topologyKey() instead,
+            // THEM WAS THE WHOLE FAULT. It swapped in _topologyKey() instead,
             // which names the object, the drawn set, the side-chain count and
             // the position count and DELIBERATELY not the frame: that is what
             // pinning the assignment means. A key that strong does not need the
@@ -3009,7 +3007,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // and it runs EVERY FRAME - side-chain indices are reissued each
             // time, so it cannot be skipped. So with side chains showing, the
             // secondary structure was re-derived from every frame's geometry
-            // while Keep SSE claimed to be holding it. Measured on
+            // while the mode claimed to be holding it. Measured on
             // _traj_1tim.pdb between two frames: three intervals moved C -> H
             // and a fourth resubdivided, the ribbon went 1452 -> 1460 prims,
             // and the station table refused every step because its
@@ -3019,7 +3017,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Anything that genuinely changes the topology changes
             // _topologyKey() and misses on the key, which is the check these
             // caches already carry.
-            if (this.stableTopology !== true) {
+            {
                 this._cartoonSec = null;
                 this._cartoonSecKey = null;
                 this._cartoonPair = null;
@@ -6106,27 +6104,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.overlayButton.style.display = (total <= 1) ? 'none' : '';
             }
 
-            // KEEP SSE IS A TRAJECTORY CONTROL, so it appears with the strip
-            // and not before: on a single frame there is nothing to keep the
-            // assignment ACROSS, and a lit button over a still picture is a
-            // question the reader cannot answer.
-            //
-            // ...and it is re-synced here rather than only on its own click,
-            // because this runs when the frames change - a new file, a switched
-            // object - and the flag may not be what the button last said.
-            if (this.keepSseButton) {
-                this.keepSseButton.disabled = (total <= 1);
-                // 🔴 THE FACE, NOT THE CHECKBOX. Keep SSE is a toggle in the
-                // style panel now - a label wrapping a hidden input - so
-                // hiding the input hides nothing a reader can see. The
-                // fallback is the element itself, for any shell that still
-                // gives it as a plain button.
-                const face = (this.keepSseButton.closest
-                    && this.keepSseButton.closest('.btn-toggle')) || this.keepSseButton;
-                face.style.display = (total <= 1) ? 'none' : '';
-                this._syncKeepSseButton();
-            }
-
             // Unified frame control state
             const shouldDisableFrameControls = this.overlayState.enabled || (total <= 1);
 
@@ -6637,25 +6614,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const on = !!(this.overlayState && this.overlayState.enabled);
             this.overlayButton.classList.toggle('btn-primary', on);
             this.overlayButton.classList.toggle('btn-secondary', !on);
-        }
-
-        /**
-         * ...and the same for Keep SSE, lit while the assignment is being held.
-         *
-         * Written from the FLAG rather than from the click, for the reason the
-         * note above gives about overlay: the flag moves without the button
-         * being pressed - an embed that asked for it, a new file that resets
-         * it - and a button tracking only its own clicks then says the opposite
-         * of what is true.
-         */
-        _syncKeepSseButton() {
-            if (!this.keepSseButton) return;
-            const on = this.stableTopology === true;
-            // A toggle shows its state through :checked; a button through its
-            // class. Both are set, so either shape is right.
-            if (this.keepSseButton.type === 'checkbox') this.keepSseButton.checked = on;
-            this.keepSseButton.classList.toggle('btn-primary', on);
-            this.keepSseButton.classList.toggle('btn-secondary', !on);
         }
 
         /**
@@ -7906,7 +7864,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // These two lines stood before the freshness test, so EVERY
                 // setCoords wiped them and only a fresh frame filled them in
                 // again - which is fine while every frame is fresh, and is a
-                // silent failure the moment one is not. Keep SSE makes frames
+                // silent failure the moment one is not. A held mesh makes frames
                 // that are not: with the tables held across a step, the map was
                 // cleared and never rebuilt, every chainIndexMap.get missed,
                 // and getAtomColor fell through to `colorArray[0]`. Ten chains
@@ -8060,34 +8018,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // The explicit invalidations stay: they are for the other
             // direction, where the array is the same and the segments are not
             // - a contact added, a bond list changed, the backbone hidden.
-            // 🔴 AND KEEP SSE KEEPS THE BONDS TOO, for the same reason it keeps
-            // the assignment. Connectivity is inferred from a DISTANCE - 5.0 A
-            // between protein alpha carbons - and a pair sitting near that
-            // threshold crosses it as the structure breathes. Measured on a
-            // 3,348-residue trajectory: the segment count goes 3336 -> 3337 ->
-            // 3336, twice every fifteen frames.
+            // 🔴 AND CONNECTIVITY IS STILL INFERRED FROM A DISTANCE, which is
+            // what Keep SSE used to paper over. 5.0 A between protein alpha
+            // carbons, with no hysteresis, so a pair sitting near the threshold
+            // crosses it as the structure breathes: measured on a 3,348-residue
+            // trajectory the segment count goes 3336 -> 3337 -> 3336, twice
+            // every fifteen frames. The ribbon visibly breaks and rejoins, the
+            // face list changes, this cache misses and the frame rebuilds.
             //
-            // That is not a molecule making and breaking a bond. It is a
-            // threshold with no hysteresis, and it costs twice over: the ribbon
-            // visibly breaks and rejoins, and the face list changes, so every
-            // cache keyed on the geometry is thrown away and the frame rebuilds
-            // - 25 ms becoming 200.
-            //
-            // stableTopology is already the caller saying "these frames are one
-            // molecule moving". If that is true the bond list is a property of
-            // the molecule and not of the frame, so the cache outlives the
-            // frame. What is still checked is that it is the same object and
-            // the same number of positions: those are the things that would
-            // make the indices mean something else.
-            //
-            // 🔴 AND IT IS WRONG ON A FOLDING TRAJECTORY, exactly as pinning the
-            // assignment is. Same flag, same claim, same reason it is opt-in.
-            const segmentCacheHolds = this.stableTopology === true
-                ? (this.cachedSegmentIndicesObjectName === this.currentObjectName
-                    && this.cachedSegmentIndicesCount === this.coords.length)
-                : (this.cachedSegmentIndicesCoords === this.coords
-                    && this.cachedSegmentIndicesFrame === this.currentFrame
-                    && this.cachedSegmentIndicesObjectName === this.currentObjectName);
+            // Keep SSE asserted "these frames are one molecule moving" and let
+            // the cache outlive the frame on that promise. It was REMOVED, and
+            // the threshold it was covering for is the thing to fix: hysteresis
+            // on the bond test, which needs no flag and no mode.
+            const segmentCacheHolds = this.cachedSegmentIndicesCoords === this.coords
+                && this.cachedSegmentIndicesFrame === this.currentFrame
+                && this.cachedSegmentIndicesObjectName === this.currentObjectName;
             const canUseCache = this.cachedSegmentIndices !== null
                 && segmentCacheHolds
                 && this.cachedSegmentIndices.length > 0;
@@ -8657,8 +8602,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.cachedSegmentIndicesCoords = this.coords;
                 this.cachedSegmentIndicesFrame = this.currentFrame;
                 this.cachedSegmentIndicesObjectName = this.currentObjectName;
-                // ...and what the stableTopology form of the check reads.
-                this.cachedSegmentIndicesCount = this.coords.length;
                 this.cachedCyclicChains = this.cyclicChains
                     ? new Set(this.cyclicChains) : null;
             }

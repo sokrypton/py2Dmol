@@ -1545,7 +1545,7 @@ frames — answer questions about *which residues these are*, not where they sit
 and `_coordsKey` names the frame, so a trajectory recomputes all three for every
 one. `parts/multi.js:_topologyKey` is the same statement without the frame and
 without the coordinate samples; `renderer.stableTopology = true` selects it.
-Gated by `tests/stable_topology.py`.
+🔴 ITS GATE WENT WITH IT - Keep SSE was removed, so this section is a record of what the mode measured and not a description of the shipped path.
 
 | | off | on | |
 |---|--:|--:|--:|
@@ -1766,7 +1766,7 @@ Keep SSE already claims these frames are one molecule moving. If that is true
 the bond list is a property of the molecule and not of the frame, so the segment
 cache outlives the frame under the same flag - checked on the object name and
 the position count, which are the things that would make the indices mean
-something else. `tests/stable_topology.py` drives a fixture with one bond
+something else. Its gate (removed with the feature) drove a fixture with one bond
 straddling the threshold: **loose [58, 59], pinned [59]**.
 
     9FOG, the flickering amplitude, cartoon at 4x     8.1 fps -> 25.3   3.14x
@@ -2882,7 +2882,7 @@ is the small version of the same number.
 🔴 **BUT THE PAGE DOES NOT DRAW 9FOG AS A CARTOON.** Above
 LARGE_MOLECULE_CUTOFF (1,000 segments) the app picks tube on its own, and a tube
 step is 1.8 ms. The 124 ms case is reached by setting Cartoon by hand on a
-3,348-residue structure - which is exactly what tests/demo_keep_sse.py tells you
+3,348-residue structure - which is exactly what the removed Keep SSE demo told you
 to do, so it is a supported path and not a straw man, but it is not the default
 one. The partial rebuild is worth 38% on the trajectories the page draws as
 cartoons by itself.

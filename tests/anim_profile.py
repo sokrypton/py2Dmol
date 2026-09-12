@@ -53,7 +53,8 @@ window.addEventListener('load', () => {
       // other painter.
       if (r.setStyle) r.setStyle('cartoon'); else r.style = 'cartoon';
       await settle(6);
-      r.stableTopology = true; r._noFoldCuts = true;
+      if (window.py2dmolCartoonGPU) window.py2dmolCartoonGPU.setStationDraw(true);
+    r._noFoldCuts = true;
       const G = window.py2dmolCartoonGPU;
       if (G && G.setStationDraw) G.setStationDraw(true);
       if (r._invalidateSegmentCache) r._invalidateSegmentCache();

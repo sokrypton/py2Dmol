@@ -1,20 +1,32 @@
-"""The render loop takes the fast path by itself.
+"""THE STATION PATH END TO END - AN INSTRUMENT NOW, NOT A GATE.
 
-    python3 tests/station_integrated.py [_traj_1tim.pdb]
+    python3 tests/station_integrated.py
 
-Every other station probe drives the pieces by hand: capture, build, update,
-draw. This one turns the flag on and steps the trajectory the way the app does -
-setFrame and render - and asks whether renderApp took the fast path, whether the
-picture is right, and what it cost.
+🔴 ITS PREMISE WAS KEEP SSE, WHICH HAS BEEN REMOVED. This compared the station
+fast path against a rebuild of the same frame and asserted three things: that
+the path is taken on nearly every step, that it is faster, and that it draws
+what a rebuild draws. All three held with the assignment PINNED. They do not
+hold without it, and the pin is gone - so this is out of the gate lanes rather
+than watered down to pass.
 
-🔴 THE COUNTERS ARE THE ASSERTION. window.__stationFastPath and
-__stationSlowPath are incremented inside renderApp, so "it was faster" and "it
-actually took the path" are separate questions with separate answers. A probe
-that timed the loop without reading them could not tell a fast path from a
-lucky cache.
+Measured on this tip, the table on and nothing pinned:
 
-🔴 AND THE PICTURE IS COMPARED AGAINST THE SAME FRAME REBUILT. Not against the
-previous frame, which is what a stale draw would match.
+    _traj_1tim.pdb    22/33 steps, 1.05x / 0.93x     noise, either direction
+    _traj_unfold.pdb  22/33 steps, 1.47x / 0.92x     and 0.083% of pixels
+    _traj_1ehz.pdb    16/33 steps, 0.89x / 0.52x     6 rebuilds
+
+🔴 AND THE PIXEL LINE IS AN OPEN BUG, NOT A CONSEQUENCE OF THE REMOVAL. On
+_traj_unfold.pdb the fast path draws a frame 0.083% different from a rebuild of
+it, worst channel 222 - and the same numbers appear on the commit BEFORE Keep
+SSE was removed, with the pin taken away by hand. The station table auto-enables
+for any multi-frame object (see paintgl.js, the stationAuto block), so that
+configuration ships today and nothing checked it: this probe only ever ran the
+table beside the pin. Whatever the revisit does about keeping an assignment, it
+should start here.
+
+What it still does, faithfully: runs both arms over the same frames in one
+process, compares the picture pixel for pixel against a rebuild, and reports how
+often the path was taken. Read it; do not trust the exit code.
 """
 import json, os, sys, shutil, subprocess, http.server, socketserver, threading
 
@@ -35,7 +47,7 @@ ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
 # decisions genuinely change, and the same gate reads 5.56% of pixels.
 #
 # That is exactly what shipped: the two-tone colour was baked into the instance
-# row, the station path never rewrites that row, and under Keep SSE the pale
+# row, the station path never rewrites that row, so the pale
 # face stayed on whichever side frame 0 put it - visibly on the OUTSIDE of a
 # helix by the second frame. The mechanism was in range of this gate the whole
 # time and the trajectory was too gentle to show it.
@@ -96,7 +108,7 @@ window.addEventListener('load', () => {
 
     // ARM 1: the same trajectory, same drawing settings, ordinary path.
     //
-    // 🔴 THE SETTINGS HAVE TO MATCH OR THIS COMPARES TWO PICTURES. Keep SSE
+    // 🔴 THE SETTINGS HAVE TO MATCH OR THIS COMPARES TWO PICTURES. The
     // pins the assignment and CHANGES the drawing - a residue held as strand is
     // wider than the same residue redrawn as coil, which tests/cartoon_station.js
     // measures at 17 A - and the fold cuts change how pieces are divided. Run
@@ -110,7 +122,8 @@ window.addEventListener('load', () => {
     // path as "not faster" on three trajectories, which is the file working.
     r._autoStationTable = false;
     G.setStationDraw(false);
-    r.stableTopology = true; r._noFoldCuts = true;
+    if (window.py2dmolCartoonGPU) window.py2dmolCartoonGPU.setStationDraw(true);
+    r._noFoldCuts = true;
     r.outlineMode = outline ? 'on' : 'none';
     r.relativeOutlineWidth = outline ? 3 : 0;
     if (r._invalidateSegmentCache) r._invalidateSegmentCache();
@@ -127,10 +140,10 @@ window.addEventListener('load', () => {
       }
     }
 
-    // ARM 2: the same loop with the path switched on. Keep SSE pins the
+    // ARM 2: the same loop with the path switched on. The station table pins
     // assignment and the fold cuts come off - both are what make the topology
     // hold still; see tests/station_frames.py for what each is worth.
-    r.stableTopology = true;
+    if (window.py2dmolCartoonGPU) window.py2dmolCartoonGPU.setStationDraw(true);
     r._noFoldCuts = true;
     if (r._invalidateSegmentCache) r._invalidateSegmentCache();
     if (G.invalidate) G.invalidate();
@@ -182,7 +195,7 @@ window.addEventListener('load', () => {
     const missed = window.__stationSlowPath || 0;
 
     G.setStationDraw(false); G.clearResidentStations();
-    r.stableTopology = false; r._noFoldCuts = false;
+    r._noFoldCuts = false;
     r._autoStationTable = true;
     if (r._invalidateSegmentCache) r._invalidateSegmentCache();
     if (G.invalidate) G.invalidate();

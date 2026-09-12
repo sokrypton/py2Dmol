@@ -87,6 +87,9 @@ const OBJECT_STATE = [
     // position -> letter, and position -> colour
     { key: 'sse', kind: 'plain', absent: 'none', json: 'sse',
         remap: remapPositionMap },
+    // position -> position (base pairs: duplex rungs)
+    { key: 'pairs', kind: 'plain', absent: 'none', json: 'pairs',
+        remap: remapPositionPairs },
     { key: 'sidechainColor', kind: 'plain', absent: 'none', json: 'sidechain_color',
         remap: remapPositionMap },
     // position -> how solidly it is drawn, 0..1. Absent is SOLID, which is
@@ -158,6 +161,21 @@ function remapPositionMap(src, ctx) {
     for (const k of Object.keys(src)) {
         const to = ctx.map.get(Number(k));
         if (to !== undefined) out[to] = src[k];
+    }
+    return Object.keys(out).length ? out : null;
+}
+
+/**
+ * A position -> position pair mapping (base pairs). Both ends must survive the
+ * selection, or the pair is dropped - half a base pair is not one.
+ */
+function remapPositionPairs(pairs, ctx) {
+    if (!pairs || typeof pairs !== 'object') return undefined;
+    const out = {};
+    for (const k of Object.keys(pairs)) {
+        const a = ctx.map.get(Number(k));
+        const b = ctx.map.get(Number(pairs[k]));
+        if (a !== undefined && b !== undefined) out[a] = b;
     }
     return Object.keys(out).length ? out : null;
 }

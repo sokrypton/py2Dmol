@@ -82,10 +82,9 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 
 | Probe | Lane | What it answers |
 | --- | --- | --- |
-| `against_baseline.py` | tool | THIS TREE AGAINST origin/main, on the ORDINARY path - Keep SSE OFF. |
+| `against_baseline.py` | tool | THIS TREE AGAINST origin/main, on the ordinary path: every frame rebuilds. |
 | `align.js` | node | TM-align, and the four decisions the viewer makes around it. |
 | `align_objects.py` | ui | Superposing one object onto another, in the browser. |
-| `anim_playback.py` | tool | Does Keep SSE make PLAYBACK faster, or only the loop a benchmark runs? |
 | `anim_profile.py` | tool | A CPU profile of a trajectory being stepped, aggregated by function. |
 | `arrow_rebuilds.py` | gpu | ARROWS NO LONGER MAKE A TRAJECTORY REBUILD, and this is the gate on that. |
 | `bench.js` | tool | Render-time benchmark. Requires tests/out/bench.html (python tests/make_bench.py). |
@@ -104,7 +103,6 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `cyclic_bench.py` | node | Build the cyclic-peptide secondary-structure benchmark. |
 | `cyclic_partner.js` | node | A CYCLIC PEPTIDE BOUND TO SOMETHING ELSE MUST NOT LOSE ITS STRANDS. |
 | `default_object.py` | gpu | Which object a viewer opens on when several arrive together. |
-| `demo_keep_sse.py` | tool | A trajectory that is slow without Keep SSE and fast with it - measured, and |
 | `dev_rebuild_light.py` | gpu | The dev page says when the cartoon mesh was rebuilt, and only then. |
 | `diffusion_connectivity.py` | gpu | A SAMPLER TRAJECTORY IS NOT A MOLECULE YET, AND THE DISTANCE TEST KNOWS IT. |
 | `disulfides.py` | gpu | A disulfide comes from the file, and lands on two cysteines. |
@@ -192,14 +190,13 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `ss_bench.py` | tool | Score the renderer's secondary-structure assignment against pydssp. |
 | `ss_legacy.js` | tool | THE SUPERSEDED C-ALPHA-ONLY SECONDARY STRUCTURE, kept as a baseline. |
 | `ss_tune.js` | tool | Tune the CA-only SS parameters against pydssp by coordinate descent. |
-| `stable_topology.py` | gpu | `renderer.stableTopology` keeps the fold's answers across frames - and is |
 | `station_controls.py` | gpu | DOES THE STATION PATH DRAW WHAT A REBUILD DRAWS, CONTROL BY CONTROL? |
 | `station_corners.py` | gpu | The corners a station table implies are the corners the mesh was built from. |
 | `station_edges.py` | gpu | THE EDGE ARRAYS, BUILT TWICE AND DIFFED ELEMENT BY ELEMENT. |
 | `station_faces.js` | node | EVERY RIBBON FACE IS (a piece, a station, a surface) - the other half of |
 | `station_foldcuts.py` | gpu | What dropping the orientation-fold cuts costs, and what it buys. |
 | `station_frames.py` | gpu | What a trajectory step costs when only the stations are uploaded. |
-| `station_integrated.py` | gpu | The render loop takes the fast path by itself. |
+| `station_integrated.py` | tool | THE STATION PATH END TO END - AN INSTRUMENT NOW, NOT A GATE. |
 | `station_overlay.py` | gpu | What is drawn ON TOP of the canvas follows the station fast path. |
 | `station_pixels.py` | gpu | The station path draws the same picture. |
 | `station_rows.py` | gpu | THE STATION ROW'S FIFTEEN STATIC FLOATS, DERIVED BOTH WAYS. |

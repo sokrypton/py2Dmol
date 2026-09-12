@@ -33,7 +33,7 @@ SETUP = """
 window.__ready = false;
 window.addEventListener('load', () => {
   //HELPERS
-  window.__go = async (file, keepSse) => {
+  window.__go = async (file, stations) => {
     if (window.__loadedFile !== file) {
       const t = await (await fetch('/' + file)).text();
       await window.processFiles([{name: file, readAsync: () => Promise.resolve(t)}], true);
@@ -46,10 +46,13 @@ window.addEventListener('load', () => {
     await until(() => !r._quietStyle && !r._switchQuiet, 30000);
     if (r.setStyle) r.setStyle('cartoon'); else r.style = 'cartoon';
     await settle(8);
-    const sse = document.querySelector('#keepSseButton');
-    if (!sse) return {error: 'no SSE button on this page'};
-    if (keepSse && !r.stableTopology) { sse.click(); await settle(8); }
-    if (!keepSse && r.stableTopology) { sse.click(); await settle(8); }
+    const G0 = window.py2dmolCartoonGPU;
+    if (!G0 || !G0.setStationDraw) return {error: 'no station switch on this page'};
+    // THE STATION TABLE, which the station table used to switch on beside its pin.
+    // The pin is gone; the table is the thing these arms were reaching for.
+    if (G0 && G0.setStationDraw) G0.setStationDraw(!!stations);
+    if (!stations && G0 && G0.clearResidentStations) G0.clearResidentStations();
+    await settle(8);
     const el = document.getElementById('devRebuildLight');
     if (!el) return {error: 'no #devRebuildLight - tools/bundle.py did not inject it'};
     const dark = () => new Promise((s) => setTimeout(s, 600));
@@ -64,7 +67,7 @@ window.addEventListener('load', () => {
       await settle(2);
       // 🔴 DID THIS STEP REBUILD, AND DID THE LIGHT SAY SO - per step, not per
       // run. This counted lit steps and compared them with the TOTAL number of
-      // steps, which was the same thing only while every step without Keep SSE
+      // steps, which was the same thing only while every step without the station table
       // rebuilt. A trajectory gets the station table now whether or not the
       // button is pressed, so some steps are updated in place and correctly
       // show no light: 4 of 5 on 1TIM. The light's contract was never "always
@@ -88,13 +91,13 @@ window.addEventListener('load', () => {
     const forcedBuilt = (window.__faceBuilds || 0) > fb;
     const forcedLit = el.classList.contains('on');
     await dark();
-    // 🔴 READ THE LIGHT BEFORE PUTTING THE MODE BACK. Toggling Keep SSE off
+    // 🔴 READ THE LIGHT BEFORE PUTTING THE MODE BACK. Toggling the station table off
     // invalidates and rebuilds, which lights it - so cleaning up first and
     // asking afterwards measures the cleanup.
-    const out = {keepSse, steps: 5, lit, built, mismatch, forcedBuilt, forcedLit,
+    const out = {stations, steps: 5, lit, built, mismatch, forcedBuilt, forcedLit,
                  builds: (window.__faceBuilds || 0) - base,
                  wentDark: !el.classList.contains('on'), badge: el.textContent};
-    if (r.stableTopology) { sse.click(); await settle(4); }
+    if (G0 && G0.setStationDraw) { G0.setStationDraw(false); await settle(4); }
     return out;
   };
   window.__ready = true;
@@ -141,7 +144,7 @@ bad = []
 for keep, o in runs.items():
     if o.get("error"):
         sys.exit("page error: " + o["error"])
-    print(f"Keep SSE={str(keep):5s}: {o['builds']} rebuilds over {o['steps']} steps,"
+    print(f"the station table={str(keep):5s}: {o['builds']} rebuilds over {o['steps']} steps,"
           f" lit on {o['lit']}, built on {o['built']},"
           f" disagreed on {o['mismatch']}, badge {o['badge']!r},"
           f" went dark {o['wentDark']}")
@@ -154,7 +157,7 @@ off, on = runs[False], runs[True]
 # broken. What is left is the light's actual contract, tested directly: on
 # exactly when the mesh was rebuilt. A rebuild is asked for outright to get a
 # lit step at all.
-for tag, o in (("without Keep SSE", off), ("with Keep SSE", on)):
+for tag, o in (("without the station table", off), ("with the station table", on)):
     if o["mismatch"]:
         bad.append(f"{tag}: the light disagreed with the mesh on"
                    f" {o['mismatch']} of {o['steps']} steps - it lit on"
@@ -171,7 +174,7 @@ for tag, o in (("without Keep SSE", off), ("with Keep SSE", on)):
 # right to show it. What must not happen is a rebuild PER STEP, which is the
 # state the mode exists to avoid and is what this arm is really asking about.
 if on["builds"] > 1:
-    bad.append(f"Keep SSE rebuilt {on['builds']} times over {on['steps']} steps"
+    bad.append(f"the station table rebuilt {on['builds']} times over {on['steps']} steps"
                " - the fast path is not holding")
 # ...and NOT `lit == builds` over the run: `builds` counts the forced rebuild
 # that happens after the stepping loop, so the two are different questions. The

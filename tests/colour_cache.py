@@ -127,10 +127,10 @@ window.addEventListener('load', () => {
     await arm('and off again', 6, async () => {
       delete r.objectsData[r.currentObjectName].color;
     });
-    // 🔴 AND THE PALETTE SURVIVES KEEP SSE, which is the arm a real bug walked
+    // 🔴 AND THE PALETTE SURVIVES A PLAYBACK, which is the arm a real bug walked
     // through. setCoords used to clear chainIndexMap and ligandOnlyChains
     // ABOVE the test that refills them, so a frame that kept its chain tables
-    // - which is exactly what Keep SSE makes - left the map empty, every
+    // - which is exactly what the station table makes - left the map empty, every
     // lookup missed, and getAtomColor fell through to colorArray[0]. Ten
     // chains of a nucleosome all came out the same green, on the fast path and
     // on a rebuild alike. Counting DISTINCT colours is what catches it: the
@@ -141,17 +141,15 @@ window.addEventListener('load', () => {
       for (const c of (r.colors || [])) if (c) seen.add((c.r|0)+','+(c.g|0)+','+(c.b|0));
       return seen.size;
     };
-    r.stableTopology = false;
     if (r.setColorMode) r.setColorMode('chain'); else r.colorMode = 'chain';
     r.colorsNeedUpdate = true; r.setFrame(0); r.render('sse-arm'); await settle(4);
     const keepBefore = distinct();
-    r.stableTopology = true;
+    if (window.py2dmolCartoonGPU) window.py2dmolCartoonGPU.setStationDraw(true);
     if (r._invalidateSegmentCache) r._invalidateSegmentCache();
     for (let i = 1; i < Math.min(frames, 8); i++) { r.setFrame(i); r.render('sse-step'); await settle(2); }
     const keepAfter = distinct();
-    r.stableTopology = false;
     return {file, frames, n: r.coords.length, out,
-            keepSse: {before: keepBefore, after: keepAfter,
+            stations: {before: keepBefore, after: keepAfter,
                       chains: new Set(r.chains || []).size,
                       mapSize: r.chainIndexMap ? r.chainIndexMap.size : -1}};
    } catch (e) { return {error: String((e && e.stack) || e)}; }
@@ -193,8 +191,8 @@ if res.get("error"):
 
 print(f"{res['file']}: {res['frames']} frames of {res['n']} positions")
 bad = []
-K = res.get("keepSse") or {}
-print(f"  Keep SSE, colour by chain: {K.get('chains')} chains ->"
+K = res.get("stations") or {}
+print(f"  station table, colour by chain: {K.get('chains')} chains ->"
       f" {K.get('before')} distinct colours before a playback,"
       f" {K.get('after')} after   (chainIndexMap holds {K.get('mapSize')})")
 # 🔴 THE MAP IS THE PRIMARY SIGNAL, NOT THE COLOUR COUNT. By the time this arm
@@ -205,9 +203,9 @@ _collapse = ("setCoords clears the chain tables outside the test that refills"
              " them, so a frame that keeps its tables loses them and every"
              " colour falls through to the palette's first entry")
 if not K:
-    bad.append("the Keep SSE arm did not run")
+    bad.append("the the station table arm did not run")
 elif (K.get('chains') or 0) < 2:
-    bad.append(f"the Keep SSE arm is vacuous: the structure has"
+    bad.append(f"the the station table arm is vacuous: the structure has"
                f" {K.get('chains')} chain(s), so a collapse could not be seen."
                " It needs a multi-chain trajectory")
 elif (K.get('mapSize') or 0) < 2:
@@ -218,7 +216,7 @@ elif (K.get('before') or 0) < 2:
                f" {K.get('chains')} chains before the arm even starts. "
                + _collapse)
 elif K.get('after') != K.get('before'):
-    bad.append(f"Keep SSE collapsed the chain colours from {K.get('before')} to"
+    bad.append(f"the station table collapsed the chain colours from {K.get('before')} to"
                f" {K.get('after')}. " + _collapse)
 
 kept_total = 0

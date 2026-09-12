@@ -277,15 +277,6 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                             title="Cycle playback speed">1x</button>
                         <button id="overlayButton" class="btn btn-secondary" title="Overlay all frames"
                             style="font-weight: 400;">⧉</button>
-                        <!-- KEEP SSE: assign the secondary structure once and keep it for
-                             every frame. Right for a trajectory that is one molecule
-                             moving - MD, an NMR ensemble, a morph - and wrong for one that
-                             FOLDS, which is why it is a button and not the default.
-                             See parts/multi.js:_topologyKey. -->
-                        <!-- KEEP SSE IS NOT HERE ANY MORE. It is a toggle in the style
-                             panel, beside Cyclic - it says something about the structure
-                             rather than about playback, and the panel has room to spell
-                             it out. parts/panel.js builds it, so both shells get it. -->
                     </div>
                 </div>
 

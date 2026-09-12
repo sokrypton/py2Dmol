@@ -216,14 +216,6 @@ function show(target, text, options) {
     // So the switch follows the same rule it always did: it belongs to whoever
     // can show the result. That is now this entry point too.
     renderer.selectionEnabled = opts.select !== false;
-    // 🔴 `stableTopology: true` IS A STATEMENT ABOUT THE DATA, and only the
-    // host knows it. It says these frames are one molecule moving - an MD run,
-    // an NMR ensemble, a morph - so the secondary structure, the base pairing
-    // and the sheet frames may be computed once and kept, which is 12% of a
-    // step (tests/anim_profile.py). It is WRONG for a folding trajectory, whose
-    // fold is different in every frame, so it defaults off and is never
-    // inferred: see parts/multi.js:_topologyKey.
-    renderer.stableTopology = opts.stableTopology === true;
     loadFrames(renderer, frames, opts.name || 'structure', opts.orient !== false);
     return renderer;
 }

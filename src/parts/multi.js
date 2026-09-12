@@ -174,27 +174,26 @@
          * WHAT THE ARRAY HOLDS, WITHOUT WHERE IT IS - `_coordsKey` minus the
          * frame and minus the coordinate samples.
          *
-         * 🔴 IT IS FOR THE CACHES THAT ARE TOPOLOGICAL RATHER THAN GEOMETRIC.
-         * The secondary-structure assignment, the base pairing and the sheet
-         * frames are answers about which residues these are and how they are
-         * connected. On a trajectory whose fold does not change - an MD run, an
-         * NMR ensemble, a morph - those answers are the same in every frame,
-         * and keying them on `_coordsKey` recomputes all three for every one:
-         * measured at 12% of a step on 1TIM, tests/anim_profile.py.
+         * 🔴 WHAT USES IT: THE STATION FAST PATH'S SIGNATURE. cartoon/paintgl.js
+         * asks for the TOPOLOGICAL form of its mesh signature - the one that
+         * decides whether this frame's face list can be updated in place
+         * instead of rebuilt - and that question is about which residues these
+         * are and how they are connected, not about where they currently sit.
          *
-         * 🔴 AND IT IS NOT SAFE ON ITS OWN, WHICH IS WHY NOTHING USES IT BY
-         * DEFAULT. A FOLDING trajectory is the same objects, the same frame
+         * 🔴 IT ALSO USED TO KEY THE SECONDARY-STRUCTURE CACHES, under Keep
+         * SSE, and that mode has been REMOVED. The claim it rested on is the
+         * reason: a FOLDING trajectory is the same objects, the same frame
          * count and the same length with a different fold in every frame, and
          * this key cannot tell that from an MD run - dropping exactly that
-         * information is what it is for. `renderer.stableTopology` is the
-         * caller stating which kind of trajectory this is; see secCacheKey in
-         * cartoon/geom.js.
+         * information is what it is for. So it was the CALLER's promise about
+         * its own data, unverifiable from here, and pinning the assignment
+         * turned out not to be what paid anyway (see secCacheKey in
+         * cartoon/geom.js for the measurement).
          *
-         * What it still names: which objects are drawn, whether they are
-         * merged, how many side-chain atoms have been materialised into the
-         * array, and how long it is. Each of those changes the CONTENTS in a
-         * way a kept assignment would be wrong about, and none of them is a
-         * frame.
+         * What it names: which objects are drawn, whether they are merged, how
+         * many side-chain atoms have been materialised into the array, and how
+         * long it is. Each of those changes the CONTENTS in a way a reused face
+         * list would be wrong about, and none of them is a frame.
          */
         _topologyKey() {
             const ov = !!(this.overlayState && this.overlayState.enabled);

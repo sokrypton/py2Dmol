@@ -112,12 +112,6 @@ window.addEventListener('load', () => {
     const backTo = opts.filter((v) => v && v !== 'tube')[0] || null;
     await sel('style to tube', '#styleSelect', 'tube');
     if (backTo) await sel('style to ' + backTo, '#styleSelect', backTo);
-    await measure('keep sse on', async () => {
-      const b = document.querySelector('#keepSseButton');
-      // disabled on a single frame, which 1UBQ is - that is not a failure
-      if (!b || b.disabled) return false;
-      b.click();
-    });
     await measure('clip', async () => {
       const c = document.querySelector('#clipCheckbox');
       if (!c || c.disabled) return false;

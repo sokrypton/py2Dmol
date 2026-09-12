@@ -1,13 +1,13 @@
-"""THIS TREE AGAINST origin/main, on the ORDINARY path - Keep SSE OFF.
+"""THIS TREE AGAINST origin/main, on the ordinary path: every frame rebuilds.
 
     git worktree add /tmp/py2dmol-base origin/main
     python3 tests/against_baseline.py                    # a step, and a load
     python3 tests/against_baseline.py --root=/tmp/py2dmol-base   # one arm alone
 
-The fast path is not what this measures. `stableTopology` is set FALSE in both
-arms, so every frame rebuilds its assignment, its faces and its mesh - which is
-what a reader gets who never presses the button, and the path all this session's
-work had to leave alone or improve on its own terms.
+The fast path is not what this measures. Every frame rebuilds its assignment,
+its faces and its mesh, which is what a reader gets on the ordinary path - and
+the path all this session's work had to leave alone or improve on its own terms.
+the station table used to be able to switch that off from here; it has been removed.
 
 🔴 THE ARMS ARE TWO CHECKOUTS, SO THEY CANNOT SHARE A PROCESS. Everything else
 in tests/ interleaves its arms inside one page because this machine drifts by
@@ -65,7 +65,6 @@ window.addEventListener('load', () => {
     await until(() => !r._quietStyle && !r._switchQuiet, 60000);
     if (r.setStyle) r.setStyle('cartoon'); else r.style = 'cartoon';
     await settle(10);
-    r.stableTopology = false;
     const obj = r.objectsData[r.currentObjectName];
     const frames = (obj && obj.frames) ? obj.frames.length : 1;
     // a few steps first, so a compile or a first-frame allocation lands
@@ -116,7 +115,7 @@ window.addEventListener('load', () => {
             stepMedian: +each[(each.length / 2) | 0].toFixed(2),
             stepMin: +each[0].toFixed(2),
             positions: r.coords.length, frames,
-            keepSse: !!r.stableTopology};
+            };
    } catch (e) { return {error: String((e && e.stack) || e)}; }
   };
   window.__ready = true;
@@ -184,16 +183,13 @@ for i in range(ROUNDS):
         rows[name].append(out)
 
 bad = []
-print(f"\n{FILE}, cartoon, Keep SSE OFF - {STEPS} steps a round,"
+print(f"\n{FILE}, cartoon, the station table OFF - {STEPS} steps a round,"
       f" {ROUNDS} rounds each\n")
 for name in ("this tree", "origin/main"):
     rs = rows[name]
     if not rs:
         bad.append(f"{name} produced no measurement at all")
         continue
-    if any(r["keepSse"] for r in rs):
-        bad.append(f"{name} ran with stableTopology ON - that is the fast path,"
-                   " not the ordinary one, and the comparison is void")
     step = statistics.median([r["stepMedian"] for r in rs])
     mn = min(r["stepMin"] for r in rs)
     load = statistics.median([r["loadMs"] for r in rs])

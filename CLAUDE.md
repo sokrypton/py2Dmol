@@ -160,9 +160,7 @@ public downloads is exercised on every run.
 | `tests/station_frames.py` | what a trajectory step costs when only the stations are uploaded. |
 | `tests/station_integrated.py` | renderApp taking that path by itself, and declining where it must. |
 | `tests/station_foldcuts.py` | what dropping the orientation-fold cuts costs, and what it buys. |
-| `tests/stable_topology.py` | Keep SSE: the fold's answers kept across frames, and wrong to keep on a folding one. |
-| `tests/make_traj.py` | the synthetic trajectories those read - one whose fold holds, one that unfolds. |
-| `tests/demo_keep_sse.py` | a trajectory that is slow without Keep SSE and fast with it, with the steps to see it by hand. |
+| `tests/make_traj.py` | the synthetic trajectories the animation probes read - one whose fold holds, one that unfolds. |
 
 ## Rules
 

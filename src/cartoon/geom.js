@@ -5835,6 +5835,17 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
     if (!pairOf || renderer._cartoonPairKey !== secKey) {
         if (renderer._cartoonPairKey !== secKey) cacheRebuilt = true;
         pairOf = new Int32Array(n).fill(-1);
+        const forcedPairs = pairsOf(renderer);
+        if (forcedPairs) {
+            for (const k of Object.keys(forcedPairs)) {
+                const i = Number(k);
+                const j = Number(forcedPairs[k]);
+                if (i >= 0 && i < n && j >= 0 && j < n && i !== j) {
+                    pairOf[i] = j;
+                    pairOf[j] = i;
+                }
+            }
+        } else {
         const coords = renderer.coords;
         const names = renderer.positionNames || [];
         // Unrotated frames: pairing is cached on the unrotated coords.
@@ -6112,6 +6123,7 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
                     pairOf[c] = d; pairOf[d] = c;
                 }
             }
+        }
         }
         renderer._cartoonPair = pairOf;
         renderer._cartoonPairKey = secKey;
@@ -8880,9 +8892,8 @@ function drawRun(runIdx, ctx) {
                 // see tests/station_foldcuts.py for what it costs in pixels.
                 if (renderer._noFoldCuts !== true) {
                     // 🔴 COUNTED, BECAUSE THE PIECE COUNT IS ONLY SOMETIMES
-                    // PROOF. tests/station_foldcuts.py and
-                    // tests/stable_topology.py both used "the cuts changed the
-                    // number of pieces" as their way of knowing the flag had
+                    // PROOF. tests/station_foldcuts.py used "the cuts changed
+                    // the number of pieces" as its way of knowing the flag had
                     // REACHED here. Raise the sampling and that stops being
                     // true - 27 cuts found on 1UBQ and not one extra piece,
                     // because they land where a cut already is - and "the
@@ -11070,7 +11081,8 @@ const sseOf = (renderer) => {
         const out = {};
         let any = false;
         for (const nm of ms.sourceNames) {
-            const own = (renderer.objectsData[nm] || {}).sse;
+            const ob = renderer.objectsData && renderer.objectsData[nm];
+            const own = (ob && ob.sse) || null;
             if (!own) continue;
             const off = renderer.sourceOffsetOf(nm);
             for (const k of Object.keys(own)) { out[Number(k) + off] = own[k]; any = true; }
@@ -11088,6 +11100,40 @@ const sseKey = (renderer) => {
     const ks = Object.keys(ov);
     return '|ss' + ks.length + ':' + ks.join(',') + ':' + ks.map((k) => ov[k]).join('');
 };
+
+// Stored PER OBJECT as `pairs`: { [i]: j, [j]: i } mapping paired nucleotide
+// position indices for DNA/RNA duplex rungs. Python's set_basepairs and the
+// set_basepairs writes this field.
+const pairsOf = (renderer) => {
+    if (!renderer) return null;
+    const ms = renderer.multiState;
+    if (ms && ms.enabled && ms.sourceNames && renderer.sourceOffsetOf) {
+        const out = {};
+        let any = false;
+        for (const nm of ms.sourceNames) {
+            const ob = renderer.objectsData && renderer.objectsData[nm];
+            const own = (ob && ob.pairs) || null;
+            if (!own) continue;
+            const off = renderer.sourceOffsetOf(nm);
+            for (const k of Object.keys(own)) {
+                out[Number(k) + off] = Number(own[k]) + off;
+                any = true;
+            }
+        }
+        return any ? out : null;
+    }
+    const o = renderer.objectsData && renderer.currentObjectName
+        ? renderer.objectsData[renderer.currentObjectName] : null;
+    return (o && o.pairs) || null;
+};
+
+const pairsKey = (renderer) => {
+    const ov = pairsOf(renderer);
+    if (!ov) return '';
+    const ks = Object.keys(ov);
+    return '|pairs' + ks.length + ':' + ks.join(',') + ':' + ks.map((k) => ov[k]).join(',');
+};
+
 // EXPORTED, because the WebGL2 port's rebuild signature needs this exact
 // digest. An sse edit changes which residues are helix, strand or loop, so
 // it changes the GEOMETRY - and the port cannot reach it through
@@ -11100,6 +11146,7 @@ const sseKey = (renderer) => {
 // literal is built before this const exists.
 if (typeof window !== 'undefined' && window.py2dmolCartoon) {
     window.py2dmolCartoon.sseKey = sseKey;
+    window.py2dmolCartoon.pairsKey = pairsKey;
 }
 /**
  * WHAT AN SS ASSIGNMENT WAS COMPUTED FOR - the object, the frame, the size,
@@ -11119,31 +11166,36 @@ if (typeof window !== 'undefined' && window.py2dmolCartoon) {
 // _invalidateSegmentCache had to clear it by hand. Plus the forced SSE,
 // which is this cache's own business.
 //
-// 🔴 UNLESS THE CALLER SAYS THE FOLD DOES NOT CHANGE. All three caches on this
-// key - the assignment, the base pairing, the sheet frames - answer questions
-// about which residues these are and how they are connected, not about where
-// they currently sit. On a trajectory whose topology is fixed they give the
-// same answer in every frame and are recomputed for every one anyway, because
-// `_coordsKey` names the frame. `stableTopology` swaps in a key that does not:
-// parts/multi.js:_topologyKey.
+// 🔴 AND IT NAMES THE FRAME, WHICH IS WHY A TRAJECTORY RECOMPUTES ALL THREE.
+// The caches on this key - the assignment, the base pairing, the sheet frames -
+// answer questions about which residues these are and how they are connected,
+// not about where they currently sit, so on a trajectory whose topology is
+// fixed they give the same answer every frame and are rebuilt for every one.
 //
-// 🔴 IT IS OPT-IN AND MUST STAY OPT-IN. A folding trajectory is the same
-// objects, the same length and a different fold every frame; kept across those,
-// the assignment would draw the last frame's helices on the first frame's
-// coordinates. There is no cheap way to tell the two apart from here either -
-// a fingerprint able to notice the fold changing costs about what
-// assignSecondary costs, since that is the same CA-CA distance set. So it is
-// the caller's statement about its own data, and the default is unchanged.
+// 🔴 KEEP SSE USED TO SWAP IN A KEY THAT DID NOT NAME THE FRAME
+// (parts/multi.js:_topologyKey) and it has been REMOVED. What it bought was
+// real - measured at 2 mesh rebuilds against 0 over twelve frames of
+// _traj_1tim.pdb with side chains showing - and what it cost was a mode whose
+// promise the caller had to make and could not check: a folding trajectory is
+// the same objects, the same length and a different fold every frame, and kept
+// across those the assignment draws the last frame's helices on the first
+// frame's coordinates.
+//
+// 🔴 AND PINNING THE ASSIGNMENT WAS NOT WHAT PAID. Measured: writing the
+// current frame's letters into `obj.sse` for all 494 protein positions - a
+// provably stable assignment, 0 letters differing across a frame step - still
+// rebuilt twice. Neither half of the flag paid alone either. Whatever is worth
+// having here is in the CACHE KEY and not in the secondary structure, which is
+// where a revisit should start.
 const secCacheKey = (renderer, n) => (
-    (renderer.stableTopology === true && renderer._topologyKey
-        ? renderer._topologyKey()
-        : (renderer._coordsKey ? renderer._coordsKey()
+    ((renderer._coordsKey ? renderer._coordsKey()
             : `${renderer.currentObjectName}|${renderer.currentFrame}|${n}`
               + `|${!!(renderer.overlayState && renderer.overlayState.enabled)}`
               + `|${(renderer.multiState && renderer.multiState.enabled
                   && renderer.multiState.sourceNames)
                   ? renderer.multiState.sourceNames.join(',') : ''}`))
-    + sseKey(renderer));
+    + sseKey(renderer)
+    + pairsKey(renderer));
 
 const applySse = (sec, renderer) => {
     const ov = sseOf(renderer);

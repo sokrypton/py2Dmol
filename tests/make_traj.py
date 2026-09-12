@@ -3,7 +3,7 @@
     python3 tests/make_traj.py           # writes _traj_{3chy,1tim,1aoi}.pdb
     python3 tests/make_traj.py 1UBQ.cif  # one structure
 
-Input for tests/anim_profile.py and tests/stable_topology.py. Every model is the
+Input for tests/anim_profile.py and the station probes. Every model is the
 same molecule under a smooth, low-spatial-frequency breathing displacement: the
 wavelength is hundreds of
 residues, so neighbours move together and bond lengths, dihedrals and the fold
@@ -246,12 +246,13 @@ def emit_diffusion(src, dst, models=16, seed=7, sigma_max=40.0,
 
 
 def emit_unfolding(src, dst, models=30):
-    """The OTHER kind of trajectory, and the reason stableTopology is opt-in.
+    """The OTHER kind of trajectory: the fold itself changes.
 
     Frame k blends the native coordinates towards an extended chain, so the
     fold - and with it the secondary structure - is different in every frame.
     Keeping frame 0's assignment across this one is wrong, and
-    tests/stable_topology.py asserts that it is wrong rather than trusting the
+    Its gate asserted that keeping the assignment is wrong here rather than
+    trusting the
     argument.
     """
     header, rows = read_cif(src)

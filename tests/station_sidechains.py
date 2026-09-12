@@ -64,9 +64,9 @@ window.addEventListener('load', () => {
     }
     await settle(10);
     const shown = r.shownSidechainSet ? (r.shownSidechainSet() || new Set()).size : -1;
-    const sse = document.querySelector('#keepSseButton');
-    if (!sse) return {error: 'no SSE button on this page'};
-    if (!r.stableTopology) { sse.click(); await settle(8); }
+    const G0 = window.py2dmolCartoonGPU;
+    if (!G0 || !G0.setStationDraw) return {error: 'no station switch on this page'};
+    if (G0 && G0.setStationDraw) { G0.setStationDraw(true); await settle(8); }
 
     const shot = () => {
       const c = document.createElement('canvas');
@@ -108,7 +108,7 @@ window.addEventListener('load', () => {
       r.setFrame(i); r.render('reinstall');
     }
     const took = window.__stationFastPath || 0;
-    if (r.stableTopology) { sse.click(); await settle(4); }
+    if (G0 && G0.setStationDraw) { G0.setStationDraw(false); await settle(4); }
     if (r.showSidechains) r.showSidechains([]);
     const med = (v) => [...v].sort((a, b) => a - b)[v.length >> 1];
     return {withSidechains, shown, took, rows,

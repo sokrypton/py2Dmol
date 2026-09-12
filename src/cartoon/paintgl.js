@@ -287,7 +287,7 @@ function facesOf(prims, prm, consume) {
                     // whenever the ribbon rolls.
                     //
                     // Baking the decision is what put the pale face on the
-                    // OUTSIDE of a helix under Keep SSE: the instance row
+                    // OUTSIDE of a helix on a held mesh: the instance row
                     // carries the colour, the station fast path never rewrites
                     // that row, and by the second frame of a trajectory frame
                     // 0's answer is wrong. Freezing it harder does not help -
@@ -2665,7 +2665,7 @@ let heldCapture = null;
 // that a user's unrelated action can trip is the wrong rule, and "has this
 // ever paid" cannot be tripped by anything except the answer being no.
 //
-// Only the AUTOMATIC table gives up - Keep SSE and the sliders asked for it,
+// Only the AUTOMATIC table gives up - a slider that asked for it owns it,
 // and a decline is not their answer to reverse.
 let stationAuto = false;        // the table came from the trajectory rule
 let stationTries = 0;           // declines since it did
@@ -3936,7 +3936,7 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused) {
     // the mesh was built for. See refreshEdgesFromStations.
     // ...and it is FIVE when nothing will read the other four. eIn is allocated
     // and grown per build, so paying for four numbers a reader who never
-    // pressed Keep SSE will never look at is the same tax as edgeSrc below.
+    // never turns the table on will never look at is the same tax as edgeSrc below.
     const E_I = stationDraw ? 10 : 6;
     // THE RESIDUE, at the end of whichever layout is in force. Put here rather
     // than in the middle so the station slots keep the indices every reader
@@ -4779,8 +4779,8 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused) {
         // exactly the tax a feature has no business levying on people not
         // using it.
         //
-        // 🔴 AND THE GATE IS stationDraw, NOT Keep SSE. This said "a reader who
-        // never presses Keep SSE", which names the wrong switch: the table is
+        // 🔴 AND THE GATE IS stationDraw. This once named a button instead,
+        // which was the wrong switch: the table is
         // the machinery and the pin is a separate promise about the data - see
         // wantStationTable in parts/ui.js, which turns exactly one of the two
         // on. The table arms itself on any trajectory, pinned or not.
@@ -5147,7 +5147,7 @@ function ribbonHashOf(faces, scale, prm) {
  *             trajectory does, and it is what a frame would upload.
  *   faces     two floats each - the near station's GLOBAL index, and which of
  *             the four surfaces. Topology: it does not change while the fold
- *             does not, which is what renderer.stableTopology asserts.
+ *             does not - which is what a trajectory of one molecule is.
  *
  * 🔴 THE ORDER IS facesOf's ORDER, EXACTLY, and it has to be: the flags, the
  * colour and the palette slot stay in the instance row facesOf already builds,
@@ -5162,7 +5162,7 @@ function ribbonHashOf(faces, scale, prm) {
  * face collapsed onto the origin, which is a spike through the middle of the
  * structure and reads as a geometry bug rather than a missing input.
  */
-function stationMeshOf(prims, trace, rot, centre, rich) {
+function stationMeshOf(prims, trace, rot, centre, rich, liveCentre) {
     // 🔴 WRITTEN INTO TYPED ARRAYS THAT SURVIVE THE FRAME, not pushed into JS
     // ones and copied. A 5,000-residue chain has 34,555 stations, so the plain
     // version pushed 553,000 numbers a frame, then allocated a Float32Array and
@@ -5226,6 +5226,16 @@ function stationMeshOf(prims, trace, rot, centre, rich) {
     // 30 A out on this structure, and it is a CONSTANT, so it survives every
     // check that looks at shape and none that looks at position.
     const C = centre || { x: 0, y: 0, z: 0 };
+    const Cx = C.x !== undefined ? C.x : (C[0] !== undefined ? C[0] : 0);
+    const Cy = C.y !== undefined ? C.y : (C[1] !== undefined ? C[1] : 0);
+    const Cz = C.z !== undefined ? C.z : (C[2] !== undefined ? C[2] : 0);
+    const LC = liveCentre || C;
+    const Lx = LC.x !== undefined ? LC.x : (LC[0] !== undefined ? LC[0] : Cx);
+    const Ly = LC.y !== undefined ? LC.y : (LC[1] !== undefined ? LC[1] : Cy);
+    const Lz = LC.z !== undefined ? LC.z : (LC[2] !== undefined ? LC[2] : Cz);
+    const dCx = Lx - Cx;
+    const dCy = Ly - Cy;
+    const dCz = Lz - Cz;
     const R = rot || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
     const un = (v) => [
         R[0][0] * v[0] + R[1][0] * v[1] + R[2][0] * v[2],
@@ -5271,15 +5281,16 @@ function stationMeshOf(prims, trace, rot, centre, rich) {
             room(so + 16);
             const S = scratch.stations;
             // The trace is model space with the view centre added back, so
-            // subtracting C leaves un(rotated). A prim's own midpoints never
-            // had the centre added, so un() alone is the same quantity - which
-            // is why one is shifted and the other is not.
+            // subtracting C leaves un(rotated) relative to C. A prim's own
+            // midpoints are un(rotated) relative to the live view centre (Lx,Ly,Lz);
+            // adding dC = L - C places them into (coords - C) space, exactly
+            // agreeing with the backbone stations when L !== C.
             if (ownMid) {
                 const m = un(ownMid[k]);
-                S[so] = m[0]; S[so + 1] = m[1]; S[so + 2] = m[2];
+                S[so] = m[0] + dCx; S[so + 1] = m[1] + dCy; S[so + 2] = m[2] + dCz;
             } else {
-                S[so] = cs[mi] - C.x; S[so + 1] = cs[mi + 1] - C.y;
-                S[so + 2] = cs[mi + 2] - C.z;
+                S[so] = cs[mi] - Cx; S[so + 1] = cs[mi + 1] - Cy;
+                S[so + 2] = cs[mi + 2] - Cz;
             }
             S[so + 3] = hf[0];
             S[so + 4] = u[0]; S[so + 5] = u[1]; S[so + 6] = u[2]; S[so + 7] = hf[1];
@@ -6091,13 +6102,20 @@ function stationMeshNow(renderer, w, h, colors) {
  * 🔴 IT DOES NOT STORE THE TRACE. Both callers do that themselves, and doing it
  * here as well would store it twice on the rebuild path.
  */
-function stationMeshFrom(renderer, cap) {
-    const centre = typeof renderer._computeViewCentre === 'function'
+function stationMeshFrom(renderer, cap, optCentre) {
+    const liveC = typeof renderer._computeViewCentre === 'function'
         ? renderer._computeViewCentre(renderer.objectsData[renderer.currentObjectName])
         : null;
+    let centre = optCentre;
+    if (!centre && resident && resident.capCentre) {
+        centre = resident.capCentre;
+    }
+    if (!centre) {
+        centre = liveC;
+    }
     const mesh = stationMeshOf(cap.prims, renderer._ribbonTrace || [],
         renderer.viewerState.rotation, centre,
-        renderer.cartoonRichardson === true);
+        renderer.cartoonRichardson === true, liveC);
     // ...and THIS FRAME'S drawn positions travel with it. The capture already
     // produced them; without carrying them over, the overlay - halo, picking,
     // Orient - keeps projecting the frame the mesh was built at.
@@ -6515,7 +6533,7 @@ function refreshEdgesFromStations(mesh) {
  *
  * 🔴 THE SHAPE HAS TO MATCH OR IT IS A DIFFERENT MESH. Same station count, same
  * piece count, same face count - anything else means the topology moved, which
- * is exactly the case renderer.stableTopology exists to rule out, and the
+ * is exactly the case a folding trajectory presents, and the
  * caller has to rebuild instead. texSubImage2D into a texture sized for a
  * different structure would draw whatever was left of the old one.
  */
@@ -7563,7 +7581,7 @@ let appPos = null;                 // the drawn positions, model space, xyz trip
  * drawn ON TOP of the canvas - the selection halo, the sequence hover,
  * click-picking, and Orient's framing of a selection - reads
  * renderer.screenX/screenY, which projectPositions writes from this array. The
- * full rebuild filled it and the station fast path did not, so under Keep SSE
+ * full rebuild filled it and the station fast path did not, so on a trajectory
  * the picture was this frame's and the overlay was the frame the mesh was built
  * at: measured on _traj_1tim.pdb, three steps in, the projections were up to
  * 6.4 px from the plain path's and the picker answered a different residue at 3
@@ -7954,6 +7972,10 @@ function signatureOf(r, w, h, colors, topological) {
         // colour. The 2D pass folds the same digest into its own secKey.
         (window.py2dmolCartoon && window.py2dmolCartoon.sseKey
             ? window.py2dmolCartoon.sseKey(r) : ''),
+        // FORCED BASE PAIRING IS GEOMETRY. objectsData[name].pairs maps
+        // paired nucleotide indices, which places the rungs and flips the normals.
+        (window.py2dmolCartoon && window.py2dmolCartoon.pairsKey
+            ? window.py2dmolCartoon.pairsKey(r) : ''),
         // A BASE PLATE IS GEOMETRY, and which residues have one is a per-object
         // set the 2D pass reads while it builds them (baseShown). Nothing else
         // here moves when it changes - a plate is drawn from the ribbon frame,
@@ -8075,7 +8097,7 @@ function captureFrom(renderer, w, h, colors) {
     // 0.0000% of pixels moved, worst 1 level of 255. See
     // tests/station_foldcuts.py.
     //
-    // 🔴 HERE AND NOT ON THE KEEP SSE BUTTON, which is where it used to be set.
+    // 🔴 HERE AND NOT ON A BUTTON, which is where it used to be set.
     // This is a renderer flag geom.js reads on BOTH paths, so pinning it there
     // also took the cuts away from the 2D painter - which does sort, and does
     // need them. Set inside the capture and put back in the finally, it reaches
@@ -8555,27 +8577,30 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
         // ...on always: MESH_KEEP_MAX_BYTES is the cap that matters, and a
         // single-object page alternates as much as a multi-object one.
         setKeepMeshArrays(true);
-        // 🔴 A TRAJECTORY GETS THE STATION TABLE WITHOUT BEING ASKED, and that
-        // is the half of Keep SSE that needs no promise from the reader.
+        // 🔴 A TRAJECTORY GETS THE STATION TABLE WITHOUT BEING ASKED, and it
+        // is a claim about nothing: where the face-to-station mapping happens
+        // to hold, the frame is updated in place; where it does not,
+        // stationsMatch says so and the frame rebuilds exactly as it would
+        // have.
         //
-        // The button does two things: it builds the table, and it PINS the
-        // secondary structure so the mapping holds still. The pin is a claim
-        // about the data - "these frames are one molecule moving" - and it is
-        // wrong on a folding trajectory, which is why it is opt-in. The table
-        // is not a claim about anything: where the mapping happens to hold, the
-        // frame is updated in place; where it does not, stationsMatch says so
-        // and the frame rebuilds exactly as it would have. The picture is the
-        // same either way - that is what tests/station_integrated.py compares.
+        // 🔴 AND "THE PICTURE IS THE SAME EITHER WAY" IS NOT ESTABLISHED. This
+        // used to say so and cite tests/station_integrated.py - which only ever
+        // ran the table BESIDE the removed Keep SSE pin, so the unpinned case
+        // it was being credited with was never compared. Run unpinned on
+        // _traj_unfold.pdb it reports 0.083% of pixels differing from a rebuild
+        // of the same frame, worst channel 223, and the same numbers appear on
+        // the commit before Keep SSE was removed. So the auto-enable ships a
+        // configuration whose correctness nothing checks. OPEN.
         //
-        // So the table is worth having on any trajectory, pinned or not.
+        // The table is worth having on any trajectory:
         // Interleaved medians of four, both orders:
         //
         //     _traj_1tim.pdb    17.26 ms a step -> 13.45   (14 of 29 steps)
         //     _traj_unfold.pdb   3.88 ms        ->  2.63   (23 of 29)
         //     _traj_1ehz.pdb     5.63 ms        ->  2.94   (7 of 7)
         //
-        // A nucleic trajectory never moves its assignment at all, so it gets
-        // the whole of Keep SSE's benefit with none of its promise.
+        // A nucleic trajectory never moves its assignment at all, so the
+        // mapping holds for every step of it.
         //
         // ONLY EVER SWITCHED ON HERE. Turning it off automatically would undo
         // the slider latch (see wantStationTable in parts/ui.js) and the
@@ -9034,7 +9059,8 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
             // below is what stops a frame with no fast-path mesh - the one that
             // INSTALLS the table - capturing the same frame a second time.
             if (stationDraw && !stationMeshThisFrame) {
-                stationMeshThisFrame = stationMeshFrom(renderer, { prims, pos });
+                const capFr = viewSpanOf(renderer);
+                stationMeshThisFrame = stationMeshFrom(renderer, { prims, pos }, capFr.centre);
             }
             // ...and how many faces it covers, for makeResident to decide with.
             stationCoverCount = (stationDraw && stationMeshThisFrame)
@@ -10446,6 +10472,9 @@ window.py2dmolCartoonGPU = {
         // difference that lands in a compact blob wants to be told apart from
         // one on the backbone.
         residentCount: resident ? resident.count : -1,
+        // ...and how many centroids stand behind the station count, because
+        // the depth-range correction reads one against the other.
+        centroidLen: (resident && resident.centroids) ? resident.centroids.length : -1,
         tail: resident ? resident.count - residentStations.count : -1,
         zMin: resident ? resident.zMin : -1,
         zMax: resident ? resident.zMax : -1,

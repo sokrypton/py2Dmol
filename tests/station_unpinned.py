@@ -2,7 +2,7 @@
 
     python3 tests/station_unpinned.py [_traj_1tim.pdb ...]
 
-Keep SSE does two things: it builds the station table, and it PINS the
+the station table does two things: it builds the station table, and it PINS the
 secondary structure so the face-to-station mapping holds still between frames.
 Those are not the same kind of thing. The pin is a claim about the data -
 "these frames are one molecule moving" - and it is wrong on a folding
@@ -18,7 +18,7 @@ not. Interleaved medians of four, both orders, before that change:
     _traj_1ehz.pdb     5.63 ms        ->  2.94   (7 of 7)
 
 A nucleic trajectory never moves its assignment at all, so it gets the whole of
-Keep SSE's benefit with none of its promise.
+the station table's benefit with none of its promise.
 
 🔴 THE PICTURE IS THE POINT, NOT THE COUNT. An unpinned fast step is only
 allowed because stationsMatch is exact - it compares the whole face-to-station
@@ -61,7 +61,6 @@ window.addEventListener('load', () => {
     await settle(12);
     const G = window.py2dmolCartoonGPU;
     // the DEFAULT: no pin, and whatever the renderer decides about the table
-    r.stableTopology = false;
     const nF = (r.objectsData[r.currentObjectName].frames || []).length;
 
     const shot = () => {
@@ -192,7 +191,7 @@ for f in FILES:
     if not out["fast"]:
         bad.append(f"{f}: the fast path was never taken without the pin, so"
                    " nothing here was measured - a trajectory is meant to get"
-                   " the station table whether or not Keep SSE is on")
+                   " the station table whether or not the station table is on")
     # 🔴 JUDGED AGAINST WHAT THE STEP ITSELF CHANGES, not against a fixed
     # number of levels. A stale mapping draws a plausible ribbon made of the
     # WRONG SLICES - percent of the frame, not a pixel - while a correct step

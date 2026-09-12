@@ -1031,13 +1031,12 @@ if (lineWidthSlider) lineWidthSlider.value = renderer.lineWidth;
 // update. Someone who never touches them never pays, and someone who does
 // pays once.
 //
-// 🔴 stationDraw ALONE, NOT stableTopology. The table is the machinery; the
-// pin is the promise that the secondary structure holds still across
-// frames, which is a trajectory's business and emphatically not a slider's.
-// Turning that on here would freeze the assignment of a structure nobody
-// asked to freeze. Verified apart: with stations on and stableTopology
-// false, a flatness change takes the fast path and draws what a rebuild
-// draws.
+// 🔴 THE TABLE IS THE MACHINERY AND A SLIDER MAY ASK FOR IT. It used to be
+// paired with a pin - the promise that the secondary structure holds
+// still across frames - and the two were deliberately kept apart here, because
+// turning the pin on would have frozen the assignment of a structure nobody
+// asked to freeze. The pin is gone; the table is not, and a flatness change
+// still takes the fast path and draws what a rebuild draws.
 const wantStationTable = () => {
     const G = window.py2dmolCartoonGPU;
     if (G && G.setStationDraw) G.setStationDraw(true);
@@ -1331,52 +1330,6 @@ if (drawCheckbox) {
     });
 }
 
-// KEEP SSE. Assign the secondary structure once and keep it for every frame,
-// rather than recomputing it - and the base pairing, and the sheet frames - for
-// each one. See cartoon/geom.js:secCacheKey and parts/multi.js:_topologyKey;
-// measured at 1.18-1.19x a frame in tests/PERF_NOTES.md.
-//
-// 🔴 A BUTTON AND NOT A DEFAULT, because it is a claim about the DATA that only
-// a reader can make. Right for one molecule moving - MD, an NMR ensemble, a
-// morph - and wrong for a folding trajectory, where the fold in the last frame
-// is not the fold in the first: tests/stable_topology.py measures that case at
-// 64% of residues assigned wrong.
-//
-// 🔴 AND SWITCHING IT HAS TO INVALIDATE, BOTH WAYS. The caches hold an
-// assignment made under the other key and nothing else would move it, so the
-// picture would keep the stale structure until something unrelated cleared it -
-// which reads as the button not working. The MESH holds the ribbon built from
-// that assignment too, so the frame on screen must be rebuilt and not redrawn.
-const keepSseButton = containerElement.querySelector('#keepSseButton');
-if (keepSseButton) {
-    renderer.keepSseButton = keepSseButton;
-    keepSseButton.addEventListener('click', () => {
-        const on = !renderer.stableTopology;
-        renderer.stableTopology = on;
-        // 🔴 AND IT TURNS ON THE WHOLE TRAJECTORY PATH, because a stable
-        // assignment is exactly what that path needs and nothing else does.
-        // With the fold cuts off and the assignment pinned, the face list holds
-        // still between frames, so a step uploads two textures instead of
-        // rebuilding the mesh: 12.8 ms to 4.0 on a 494-residue trajectory, with
-        // the picture the same to 0.0018% of pixels. See tests/PERF_NOTES.md.
-        //
-        // 🔴 THE FOLD CUTS ARE NOT SET HERE ANY MORE. This line read
-        // `renderer._noFoldCuts = on`, and that flag is read by geom.js on BOTH
-        // paths - so pressing this button also took the cuts away from the 2D
-        // painter, which sorts and genuinely needs them. The mesh path now
-        // drops them inside captureFrom, where it reaches the mesh and nothing
-        // else, and it does so on every build rather than only under this
-        // button. See the note there.
-        const G = window.py2dmolCartoonGPU;
-        if (G && G.setStationDraw) G.setStationDraw(on);
-        if (!on && G && G.clearResidentStations) G.clearResidentStations();
-        if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
-        if (G && G.invalidate) G.invalidate();
-        renderer._syncKeepSseButton();
-        renderer.render('keepSseButton');
-    });
-    if (renderer._syncKeepSseButton) renderer._syncKeepSseButton();
-}
 
 // Pass ALL controls to the renderer
 renderer.setUIControls(
@@ -1543,6 +1496,10 @@ if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (windo
                 // here, exactly like color.
                 if (obj.sse && renderer.objectsData[obj.name]) {
                     renderer.objectsData[obj.name].sse = obj.sse;
+                    renderer._invalidateSegmentCache();
+                }
+                if (obj.pairs && renderer.objectsData[obj.name]) {
+                    renderer.objectsData[obj.name].pairs = obj.pairs;
                     renderer._invalidateSegmentCache();
                 }
                 // ...and the ghosting (Python's set_opacity), for the same
@@ -1737,6 +1694,12 @@ const applyMetadataToObject = (obj, meta) => {
     // replacing it invalidates the cached assignment and geometry by itself.
     if ('sse' in meta) {
         obj.sse = meta.sse || null;
+        needsRerender = true;
+    }
+    // Base pairing for DNA/RNA (Python's set_basepairs), keyed by paired
+    // position indices. Replacing it invalidates geometry caches and re-renders.
+    if ('pairs' in meta) {
+        obj.pairs = meta.pairs || null;
         needsRerender = true;
     }
     // ...and the ghosting, which arrives the same way and by the same

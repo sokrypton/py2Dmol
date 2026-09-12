@@ -9,10 +9,10 @@ one-residue pieces and there is no ribbon to draw at all. Not a slow ribbon - no
 ribbon. Measured on 3CHY, 128 positions, 16 frames, at 706x706:
 
     arm                    builds  fast  ms/frame  segments        ink, frames 0-3
-    distance + Keep SSE        15     0      4.33  128             1.06 1.04 1.01 0.99
-    sequence + Keep SSE         0    15      3.88  127             11.48 7.90 5.33 3.52
-    distance, no Keep SSE      15     0      6.37  10 distinct     1.06 1.04 1.01 0.99
-    sequence, no Keep SSE      15     0      5.64  127             11.48 7.90 5.33 3.52
+    distance + the station table        15     0      4.33  128             1.06 1.04 1.01 0.99
+    sequence + table           0    15      3.88  127             11.48 7.90 5.33 3.52
+    distance, no the station table      15     0      6.37  10 distinct     1.06 1.04 1.01 0.99
+    sequence, no table         15     0      5.64  127             11.48 7.90 5.33 3.52
 
 The ink column is the finding. One percent is the scattered sticks and nothing
 else; eleven is a cartoon. The rebuild counts are the same story from the other
@@ -24,8 +24,8 @@ half of the decision and the half a file about diffusion would otherwise leave
 out. The same measurement on _traj_1tim.pdb, 494 positions, 30 frames:
 
     arm                    builds  fast  ms/frame  segments  ink, frames 0-3
-    distance + Keep SSE         0    29      6.60  492       18.47 18.43 18.40 18.39
-    sequence + Keep SSE         0    29      5.57  490       18.45 18.40 18.38 18.36
+    distance + the station table         0    29      6.60  492       18.47 18.43 18.40 18.39
+    sequence + table           0    29      5.57  490       18.45 18.40 18.38 18.36
 
 Two segments apart and two hundredths of a percent of ink. So the option is not
 a trade between two drawings on ordinary structures; it is inert there and
@@ -79,11 +79,10 @@ window.addEventListener('load', () => {
         if (d[i]<245||d[i+1]<245||d[i+2]<245) n++;
       return n/(d.length/4); };
 
-    const arm = async (bySeq, keepSse) => {
+    const arm = async (bySeq, stations) => {
       r.sequenceConnectivity = bySeq;
-      r.stableTopology = keepSse;
-      if (G && G.setStationDraw) G.setStationDraw(keepSse);
-      if (keepSse === false && G && G.clearResidentStations) G.clearResidentStations();
+      if (G && G.setStationDraw) G.setStationDraw(stations);
+      if (stations === false && G && G.clearResidentStations) G.clearResidentStations();
       if (r._invalidateSegmentCache) r._invalidateSegmentCache();
       if (G && G.invalidate) G.invalidate();
       r.setFrame(0); r.render('armWarm'); await settle(8);
@@ -106,8 +105,8 @@ window.addEventListener('load', () => {
     const out = {};
     out.distance = await arm(false, true);
     out.sequence = await arm(true, true);
-    out.distanceNoSse = await arm(false, false);
-    out.sequenceNoSse = await arm(true, false);
+    out.distanceNoTable = await arm(false, false);
+    out.sequenceNoTable = await arm(true, false);
     return {nFrames, n: r.coords.length, out};
   };
   window.__ready = true;
@@ -151,7 +150,7 @@ bad = []
 seq = out["out"]["sequence"]
 dist = out["out"]["distance"]
 if seq["builds"] or seq["fast"] < out["nFrames"] - 2:
-    bad.append(f"with sequence connectivity and Keep SSE the run rebuilt"
+    bad.append(f"with sequence connectivity and the station table the run rebuilt"
                f" {seq['builds']} time(s) and took the fast path {seq['fast']}"
                f" of {out['nFrames']} frames - the option no longer gives the"
                " station path a stable topology to work with")

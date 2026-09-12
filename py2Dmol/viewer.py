@@ -1549,6 +1549,10 @@ class view:
                 current_metadata["sse"] = {
                     str(k): v for k, v in obj["sse"].items()
                 }
+            if obj.get("pairs"):
+                current_metadata["pairs"] = {
+                    str(k): v for k, v in obj["pairs"].items()
+                }
             # ...and the ghosting, which is the same kind of thing by the same
             # argument: a map keyed by position index, set by set_opacity, and
             # useless anywhere but against this object.
@@ -1827,7 +1831,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             for py_obj in static_data:
                 # Skip objects with no frames AND no metadata
                 if not py_obj.get("frames") and not any(
-                    py_obj.get(key) for key in ["scatter_config", "contacts", "bonds", "color", "sse", "opacity", "rotation_matrix", "center"]
+                    py_obj.get(key) for key in ["scatter_config", "contacts", "bonds", "color", "sse", "pairs", "opacity", "rotation_matrix", "center"]
                 ):
                     continue
 
@@ -1910,6 +1914,10 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 if py_obj.get("sse"):
                     obj_to_serialize["sse"] = {
                         str(k): v for k, v in py_obj["sse"].items()
+                    }
+                if py_obj.get("pairs"):
+                    obj_to_serialize["pairs"] = {
+                        str(k): v for k, v in py_obj["pairs"].items()
                     }
                 if py_obj.get("opacity"):
                     obj_to_serialize["opacity"] = {
@@ -3271,6 +3279,61 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         if self._is_live:
             self._send_incremental_update()
 
+    def set_basepairs(self, pairs, name=None):
+        """
+        Override the base pairing of nucleic acid residues (DNA/RNA).
+
+        Controls which nucleotides pair as rungs in the double helix cartoon.
+        By default, base pairing is inferred from 3D coordinates, complementarity,
+        and stacking. This method allows specifying canonical, non-canonical, or
+        experimentally determined base pairs directly.
+
+        Args:
+            pairs (dict, list of tuples, or None):
+                - dict mapping {pos1: pos2, ...}
+                - list of tuples [(pos1, pos2), ...]
+                - None to clear custom base pairs and return to automatic detection.
+            name (str, optional): Object to apply to. Defaults to the last one added.
+
+        Examples:
+            view.set_basepairs([(0, 23), (1, 22), (2, 21)])  # duplex rungs
+            view.set_basepairs({0: 23, 1: 22})
+            view.set_basepairs(None)                         # return to automatic
+        """
+        if not self.objects:
+            print("Error: No objects loaded. Cannot set base pairing.")
+            return
+        target_obj = self.objects[-1] if name is None else next(
+            (o for o in self.objects if o.get("name") == name), None)
+        if target_obj is None:
+            print(f'Error: Object "{name}" not found.')
+            return
+
+        if pairs is None:
+            target_obj["pairs"] = None
+        elif isinstance(pairs, dict):
+            current = {}
+            for k, v in pairs.items():
+                ik, iv = int(k), int(v)
+                current[ik] = iv
+                current[iv] = ik
+            target_obj["pairs"] = current or None
+        elif isinstance(pairs, (list, tuple)):
+            current = {}
+            for item in pairs:
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    ik, iv = int(item[0]), int(item[1])
+                    current[ik] = iv
+                    current[iv] = ik
+                else:
+                    raise ValueError(f"Expected (pos1, pos2) pair, got {item}")
+            target_obj["pairs"] = current or None
+        else:
+            raise TypeError("pairs must be a dict, list of tuples, or None")
+
+        if self._is_live:
+            self._send_incremental_update()
+
     def set_opacity(self, opacity, name=None, chain=None, position=None):
         """
         Fade residues so what is behind them shows through.
@@ -4575,6 +4638,10 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 obj_to_serialize["sse"] = {
                     str(k): v for k, v in obj["sse"].items()
                 }
+            if obj.get("pairs"):
+                obj_to_serialize["pairs"] = {
+                    str(k): v for k, v in obj["pairs"].items()
+                }
             # ...and the ghosting, which src/core/objstate.js declares as
             # per-object state with `json: 'opacity'` - so a session written by
             # the PAGE carries it and one written here has to as well, or the
@@ -4708,6 +4775,10 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     # keys come back from JSON as strings; set_ss works in ints
                     self.objects[-1]["sse"] = {
                         int(k): v for k, v in obj_data["sse"].items()
+                    }
+                if obj_data.get("pairs"):
+                    self.objects[-1]["pairs"] = {
+                        int(k): int(v) for k, v in obj_data["pairs"].items()
                     }
                 if obj_data.get("opacity"):
                     self.objects[-1]["opacity"] = {
