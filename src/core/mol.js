@@ -7194,10 +7194,28 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Reset data
             this.objectsData = {};
             this.currentObjectName = null;
-            // ...and what was on screen with it. A shown set naming objects
-            // that no longer exist would have the next load open into a merge
-            // of one, and the merge state itself would outlive its array.
-            this.shownObjects = new Set();
+            // 🔴 ...AND BACK TO THE RESTING STATE, WHICH IS null. It was an
+            // empty SET, and the reasoning was sound as far as it went - a set
+            // naming objects that no longer exist would open the next load
+            // into a merge of one - but an empty set is not "nothing is shown".
+            // `objectMultiOn` IS `shownObjects instanceof Set`, so an empty one
+            // is MULTI, ON, with every object switched off: a mode the reader
+            // never asked for, surviving a Clear All.
+            //
+            // And in that mode `addObject` joins each new object to the set,
+            // which is exactly right when the reader chose Multi - a file
+            // dropped while two structures are up must appear - so loading
+            // three files after a Clear All merged all three. Nothing in the
+            // markup said so beyond the Multi button being lit.
+            //
+            // null has no dead names either, which is the whole of what the
+            // empty set was for, and it is the state a fresh viewer starts in.
+            // Reported through LocalFold, where each object is a different
+            // prediction run: a restored session came back merged, so the
+            // frames would not advance and `auto` colouring resolved to chain
+            // instead of pLDDT (a merge of two objects has no PAE - see
+            // _mergeObjects).
+            this.shownObjects = null;
             this._framedObjects = new Set();
             this.multiState.enabled = false;
             this.multiState.sourceIdMap = null;

@@ -129,6 +129,60 @@ window.addEventListener('load', () => {
       R.contactsAfter = (r.segmentIndices || []).filter((x) => x.type === 'C').length;
       R.crossAfter = (r.crossContacts || []).length;
       R.after = st(r, 'after load');
+
+      // 🔴 AND THE RESTING STATE IS A STATE TOO, WHICH IS THE ONE THAT CAME
+      // BACK WRONG. Everything above saves an explicit shown set; a viewer
+      // holding several objects where the reader never pressed Multi has
+      // `shownObjects === null` - the object being edited, alone - and writes
+      // `shown_objects: null`. The restore then:
+      //
+      //   1. calls clearAllObjects(), which sets shownObjects to an EMPTY SET
+      //      rather than null (a set naming dead objects would open the next
+      //      load into a merge of one);
+      //   2. adds each saved object with addObject, which ADDS to a set when
+      //      there is one - right for a file dropped while two are up;
+      //   3. corrected the set only `if (Array.isArray(shownSaved))`, and null
+      //      is not an array.
+      //
+      // So a three-object session saved at rest came back with all three
+      // merged - reported from LocalFold, where each object is a different
+      // prediction run, as frames that will not advance and pLDDT colouring
+      // that turns into colour-by-chain (a merge of two objects drops the PAE
+      // and resolves `auto` to `chain`).
+      r.clearAllObjects();
+      await until(() => !Object.keys(r.objectsData || {}).length, 2000);
+      await load('1UBQ.cif'); await until(loaded); await settle();
+      await load('3CHY.cif'); await until(loaded); await settle();
+      await load('6MRR.cif'); await until(loaded); await settle();
+      R.restNames = Object.keys(r.objectsData);
+      R.restBefore = {shown: r.shownObjects instanceof Set
+                          ? Array.from(r.shownObjects).sort() : null,
+                      drawn: r.drawnObjects(),
+                      merged: !!(r.multiState && r.multiState.enabled)};
+      let cap2 = null;
+      window.Blob = function (parts, opts) { cap2 = parts[0]; return new RealBlob(parts, opts); };
+      HTMLAnchorElement.prototype.click = function () {};
+      window.saveViewerState();
+      window.Blob = RealBlob;
+      HTMLAnchorElement.prototype.click = realClick;
+      R.restSaved = JSON.parse(cap2).viewer_state.shown_objects;
+      r.clearAllObjects();
+      await until(() => !Object.keys(r.objectsData || {}).length, 2000);
+      await window.loadViewerState(JSON.parse(cap2));
+      await until(() => Object.keys(r.objectsData || {}).length >= 3
+          && r.coords && r.coords.length > 0);
+      await settle(4);
+      R.restAfter = {shown: r.shownObjects instanceof Set
+                         ? Array.from(r.shownObjects).sort() : null,
+                     drawn: r.drawnObjects(),
+                     merged: !!(r.multiState && r.multiState.enabled),
+                     editing: r.currentObjectName,
+                     n: r.coords.length,
+                     // ...and the frame count the strip governs, which in a
+                     // merge is the longest drawn object's rather than this
+                     // one's - the symptom a reader sees first.
+                     timeline: r._timelineLength ? r._timelineLength() : null,
+                     own: (r.objectsData[r.currentObjectName].frames || []).length};
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});
   };
@@ -170,7 +224,52 @@ for tag, s in (("before", b), ("after", a)):
           f" n={s['n']} ink={s['ink']}")
 print(f"  cleared: drawn={R['cleared']['drawn']} rows={R['cleared']['rows']}")
 
+# 🔴 AND A CLEAR ALL LEAVES THE RESTING STATE, NOT MULTI WITH NOTHING IN IT.
+# `objectMultiOn` is `shownObjects instanceof Set`, so the empty set this used
+# to leave behind lit the Multi button over an empty list - and every load
+# after it joined that set, which is how three files came to be merged without
+# anyone asking.
+if R["cleared"].get("multiBtn") != 'false':
+    bad_clear = (f"Clear All left the Multi button at"
+                 f" {R['cleared'].get('multiBtn')!r} - an empty shown set is"
+                 " Multi with every object switched off, and the next load"
+                 " joins it")
+else:
+    bad_clear = None
+
+rb, ra = R.get("restBefore") or {}, R.get("restAfter") or {}
+print(f"  at rest: saved shown_objects={R.get('restSaved')}")
+print(f"         before  shown={rb.get('shown')} drawn={rb.get('drawn')}"
+      f" merged={rb.get('merged')}")
+print(f"         after   shown={ra.get('shown')} drawn={ra.get('drawn')}"
+      f" merged={ra.get('merged')} editing={ra.get('editing')}"
+      f" n={ra.get('n')} timeline={ra.get('timeline')} own={ra.get('own')}")
+
 bad = []
+if bad_clear:
+    bad.append(bad_clear)
+# 🔴 THE RESTING STATE HAS TO COME BACK RESTING.
+if rb.get('merged'):
+    bad.append("the fixture is already merged before saving, so the check below"
+               " cannot tell a restored merge from one that was never left")
+if len(R.get('restNames') or []) < 3:
+    bad.append(f"the resting leg loaded {len(R.get('restNames') or [])} objects")
+if R.get('restSaved') is not None:
+    bad.append(f"a viewer at rest wrote shown_objects={R.get('restSaved')!r} -"
+               " the resting state is null, and an explicit list would make"
+               " this leg measure the Multi case again")
+if ra.get('merged'):
+    bad.append(f"a session saved at REST came back merged, drawing"
+               f" {ra.get('drawn')} - clearAllObjects leaves an empty SET,"
+               " every addObject adds to it, and a null shown_objects was not"
+               " restored as anything. Reported from LocalFold as restored"
+               " objects arriving in multi mode.")
+if ra.get('shown') is not None:
+    bad.append(f"the shown set came back as {ra.get('shown')} where the session"
+               " says null (the object being edited, alone)")
+if len(ra.get('drawn') or []) != 1:
+    bad.append(f"{len(ra.get('drawn') or [])} objects are drawn after restoring"
+               " a session that had one on screen")
 if R.get('contactsBefore') != 2:
     bad.append(f"expected two contacts before saving, drew {R.get('contactsBefore')}")
 if R.get('crossCleared') != 0:

@@ -1089,6 +1089,19 @@ async function loadViewerState(stateData) {
                         // ...INCLUDING AN EMPTY ONE, which is every object
                         // switched off. Null - the default - is not written at
                         // all, so an older session restores as it always did.
+                        // 🔴 AND null NEEDS NO RESTORING BECAUSE THE CLEAR AT
+                        // THE TOP OF THIS FUNCTION LEAVES THE RESTING STATE.
+                        // That is a dependency, so it is written down: this
+                        // used to accumulate instead, because clearAllObjects
+                        // left an empty SET - which is Multi, on, with every
+                        // object switched off - and addObject joins each new
+                        // object to a set when there is one. A session whose
+                        // reader never pressed Multi therefore came back with
+                        // every object merged. The fix is in clearAllObjects;
+                        // `tests/save_multi.py` asserts that a Clear All
+                        // leaves the Multi button OFF, which is what keeps
+                        // this line honest. Calling setShownObjects(null) here
+                        // as well was measured as a no-op and is not here.
                         const shownSaved = stateData.viewer_state
                             && stateData.viewer_state.shown_objects;
                         if (Array.isArray(shownSaved) && renderer.setShownObjects) {

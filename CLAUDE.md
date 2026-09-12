@@ -379,6 +379,46 @@ public downloads is exercised on every run.
   visible — `tests/multi_object.py` drives index.html's picker down to one
   option and requires the row to stay. It is re-asked on every update rather
   than decided at load.
+- 🔴 **AN EMPTY SHOWN SET IS MULTI, ON, WITH EVERYTHING SWITCHED OFF - AND
+  `clearAllObjects` LEFT ONE.** `objectMultiOn` IS
+  `shownObjects instanceof Set`, so the mode and the set are one fact; `null`
+  is the resting state, where the object being edited draws alone. The clear
+  set an EMPTY SET instead, on the sound-sounding reasoning that a set naming
+  objects which no longer exist would open the next load into a merge of one -
+  and an empty set is not "nothing is shown", it is a mode nobody asked for,
+  surviving a Clear All with the Multi button lit over an empty list.
+  **AND IN THAT MODE `addObject` JOINS EACH NEW OBJECT TO THE SET**, which is
+  exactly right when the reader chose Multi - a file dropped while two
+  structures are up must appear - so **loading three files after a Clear All
+  merged all three**, with nothing saying so but that lit button. `null` has no
+  dead names either, which is the whole of what the empty set was for.
+  🔴 **AND THE SESSION RESTORE IS A CLEAR FOLLOWED BY N LOADS, so it came back
+  merged whatever it saved.** `loadViewerState` clears first and then adds each
+  object, so every restored object joined that empty set; the correction at the
+  end runs only `if (Array.isArray(shown_objects))`, and a viewer at rest
+  writes **null**. Reported through LocalFold, where each object is a different
+  prediction run: the frames would not advance (that half was the timeline bug
+  above) and the confidence display went with it - a merge of two objects drops
+  the PAE by construction, so the panel is gone and `resolvedAutoColor` answers
+  `object` to anything asking without a position. Per-position `auto` still
+  resolves per object (`_autoColorFor`), which is why only some of it looked
+  broken.
+  **THE FIX IS IN `clearAllObjects`, NOT IN THE RESTORE.** Adding
+  `setShownObjects(null)` to the loader as well was written, measured as a
+  **no-op** - the clear now leaves the resting state before the first object
+  arrives - and removed, the way the `.selection-panel` rule and the
+  `flex: 0 1 auto` were. What is left at that site is the DEPENDENCY, written
+  down: the restore needs no null case because the clear leaves one.
+  `tests/save_multi.py` is what keeps that honest - it asserts a Clear All
+  leaves the Multi button OFF, and carries a second leg for the RESTING state
+  (three objects, Multi never pressed, saved and restored) beside the Multi one
+  it already had. *Its own control caught the wider bug: the resting fixture
+  came up `merged=True` before it had saved anything, because the leg above it
+  had cleared.* Two mutations, and the restore-side one is deliberately absent
+  because it cannot be observed.
+  **AND LocalFold'S WORKAROUND COMES OUT WITH IT** - `openBlankFold` narrowed
+  `shownObjects` to the new fold by hand, which treated this symptom and
+  overrode a reader who had deliberately asked for Multi.
 - **`multi=True` and `view.show_objects()` are the OBJECT question; `overlay`
   is the FRAME one.** Both reach `setShownObjects`, the renderer's own setter,
   which is what keeps `_framedObjects` — assigning `shownObjects` and calling
