@@ -10758,23 +10758,35 @@ function drawSticks(ctx) {
         // as wrung, so a stick that turns along its length is cut until no
         // piece turns more than MAX_SEG_TWIST.
         //
-        // 🔴 AND LENGTH GATES IT, because a covalent bond is 1.5 A and cannot
-        // look wrung however it is oriented - there is not enough of it to see
-        // the ruling turn. Under 3 A the twist rule buys nothing and costs a
-        // piece per bond, which on a structure with every side chain out is
-        // most of the sticks in the picture. Measured against the ceiling
-        // itself: raising MAX_SEG_TWIST to 30, 45, 90 and 180 degrees moves
-        // 0.07-0.5% of faces, because the halfC line below is what forces K on
-        // the bonds that have more than one piece at all.
+        // 🔴 AND IT IS NOT GATED BY LENGTH, WHICH WAS TRIED AND REPORTED.
+        // `bl > 3.0` stood here, on the reasoning that a covalent bond is 1.5 A
+        // and has not enough of it to see the ruling turn. That reasoning is
+        // wrong: twist is the rotation of the section frame between the two
+        // ends, and a SHORT bond can carry all of it. Measured on 3PTB - 791
+        // bonds, 15 want cutting by twist, and the gate refused ALL FIFTEEN,
+        // the worst a 2.72 A bond turning 59 degrees that asked for four pieces
+        // and got one.
         //
-        // A CONTACT is the case the length gate must not reach: it can cross
-        // the whole structure dead straight, so it twists not at all and would
-        // come out as one box - one depth key for each of its side faces over
-        // their whole span, sorting as if the contact were all at its own
+        // One piece across 59 degrees is a ruled, non-planar quad; its two
+        // triangles fold, and with nothing back-face culled you see through the
+        // gap. Reported as faces disappearing on twisted bonds at certain
+        // angles, on a single structure being turned by hand - which is the
+        // shape of the fault: it is in the GEOMETRY, so no amount of rebuilding
+        // fixes it and every angle shows a different piece of it.
+        //
+        // The gate bought nothing to weigh against that: +90 stick faces on
+        // 3PTB (1.5%) and +22 on 1AOI (0.17%) with it removed, and the minimum
+        // of seven builds moved 100.0 -> 99.9 ms and 200.0 -> 199.9. The twist
+        // rule only fires where there IS twist, which is 15 bonds of 791.
+        //
+        // A CONTACT is the case the twist rule cannot serve at all: it can
+        // cross the whole structure dead straight, so it twists not at all and
+        // would come out as one box - one depth key for each of its side faces
+        // over their whole span, sorting as if the contact were all at its own
         // midpoint, which is exactly what it must not do when it passes behind
         // one thing and in front of the next. `bd.segA` is its own pitch and it
-        // raises K by LENGTH, below, so the gate above cannot take it away.
-        let K = (bl > 3.0) ? Math.max(1, Math.min(8, Math.ceil(Math.abs(tw) / MAX_SEG_TWIST))) : 1;
+        // raises K by LENGTH, below, which is a floor and never a ceiling.
+        let K = Math.max(1, Math.min(8, Math.ceil(Math.abs(tw) / MAX_SEG_TWIST)));
         if (bd.segA) {
             K = Math.max(K, Math.min(CONTACT_SEG_MAX,
                 Math.ceil(bl / bd.segA)));
