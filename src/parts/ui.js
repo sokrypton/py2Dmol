@@ -1559,15 +1559,26 @@ if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (windo
                 }
             }
         }
-        // Set view to the first frame of the first object
+        // Set view to the first frame of the object worth opening on - the
+        // one with a trajectory where there is one, and the first otherwise,
+        // which is what this always did. See mostFramesOf in core/mol.js: a
+        // static backdrop added beside an animated object opened on the
+        // backdrop, and a viewer showing it has no play controls at all.
         if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && window.py2dmol_staticData[viewerId].length > 0) {
-            renderer.currentObjectName = (window.py2dmol_staticData && window.py2dmol_staticData[viewerId])[0].name;
-            renderer.objectSelect.value = (window.py2dmol_staticData && window.py2dmol_staticData[viewerId])[0].name;
+            const staticNames = window.py2dmol_staticData[viewerId].map((o) => o.name);
+            const openOn = renderer.mostFramesOf
+                ? renderer.mostFramesOf(staticNames, staticNames[0]) : staticNames[0];
+            renderer.currentObjectName = openOn;
+            renderer.objectSelect.value = openOn;
 
-            // Populate entropy data from MSA if available
-            const firstObjectName = (window.py2dmol_staticData && window.py2dmol_staticData[viewerId])[0].name;
-            if (renderer.objectsData[firstObjectName]?.msa?.msasBySequence &&
-                renderer.objectsData[firstObjectName]?.msa?.chainToSequence && window.MSA) {
+            // Populate entropy data from MSA if available - for the object
+            // being SHOWN, which is what the comment below already says this
+            // answers for. It read `[0]` while the viewer opened on `[0]` and
+            // the two were the same line; now that they can differ, an MSA on
+            // the shown object would have been passed over for the absence of
+            // one on whichever object happened to be first.
+            if (renderer.objectsData[openOn]?.msa?.msasBySequence &&
+                renderer.objectsData[openOn]?.msa?.chainToSequence && window.MSA) {
                 // ...through the one path, which answers for everything
                 // drawn - here that is this object, and it stays right the
                 // day a static page shows two.

@@ -103,6 +103,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `cyclic_bench.js` | node | Score the renderer's secondary structure on CYCLIC peptides. |
 | `cyclic_bench.py` | node | Build the cyclic-peptide secondary-structure benchmark. |
 | `cyclic_partner.js` | node | A CYCLIC PEPTIDE BOUND TO SOMETHING ELSE MUST NOT LOSE ITS STRANDS. |
+| `default_object.py` | ui | Which object a viewer opens on when several arrive together. |
 | `demo_keep_sse.py` | tool | A trajectory that is slow without Keep SSE and fast with it - measured, and |
 | `dev_rebuild_light.py` | gpu | The dev page says when the cartoon mesh was rebuilt, and only then. |
 | `diffusion_connectivity.py` | gpu | A SAMPLER TRAJECTORY IS NOT A MOLECULE YET, AND THE DISTANCE TEST KNOWS IT. |

@@ -4723,6 +4723,42 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._opacityVersion = (this._opacityVersion || 0) + 1;
         }
 
+        /**
+         * WHICH OBJECT A VIEWER SHOULD OPEN ON, when several arrive together.
+         *
+         * 🔴 A STATIC BACKDROP BESIDE AN ANIMATED ONE OPENED ON THE BACKDROP,
+         * and the viewer then had no play controls at all - the trajectory was
+         * there, one switcher click away, and every sign that it existed was
+         * behind that click. Reported as "the player doesn't have the protein
+         * visible".
+         *
+         * Both shells had the fault and NEITHER had the same rule: the page's
+         * drop path took the LAST object loaded and the notebook's static path
+         * took `[0]` - the first. So the report's own account of it was right
+         * about the notebook and inverted for the web, and it is the same bug
+         * either way: the order things arrived in is not a statement about
+         * which of them is worth looking at.
+         *
+         * FRAMES ARE. An object with a trajectory is the one a reader came to
+         * see, and one with a single frame beside it is scenery.
+         *
+         * 🔴 AND ONLY WHEN SOMETHING ACTUALLY WINS. `fallback` is the caller's
+         * existing answer and it is returned whenever nothing has strictly
+         * more frames than the rest - so two trajectories, two static objects,
+         * or one object of either kind all open exactly where they did before.
+         * The new rule fires only in the case that was broken.
+         */
+        mostFramesOf(names, fallback) {
+            let best = null; let most = 0; let tied = false;
+            for (const name of (names || [])) {
+                const o = this.objectsData && this.objectsData[name];
+                const n = (o && o.frames) ? o.frames.length : 0;
+                if (n > most) { most = n; best = name; tied = false; }
+                else if (n === most) tied = true;
+            }
+            return (best && !tied && most > 1) ? best : fallback;
+        }
+
         /** What this position is drawn at, 1 unless something ghosted it. */
         opacityOf(idx) {
             const m = this.residueOpacity;

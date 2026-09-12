@@ -2486,8 +2486,14 @@ function applyPendingObjects() {
     if (r) r._batchLoading = false;
 
     if (newNames.length > 0) {
-        // Show the last new object
-        const show = newNames[newNames.length - 1];
+        // THE ONE WITH THE FRAMES, and the last one loaded when none of them
+        // stands out - which is every case this used to handle correctly. See
+        // mostFramesOf: dropping a trajectory beside a static backdrop opened
+        // on whichever was last, and a viewer showing the static one has no
+        // play controls to say the other exists.
+        const show = r?.mostFramesOf
+            ? r.mostFramesOf(newNames, newNames[newNames.length - 1])
+            : newNames[newNames.length - 1];
         if (r?._switchToObject) r._switchToObject(show);
         tubeByDefaultIfBig(r, show);
         dropToTubeIfCartoonWontFit(r);
