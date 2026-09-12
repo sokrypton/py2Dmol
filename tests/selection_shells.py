@@ -597,15 +597,24 @@ def judge(tag, R, want_panel, nucleic=False):
 
     # 🔴 AND THE WHOLE PANEL IS COMPACT, which is a thing only a total can say.
     # Every row measured right and the panel still stood 193px tall, because the
-    # caption had a line of its own on every one of them. Inline it is 152. The
-    # bound is generous enough not to fail on a fixture with one more row and
-    # tight enough that giving every caption a line again would trip it.
+    # caption had a line of its own on every one of them. Inline it is 152.
+    #
+    # 🔴 PER ROW, NOT A TOTAL. It was a flat 170px with a comment saying it was
+    # "generous enough not to fail on a fixture with one more row" - and it was
+    # not: the Opacity row took it to 187 and the gate failed for counting to
+    # six. A total cannot tell a panel that grew a row from one that grew a
+    # line on every row, which is the fault it exists for. Measured, the two
+    # are 30px a row and 39; 34 is between them and stays between them however
+    # many rows there are.
     budget = after.get('budget') or {}
-    print('  budget: ' + ', '.join(f'{k}={v}' for k, v in sorted(budget.items())))
-    if (budget.get('panel') or 0) > 170:
+    nrows = len(after.get('rows') or {}) or 1
+    print('  budget: ' + ', '.join(f'{k}={v}' for k, v in sorted(budget.items()))
+          + f' ({budget.get("panel", 0) / nrows:.0f}px a row over {nrows})')
+    if (budget.get('panel') or 0) > nrows * 34:
         bad.append(f'{tag}: the panel is {budget.get("panel")}px tall for'
-                   f' {len(after.get("rows") or {})} rows - it was 193 when'
-                   ' every caption took a line of its own, and 152 without')
+                   f' {nrows} rows, {budget.get("panel", 0) / nrows:.0f}px each'
+                   ' - a caption takes 39px a row when it has a line of its own'
+                   ' and 30 when it shares one')
 
     # ...AND NOTHING HANGS OUT OF THE SIDE. Wrapping is fine; a control wider
     # than the panel is not, and a stated 340px width with no ceiling did

@@ -4674,6 +4674,62 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
         }
 
+        /**
+         * GHOST A SELECTION, WITHOUT REBUILDING ANYTHING.
+         *
+         * The fourth verb beside clipTo, orientTo and selectTo, and it answers
+         * the case none of them can: a side chain inside the fold, confirmed
+         * present in the scene and hidden by the cartoon in front of it from
+         * every angle worth looking from. Reorienting the camera is the
+         * mitigation people reach for and it is not one - the feature is
+         * genuinely inside.
+         *
+         * 🔴 IT IS A TEXEL, NOT A MESH. cartoon/paintgl.js keeps one texel per
+         * residue that its vertex shader already tests every face against, and
+         * the fragment shader already fades the clip slab by DROPPING PIXELS on
+         * an ordered dither rather than blending. So an opacity composes with
+         * the slab through the machinery both were already using: one
+         * texSubImage2D per residue changed, no capture, no geometry, and no
+         * ordering problem - which is what a blended fill would have needed and
+         * this path keeps no back-to-front order to give it.
+         *
+         * The OUTLINES stay solid, by choice: a ghosted region reads as a line
+         * drawing over a faded fill, which is what an illustrator draws and
+         * what the ink pass can do without carrying a residue index it has no
+         * room for - its vertex row is exactly sixteen attributes' worth.
+         *
+         * @param {*} sel      any selector selectTo takes, or null for all
+         * @param {number} a   0 hides, 1 is solid; anything between ghosts
+         */
+        setOpacity(sel, a) {
+            const alpha = Math.max(0, Math.min(1, Number(a)));
+            const named = (sel === null || sel === undefined)
+                ? null : positionsFor(this, sel);
+            const next = new Map(this.residueOpacity || []);
+            if (named === null) {
+                // ALL, which is how a fade is taken off again: a full map of
+                // ones would work and would also be a map that never empties,
+                // so every later frame would walk it.
+                next.clear();
+                if (alpha < 1) {
+                    for (let i = 0; i < this.coords.length; i++) next.set(i, alpha);
+                }
+            } else {
+                for (const i of named) {
+                    if (alpha >= 1) next.delete(i); else next.set(i, alpha);
+                }
+            }
+            this.residueOpacity = next.size ? next : null;
+            this._opacityVersion = (this._opacityVersion || 0) + 1;
+        }
+
+        /** What this position is drawn at, 1 unless something ghosted it. */
+        opacityOf(idx) {
+            const m = this.residueOpacity;
+            const v = m ? m.get(idx) : undefined;
+            return (v === undefined) ? 1 : v;
+        }
+
 
         /**
          * The side-chain table, rewritten for an extracted sub-structure.

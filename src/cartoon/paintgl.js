@@ -684,8 +684,13 @@ float clipCover(float z) {
   if (uClipFade <= 0.0) return 0.0;
   return max(0.0, 1.0 + d / uClipFade);
 }
-bool clipped(float z) {
-  float c = clipCover(z);
+// COVERAGE FROM TWO SOURCES, THROUGH ONE DITHER. The slab's is a function of
+// depth; a ghosted residue's is a constant it carries from the vertex stage.
+// They compose by taking the smaller - a residue at 30% inside the slab is 30%
+// covered, and one outside it is gone either way - and the pattern below is
+// unchanged, so a fade costs no second pass and no ordering.
+bool clipped(float z, float fade) {
+  float c = min(clipCover(z), fade);
   if (c >= 1.0) return false;
   if (c <= 0.0) return true;
   // Bayer 4x4, in SCREEN space so the pattern does not swim as the model turns
@@ -698,6 +703,8 @@ bool clipped(float z) {
   int bi = (pxy.y - (pxy.y / 4) * 4) * 4 + (pxy.x - (pxy.x / 4) * 4);
   return c < (BAYER[bi] + 0.5) / 16.0;
 }
+// ...and the old spelling, for every pass that has nothing to fade.
+bool clipped(float z) { return clipped(z, 1.0); }
 `;
 
 const VS = `#version 300 es
@@ -706,6 +713,7 @@ uniform vec2 uSize; uniform vec2 uZRange;
 out vec3 vCol;
 out float vCull;      // the shared fragment shader reads it; nothing to cull here
 out float vZv;        // view z, for the clip slab in the fragment
+out float vFade;      // ...and likewise: this pass has no residue to ghost
 // DECLARED BECAUSE THE FRAGMENT SHADER IS SHARED, not because this pass has
 // discs. A varying the fragment reads and no vertex shader writes does not
 // warn, it fails the LINK - and since both programs are built in one try
@@ -723,6 +731,7 @@ void main() {
   vCol = aCol;
   vCull = 0.0;
   vZv = aZ;
+  vFade = 1.0;
 }`;
 
 // RESIDENT GEOMETRY. The mesh is uploaded ONCE in model space and the camera is
@@ -762,6 +771,7 @@ in vec4 aFlags1;        // side, cap, sheet, residue
 in vec4 aFlags2;        // palette slot, colour mode, -, -
 out float vCull;
 out float vZv;        // view z, for the clip slab in the fragment
+out float vFade;      // this residue's coverage, 1 unless it has been ghosted
 // where in a lone atom's disc this corner is, and whether it is one
 out vec2 vDisc;
 out float vIsDisc;
@@ -1071,12 +1081,21 @@ void main() {
   // PER-RESIDUE VISIBILITY, read from a texture rather than baked into the
   // mesh. Adding or removing one residue's side chain is then a single texel
   // write - the geometry is already there, it was only being masked.
+  // 🔴 THE TEXEL IS A COVERAGE AND NOT A FLAG. It was read as one - anything
+  // under a half hid the residue - and every value between is a per-residue
+  // OPACITY now, carried to the fragment stage and dropped through the same
+  // ordered dither the clip slab already fades with. Zero still hides, which
+  // is what every caller of it meant, and 1 still draws solid; nothing about
+  // the mesh changes for any value in between, because the geometry was
+  // always there and was only ever being masked.
+  vFade = 1.0;
   if (show >= 0.5 && uVisW > 0.5) {
     // clamped: an out-of-range texelFetch returns 0, which reads as hidden, so
     // a stray index does not silently delete geometry
     int ri = clamp(int(aRes + 0.5), 0, int(uVisN) - 1);
     int w = int(uVisW);
-    if (texelFetch(uVis, ivec2(ri % w, ri / w), 0).r < 0.5) show = 0.0;
+    float cover = texelFetch(uVis, ivec2(ri % w, ri / w), 0).r;
+    if (cover <= 0.0) show = 0.0; else vFade = cover;
   }
   if (show < 0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   // ...and a double-sided face is never culled: there is no back of it to be on.
@@ -2235,7 +2254,7 @@ void main() {
 
 const FS = `#version 300 es
 precision highp float;
-in vec3 vCol; in float vCull; in float vZv; out vec4 fragColor;
+in vec3 vCol; in float vCull; in float vZv; in float vFade; out vec4 fragColor;
 in vec2 vDisc; in float vIsDisc;
 // THE OCCLUSION, BORROWED WHOLE FROM THE TUBE. uZOnly makes this pass the depth
 // prepass the shadow is computed from - the same fragment writing its view
@@ -2259,7 +2278,11 @@ void main() {
   // the per-frame version of the renderer's STICK_CULL: a face is dropped when
   // it turns away, decided now rather than when the mesh was captured
   if (vCull > 0.5) discard;
-  if (clipped(vZv)) discard;
+  // ...AND THE RESIDUE'S OWN COVERAGE WITH IT. One call, because the slab and
+  // the ghost are the same kind of thing: a fraction of the pixels kept. It is
+  // dropped here rather than after the prepass on purpose - a ghosted residue
+  // that still wrote depth would go on shadowing what shows through it.
+  if (clipped(vZv, vFade)) discard;
   // A LONE ATOM: THE QUAD IS A SQUARE AND THE ATOM IS A CIRCLE.
   //
   // Solved here rather than tessellated, and shaded the way the 2D pass shades
@@ -3289,10 +3312,19 @@ function ensureVisTexture(n) {
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, visData);
 }
-// THE EDIT. Show or hide one residue's geometry without touching the mesh.
+// THE EDIT. Show, hide, or GHOST one residue's geometry without touching the
+// mesh. The texel is a coverage: 0 hides, 255 draws solid, and everything
+// between is dropped through the fragment shader's ordered dither - so an
+// opacity is one texel write, no capture and no rebuild. See VS3D.
 function setResidueVisible(idx, on) {
+    setResidueCover(idx, on ? 255 : 0);
+}
+function setResidueOpacity(idx, alpha) {
+    const a = Math.max(0, Math.min(1, +alpha));
+    setResidueCover(idx, Math.round(a * 255));
+}
+function setResidueCover(idx, v) {
     if (!visData || idx < 0 || idx >= visData.length) return;
-    const v = on ? 255 : 0;
     if (visData[idx] === v) return;
     visData[idx] = v;
     gl.bindTexture(gl.TEXTURE_2D, visTex);
@@ -3301,11 +3333,34 @@ function setResidueVisible(idx, on) {
         gl.RED, gl.UNSIGNED_BYTE, visData.subarray(idx, idx + 1));
 }
 function setAllResiduesVisible(on) {
+    setAllResiduesCover(on ? 255 : 0);
+}
+function setAllResiduesOpacity(alpha) {
+    setAllResiduesCover(Math.round(Math.max(0, Math.min(1, +alpha)) * 255));
+}
+function setAllResiduesCover(v) {
     if (!visData) return;
-    visData.fill(on ? 255 : 0);
+    visData.fill(v);
     gl.bindTexture(gl.TEXTURE_2D, visTex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, visW, visH, gl.RED, gl.UNSIGNED_BYTE, visData);
+}
+
+// WHAT THE RENDERER SAYS IS GHOSTED, onto the texture. `residueOpacity` is a
+// Map of position index to a number in 0..1, or null for "all solid"; the
+// stamp is the renderer's own counter beside the texture's shape, so a rebuild
+// (which resizes it and fills it solid) re-applies and a still frame does not.
+let visStamp = '';
+function applyResidueOpacity(renderer) {
+    if (!visData) return;
+    const map = renderer ? renderer.residueOpacity : null;
+    const ver = (renderer && renderer._opacityVersion) || 0;
+    const stamp = ver + '|' + visW + 'x' + visH + '|' + (map ? map.size : 0);
+    if (stamp === visStamp) return;
+    visStamp = stamp;
+    setAllResiduesCover(255);
+    if (!map || !map.size) return;
+    for (const [idx, a] of map) setResidueOpacity(idx, a);
 }
 
 // THE PALETTE, as a texture. Three texels per segment - its own colour and the
@@ -7249,7 +7304,10 @@ function drawInk(cv, prm) {
     gl.depthFunc(gl.LESS);
     gl.depthMask(false);            // ink must not occlude ink
     gl.bindBuffer(gl.ARRAY_BUFFER, bufInk);
-    const stride = 19 * 4;
+    // ED_FLOATS, not 19 again: this was the second place that knew the edge
+    // row's width, and a row that grows has to grow in both or the attributes
+    // read from the wrong offsets with nothing to say so.
+    const stride = ED_FLOATS * 4;
     const binds = [['aP0', 3, 0], ['aP1', 3, 12], ['aN0', 3, 24],
         ['aN1', 3, 36], ['aAlways', 1, 48], ['aEdgeStick', 1, 52], ['aEdgePal', 1, 56],
         ['aEdgeCol', 3, 60], ['aEdgeW', 1, 72]];
@@ -9159,6 +9217,13 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
             amount: (typeof renderer.cartoonAOAmount === 'number'
                 ? renderer.cartoonAOAmount : CARTOON_AO_AMOUNT),
         } : null;
+        // GHOSTED RESIDUES, WRITTEN INTO THE TEXTURE THE MESH IS ALREADY
+        // TESTED AGAINST. Here rather than where the opacity is SET, because
+        // the texture belongs to the mesh: ensureVisTexture fills it solid
+        // whenever the structure's size changes, so a fade set before a
+        // rebuild would be quietly undone. Applying it on the frame, against a
+        // stamp, costs one comparison when nothing has moved.
+        applyResidueOpacity(renderer);
         drawResident(appCv, prm, aoOpts);
         projectPositions(renderer, displayWidth, displayHeight);
         // ...and onto the canvas the app owns, under whatever transform it is
@@ -10295,7 +10360,8 @@ window.py2dmolCartoonGPU = {
     setPixelRatio, setFocalLength, setPaper, recolour,
     facesOf, makeResident, drawResident, drawInk, nullCtx,
     getResident, clearResident, getEdgeCount,
-    setPalette, setResidueVisible, setAllResiduesVisible, setVisible, getShow,
+    setPalette, setResidueVisible, setAllResiduesVisible,
+    setResidueOpacity, setAllResiduesOpacity, setVisible, getShow,
     setStdDev, setCapturing, isCapturing, currentZoom, setZoom, zoomBy, getZoom,
     rotateView, setViewYawPitch, currentRot, setRot,
     focalLength, orthoAmount, isPersp, viewVecAt, unproject,

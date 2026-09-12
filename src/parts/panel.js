@@ -649,6 +649,23 @@ SCOPE .selection-mini-slider {
     margin: 0;
 }
 SCOPE .selection-mini-slider[hidden] { display: none; }
+/* ...and the one that has a row to itself, which is a different control. The
+   mini slider above is 64px because it shares a line with a swatch and two
+   buttons; alone on a row it came out 64x5 - the browser's bare track, with no
+   height of its own - which tests/selection_shells.py calls unstyled and is
+   right to. This takes the rest of the row and the panel's own control height. */
+SCOPE .selection-wide-slider {
+    /* BASIS 0, not auto - the same trick .toggle-item select documents above.
+       A range input's natural width is about 170px, so a basis of auto made
+       the row wrap and then handed the slider the whole second line: a 44px
+       row where every other one is 24. From zero it shrinks to whatever the
+       caption leaves. */
+    flex: 1 1 0;
+    min-width: 0;
+    height: var(--ctl-h, 24px);
+    margin: 0;
+}
+SCOPE .selection-wide-slider[hidden] { display: none; }
 /* An empty swatch means the selection has no single colour to show - nothing
    selected, or the renderer could not resolve one. A hollow square reads as
    "no answer"; a filled one would be a claim. */
@@ -1092,6 +1109,23 @@ const SELECTION_PANEL_ROWS = [
           options: [['', 'Mixed', { disabled: true, hidden: true }],
                     ['dssp', 'DSSP'], ['H', 'Helix'],
                     ['E', 'Sheet'], ['C', 'Loop']] },
+    ] },
+    // GHOSTING, which is the continuum the Show/Hide pair above has only the
+    // two ends of. The case it exists for is a side chain INSIDE the fold:
+    // present in the scene, drawn, and hidden by the cartoon in front of it
+    // from every angle - so reorienting the camera, which is the thing people
+    // reach for, is not a fix. Fade the backbone over it instead.
+    //
+    // ITS OWN ROW because the Main chain row is already a swatch, a pair and a
+    // menu, and a slider after them wraps in a 340px panel. Labelled by what it
+    // sets rather than by what it is for: the slider goes the way a reader
+    // expects, right for solid.
+    { id: 'opacityRow', label: 'Opacity', items: [
+        { kind: 'range', id: 'selOpacitySlider', cls: 'selection-wide-slider',
+          min: 0, max: 1, step: 0.05, value: 1,
+          title: 'Fade the selected residues so what is behind them shows'
+               + ' through. The outlines stay.',
+          aria: 'Opacity of the selected residues' },
     ] },
     // WHAT THE SELECTION IS, above; WHAT TO DO WITH IT, below. The rows above
     // set properties of the residues you picked and read as a group because

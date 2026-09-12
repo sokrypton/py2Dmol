@@ -70,6 +70,30 @@ function getActiveSelection() {
     return (t && t.size) ? Array.from(t) : null;
 }
 
+// GHOST WHAT IS PICKED. The renderer's own verb does the work - the map lives
+// on the renderer beside the selection and the clip, not on the object,
+// because it is a way of LOOKING at the structure rather than a property of
+// it: it belongs with the camera and the slab, and a saved session that came
+// back with half a protein invisible would be a bug report.
+function setSelectionOpacity(positions, alpha) {
+    const renderer = selectionHost.renderer();
+    if (!renderer || typeof renderer.setOpacity !== 'function') return;
+    renderer.setOpacity({ positions: Array.from(positions) }, alpha);
+    if (typeof renderer.render === 'function') renderer.render();
+}
+
+// ...and what the slider should READ for a selection, which is a question with
+// three answers: all of it solid, all of it at one value, or mixed. A mixed
+// selection shows the lowest, because that is the one the reader can see the
+// effect of and dragging from it is how they fix the mixture.
+function selectionOpacity(positions) {
+    const renderer = selectionHost.renderer();
+    if (!renderer || typeof renderer.opacityOf !== 'function') return 1;
+    let lo = 1;
+    for (const i of positions) lo = Math.min(lo, renderer.opacityOf(i));
+    return lo;
+}
+
 // Write into the object's existing colour structure, in the SAME shape
 // Python's set_color(position=...) produces: {type:'advanced', value:
 // {position:{idx: colour}}}. One representation means a colour set here is
@@ -1042,6 +1066,14 @@ function updateSelectionToolsState() {
             }
         }
     }
+    // ...AND THE FADE READS BACK OFF THE STRUCTURE, like every other control
+    // here. A slider that resets to 1 on every pick says the selection is
+    // solid when it is not, which is the one thing a panel on a selection is
+    // for - see the SSE menu above, which had the same fault.
+    {
+        const os = byId('selOpacitySlider');
+        if (os && !none) os.value = selectionOpacity(picked);
+    }
     syncSelectionToggles(picked, none);
     // The side-chain row is offered only when there is something to show:
     // glycine has no side chain, nor does any residue in a backbone-only
@@ -1579,6 +1611,17 @@ function wireSelectionPanel() {
         // shows it, otherwise it hides it. That makes "show what I picked" the
         // behaviour for a selection that is partly hidden, which is what a user
         // reaching for this after a Hide actually wants.
+        {
+            // `input`, not `change`: a fade should follow the drag, and it is
+            // one texel write per residue - see the renderer's setOpacity.
+            const os = byId('selOpacitySlider');
+            if (os) {
+                os.addEventListener('input', () => {
+                    const positions = getActiveSelection();
+                    if (positions) setSelectionOpacity(positions, +os.value);
+                });
+            }
+        }
         {
             const ws = byId('contactWidthSlider');
             if (ws) {

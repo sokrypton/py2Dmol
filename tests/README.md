@@ -150,6 +150,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `notebook_narrow.py` | ui | The notebook shell in a cell too narrow for canvas-plus-panel. |
 | `nucleic_multi.py` | ui | A nucleic object keeps its atoms when the viewer drops out of Multi. |
 | `object_reload.py` | ui | Loading another file must not disturb the objects already loaded. |
+| `opacity.py` | ui | Ghosting a selection: it must change the picture and rebuild nothing. |
 | `outline_sync.py` | gpu | DOES THE OUTLINE MOVE WITH THE SURFACE, FRAME BY FRAME THROUGH A PLAY? |
 | `packaging.py` | node | Every resource viewer.py opens must be in the wheel. |
 | `paint_order_audit.js` | tool | Paint-order audit, written once and plainly. |
