@@ -3655,7 +3655,7 @@ const LIT_LM = len3(LIT_L[0], LIT_L[1], LIT_L[2]);
  *   for the test that decides it and stationRowsFromFaces for what the station
  *   table reads instead.
  */
-function buildMeshPart(faces, scale, prm, lines, rowsUnused) {
+function buildMeshPart(faces, scale, prm, lines, rowsUnused, smOffset) {
     const P0 = prm || defaultParams();
     if (P0.ortho !== undefined) setOrtho(P0.ortho);
     // Stage timings, for finding what a build actually spends its time on.
@@ -3730,8 +3730,14 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused) {
     // reported a worst disagreement of 1.79 on a unit vector and cost this
     // change a revert before the mistake was found. With the frames built, the
     // two agree to 0.000 over 70,060 faces.
+    // 🔴 AND THE TABLE MAY DESCRIBE MORE THAN THIS PART. It was an equality,
+    // which is right while the ribbon is the only stationed part and its faces
+    // are the table's first and last. The side chains are stationed too now and
+    // sit AFTER the ribbon in it, so what this part needs is a window: `smOff`
+    // rows in, `faces.length` long, inside a table that is at least that big.
+    const smOff = smOffset || 0;
     const SM = (rowsUnused && stationCoverMesh
-        && stationCoverMesh.faceCount === faces.length
+        && stationCoverMesh.faceCount >= smOff + faces.length
         && !(typeof window !== 'undefined' && window.__stationNormalCheck))
         ? stationCoverMesh : null;
     /**
@@ -4275,7 +4281,7 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused) {
         // Caps (surf >= 4) and sticks are not stations and fall through to the
         // branches below, which need no frames either.
         if (SM && f.surf !== undefined && f.surf <= 10) {
-            const k4 = SM.faceStation[fi] * 16;
+            const k4 = SM.faceStation[fi + smOff] * 16;
             const st4 = SM.stations;
             const on = [0, 0, 0];
             if (f.surf === 4) {
@@ -5698,7 +5704,7 @@ const FILL_PAL_AT = 44;
  */
 function faceGroup(f) {
     if (f.disc) return 1;
-    if (f.stick && !f.stationed) return f.sc ? 2 : 1;
+    if (f.stick) return f.sc ? 2 : 1;
     return 0;
 }
 
@@ -5738,9 +5744,20 @@ function makeResident(faces, scale, prm, lines) {
     // all along.
     const groups = [[], [], []];
     for (const f of faces) groups[faceGroup(f)].push(f);
+    // 🔴 WHETHER THE SIDE CHAINS ARE STATIONED IS NEEDED BEFORE THE LOOP, NOT
+    // AFTER IT. It used to be read where the parts are concatenated, which is
+    // past the point where each part is BUILT - and the build has to know,
+    // because a stationed face's outward normal comes from its station's frame
+    // rather than from the winding. See the SM offset below.
+    const stationedSide = (groups[2].length > 0 && !!groups[2][0].stationed);
     const RB = window.__rebuild || {};
     const t0 = performance.now();
 
+    // ...and the same question for the side chains, asked once: the table has
+    // to cover the ribbon AND them, since it describes them in that order.
+    const sideRowsUnused = stationedSide && stationDraw
+        && stationCoverCount >= groups[0].length + groups[2].length
+        && !(typeof window !== 'undefined' && window.__stationRowCheck);
     // ...the two that are worth keeping, each against a hash of its own faces
     const parts = [];
     for (let g = 0; g < 3; g++) {
@@ -5750,7 +5767,18 @@ function makeResident(faces, scale, prm, lines) {
         // does.
         const ln = (g === 1) ? lines : null;
         if (g === 2) {                      // always rebuilt: it is the change
-            parts.push(buildMeshPart(face, scale, P0, ln));
+            // 🔴 AND IT IS DRAWN FROM THE STATIONS TOO, SO IT IS BUILT LIKE
+            // THEM. stationFillFaces is the ribbon's faces followed by these,
+            // so their rows are never issued either - and, more than a saving,
+            // it is what puts the station rule in reach of their outward
+            // normals. Built from the winding while drawn from the stations,
+            // a side chain's outline was derived one way at build and the
+            // other on every frame after: 2,299 of 18,304 edge rows carried a
+            // different normal from the one a rebuild of the same frame
+            // writes, worst 1.997 on a unit vector - two faces' silhouette
+            // verdicts flipping, which is 0.126% of the pixels.
+            parts.push(buildMeshPart(face, scale, P0, ln,
+                sideRowsUnused, sideRowsUnused ? groups[0].length : 0));
             continue;
         }
         const slot = g === 0 ? ribbonPart : otherPart;
@@ -5767,7 +5795,7 @@ function makeResident(faces, scale, prm, lines) {
         // path, so it would agree perfectly while proving nothing. The flag is
         // tests/station_rows.py's alone.
         const rowsUnused = (g === 0) && stationDraw
-            && stationCoverCount === face.length && face.length > 0
+            && stationCoverCount >= face.length && face.length > 0
             && !(typeof window !== 'undefined' && window.__stationRowCheck);
         // ...and the cache is keyed on it, because a part built without its
         // rows must never be handed to a frame that will draw them.
@@ -5815,12 +5843,13 @@ function makeResident(faces, scale, prm, lines) {
     // flag words - so they can be read off the face instead of lifted out of a
     // 48-float instance row that the station path never draws. Kept only while
     // that path is on, for the same reason stationFillRows is.
-    stationFillFaces = stationDraw ? groups[0] : null;
+    stationFillFaces = stationDraw ? (stationedSide ? groups[0].concat(groups[2]) : groups[0]) : null;
     RB.nRibbon = groups[0].length;
     RB.nOther = groups[1].length;
     RB.nSide = groups[2].length;
     RB.stickMs = +(performance.now() - t0).toFixed(1);
-    return installParts(parts, scale);
+    const orderedParts = stationedSide ? [parts[0], parts[2], parts[1]] : parts;
+    return installParts(orderedParts, scale);
 }
 
 /**
@@ -8558,6 +8587,7 @@ function captureMesh(sig) {
         edSrc: residentEdges ? residentEdges.edSrc : null,
         edgeRich: edgeRichPreset,
         spans: residentPartSpans,
+        residentStations: residentStations ? Object.assign({}, residentStations) : null,
         hasContacts: residentHasContacts,
         bytes: lastFill.byteLength + (lastEdges ? lastEdges.byteLength : 0),
     };
@@ -8577,6 +8607,7 @@ function activateMesh(m) {
     residentEdges = (m.edges && m.edSrc) ? { ed: m.edges, edSrc: m.edSrc } : null;
     edgeRichPreset = !!m.edgeRich;
     residentPartSpans = m.spans || [];
+    if (m.residentStations) residentStations = m.residentStations;
     residentHasContacts = !!m.hasContacts;
     resident = m.resident;
     appPalComplete = m.pal;

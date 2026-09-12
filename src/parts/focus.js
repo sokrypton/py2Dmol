@@ -193,8 +193,14 @@
                 this.selectionMark = snap.selectionMark;
                 if (this._syncSelectionMark) this._syncSelectionMark();
             }
-            this.setResidueSelection(
-                (withSelection === false) ? new Set() : (snap.selection || new Set()));
+            const wasBusy = this._focusBusy;
+            this._focusBusy = true;
+            try {
+                this.setResidueSelection(
+                    (withSelection === false) ? new Set() : (snap.selection || new Set()));
+            } finally {
+                this._focusBusy = wasBusy;
+            }
             this.render('focusRestore');
             return true;
         },
@@ -491,7 +497,13 @@
             // The halo stays on WHAT WAS CLICKED, not on the neighbourhood:
             // the side chains already say what is near, and lighting all of it
             // up leaves nothing to say which residue you asked about.
-            this.setResidueSelection(new Set(seed));
+            const wasBusy = this._focusBusy;
+            this._focusBusy = true;
+            try {
+                this.setResidueSelection(new Set(seed));
+            } finally {
+                this._focusBusy = wasBusy;
+            }
 
             // ...AND THE SIDE CHAINS ARE ASSIGNED, NOT ADDED TO. Every object
             // is written, including the ones the neighbourhood does not reach,
