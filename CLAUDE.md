@@ -2359,6 +2359,43 @@ public downloads is exercised on every run.
   *When measuring any of this, force `py2dmolCartoonGPU.invalidate()`: without
   it the GPU reuses its resident mesh, `geom.js` never runs, and two cache hits
   compare identical and prove nothing.*
+- 🔴 **THE STATION FAST PATH RECORDED THE COLOUR KEY WITHOUT UPLOADING THE
+  PALETTE, so a frame whose colours changed kept the last BUILD'S.** A colour
+  change over a resident mesh is three texels per segment - that is what
+  `appColourKey` and `recolour()` are for - and the station branch assigned
+  `appColourKey = colourKeyOf(colors)` and stopped. `updateStations` rewrites
+  POSITIONS; nothing there touches the palette. So the key then told the upload
+  branch these colours were already on the card, and they never were: the
+  picture kept the colours of the last real rebuild, permanently, for as long
+  as the station path kept answering.
+  **INVISIBLE DURING A LIVE TRAJECTORY, VISIBLE AFTER A SESSION RESTORE.**
+  While frames are being ADDED every step rebuilds, so the palette is written
+  by the build; once the mesh is resident and only the frame index moves, the
+  station path takes the step and the colours stop following. Reported through
+  LocalFold as an AlphaFold 3 fold's pLDDT not reaching the structure, which is
+  exactly the shape that exposes it: the sampler's frames are written with a
+  ZERO B-factor on purpose and the finished frame carries the confidence head's
+  answer, so the last step is a colour change and nothing else. Measured -
+  frame 14 (pLDDT 0) drew the finished frame's green, forcing
+  `plddtColorsNeedUpdate` changed nothing, and only `invalidate()` put the red
+  back, which is what says the palette and not the values.
+  The fix is the colour-only branch's own logic: upload when the key moved, and
+  where the palette is INCOMPLETE - colours baked per instance, with no texture
+  to repaint - rebuild instead, which is the answer that branch already gives.
+  `tests/gpu_recolour.py` covered four colour-MODE changes on a still structure
+  and none of them reached this; it now steps a trajectory whose frames differ
+  only in pLDDT and asks that the step changes the picture AND matches a forced
+  rebuild of the same frame. Mutated back: `stepped=False matchesRebuild=False`.
+  🔴 **AND THE MEASUREMENT NEARLY BURIED IT TWICE.** A canvas read taken
+  synchronously after `render()` returns the PREVIOUS frame - stepping
+  15 -> 14 -> 15 and capturing each time, the third capture is frame 14's bytes
+  - so "the colour did not change" and "I read too early" look identical, and I
+  wrote the fault off once as a lag on that evidence. What separated them was
+  that the same probe distinguished the frames on a LIVE fold and not after a
+  restore, and then that a forced mesh rebuild changed the picture where a
+  forced palette recompute did not. Read the canvas twice with a frame between
+  and keep the second; and when a reading is ambiguous, find the arm where it
+  is not.
 - 🔴 **PIXELS CANNOT BE COMPARED ACROSS PAGE LOADS ON THE GPU PATH.** Two runs
   of the SAME code differ in **110,800 of 357,604 pixels** on 4HHB - a fine
   speckle over every surface, max delta 40 - so a before/after image comparison

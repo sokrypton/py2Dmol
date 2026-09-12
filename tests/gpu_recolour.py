@@ -148,6 +148,50 @@ window.addEventListener('load', () => {
       r.render('forced rebuild');
       await settle();
       R.overrideSame = R.overrideShot === shot();
+
+      // 🔴 AND A COLOUR CHANGE THE STATION FAST PATH CARRIES, which is the one
+      // this probe did not reach. Every case above changes the colour MODE on
+      // a still structure; a TRAJECTORY changes the colours by stepping, and
+      // the station path answers that step - it rewrites POSITIONS from the
+      // station table and never touches the palette. It used to record
+      // `appColourKey = colourKeyOf(colors)` all the same, which tells the
+      // upload branch the colours are already on the card, so a frame whose
+      // pLDDT differed kept the colours of the last real BUILD, permanently.
+      //
+      // The fixture is the shape an AlphaFold 3 fold has: frames the sampler
+      // wrote before the confidence head ran, which carry a ZERO pLDDT on
+      // purpose, and a finished frame carrying the real one. Stepping between
+      // the last two is a colour change over a mesh that holds still, and the
+      // two must not paint the same.
+      const N = r.coords.length;
+      // ...taken BEFORE addObject, which makes the new object the current one:
+      // read inside the closure it was the empty object's, and `frames[0]` of
+      // an object with no frames is undefined.
+      const srcCoords = r.objectsData[r.currentObjectName].frames[0].coords;
+      const flat = (v) => ({coords: srcCoords, plddts: Array(N).fill(v)});
+      r.addObject('station');
+      r.setShownObjects(['station'], false, {reframe: true});
+      for (let k = 0; k < 8; k++) r.addFrame(flat(0), 'station');
+      r.addFrame(flat(85), 'station');
+      await setMode('plddt');
+      const frames = r.objectsData.station.frames.length;
+      // ...warmed, so the mesh is RESIDENT and the step below is the station
+      // path rather than the build that makes it
+      r.setFrame(frames - 1); r.render('station warm'); await settle(4);
+      const onLast = shot();
+      r.setFrame(frames - 2); r.render('station step'); await settle(4);
+      const onPrev = shot();
+      window.py2dmolCartoonGPU.invalidate();
+      r.render('station rebuild'); await settle(4);
+      R.station = {
+        frames,
+        // the step must change the picture...
+        stepped: onLast !== onPrev,
+        // ...and to what a rebuild of the same frame draws, which is what says
+        // the upload and the rebuild agree rather than merely differ
+        matchesRebuild: onPrev === shot(),
+        fast: window.__stationFastPath || 0,
+      };
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});
   };
@@ -195,6 +239,20 @@ if R.get("error"):
 
 print(f"{FILE}: {R.get('n')} positions, drawn on the GPU: {R.get('gpuDrew')}")
 bad = []
+st = R.get("station") or {}
+print(f"  station path: {st.get('frames')} frames, stepped={st.get('stepped')}"
+      f" matchesRebuild={st.get('matchesRebuild')} fastPaths={st.get('fast')}")
+if not st:
+    bad.append("the station leg did not run")
+else:
+    if not st.get("stepped"):
+        bad.append("a frame step that changes only the pLDDT drew the SAME"
+                   " picture - the station fast path recorded the new colour"
+                   " key without uploading the palette, so the card keeps the"
+                   " colours of the last rebuild")
+    if not st.get("matchesRebuild"):
+        bad.append("the station path's colours are not the colours a rebuild"
+                   " of the same frame draws")
 if not R.get("gpuDrew"):
     bad.append("the GPU path did not draw, so nothing here was measured")
 for m in R["modes"]:

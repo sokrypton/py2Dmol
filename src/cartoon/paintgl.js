@@ -8900,7 +8900,40 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
                 if (np) { appPos = np; window.__gpuPosCount = mesh.pos.length; }
                 appSig = sig;
                 appColors = colors;
-                appColourKey = colourKeyOf(colors);
+                // 🔴 AND THE COLOURS ARE UPLOADED, NOT MERELY RECORDED. This
+                // assigned `appColourKey = colourKeyOf(colors)` and stopped,
+                // which tells the branch below - the one that turns a colour
+                // change into three texels per segment - that these colours
+                // are already on the card. They are not: `updateStations`
+                // rewrites POSITIONS. So a frame whose colours changed while
+                // the mesh held still kept the colours of the last real BUILD,
+                // and the key said so from then on, permanently.
+                //
+                // Reported through LocalFold as an AlphaFold 3 fold's pLDDT
+                // not reaching the structure. Its sampler frames are written
+                // with a ZERO B-factor on purpose and the finished one carries
+                // the confidence head's answer, so stepping to the last frame
+                // is a colour change over a resident mesh - exactly this. It
+                // was invisible during a live fold, where every frame is added
+                // and therefore rebuilt, and appeared after a session restore,
+                // where the mesh is resident and the station path takes every
+                // step. Measured: frame 14 (pLDDT 0) drew the finished frame's
+                // green, and only `invalidate()` put the red back.
+                const stationKey = colourKeyOf(colors);
+                if (stationKey !== appColourKey) {
+                    appColourKey = stationKey;
+                    if (appPalComplete) {
+                        recolour();
+                    } else {
+                        // Baked colours: the mesh carries them per instance, so
+                        // there is no texture to repaint and this frame has to
+                        // be built. Same answer the colour-only branch gives.
+                        appSig = null;
+                        heldCapture = null;
+                        return renderApp(renderer, ctx, displayWidth,
+                                         displayHeight, colors);
+                    }
+                }
                 stationFast = true;
                 stationEverFast = true;   // it paid once; it stays for good
                 // ...and the capture goes with it: nothing below will rebuild,
