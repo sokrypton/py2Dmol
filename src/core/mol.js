@@ -2746,7 +2746,27 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
 
                     this._switchToObject(newObjectName);
-                    this.setFrame(0);
+                    // ...AND THE TIMELINE STAYS WHERE IT WAS while several
+                    // objects are on screen, for the same reason the camera
+                    // does (see _switchToObject): both structures are in front
+                    // of you and picking which one to work on is not a request
+                    // to move anything. Dropping to 0 took the trajectory
+                    // beside the one you picked back to its first frame.
+                    // Alone, an object opens on its first frame as it always
+                    // did.
+                    const shared = (this.multiState && this.multiState.enabled)
+                        || this._mergeWanted();
+                    this.setFrame(shared && this.currentFrame > 0 ? this.currentFrame : 0);
+                    // ...AND THE PLAY STRIP IS RE-ASKED. setFrame does not
+                    // touch it on the ordinary path, and nothing else on a
+                    // switch did either - so the slider and the counter went on
+                    // describing the object you had just left. Harmless while
+                    // every object had a timeline of its own and the number was
+                    // reset by the next load; now the timeline is the LONGEST
+                    // drawn object's, and switching can change it - an object
+                    // longer than anything on screen becoming the current one
+                    // lengthens it.
+                    this.updateUIControls();
                     // PAE visibility updated by setFrame -> updateFrame
                     this.updateScatterContainerVisibility();
                 });
@@ -3757,9 +3777,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // is taken, since that is which frame of the new object to draw.
             const merged = (this.multiState && this.multiState.enabled)
                 || this._mergeWanted();
+            // ...AND NEITHER DOES THE TIMELINE, by the same argument. The
+            // frame index used to be the one thing taken from the object being
+            // switched TO - correct while each object had a timeline of its
+            // own, and wrong once they share one: picking a one-frame
+            // reference to work on dropped the position to 0 and took the
+            // trajectory beside it back to its first frame. Which object you
+            // are editing is not a request to move anything.
             this.viewerState = merged ? {
                 ...this.viewerState,
-                currentFrame: saved.currentFrame
+                currentFrame: this.currentFrame
             } : {
                 rotation: this._deepCopyMatrix(saved.rotation),
                 zoom: saved.zoom,
@@ -3845,7 +3872,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Restore scatter plot for the new object using its stored data/metadata
             if (this.scatterRenderer) {
                 this.updateScatterData(newObjectName);
-                this.scatterRenderer.currentFrameIndex = this.currentFrame;
+                // ...THIS OBJECT'S OWN FRAME. The scatter holds one point
+                // per frame of the object being edited, so a timeline
+                // position past its end would highlight a point it has not
+                // got. _parkedFrameIndex is the resolved answer.
+                this.scatterRenderer.currentFrameIndex =
+                    this._parkedFrameIndex(this.currentObjectName);
                 this.scatterRenderer.render();
                 // Update visibility to hide scatter container if new object has no scatter data
                 this.updateScatterContainerVisibility();
@@ -5609,7 +5641,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             const object = this.objectsData[this.currentObjectName];
-            if (!object || frameIndex < 0 || frameIndex >= object.frames.length) {
+            // ...AGAINST THE TIMELINE, which is as long as the longest drawn
+            // object. Bounded by the EDITED object's count, every position
+            // past its end blanked the canvas outright - so a one-frame
+            // reference structure beside a trajectory could not be the object
+            // you were editing while the trajectory played.
+            if (!object || frameIndex < 0 || frameIndex >= this._timelineLength()) {
                 this.currentFrame = -1;
                 this.viewerState.currentFrame = -1;
                 this.coords = [];
@@ -5701,7 +5738,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Directly update scatter renderer highlight if present
             if (this.scatterRenderer) {
-                this.scatterRenderer.currentFrameIndex = frameIndex;
+                // ...the object's own frame, not the timeline position
+                this.scatterRenderer.currentFrameIndex =
+                    this._parkedFrameIndex(this.currentObjectName);
                 this.scatterRenderer.render();
             }
         }
@@ -5975,7 +6014,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Handle null object
             const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-            const total = object ? object.frames.length : 0;
+            // THE TIMELINE'S LENGTH, not the edited object's - see
+            // _timelineLength. With several objects drawn the strip governs
+            // all of them, so it has to reach the longest one's last frame
+            // whichever object is being edited.
+            const total = object ? this._timelineLength() : 0;
             const current = Math.max(0, this.currentFrame) + 1;
 
             // Check config.display.controls before showing
@@ -6411,10 +6454,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         _parkedFrameIndex(name) {
             const object = this.objectsData?.[name];
             if (!object || !object.frames?.length) return -1;
-            const idx = (name === this.currentObjectName)
-                ? this.currentFrame
-                : (object.viewerState?.currentFrame ?? 0);
-            return Math.max(0, Math.min(idx | 0, object.frames.length - 1));
+            // 🔴 EVERY DRAWN OBJECT FOLLOWS THE ONE TIMELINE, through its own
+            // policy. This read each non-edited object's SAVED frame, which
+            // never advances - so playing a 100-frame trajectory beside a
+            // 20-frame one left the second frozen on frame 0 for the whole
+            // run, and the two objects were on screen together saying nothing
+            // about each other. `this.currentFrame` is the position; see
+            // _frameForObject for what each object makes of it.
+            const t = this.currentFrame >= 0 ? this.currentFrame : 0;
+            return this._frameForObject(name, t);
         }
 
 
@@ -6749,10 +6797,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Check for null
             if (!this.currentObjectName) return;
             const object = this.objectsData[this.currentObjectName];
-            if (!object || object.frames.length < 2) return;
+            // ...and there is something to play when ANY drawn object has
+            // more than one frame, not only the one being edited.
+            const T = this._timelineLength();
+            if (!object || T < 2) return;
 
             // If we're at the last frame and not recording, reset to first frame for looping
-            if (!this.isRecording && this.currentFrame >= object.frames.length - 1) {
+            if (!this.isRecording && this.currentFrame >= T - 1) {
                 this.currentFrame = 0;
                 this._loadFrameForPlayback(0);
             }
@@ -6772,11 +6823,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
 
                     const obj = this.objectsData[this.currentObjectName];
-                    if (obj && obj.frames.length > 1) {
+                    // ...ALONG THE TIMELINE. Advancing over the edited
+                    // object's own count stopped a shorter object's playback
+                    // dead while a longer one beside it still had frames to
+                    // show. Each object resolves the position for itself.
+                    const T = this._timelineLength();
+                    if (obj && T > 1) {
                         let nextFrame = this.currentFrame + 1;
 
                         // Normal playback - loop
-                        if (nextFrame >= obj.frames.length) {
+                        if (nextFrame >= T) {
                             nextFrame = 0;
                         }
 
@@ -6851,7 +6907,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             requestAnimationFrame(() => {
                 // Update scatter plot for current frame if present
                 if (this.scatterRenderer) {
-                    this.scatterRenderer.currentFrameIndex = currentFrame;
+                    this.scatterRenderer.currentFrameIndex =
+                        this._parkedFrameIndex(this.currentObjectName);
                     this.scatterRenderer.render();
                 }
 
@@ -6925,7 +6982,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Set recording state
             this.isRecording = true;
-            this.recordingEndFrame = object.frames.length - 1;
+            // ...THE TIMELINE, so a recording of two objects plays both.
+            this.recordingEndFrame = this._timelineLength() - 1;
 
             // Disable interaction during recording
             this.isDragging = false; // Stop any active drag
@@ -8722,6 +8780,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         _loadFrameData(frameIndex, skipRender = false) {
             if (!this.currentObjectName) return;
             const object = this.objectsData[this.currentObjectName];
+            // 🔴 A TIMELINE POSITION, NOT THIS OBJECT'S OWN INDEX. Every
+            // caller passes the position the strip is on, and the timeline is
+            // as long as the LONGEST drawn object - so a position past this
+            // object's end is ordinary rather than an error, and returning on
+            // it left the canvas holding the previous frame while the merge
+            // beside it had moved. Resolved through the one translation, which
+            // is the same one _parkedFrameIndex hands the merge.
+            frameIndex = this._frameForObject(this.currentObjectName, frameIndex);
             if (!object || frameIndex < 0 || frameIndex >= object.frames.length) {
                 return;
             }
@@ -13376,7 +13442,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (previousFrame !== currentFrame && this.currentObjectName) {
                 // Frame changed - ensure data is loaded (may have been loaded by timer)
                 const object = this.objectsData[this.currentObjectName];
-                if (object && object.frames[currentFrame]) {
+                // 🔴 DOES THE TIMELINE HAVE THIS POSITION - not "does the
+                // EDITED object have a frame at this index". `currentFrame` is
+                // a position now and the object being edited may be shorter
+                // than the timeline, so `frames[currentFrame]` is undefined at
+                // every position past its end: the timer advanced the counter,
+                // _loadFrameForPlayback rebuilt the array correctly, and this
+                // line then declined to set needsRender - so NOTHING WAS
+                // PAINTED and every object on screen froze, the long ones
+                // included. Reported as "the one with more frames also stops".
+                //
+                // Asked of the funnel, which answers -1 only when the object
+                // has no frames at all - which is what the old guard meant.
+                if (object && this._parkedFrameIndex(this.currentObjectName) >= 0) {
                     // Data should already be loaded by _loadFrameData in timer
                     // But ensure it's loaded if somehow it wasn't
                     // CRITICAL FIX: In overlay mode, DON'T call _loadFrameData - it would destroy merged data!
@@ -13389,7 +13467,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                 // Keep scatter highlight in sync during playback
                 if (this.scatterRenderer) {
-                    this.scatterRenderer.currentFrameIndex = currentFrame;
+                    this.scatterRenderer.currentFrameIndex =
+                        this._parkedFrameIndex(this.currentObjectName);
                     this.scatterRenderer.render();
                 }
             }

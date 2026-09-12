@@ -136,6 +136,14 @@ const OBJECT_STATE = [
     // where its file put it, on its own, with nothing said.
     { key: 'alignTransform', kind: 'plain', absent: 'none', json: 'align_transform',
         remap: remapWhole },
+    // WHAT THIS OBJECT DOES WHEN THE TIMELINE RUNS PAST ITS LAST FRAME -
+    // 'hold', 'loop' or 'stretch', see _frameForObject. The SECOND field here
+    // that is not keyed by position, so it is carried whole like the transform
+    // above it: a piece cut out of a looping trajectory is still that
+    // trajectory, and a session that came back holding where it had been
+    // looping would be a different animation with nothing said.
+    { key: 'framePolicy', kind: 'plain', absent: 'none', json: 'frame_policy',
+        remap: remapWhole },
 ];
 
 /** Carried across unchanged: this one is not keyed by position. */

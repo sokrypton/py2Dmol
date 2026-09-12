@@ -108,6 +108,109 @@
         objectStateFromJSON(object, saved) { objectStateFromJSON(object, saved); },
 
         /**
+         * HOW LONG THE TIMELINE IS, over everything on screen.
+         *
+         * 🔴 A FRAME INDEX IS NOT A SHARED CLOCK. Every object has its own
+         * frame count, and the play strip used to read the count of the object
+         * being EDITED - so switching which object you were working on
+         * silently rescaled the timeline, and a 100-frame trajectory beside a
+         * 20-frame one had no position past 19 to ask for. What is shared is a
+         * POSITION, and the longest object is what bounds it; each object
+         * turns that position into a frame of its own through
+         * _frameForObject.
+         *
+         * The object being edited counts even when nothing is drawn, because
+         * every eye can be switched off and the strip still governs it.
+         */
+        _timelineLength() {
+            let n = 0;
+            const count = (name) => {
+                const o = this.objectsData?.[name];
+                const k = (o && o.frames) ? o.frames.length : 0;
+                if (k > n) n = k;
+            };
+            for (const name of this.drawnObjects()) count(name);
+            if (this.currentObjectName) count(this.currentObjectName);
+            return n;
+        },
+
+        /**
+         * ONE TIMELINE POSITION -> ONE OBJECT'S OWN FRAME. The single
+         * translation, the way clipTo and orientTo are each one - the merge,
+         * the aligner, the single-object load and the array key all ask it, so
+         * they cannot disagree about which frame an object is showing.
+         *
+         * 🔴 THE THREE POLICIES ARE THREE DIFFERENT CLAIMS, and the default is
+         * the one that claims nothing:
+         *
+         *   hold    - the short object stops at its last frame. "There is no
+         *             more data." A static reference structure beside a
+         *             trajectory is one frame held, which is the commonest
+         *             multi-object case there is and exactly right.
+         *   loop    - t % n. Says the object is PERIODIC, which an MD run or a
+         *             folding path is not. Right for two independent
+         *             simulations played side by side and wrong everywhere
+         *             else.
+         *   stretch - the object's whole trajectory spread over the whole
+         *             timeline. Says the two objects are the SAME process
+         *             sampled at different rates - a 100-step morph against a
+         *             20-step run of the same fold - and invents a
+         *             correspondence between frames if they are not.
+         *
+         * So hold is the default: with equal counts all three are the identity,
+         * and hold is the only one that does not assert something about data it
+         * cannot see. The other two exist because both of their cases are real.
+         *
+         * 🔴 HOLD AND LOOP ARE IDEMPOTENT AND STRETCH IS NOT, which is why
+         * this is applied to a TIMELINE POSITION and never to a value that has
+         * already been through it. _loadFrameData is the one place that could
+         * be handed either, and every caller of it passes a position.
+         */
+        _frameForObject(name, t) {
+            const o = this.objectsData?.[name];
+            const n = (o && o.frames) ? o.frames.length : 0;
+            if (n <= 0) return -1;
+            if (n === 1) return 0;
+            const pos = Math.max(0, t | 0);
+            switch (o.framePolicy || 'hold') {
+                case 'loop':
+                    return pos % n;
+                case 'stretch': {
+                    const T = this._timelineLength();
+                    if (T <= 1) return 0;
+                    return Math.max(0, Math.min(n - 1,
+                        Math.round((pos * (n - 1)) / (T - 1))));
+                }
+                default:
+                    return Math.min(pos, n - 1);
+            }
+        },
+
+        /**
+         * WHAT THIS OBJECT DOES WHEN THE TIMELINE RUNS PAST ITS LAST FRAME.
+         * 'hold' (the default), 'loop' or 'stretch' - see _frameForObject.
+         *
+         * A verb rather than an assignment, because the answer changes what is
+         * in the coordinate array: the array key names each object's resolved
+         * frame, so the reload has to be asked for or the picture keeps the
+         * frame the old policy chose.
+         */
+        setFramePolicy(policy, object = null) {
+            const allowed = ['hold', 'loop', 'stretch'];
+            const p = String(policy || 'hold');
+            if (!allowed.includes(p)) {
+                throw new Error('setFramePolicy: policy must be one of '
+                    + allowed.join(', ') + ' - got "' + policy + '"');
+            }
+            const name = object || this.currentObjectName;
+            const o = this.objectsData?.[name];
+            if (!o) throw new Error('setFramePolicy: no object "' + name + '"');
+            o.framePolicy = p;
+            this.reloadDrawn();
+            this.updateUIControls();
+        },
+
+        /**
          * WHAT THE COORDINATE ARRAY IS SUPPOSED TO HOLD, as a string.
          *
          * Everything that builds the array - a frame load, a merge, an empty
@@ -133,11 +236,18 @@
             const ov = !!(this.overlayState && this.overlayState.enabled);
             const parts = [];
             for (const n of this.drawnObjects()) {
-                const o = this.objectsData[n];
-                const f = (n === this.currentObjectName)
-                    ? this.currentFrame
-                    : ((o && o.viewerState && o.viewerState.currentFrame) || 0);
-                parts.push(n + '#' + f);
+                // ...THROUGH THE ONE TRANSLATION, so this cannot disagree
+                // with what the merge actually loaded. It used to read each
+                // non-edited object's own saved frame, which is a different
+                // answer from _parkedFrameIndex's the moment the counts differ
+                // - and a key saying "no change" while the merge resolved a
+                // different frame is a picture that never rebuilds.
+                //
+                // Naming the RESOLVED frames rather than the position is also
+                // what makes the skip correct under hold: two positions past a
+                // short object's end resolve to the same frame, so there is
+                // genuinely nothing to rebuild.
+                parts.push(n + '#' + this._frameForObject(n, this.currentFrame));
             }
             const sc = this.shownSidechainSet ? this.shownSidechainSet() : null;
             return (ov ? 'overlay|' : 'frames|') + parts.join(',')
@@ -474,7 +584,16 @@
             ms.sourceFrames = merged.sourceFrames;
             ms.sourceAutoColors = merged.sourceAutoColors;
             ms.autoColor = merged.autoColor;
-            ms.stats = this._mergedStats(merged.coords);
+            // ...OVER EVERY FRAME, AND ONLY WHEN THE POINTS CHANGED. Measured
+            // from `merged.coords` - the current frame - the extent moved on
+            // every step, which breathed the camera and refused the station
+            // fast path (see _mergedStatsOfFrames). The walk is O(frames) so
+            // it is cached against what it was measured from, and a frame is
+            // deliberately not part of that key.
+            const statsKey = this._drawnStatsKey(names);
+            ms.stats = (ms.stats && ms.statsKey === statsKey)
+                ? ms.stats : this._mergedStatsOfFrames(names);
+            ms.statsKey = statsKey;
             // FRAME ON THE LOT WHEN SOMETHING NEW ARRIVES, and not otherwise.
             //
             // The camera has to move for an object it has never seen - a file
@@ -548,6 +667,72 @@
          * totalPositions, globalCenterSum - so every reader takes it in place
          * of one with no other change.
          */
+        /**
+         * 🔴 WHAT IS ON SCREEN IS MEASURED OVER EVERY FRAME, NOT THE ONE
+         * SHOWING - AND A FRAME STEP REBUILT THE WHOLE MESH BECAUSE OF IT.
+         *
+         * `_recomputeObjectStats` walks every frame of an object, so a single
+         * object's centre, extent and spread DO NOT DEPEND ON WHICH FRAME IS
+         * DRAWN. The merge measured the merged coordinate array instead - the
+         * current frame's - so with several objects drawn the extent moved a
+         * little on every step: 50.17 -> 50.65 -> 51.13 on a 20-frame NMR
+         * ensemble beside one static structure.
+         *
+         * Two things came of that, and the second is the expensive one:
+         *
+         *  - THE CAMERA BREATHED. The view scale divides by the extent, so a
+         *    trajectory grew and shrank as it played - the fault the "once,
+         *    not per frame" rule already refuses for `extentAspect`.
+         *  - THE STATION FAST PATH WAS REFUSED ON EVERY STEP. maxExtent is in
+         *    the mesh's TOPOLOGICAL signature, so a moving extent reads as
+         *    "this is different geometry": measured `builds=1 fast=0` and
+         *    8-14 ms a step against `builds=0 fast=1` and 5 ms for the same
+         *    trajectory drawn alone. The reason was printed by
+         *    stationDecline(): "the topological key moved at 10".
+         *
+         * So this is the same walk `_recomputeObjectStats` does, over the
+         * drawn objects rather than one - through `_resolvedFrame`, because an
+         * aligned object is drawn where the alignment put it and its stats
+         * have to say the same.
+         */
+        _mergedStatsOfFrames(names) {
+            const pts = [];
+            for (const name of (names || [])) {
+                const o = this.objectsData[name];
+                if (!o || !o.frames) continue;
+                for (let i = 0; i < o.frames.length; i++) {
+                    const fr = this._resolvedFrame(o, i);
+                    const co = fr && fr.coords;
+                    if (co) for (let k = 0; k < co.length; k++) pts.push(co[k]);
+                }
+            }
+            return this._mergedStats(pts);
+        },
+
+        /**
+         * WHAT THE DRAWN STATS WERE MEASURED FROM, so a frame step can reuse
+         * them and an edit cannot.
+         *
+         * 🔴 IT DELIBERATELY DOES NOT NAME THE FRAME. That is the whole point:
+         * the stats are over every frame, so the one showing must not be able
+         * to change them. What it does name is everything that changes the
+         * POINTS - which objects, how many frames and positions each has, its
+         * own extent (recomputed by every edit and every added frame), and
+         * where an alignment put it.
+         */
+        _drawnStatsKey(names) {
+            const parts = [];
+            for (const name of (names || [])) {
+                const o = this.objectsData[name] || {};
+                const t = o.alignTransform;
+                parts.push(name + ':' + (o.frames ? o.frames.length : 0)
+                    + ':' + (o.totalPositions || 0)
+                    + ':' + (o.maxExtent || 0)
+                    + ':' + (t && t.t ? t.t.join(',') : ''));
+            }
+            return parts.join('|');
+        },
+
         drawnStats() {
             const ms = this.multiState;
             if (ms && ms.enabled && ms.stats) return ms.stats;
@@ -1536,6 +1721,11 @@
             ms.sourceAutoColors = null;
             ms.autoColor = null;
             ms.stats = null;
+            // ...and what they were measured from, beside them: the guard
+            // reads the stats first so a null one already forces the walk, but
+            // a key outliving its stats is the kind of pair this file has
+            // scars from.
+            ms.statsKey = null;
             this._sourceGroupsCache = null;
             this._mergedSetCache = null;
             this._mergedLigCache = null;

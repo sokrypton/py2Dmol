@@ -386,6 +386,157 @@ public downloads is exercised on every run.
   resolves "all of them" itself, at the moment of the call, so what travels is
   always an explicit list; `multi=True` is resolved in `_display_viewer`,
   because the objects it names do not exist until something has been added.
+- 🔴 **A FRAME INDEX IS NOT A SHARED CLOCK, AND TWO OBJECTS OF DIFFERENT
+  LENGTH IS WHERE THAT SHOWED.** The play strip read `object.frames.length` of
+  the object being EDITED and the timer advanced `this.currentFrame` alone,
+  while every other drawn object was taken from its own saved
+  `viewerState.currentFrame` - which never advances. So a 100-frame trajectory
+  beside a 20-frame one played the first and left the second frozen on frame 0
+  for the whole run, and switching which object you were editing silently
+  rescaled the timeline under you: with the short one picked there was no
+  position past 19 to ask for, and `setFrame` BLANKED THE CANVAS at every one
+  of them.
+  **WHAT IS SHARED IS A POSITION.** `_timelineLength()` is the longest drawn
+  object (plus the edited one, because every eye can be off and the strip still
+  governs it) and `_frameForObject(name, t)` is the ONE translation from a
+  position to an object's own frame - the shape `clipTo` and `orientTo` already
+  have, and for the same reason: the merge, the aligner, the single-object load
+  and `_arrayKey` all ask it, so they cannot disagree about which frame an
+  object is showing. `_parkedFrameIndex` is that funnel and now delegates.
+  **THREE POLICIES, THREE CLAIMS, and the default is the one that claims
+  nothing.** `hold` stops the short object on its last frame ("there is no more
+  data"); `loop` says it is PERIODIC, which an MD run or a folding path is not;
+  `stretch` spreads its whole trajectory over the whole timeline, which says
+  the two are the SAME process sampled at different rates and invents a
+  correspondence between frames if they are not. With equal counts all three
+  are the identity. **hold is the default** because a one-frame reference
+  structure beside a trajectory is the commonest multi-object case there is and
+  hold is exactly right for it, and because the other two assert something
+  about data that is not there. Both of their cases are real, which is why they
+  exist: `view.set_frame_policy('loop', 'run')`, `renderer.setFramePolicy`.
+  🔴 **AND `_arrayKey` HAD TO LEARN IT OR NOTHING REBUILDS.** The key named
+  each non-edited object's SAVED frame, which is a different answer from
+  `_parkedFrameIndex`'s the moment two objects differ in length - and a key
+  saying "already loaded" while the merge resolved a different frame is a
+  picture that never rebuilds. It names the RESOLVED frames now, which is also
+  what makes the skip correct under hold: two positions past a short object's
+  end genuinely are the same array. The policy is therefore in the key, so
+  changing it reloads rather than leaving the frame the old policy chose.
+  🔴 **AND PICKING AN OBJECT TO WORK ON DOES NOT MOVE ANYTHING**, which is the
+  camera's rule (`_switchToObject`: "the camera does not move when several
+  objects are on screen") applied to the timeline. The frame index was the one
+  thing still taken from the object switched TO, and the picker then called
+  `setFrame(0)` on top - so choosing the reference structure took the
+  trajectory beside it back to its first frame. Both are guarded on the merge;
+  alone, an object still opens on its first frame.
+  🔴 **AND THE STRIP IS RE-ASKED ON A SWITCH, which nothing did.** `setFrame`
+  does not touch `updateUIControls` on the ordinary path and no switch path did
+  either, so the slider and the counter went on describing the object you had
+  just left. Harmless while each object had a timeline of its own; now the
+  timeline is the longest DRAWN object's and a switch can change it.
+  **AND AN INDEX CHECK ALONE PASSES AGAINST A NO-OP.** Every policy answer can
+  be right while the array holds a frame nobody asked for - that IS the bug,
+  since the key decides. `tests/frame_policy.py` reads every position TWICE:
+  the index the funnel resolved, and the y of that object's own slice of the
+  merged array, which is 10 A per frame by construction. Six mutations caught
+  there (the funnel, the counter, the playback bound, `setFrame`'s bound, the
+  picker's reset, the policy ignored) and the key's two in `tests/interaction.js`,
+  which is where it belongs: the merged path rebuilds unconditionally, so the
+  browser cannot see a stale key at all.
+  🔴 **AND THE COUNTER IS NOT THE PICTURE. THE RENDER LOOP ASKED THE EDITED
+  OBJECT FOR A FRAME AT THE SHARED POSITION, AND EVERYTHING FROZE.** Reported
+  as *"the one with less frames stops as expected, but also the one with more
+  frames stops"* - and every index was already right. `animate()`'s frame gate
+  was `if (object && object.frames[currentFrame])`, which is undefined at every
+  position past the EDITED object's own end: the timer advanced the counter,
+  `_loadFrameForPlayback` rebuilt the merged array correctly, and this line then
+  declined to set `needsRender`. So nothing was painted and every object on
+  screen held still, the long ones included. Asked of the funnel now, which
+  answers -1 only when the object has no frames at all - which is what the old
+  guard meant. Mutated back: **4 pictures and 4 renders** over a ten-position
+  timeline, the short object's own length, which is the report exactly.
+  **`parts/orient.js` HAD THE SAME SHAPE** - `object.frames[renderer.currentFrame]`,
+  so Orient returned having done nothing whenever the object it was framing was
+  shorter than the timeline. It was also the wrong object's index whenever
+  `opts.name` named another one, which it always could. `grep` for
+  `frames[currentFrame]` and `frames[this.currentFrame]`: an index into one
+  object's frames is a RESOLVED frame, never a position, and those two were the
+  only ones in the tree.
+  🔴 **AND TWO WEAKER VERSIONS OF THAT CHECK BOTH PASSED AGAINST THE BUG.**
+  Counting `r.currentFrame` passes - the counter is what advances. Counting the
+  drawn COORDINATES passes too, because the array really is rebuilt; it is the
+  canvas that holds still. Only a digest of the canvas itself separates them.
+  **AND A BLANK CANVAS IS ONE PICTURE AT EVERY POSITION**, which is
+  indistinguishable from a frozen one: built straight through `addObject` the
+  page never sizes its viewer and the probe ran at **1x1**, so it loads one real
+  file first for the layout alone and asserts the ink at the end. A 32x32 digest
+  was also too coarse to see a 10 A move of a small structure - 5 distinct
+  pictures of 10 on correct code - so it is 160x160.
+  🔴 **AND A FRAME STEP WITH SEVERAL OBJECTS DRAWN REBUILT THE WHOLE MESH,
+  BECAUSE THE DRAWN EXTENT WAS MEASURED FROM THE FRAME SHOWING.** Reported as
+  *"we are rebuilding for multi-object frame advancements"*, and it is one
+  inconsistency: `_recomputeObjectStats` walks EVERY FRAME of an object, so one
+  object's centre, extent and spread do not depend on which frame is drawn -
+  and `_mergedStats(merged.coords)` measured the current frame's merged array,
+  so the merged extent drifted on every step (119.85 -> 120.05 -> 120.71 on a
+  20-frame ensemble beside a nucleosome). Two things came of that, and the
+  second is the expensive one: **the camera breathed** as a trajectory played,
+  which is the fault the "once, not per frame" rule already refuses for
+  `extentAspect`; and **maxExtent is in the mesh's TOPOLOGICAL signature**, so
+  the station fast path read the drift as different geometry and rebuilt
+  everything - 20,406 ribbon faces of a structure that had not moved.
+  **42-59 ms a step against 21-25**, and `stationDecline()` said so in one
+  line: *"the topological key moved at 10"*.
+  `_mergedStatsOfFrames` is the same walk over the drawn objects, through
+  `_resolvedFrame` so an aligned object's stats say where the alignment put it.
+  **CACHED AGAINST WHAT IT WAS MEASURED FROM, AND THE FRAME IS DELIBERATELY
+  NOT IN THAT KEY** - `_drawnStatsKey` names the objects, their frame and
+  position counts, each object's own extent and its transform, because those
+  are what move the POINTS. The walk is O(frames) and `_applyShownObjects`
+  runs on every step, so without the cache the answer is right and paid for
+  again each time.
+  **WHAT IS LEFT IS THE PAINT, NOT A REBUILD, AND IT WAS MEASURED RATHER THAN
+  ASSUMED.** Of a ~22 ms merged step on that scene: **the 2D geometry capture
+  is 10-12 ms**, the station writes and the GPU draw about 10, `_mergeObjects`
+  0.5, `setCoords` 1.4, and the SEGMENT list - the thing that looks guilty,
+  since `_applyShownObjects` drops its cache on every step - is **0.3 ms** for
+  1,123 segments. The secondary-structure assignment inside the capture is
+  **2.1 ms** and does run over the whole scene every step.
+  🔴 **SO THE REMAINING ITEM IS THE PER-OBJECT PRIM CAPTURE, which this file
+  already names and which nothing here reaches.** `captureFrom` runs
+  `cartoon/geom.js` over EVERYTHING drawn to harvest prims and stations,
+  whether or not an object moved - the same "two halves one level upstream"
+  entry recorded against the side-chain click. Prims are in PROJECTED space,
+  so a static object's are identical across a step and cacheable by (object,
+  frame, camera); what makes it a project rather than a fix is the station
+  table's index mapping across objects and a run loop whose state is carried
+  residue to residue. **Not attempted here.** The SS share is 2 ms of 22, which
+  is under this harness's own ~5% noise floor for a change with pixel risk, so
+  caching that alone is not worth the argument either.
+  🔴 **AND `totalPositions` NOW MEANS WHAT IT MEANS FOR ONE OBJECT** - the
+  count over every frame, not the number on screen. `tests/interaction.js` had
+  asserted 5 (the merged array) and asks for 6 (both objects, all frames); its
+  only reader is `_computeViewCentre`, which divides `globalCenterSum` by it,
+  and both come from the one walk.
+  `tests/multi_step.py` is the gate, in the gpu lane: the trajectory alone as
+  the control, the same trajectory merged, the extent held still across the
+  steps, and the fast path's picture against a forced `invalidate()` rebuild -
+  23 of 725,904 pixels, the same tie-break noise the mesh split records.
+  **Mutated back it reports all three**: 5 of 5 steps rebuilt, 0 fast, and the
+  extent moving 119.09 to 121.32. Four more mutations of the cache are caught
+  in the node lane - measuring the current frame, putting the frame in the key,
+  dropping the position and extent terms (checked with a CUT, since an added
+  frame is caught by the frame count alone), and forgetting the alignment.
+  🔴 **AND `tests/config.js` GREW THE OTHER HALF OF THIS, because `frame_policy`
+  is the FIFTH thing to travel through a field-by-field rebuild.** It already
+  compared the per-FRAME lists; it now compares the per-OBJECT metadata keys
+  `_send_incremental_update` packs against the ones `applyMetadataToObject`
+  reads, and the static payload's keys against what the static loader reads
+  back. `rotation_matrix` and `center` are read by the HANDLER rather than the
+  applier - deliberately, for newly created objects only - so the scan asks
+  whether the key is read at all. Four mutations, all caught, and the check is
+  generic: it is what would have caught `align`, `maps` and the per-atom
+  columns.
 - **`view.orient()` is an ACTION, not a state.** `clip` and `shown_objects` are
   diffed against what was last sent and skipped when unchanged; the same
   `orient()` asked for twice means fly there twice, so it is queued and cleared

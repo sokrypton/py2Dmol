@@ -1510,6 +1510,16 @@ if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (windo
                     renderer._opacityVersion = (renderer._opacityVersion || 0) + 1;
                 }
 
+                // ...and what this object does when the timeline runs past
+                // its last frame (Python's set_frame_policy). The static path
+                // is what a notebook cell renders from, so a policy set before
+                // show() only survives if it is read back here - the same
+                // field-by-field rebuild that dropped `align` and the per-atom
+                // columns before it.
+                if (obj.frame_policy && renderer.objectsData[obj.name]) {
+                    renderer.objectsData[obj.name].framePolicy = obj.frame_policy;
+                }
+
                 // Store rotation matrix and center for view transform if present
                 if (obj.rotation_matrix && obj.center) {
                     if (renderer.objectsData[obj.name]) {
@@ -1727,6 +1737,14 @@ const applyMetadataToObject = (obj, meta) => {
             const col = want[String(i)] || null;
             if (f.color !== col) { f.color = col; needsRerender = true; }
         });
+    }
+
+    // ...and the frame policy, which decides which FRAME of this object the
+    // timeline position resolves to - so changing it changes the coordinate
+    // array and needs the redraw.
+    if ('frame_policy' in meta) {
+        obj.framePolicy = meta.frame_policy || null;
+        needsRerender = true;
     }
 
     // Scatter config doesn't trigger rerender (handled separately)

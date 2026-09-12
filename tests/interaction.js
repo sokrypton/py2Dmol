@@ -119,7 +119,7 @@ global.OBJECT_STATE = new Function(
 // orient's rotation solver, scored as shipped
 eval(L.utils.match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_colorForMode','setSidechainColor','_calculatePlddtColors','_segmentElementColor','_calculateSegmentColors','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyLookDefaults','autoClip','_autoClipDepth','_autoClipHalf','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_transformedFrame','_parkedFrameIndex','setAlignTransform','clearAlignments','anyAlignment','_reapplyAfterAlign','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','_applyRecordVisibility','_composeAndApplyMask','_visibleForObject','_syncModelToMask','withSidechainAtoms','_baseCount','ownerOf','mergedObjectSet','writeGroups','localRangeOf','addressesObject','objectPositions','_writeTargets','_positionCount','mergedLigandGroups','ligandGroupsOf','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_colorForMode','setSidechainColor','_calculatePlddtColors','_segmentElementColor','_calculateSegmentColors','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyLookDefaults','autoClip','_autoClipDepth','_autoClipHalf','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_timelineLength','_frameForObject','_drawnStatsKey','_mergedStatsOfFrames','_resolvePlddtData','_resolvedFrame','_transformedFrame','_parkedFrameIndex','setAlignTransform','clearAlignments','anyAlignment','_reapplyAfterAlign','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','_applyRecordVisibility','_composeAndApplyMask','_visibleForObject','_syncModelToMask','withSidechainAtoms','_baseCount','ownerOf','mergedObjectSet','writeGroups','localRangeOf','addressesObject','objectPositions','_writeTargets','_positionCount','mergedLigandGroups','ligandGroupsOf','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_selectionAsOwners','_restoreSelectionFromOwners','objectsInSelection','_perObjectEdit','_editOneObject','addObject',];
 const body={};
 for(const nm of names) body[nm]=L.method(nm);
 // ...and the STATICS the lifted methods reach through this.constructor. Only
@@ -7434,8 +7434,12 @@ function mergeViewer() {
             }]
         },
         B: {
-            // parked on its second frame, which is what a merge must take
-            viewerState: { currentFrame: 1 },
+            // THE TIMELINE IS ON POSITION 1 (below), which is B's second frame
+            // and A's only one - A has one frame and holds it. This used to be
+            // spelled as a saved `viewerState.currentFrame` of B's own, and
+            // that is no longer read: every drawn object resolves the ONE
+            // position through its own policy. See _frameForObject.
+            viewerState: {},
             bonds: [[0, 1]],
             frames: [
                 { coords: [[9, 9, 9]], chains: ['Z'] },
@@ -7452,7 +7456,7 @@ function mergeViewer() {
         }
     };
     v.currentObjectName = 'A';
-    v.currentFrame = 0;
+    v.currentFrame = 1;
     return v;
 }
 
@@ -7489,11 +7493,57 @@ const QUARTER = { t: [10, 0, 0], u: [0, -1, 0, 1, 0, 0, 0, 0, 1] };
 
 t('the frame an object is parked on is one answer, for the merge and the aligner', () => {
     const v = alignedViewer();
-    eq(v._parkedFrameIndex('A'), 0, 'the current object is on its live frame');
-    eq(v._parkedFrameIndex('B'), 1, 'every other object is on its saved one');
-    v.objectsData.B.viewerState.currentFrame = 99;
-    eq(v._parkedFrameIndex('B'), 1, 'a saved frame past the end is clamped, not trusted');
+    // 🔴 EVERY DRAWN OBJECT FOLLOWS THE ONE TIMELINE. This used to read each
+    // non-edited object's SAVED frame, which never advances - so playing a
+    // long trajectory beside a short one left the short one frozen on frame 0
+    // for the whole run. The position is the viewer's; what each object makes
+    // of it is its policy's, and A here has one frame and holds it.
+    eq(v.currentFrame, 1, 'the timeline is on position 1');
+    eq(v._parkedFrameIndex('A'), 0, 'a one-frame object holds its only frame');
+    eq(v._parkedFrameIndex('B'), 1, '...and a longer one is at that position');
     eq(v._parkedFrameIndex('nope'), -1, 'an object that is not there has no frame');
+});
+
+// A SHORT OBJECT AND A LONG ONE SHARE THE TIMELINE, and the policy is the
+// whole of what the short one does past its own end. Asked of the funnel the
+// merge and the aligner both use, so the drawn frame and the fitted frame
+// cannot come apart.
+t('a timeline position past an object\'s end is its policy\'s answer, not an error', () => {
+    const v = alignedViewer();
+    const frames = (n) => Array.from({length: n}, () => ({coords: [{x: 0, y: 0, z: 0}]}));
+    v.objectsData.A.frames = frames(10);
+    v.objectsData.B.frames = frames(4);
+    const at = (t) => { v.currentFrame = t; return [v._parkedFrameIndex('A'), v._parkedFrameIndex('B')]; };
+
+    eq(v._timelineLength(), 10, 'the timeline is as long as the longest drawn object');
+
+    // HOLD, the default: the short one stops on its last frame and says
+    // nothing more. Nothing is invented.
+    eq(at(3).join(), '3,3', 'inside both, a position is that frame of each');
+    eq(at(7).join(), '7,3', 'past the short one it holds its last frame');
+    eq(at(9).join(), '9,3', 'and goes no further');
+
+    // LOOP: says the short one is periodic.
+    v.objectsData.B.framePolicy = 'loop';
+    eq(at(3).join(), '3,3', 'inside its own length loop is the identity');
+    eq(at(4).join(), '4,0', 'and past it, round again');
+    eq(at(9).join(), '9,1', '');
+
+    // STRETCH: says the two are the same process sampled differently, so the
+    // ends must meet - first frame to first, last to last.
+    v.objectsData.B.framePolicy = 'stretch';
+    eq(at(0).join(), '0,0', 'stretch starts both at their first frame');
+    eq(at(9).join(), '9,3', '...and ends both at their last');
+    eq(at(3)[1], 1, 'and spreads the short one evenly in between');
+
+    // A ONE-FRAME OBJECT IS ONE FRAME UNDER EVERY POLICY - a static reference
+    // structure beside a trajectory, which is the commonest case there is.
+    for (const p of ['hold', 'loop', 'stretch']) {
+        v.objectsData.B.framePolicy = p;
+        v.objectsData.B.frames = frames(1);
+        eq(at(7).join(), '7,0', 'one frame is held by ' + p);
+        v.objectsData.B.frames = frames(4);
+    }
 });
 
 t('an aligned object is drawn moved, and its file is not touched', () => {
@@ -7754,9 +7804,14 @@ function shownViewer() {
         this.coords = new Array(d.coords.length).fill(0);
     };
     v._loadFrameData = function (f) {
-        this.loaded.push({ single: f });
+        // ...RESOLVING THE POSITION IT IS HANDED, exactly as the shipped one
+        // does: a caller passes a TIMELINE position and this object may be
+        // shorter than the timeline. Through the prototype's own translation,
+        // never a second copy of the rule.
+        const at = this._frameForObject(this.currentObjectName, f);
+        this.loaded.push({ single: at });
         const o = this.objectsData[this.currentObjectName];
-        const fr = o && o.frames && o.frames[Math.max(0, f | 0)];
+        const fr = o && o.frames && o.frames[Math.max(0, at | 0)];
         this.coords = new Array((fr && fr.coords.length) || 0).fill(0);
     };
     v._invalidateSegmentCache = function () { this.segCleared = true; };
@@ -7865,9 +7920,81 @@ t('showing two objects merges them and records where each starts', () => {
     if (!v.viewerState.center) throw new Error('the view was not re-centred');
     if (!(v.viewerState.extent > 0)) throw new Error('the view extent still fits one object');
     const st = v.drawnStats();
-    if (!st || !(st.maxExtent > 0) || st.totalPositions !== 5) {
-        throw new Error('drawnStats does not describe the merge');
+    // 🔴 OVER EVERY FRAME, NOT THE ONE SHOWING - which is what
+    // _recomputeObjectStats has always meant for ONE object, so the merge now
+    // means the same. A has 3 positions in its single frame and B has 1 and 2
+    // in its two, so the walk sees 6. Measured from the merged array it was 5,
+    // the current frame's, and that number MOVED on every frame step: the
+    // camera breathed, and the extent is in the mesh's topological signature,
+    // so the station fast path was refused and the whole mesh rebuilt every
+    // step (measured 42-59 ms against 21-25 on a nucleosome beside a 20-frame
+    // ensemble, rebuilding 20,406 ribbon faces that had not moved).
+    if (!st || !(st.maxExtent > 0) || st.totalPositions !== 6) {
+        throw new Error('drawnStats does not describe the merge over all its'
+            + ' frames: ' + JSON.stringify(st && st.totalPositions));
     }
+    // ...AND A FRAME STEP DOES NOT MOVE IT. The whole point, and it needs no
+    // browser: the same objects at a different position must measure the same.
+    const was = JSON.stringify([st.center, st.maxExtent, st.stdDev]);
+    // ...NOR PAY FOR IT AGAIN. The walk is over every frame of every drawn
+    // object, and _applyShownObjects runs on every step - so the answer is
+    // cached against what it was measured from. Recomputing gives the same
+    // numbers, so only a call count can see this.
+    let walks = 0;
+    const walk = v._mergedStatsOfFrames;
+    v._mergedStatsOfFrames = function (...a) { walks++; return walk.apply(this, a); };
+    // ...TO A DIFFERENT FRAME THAN THE FIXTURE IS ON, which is 1. The first
+    // version of this stepped to 1 and measured nothing at all: the key was
+    // unchanged because the frame was unchanged, so both mutations of the
+    // cache walked straight through it.
+    v.currentFrame = 0;
+    v._applyShownObjects(true);
+    const now = v.drawnStats();
+    if (JSON.stringify([now.center, now.maxExtent, now.stdDev]) !== was) {
+        throw new Error('stepping a frame moved the drawn stats: ' + was
+            + ' -> ' + JSON.stringify([now.center, now.maxExtent, now.stdDev]));
+    }
+    if (walks !== 0) {
+        throw new Error('a frame step measured every frame of every drawn'
+            + ' object again for the same answer');
+    }
+    // ...BUT AN EDIT DOES. The cache key names what the points are - the frame
+    // counts, the positions, each object's own extent - and an edit moves all
+    // three. Keyed on the names alone, a Cut would leave the camera framing a
+    // structure that is no longer there.
+    // ...AND IT IS A CUT, NOT AN ADDED FRAME: the same number of frames with
+    // different points in them, which is what an edit leaves behind. Adding a
+    // frame is caught by the frame COUNT in the key, so it says nothing about
+    // the other two terms - the first version of this leg pushed a frame and
+    // both of those mutations walked through it.
+    v.objectsData.B.frames[1] = {coords: [[90, 0, 0], [91, 0, 0]], chains: ['B', 'B']};
+    v.objectsData.B.totalPositions = 3;
+    v.objectsData.B.maxExtent = 45;
+    v._applyShownObjects(true);
+    if (walks !== 1) {
+        throw new Error('an edit did not re-measure the drawn stats - the cache'
+            + ' key does not name what it was measured from');
+    }
+    if (JSON.stringify(v.drawnStats().maxExtent) === JSON.stringify(st.maxExtent)) {
+        throw new Error('a frame added 90 A away left the drawn extent where it'
+            + ' was');
+    }
+    // ...AND SO DOES AN ALIGNMENT, which nothing else in this key can stand in
+    // for: the transform is applied on the way OUT (see _transformedFrame), so
+    // an object's own frames, positions and maxExtent are all untouched by it
+    // while every point it contributes to the merge has moved.
+    const movedTo = v.drawnStats().center.slice();
+    v.objectsData.B.alignTransform = {t: [500, 0, 0], u: [1, 0, 0, 0, 1, 0, 0, 0, 1]};
+    v._applyShownObjects(true);
+    if (walks !== 2) {
+        throw new Error('an alignment did not re-measure the drawn stats - the'
+            + ' key does not name where the alignment put each object');
+    }
+    if (v.drawnStats().center[0] === movedTo[0]) {
+        throw new Error('moving an object 500 A left the drawn centre where it'
+            + ' was');
+    }
+    v._mergedStatsOfFrames = walk;
 });
 
 t('an object that has something hidden keeps it hidden in the merge', () => {
@@ -8902,13 +9029,22 @@ t('what the coordinate array is, said once', () => {
         }
         return src.slice(at, k + 1);
     };
+    // ...AND THE TRANSLATION THE KEY ASKS, lifted rather than restated: a
+    // fixture with its own copy of the policy rule is exactly the second
+    // convention the one funnel exists to remove.
     const obj = new Function('return {' + lift('_arrayKey') + ',\n'
-        + lift('_coordsKey') + '};')();
+        + lift('_coordsKey') + ',\n'
+        + L.method('_timelineLength') + ',\n'
+        + L.method('_frameForObject') + '};')();
     const mk = (n, dx) => Array.from({length: n},
         (_, i) => ({x: i + (dx || 0), y: 0, z: 0}));
     const r = Object.assign(obj, {
         coords: mk(20), currentObjectName: 'A', currentFrame: 0,
-        objectsData: {A: {}, B: {viewerState: {currentFrame: 2}}},
+        objectsData: {
+            A: {frames: [{}, {}, {}, {}]},
+            // SHORTER THAN THE TIMELINE, which is the case the policy is for
+            B: {frames: [{}, {}, {}]},
+        },
         drawnObjects: () => ['A', 'B'],
         shownSidechainSet: () => null,
         overlayState: null,
@@ -8928,14 +9064,21 @@ t('what the coordinate array is, said once', () => {
         throw new Error('moving the coordinates inside a frame reads as no'
             + ' change, so an alignment leaves the old geometry on screen');
     }
-    // a different frame of the same object, and a second object's frame too
+    // a different position on the timeline, which is a different frame of
+    // every object long enough to have one
     r.coords = mk(20); r.currentFrame = 1;
     if (r._coordsKey() === before) throw new Error('the frame is not in the key');
-    r.currentFrame = 0;
-    r.objectsData.B.viewerState.currentFrame = 3;
-    if (r._coordsKey() === before) {
-        throw new Error("a second drawn object's frame is not in the key");
+    // ...AND SO IS AN OBJECT'S POLICY, because it decides which frame that
+    // position resolves to. Position 3 holds B's last frame; looping, the same
+    // position is a different frame of B and the array is a different array.
+    r.currentFrame = 3;
+    const held = r._coordsKey();
+    r.objectsData.B.framePolicy = 'loop';
+    if (r._coordsKey() === held) {
+        throw new Error("a drawn object's frame policy is not in the key, so"
+            + ' changing it leaves the frame the old policy chose on screen');
     }
+    r.objectsData.B.framePolicy = null;
     // ...and every cache built on the coordinates asks for it rather than
     // writing its own list
     const gpu = fs.readFileSync('src/cartoon/paintgl.js', 'utf8');
@@ -9031,7 +9174,11 @@ t('the array says what it holds rather than being deduced', () => {
     if (!key) throw new Error('_arrayKey is gone');
     for (const [what, probe] of [
         ['which objects are drawn', /this\.drawnObjects\(\)/],
-        ['which frame each is on', /viewerState && o\.viewerState\.currentFrame/],
+        // ...THROUGH THE ONE TRANSLATION. It used to read each non-edited
+        // object's own saved frame, which is a different answer from the one
+        // the merge loads the moment two objects differ in length - and a key
+        // that disagrees with the merge is a picture that never rebuilds.
+        ['which frame each is on', /_frameForObject\(n, this\.currentFrame\)/],
         ['whether the overlay merge is up', /overlayState && this\.overlayState\.enabled/],
         ['how many side chains are materialised', /shownSidechainSet/],
     ]) {

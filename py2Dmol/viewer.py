@@ -1572,6 +1572,12 @@ class view:
             }
             if frame_colors:
                 current_metadata["frame_colors"] = frame_colors
+            # ...and what this object does when the timeline runs past its
+            # last frame (set_frame_policy). It decides which FRAME of this
+            # object a timeline position resolves to, so it has to travel with
+            # the rest or the call did nothing in live mode.
+            if obj.get("frame_policy") is not None:
+                current_metadata["frame_policy"] = obj["frame_policy"]
             if obj.get("scatter_config") is not None:
                 current_metadata["scatter_config"] = obj["scatter_config"]
             if obj.get("rotation_matrix") is not None:
@@ -1923,6 +1929,13 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     obj_to_serialize["opacity"] = {
                         str(k): v for k, v in py_obj["opacity"].items()
                     }
+
+                # ...and the frame policy, which is not keyed by position but
+                # still belongs to the object - see set_frame_policy. This
+                # payload is built field by field, so a key it does not name is
+                # a key it throws away: the same fault that dropped `align`.
+                if py_obj.get("frame_policy"):
+                    obj_to_serialize["frame_policy"] = py_obj["frame_policy"]
 
                 # Add scatter_config if it exists
                 if "scatter_config" in py_obj and py_obj["scatter_config"] is not None:
@@ -3215,6 +3228,66 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         req = dict(self._selector(name=name, chain=chain, position=position) or {})
         req["animate"] = bool(animate)
         self._orient_request = req
+        if self._is_live:
+            self._send_incremental_update()
+
+    def set_frame_policy(self, policy, name=None):
+        """
+        What this object does when the timeline runs past its last frame.
+
+        Several objects on screen share ONE timeline, as long as the longest
+        of them - a frame index is a position in that timeline, not a clock
+        each object keeps for itself. This says what a SHORTER object makes of
+        a position it does not have a frame for.
+
+        Args:
+            policy (str): one of
+
+                "hold" (the default) - stop on the last frame. "There is no
+                    more data." A static reference structure beside a
+                    trajectory is one frame held, which is what you want.
+                "loop" - start again from frame 0. Says the object is
+                    PERIODIC, which an MD run or a folding path is not; right
+                    for two independent simulations played side by side.
+                "stretch" - spread this object's whole trajectory over the
+                    whole timeline, so a 20-frame run plays in step with a
+                    100-frame one. Says the two are the SAME process sampled
+                    at different rates, and invents a correspondence between
+                    frames if they are not.
+
+            name (str, optional): Object to apply to. Defaults to the last one
+                added.
+
+        Examples:
+            view.add(ref)                          # 1 frame
+            view.add(traj, name="run")             # 100 frames
+            view.set_frame_policy("loop", "run")
+
+        Note:
+            With equal frame counts all three policies are the identity, so
+            this only ever matters for objects of differing length. "hold" is
+            the default because it is the only one that does not assert
+            something about data that is not there.
+        """
+        allowed = ("hold", "loop", "stretch")
+        p = str(policy).lower() if policy is not None else "hold"
+        if p not in allowed:
+            raise ValueError(
+                f'Invalid frame policy "{policy}" - expected one of '
+                + ", ".join(allowed) + ".")
+
+        if not self.objects:
+            print("Error: No objects loaded. Cannot set frame policy.")
+            return
+        target_obj = self.objects[-1] if name is None else next(
+            (o for o in self.objects if o.get("name") == name), None)
+        if target_obj is None:
+            print(f'Error: Object "{name}" not found.')
+            return
+
+        target_obj["frame_policy"] = p
+        # Same live-update path set_sse uses, so a change lands immediately in
+        # an already-displayed viewer and is picked up by show() otherwise.
         if self._is_live:
             self._send_incremental_update()
 
@@ -4650,6 +4723,12 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 obj_to_serialize["opacity"] = {
                     str(k): v for k, v in obj["opacity"].items()
                 }
+            # ...and the frame policy, which objstate.js declares with
+            # `json: 'frame_policy'` - so by the same argument as the ghosting
+            # above, a session written here carries what one written by the
+            # page carries.
+            if obj.get("frame_policy"):
+                obj_to_serialize["frame_policy"] = obj["frame_policy"]
             # Add scatter_config and scatter_metadata if present
             if "scatter_config" in obj and obj["scatter_config"] is not None:
                 obj_to_serialize["scatter_config"] = obj["scatter_config"]
@@ -4784,6 +4863,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     self.objects[-1]["opacity"] = {
                         int(k): float(v) for k, v in obj_data["opacity"].items()
                     }
+                if obj_data.get("frame_policy"):
+                    self.objects[-1]["frame_policy"] = obj_data["frame_policy"]
                 # Restore scatter config (prefer scatter_config, but accept legacy scatter_metadata)
                 scatter_cfg = obj_data.get("scatter_config")
                 if not scatter_cfg and obj_data.get("scatter_metadata"):

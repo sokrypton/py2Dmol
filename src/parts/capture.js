@@ -1132,8 +1132,12 @@
             // the sink renders, once, at the size it is recording.
             const object = this.currentObjectName
                 ? this.objectsData[this.currentObjectName] : null;
+            // ...OVER THE TIMELINE, so a turn of two objects plays both. The
+            // edited object's own count stopped a shorter object's share of
+            // the video dead on its last frame while a longer one beside it
+            // still had frames to show.
             const nFrames = (o.playFrames && object && object.frames)
-                ? object.frames.length : 0;
+                ? this._timelineLength() : 0;
             let i = 0;
             const tick = () => {
                 if (nFrames > 1) {

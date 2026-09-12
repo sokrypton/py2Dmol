@@ -285,6 +285,103 @@ if (sb.normalizeConfig({ gpu: false }).rendering.gpu !== false) {
     }
 }
 
+// --- AND THE PER-OBJECT METADATA IS THE SAME FAULT ONE LEVEL UP ------------
+//
+// A frame is not the only thing built field by field. `_send_incremental_update`
+// assembles `current_metadata` key by key and `applyMetadataToObject` takes it
+// apart with `'x' in meta` - and there are FOUR such rebuilds in the tree
+// (viewer.py's light_frame, parts/ui.js's static loader, app/session.js's two
+// ends), every one of which has dropped a field it did not name: `align`,
+// `maps`, `pae_n`, the per-atom columns. Nothing throws; the call simply does
+// nothing on one path and works on the other.
+//
+// So the two ends are read out of the source and compared, the same way the
+// frame lists above are. `frame_colors` is the one exception BY NAME: it is
+// authoritative rather than a patch and is applied by walking the frames.
+{
+    const uiSrc = fs.readFileSync('src/parts/ui.js', 'utf8');
+    const applier = uiSrc.slice(uiSrc.indexOf('const applyMetadataToObject'),
+        uiSrc.indexOf('const handleIncrementalStateUpdate'));
+    if (!applier) {
+        bad('parts/ui.js no longer has applyMetadataToObject - the live update'
+            + ' has gone back to a metadata copy of its own, which is how sse'
+            + ' came to be dropped on arrival');
+    } else {
+        const jsKeys = new Set([...applier.matchAll(/'(\w+)' in meta/g)]
+            .map((m) => m[1]));
+        // ...AND WHAT THE HANDLER READS FOR ITSELF. `rotation_matrix` and
+        // `center` are deliberately not the applier's: they are applied to
+        // NEWLY CREATED objects only, because re-seeding the camera of an
+        // object already on screen would move the picture on every add(). The
+        // question here is whether the key is read at all.
+        const handler = uiSrc.slice(uiSrc.indexOf('const handleIncrementalStateUpdate'),
+            uiSrc.indexOf('const handleReplaceFrame'));
+        for (const m of handler.matchAll(/changedFields\.(\w+)/g)) jsKeys.add(m[1]);
+        // ...from the ONE block that packs it, not from the whole file: the
+        // static path names the same fields a hundred lines up and reading
+        // both would score a union against one of the two appliers.
+        const pySrc = py.replace(/^[ \t]*#.*$/gm, '');
+        const at = pySrc.indexOf('current_metadata = {}');
+        const pack = pySrc.slice(at, pySrc.indexOf('previously_sent_metadata', at));
+        const pyKeys = new Set([...pack.matchAll(/current_metadata\["(\w+)"\]/g)]
+            .map((m) => m[1]));
+        const missing = [...pyKeys].filter((k) => !jsKeys.has(k));
+        const extra = [...jsKeys].filter((k) => !pyKeys.has(k));
+        if (missing.length) {
+            bad(`viewer.py packs ${missing.join(', ')} into the live update and`
+                + ' parts/ui.js does not read it - the call updates Python,'
+                + ' sends the field and has it dropped on arrival');
+        }
+        if (extra.length) {
+            bad(`parts/ui.js reads ${extra.join(', ')} off a live update that`
+                + ' viewer.py never packs');
+        }
+        console.log(`object metadata: ${pyKeys.size} named on both sides`);
+        if (pyKeys.size < 8) {
+            bad(`only ${pyKeys.size} metadata keys found - the scan has stopped`
+                + ' matching and this check proves nothing');
+        }
+        // ...AND THE STATIC PATH CARRIES WHAT THE LIVE ONE DOES. Both are
+        // built key by key from the same object, so a field that travels live
+        // and not statically is a setting that survives show() and not a
+        // reopened notebook - and the other way round is set_sse's old bug
+        // exactly.
+        const stat = pySrc.slice(pySrc.indexOf('obj_to_serialize = {'),
+            pySrc.indexOf('serialized_objects.append'));
+        for (const k of pyKeys) {
+            if (k === 'frame_colors') continue;   // frames carry their own
+            if (!stat.includes('"' + k + '"')) {
+                bad(`${k} travels on the live path and is not in the static`
+                    + ' payload, so it survives an add() after show() and is'
+                    + ' lost by show() itself');
+            }
+        }
+        // ...AND THE STATIC LOADER READS BACK WHAT THAT PAYLOAD WRITES. This
+        // is the reopen path - the one a saved .ipynb renders from - and it is
+        // a third field-by-field rebuild: `align` and the per-atom columns
+        // were both dropped HERE while the payload carried them perfectly.
+        const loader = uiSrc.slice(uiSrc.indexOf('for (const obj of (window.py2dmol_staticData'),
+            uiSrc.indexOf('const applyMetadataToObject'));
+        const statKeys = [...stat.matchAll(/obj_to_serialize\["(\w+)"\]/g)]
+            .map((m) => m[1]);
+        if (!loader || statKeys.length < 6) {
+            bad('the static payload/loader scan found ' + statKeys.length
+                + ' keys and a ' + loader.length + '-char loader - it has'
+                + ' stopped matching and proves nothing');
+        }
+        for (const k of new Set(statKeys)) {
+            // the frames are unpacked by STATIC_FRAME_FIELDS above; `name` is
+            // the key everything else is filed under
+            if (k === 'frames' || k === 'name') continue;
+            if (!loader.includes('obj.' + k)) {
+                bad(`the static payload carries ${k} and the static loader`
+                    + ' never reads it, so it is written into every .ipynb and'
+                    + ' thrown away on reopen');
+            }
+        }
+    }
+}
+
 // --- THE SLAB IS THE VIEWER'S, and it rides top-level -----------------------
 // clip is not a rendering key: it belongs to the camera, survives switching
 // objects, and is a SELECTOR rather than a setting. It reaches the page as an

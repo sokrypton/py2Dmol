@@ -187,8 +187,17 @@ function orientToBestView(renderer, options) {
     const object = renderer.objectsData[objectName];
     if (!object || !object.frames || object.frames.length === 0) return;
 
+    // ...AND THE FRAME IS THIS OBJECT'S, RESOLVED FROM THE TIMELINE POSITION.
+    // `renderer.currentFrame` is a position shared by every drawn object, so
+    // indexing this object's frames with it is undefined past its own end and
+    // Orient returned without doing anything - on a one-frame reference beside
+    // a trajectory, at every position but the first. It was also the wrong
+    // object's index whenever `opts.name` named another one.
     const currentFrame = renderer.currentFrame || 0;
-    const frame = object.frames[currentFrame];
+    const at = renderer._parkedFrameIndex
+        ? renderer._parkedFrameIndex(objectName)
+        : currentFrame;
+    const frame = object.frames[at >= 0 ? at : 0];
     if (!frame || !frame.coords || frame.coords.length === 0) return;
 
     // Ensure frame data is loaded into renderer if not already.
