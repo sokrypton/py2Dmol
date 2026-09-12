@@ -650,6 +650,7 @@ const MITRE_TOP = [0, 1];
 const MITRE_BOT = [3, 2];
 const SQ_U = [1, 1, -1, -1];
 const SQ_V = [1, -1, -1, 1];
+const STICK_SURF_MAP = [7, 8, 9, 10, 4, 5];
 const RING_CACHE = new Map();
 const ringTables = (n) => {
     if (n === 4) return { faces: STICK_FACES, edges: STICK_EDGES, ring: STICK_SQ };
@@ -3785,7 +3786,8 @@ if (renderer.cartoonBasePlates !== false) {
 function mergeBondRuns(S) {
     const { renderer, prims, rotated, project, persp, fl,
             bondList, deg, inc, at,
-            stickBox, stickFrame, stickHT, stickHW, stickIsFlat, registerJoint } = S;
+            stickBox, stickFrame, stickHT, stickHW, stickIsFlat, registerJoint,
+            frameProbe } = S;
 
     const sameStyle = (p, q) => p.w === q.w && p.flat === q.flat
         && p.sel === q.sel && p.c.r === q.c.r && p.c.g === q.c.g
@@ -4191,6 +4193,7 @@ function mergeBondRuns(S) {
                 // geometry's
                 two: stickIsFlat,
                 face: Math.abs(nz),
+                pts: frameProbe ? pts.map((p) => [p[0], p[1], p[2]]) : undefined,
             });
             // set renderer._jointProbe = [] to collect the junction
             // fills: which way each one ended up facing is not visible
@@ -9255,6 +9258,7 @@ const stickLodFlat = (renderer, scale) =>
     sectionIsFlat(STICK_HW, stickHalfThickness(renderer), scale);
 
 function drawSticks(ctx) {
+    let stickSegCount = 0;
     const {
         at, baseInk, baseLineWidthPixels, colors, displayHeight,
         displayWidth, fl, frameProbe, genericSegs, inkCurves,
@@ -10201,6 +10205,26 @@ function drawSticks(ctx) {
         const RT = ringTables(bSides);
         const SF = bFlat ? STICK_FACES_FLAT : RT.faces;
         const emitSeg = (secA, secB, firstSeg, lastSeg, segC) => {
+        let stA; let stB; let segId;
+        if (frameProbe && bSides === 4 && secA.length === 4 && secB.length === 4) {
+            segId = ++stickSegCount;
+            const stationOfSec = (sec) => {
+                const mid = [(sec[0][0] + sec[2][0]) * 0.5, (sec[0][1] + sec[2][1]) * 0.5, (sec[0][2] + sec[2][2]) * 0.5];
+                const wx = (sec[0][0] - sec[1][0]) * 0.5;
+                const wy = (sec[0][1] - sec[1][1]) * 0.5;
+                const wz = (sec[0][2] - sec[1][2]) * 0.5;
+                const ux = (sec[0][0] - sec[3][0]) * 0.5;
+                const uy = (sec[0][1] - sec[3][1]) * 0.5;
+                const uz = (sec[0][2] - sec[3][2]) * 0.5;
+                const hw = len3(wx, wy, wz);
+                const ht = len3(ux, uy, uz);
+                const wa = hw > 1e-6 ? [wx / hw, wy / hw, wz / hw] : [0, 1, 0];
+                const ub = ht > 1e-6 ? [ux / ht, uy / ht, uz / ht] : [1, 0, 0];
+                return { mid, hw, ht, wa, ub, tv: [tx, ty, tz] };
+            };
+            stA = stationOfSec(secA);
+            stB = stationOfSec(secB);
+        }
         const V = [];
         const W = [];                       // the same eight, in Angstroms
         // TWO NAMED SECTIONS, not an array of two. `for (const sec of
@@ -10503,6 +10527,10 @@ function drawSticks(ctx) {
                 draw: o[fi] > -STICK_CULL && !buried,
                 gs0: prim.gs0,
                 gsStep: 0,
+                stA,
+                stB,
+                segId,
+                surf: (stA && stB) ? (bFlat ? 0 : STICK_SURF_MAP[fi]) : undefined,
             });
         }
 
@@ -10723,21 +10751,9 @@ function drawSticks(ctx) {
                     mB[0] * mA[0] + mB[1] * mA[1] + mB[2] * mA[2])));
         }
         const MAX_SEG_TWIST = 18 * Math.PI / 180;
-        // AN EVEN K WHEN THE BOND IS TWO COLOURS, so a piece boundary lands
-        // exactly at the middle and the two halves are whole numbers of
-        // pieces. Twist alone decides it otherwise.
-        let K = Math.max(1, Math.min(8, Math.ceil(Math.abs(tw) / MAX_SEG_TWIST)));
-        // ...AND BY LENGTH, for a bond that spans the picture. Twist alone
-        // is the right measure for a stick a bond long: it is what decides
-        // whether the ruled side faces read as wrung. A CONTACT can cross
-        // the whole structure dead straight, so it twists not at all and
-        // would come out as one box - one depth key for each of its side
-        // faces over their whole span, sorting as if the contact were all
-        // at its own midpoint, which is exactly what it must not do when it
-        // passes behind one thing and in front of the next. Same 2 A pitch
-        // and same ceiling the flat stroke used.
+        const bl = len3(vb.x - va.x, vb.y - va.y, vb.z - va.z);
+        let K = (bl > 3.0) ? Math.max(1, Math.min(8, Math.ceil(Math.abs(tw) / MAX_SEG_TWIST))) : 1;
         if (bd.segA) {
-            const bl = len3(vb.x - va.x, vb.y - va.y, vb.z - va.z);
             K = Math.max(K, Math.min(CONTACT_SEG_MAX,
                 Math.ceil(bl / bd.segA)));
         }
@@ -10789,7 +10805,7 @@ function drawSticks(ctx) {
         renderer, prims, rotated, project, persp,
         fl, bondList, deg, inc, at,
         stickBox, stickFrame, stickHT, stickHW,
-        stickIsFlat, registerJoint,
+        stickIsFlat, registerJoint, frameProbe,
     });
 }
 

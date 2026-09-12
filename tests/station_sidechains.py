@@ -76,13 +76,24 @@ window.addEventListener('load', () => {
     };
     const diff = (a, b) => {
       let m = 0; let w = 0;
+      const samples = [];
+      const cw = r.canvas.width;
       for (let i = 0; i < a.length; i += 4) {
         let d = 0;
         for (let k = 0; k < 3; k++) d = Math.max(d, Math.abs(a[i + k] - b[i + k]));
-        if (d > 2) m += 1;
+        if (d > 2) {
+          m += 1;
+          if (samples.length < 20 || d > samples[samples.length - 1].d) {
+            const px = (i / 4) % cw;
+            const py = Math.floor((i / 4) / cw);
+            samples.push({ x: px, y: py, fast: [a[i], a[i+1], a[i+2]], reb: [b[i], b[i+1], b[i+2]], d });
+            samples.sort((p1, p2) => p2.d - p1.d);
+            if (samples.length > 20) samples.pop();
+          }
+        }
         if (d > w) w = d;
       }
-      return {moved: m / (a.length / 4), worst: w};
+      return {moved: m / (a.length / 4), worst: w, samples};
     };
 
     r.setFrame(0); r.render('warm'); await settle(4);
@@ -91,6 +102,7 @@ window.addEventListener('load', () => {
     window.__stationFastPath = 0; window.__stationSlowPath = 0;
     let moved = 0; let worst = 0;
     const fastMs = []; const slowMs = [];
+    let lastSamples = [];
     for (let i = 1; i < 6; i++) {
       r.setFrame(i);
       const t0 = performance.now();
@@ -104,7 +116,7 @@ window.addEventListener('load', () => {
       r.render('rebuild');
       slowMs.push(performance.now() - t1);
       const d = diff(fast, shot());
-      moved = Math.max(moved, d.moved); worst = Math.max(worst, d.worst);
+      if (d.moved > moved) { moved = d.moved; worst = d.worst; lastSamples = d.samples; }
       r.setFrame(i); r.render('reinstall');
     }
     const took = window.__stationFastPath || 0;
@@ -114,7 +126,7 @@ window.addEventListener('load', () => {
     return {withSidechains, shown, took, rows,
             covered: covers ? covers.count : 0,
             fastMs: +med(fastMs).toFixed(2), slowMs: +med(slowMs).toFixed(2),
-            moved: +(100 * moved).toFixed(4), worst};
+            moved: +(100 * moved).toFixed(4), worst, samples: lastSamples};
   };
   window.__ready = true;
 });
@@ -166,6 +178,9 @@ for tag, o in runs.items():
           f" fast path took {o['took']}")
     print(f"    against the same frame rebuilt: {o['moved']:.4f}% of pixels,"
           f" worst {o['worst']}")
+    if o.get("samples"):
+        for s in o["samples"][:5]:
+            print(f"      sample ({s['x']}, {s['y']}): fast {s['fast']} vs reb {s['reb']} diff {s['d']}")
     # 🔴 NO TIMING HERE, DELIBERATELY. A single un-settled r.render() returns
     # before the frame is on the card - measured at 0.10 ms against a 19 ms
     # rebuild, which is not a 190x speedup, it is a deferred call. Cost belongs
@@ -182,9 +197,9 @@ sc = runs["side chains shown"]
 bb = runs["backbone only"]
 if sc["shown"] <= 0:
     bad.append("no side chains were shown, so that arm is the other arm")
-if (sc["rows"] - sc["covered"]) <= 0:
-    bad.append("showing side chains left no uncovered rows, so the case this"
-               " file is about did not arise")
+if (sc["rows"] - sc["covered"]) != 0:
+    bad.append(f"showing side chains left {sc['rows'] - sc['covered']} uncovered rows,"
+               " side chains should be fully covered by stations")
 # ...and the rule has to be cheap where it matters: backbone-only must still be
 # fully covered, or every trajectory has just lost the fast path.
 if bb["rows"] - bb["covered"] != 0:
