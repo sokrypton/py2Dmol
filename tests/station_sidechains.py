@@ -12,16 +12,19 @@ Measured before the fix, on _traj_1tim.pdb with 74 side chains showing: the
 steps that took the fast path drew them 1.53% of the frame out of place at a
 worst channel of 224, standing still while the backbone moved.
 
-🔴 SO THE PATH DECLINES WHEN THE TABLE DOES NOT COVER THE WHOLE MESH, which is
-what installStations argued for in the first place - "a path that quietly drops
-a whole class of geometry is worse than one that declines" - and a stale row is
-the same fault as a dropped one. This file holds that: with side chains on the
-picture must be exact, and it is allowed to be exact by rebuilding.
+🔴 THE PATH USED TO DECLINE WHEN THE TABLE DID NOT COVER THE WHOLE MESH, which
+is what installStations argued for in the first place - "a path that quietly
+drops a whole class of geometry is worse than one that declines" - and a stale
+row is the same fault as a dropped one. That rule was blunt: the moment a side
+chain was shown it was a rebuild per frame.
 
-🔴 AND IT CHECKS THE COST OF THAT RULE, because a rule this blunt is only
-acceptable while the tail is usually empty. With nothing but backbone the table
-covers every row (6927 of 6927 on 1TIM), so the trajectories the path exists for
-are untouched; the moment a side chain is shown it is a rebuild per frame.
+🔴 SO THE STICKS WERE GIVEN STATIONS OF THEIR OWN, and the assertion below
+turned over with them: showing side chains must now leave NO uncovered rows,
+where this file used to require that it left some (that was the case it existed
+to catch). What did NOT change is the part that matters - with side chains on
+the picture must still be exact against the same frame rebuilt - and a new
+check says the fast path has to RUN with them shown, because asserting only the
+picture passes on a path that always declines, which is what it did before.
 """
 import json, os, sys, shutil, subprocess, http.server, socketserver, threading
 

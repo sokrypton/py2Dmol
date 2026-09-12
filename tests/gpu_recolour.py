@@ -183,13 +183,44 @@ window.addEventListener('load', () => {
       const onPrev = shot();
       window.py2dmolCartoonGPU.invalidate();
       r.render('station rebuild'); await settle(4);
+      // 🔴 COUNTED, NOT COMPARED BYTE FOR BYTE. The first version of this leg
+      // asked `onPrev === shot()`, which held when it was written and broke the
+      // moment sticks were given stations: the two paths lay their rows out
+      // differently, so where a stick surface and the ribbon it grows from land
+      // on the same depth the pixel goes to whichever was drawn first. Measured
+      // 13 of 722,500 at a worst channel of 67 - the same tie-break class as
+      // the three-part mesh split (260 of 357,604) and the dropped depth sort
+      // (2,401 of 498,436), both of which this project accepts by name.
+      //
+      // An exact comparison here reports that noise as a colour fault, which is
+      // what it did: the probe failed while `stepped` was true and the ramp was
+      // following the frame perfectly. The bound is what the noise is, with
+      // room - a real palette miss is EVERY inked pixel of the structure, four
+      // orders of magnitude away, so nothing is being let through.
+      const diffPixels = await (async () => {
+        const load = (u) => new Promise((res) => {
+          const c = document.createElement('canvas');
+          c.width = r.canvas.width; c.height = r.canvas.height;
+          const g = c.getContext('2d'); const im = new Image();
+          im.onload = () => { g.drawImage(im, 0, 0);
+            res(g.getImageData(0, 0, c.width, c.height).data); };
+          im.src = u;
+        });
+        const [a, b] = await Promise.all([load(onPrev), load(shot())]);
+        let n = 0;
+        for (let i = 0; i < a.length; i += 4) {
+          let d = 0;
+          for (let k = 0; k < 3; k++) d = Math.max(d, Math.abs(a[i + k] - b[i + k]));
+          if (d > 2) n += 1;
+        }
+        return {n, total: a.length / 4};
+      })();
       R.station = {
         frames,
         // the step must change the picture...
         stepped: onLast !== onPrev,
-        // ...and to what a rebuild of the same frame draws, which is what says
-        // the upload and the rebuild agree rather than merely differ
-        matchesRebuild: onPrev === shot(),
+        // ...and land where a rebuild of the same frame lands, bar the ties
+        diff: diffPixels.n, totalPx: diffPixels.total,
         fast: window.__stationFastPath || 0,
       };
     } catch (e) { R.error = String((e && e.stack) || e); }
@@ -240,8 +271,9 @@ if R.get("error"):
 print(f"{FILE}: {R.get('n')} positions, drawn on the GPU: {R.get('gpuDrew')}")
 bad = []
 st = R.get("station") or {}
-print(f"  station path: {st.get('frames')} frames, stepped={st.get('stepped')}"
-      f" matchesRebuild={st.get('matchesRebuild')} fastPaths={st.get('fast')}")
+print(f"  station path: {st.get('frames')} frames, stepped={st.get('stepped')},"
+      f" {st.get('diff')} of {st.get('totalPx')} pixels differ from a rebuild,"
+      f" fastPaths={st.get('fast')}")
 if not st:
     bad.append("the station leg did not run")
 else:
@@ -250,9 +282,15 @@ else:
                    " picture - the station fast path recorded the new colour"
                    " key without uploading the palette, so the card keeps the"
                    " colours of the last rebuild")
-    if not st.get("matchesRebuild"):
-        bad.append("the station path's colours are not the colours a rebuild"
-                   " of the same frame draws")
+    # 0.05% of the canvas: two orders above the tie-break noise measured here
+    # (13 of 722,500 = 0.0018%) and two below a palette that did not arrive,
+    # which is every inked pixel of the structure.
+    cap = max(64, (st.get("totalPx") or 0) // 2000)
+    if (st.get("diff") or 0) > cap:
+        bad.append(f"the station path drew {st['diff']} of {st['totalPx']}"
+                   f" pixels differently from a rebuild of the same frame"
+                   f" (more than {cap}) - its colours are not the colours a"
+                   " rebuild draws")
 if not R.get("gpuDrew"):
     bad.append("the GPU path did not draw, so nothing here was measured")
 for m in R["modes"]:

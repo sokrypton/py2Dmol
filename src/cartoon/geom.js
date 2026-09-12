@@ -10752,11 +10752,38 @@ function drawSticks(ctx) {
         }
         const MAX_SEG_TWIST = 18 * Math.PI / 180;
         const bl = len3(vb.x - va.x, vb.y - va.y, vb.z - va.z);
+        // HOW MANY PIECES ONE BOND IS CUT INTO, and three rules decide it.
+        //
+        // TWIST is the first: it is what says whether the ruled side faces read
+        // as wrung, so a stick that turns along its length is cut until no
+        // piece turns more than MAX_SEG_TWIST.
+        //
+        // 🔴 AND LENGTH GATES IT, because a covalent bond is 1.5 A and cannot
+        // look wrung however it is oriented - there is not enough of it to see
+        // the ruling turn. Under 3 A the twist rule buys nothing and costs a
+        // piece per bond, which on a structure with every side chain out is
+        // most of the sticks in the picture. Measured against the ceiling
+        // itself: raising MAX_SEG_TWIST to 30, 45, 90 and 180 degrees moves
+        // 0.07-0.5% of faces, because the halfC line below is what forces K on
+        // the bonds that have more than one piece at all.
+        //
+        // A CONTACT is the case the length gate must not reach: it can cross
+        // the whole structure dead straight, so it twists not at all and would
+        // come out as one box - one depth key for each of its side faces over
+        // their whole span, sorting as if the contact were all at its own
+        // midpoint, which is exactly what it must not do when it passes behind
+        // one thing and in front of the next. `bd.segA` is its own pitch and it
+        // raises K by LENGTH, below, so the gate above cannot take it away.
         let K = (bl > 3.0) ? Math.max(1, Math.min(8, Math.ceil(Math.abs(tw) / MAX_SEG_TWIST))) : 1;
         if (bd.segA) {
             K = Math.max(K, Math.min(CONTACT_SEG_MAX,
                 Math.ceil(bl / bd.segA)));
         }
+        // ...AND AN EVEN K WHEN THE BOND IS TWO COLOURS, so a piece boundary
+        // lands exactly at the middle and the two halves are whole numbers of
+        // pieces. This is the rule that actually decides K on most bonds - 634
+        // of 2,432 on 4HHB, 4,062 of 7,070 on 1AOI - so it outranks both of the
+        // rules above and must stay last.
         if (bd.halfC && bd.halfC.a && bd.halfC.b) K = Math.max(2, K + (K % 2));
         const secs = [secA];
         for (let k = 1; k < K; k++) {

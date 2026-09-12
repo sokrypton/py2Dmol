@@ -38,11 +38,18 @@ dist/
 # (_panelpic2.html, 1,022 lines of nothing).
 _*.html
 
-# ...and the same lesson twice more. A probe run by hand writes its dumps into
-# whatever directory it was started from, which is the repository root, and
-# `git add -A` sweeps them into the branch: resize-fast.png and resize-full.png
-# went in that way, and notes.txt was a one-line scratchpad nobody meant to
-# keep. Write dumps somewhere outside the tree; if one lands here anyway, it
-# does not become a commit.
-/*.png
+# ...and the same lesson three times more. A probe run by hand writes its dumps
+# into whatever directory it was started from, and `git add -A` sweeps them into
+# the branch: resize-fast.png and resize-full.png went in that way, and
+# notes.txt was a one-line scratchpad nobody meant to keep. Write dumps
+# somewhere outside the tree; if one lands here anyway, it does not become a
+# commit.
+#
+# 🔴 AND THE LEADING SLASH IS WHY IT HAPPENED AGAIN. `/*.png` is anchored to
+# the repository ROOT, so a dump written one directory down is not covered at
+# all - scratch/fast.png and scratch/reb.png, 656 KB of before-and-after
+# screenshots, were committed in 82058f5 past a rule written for exactly them.
+# Unanchored, so it holds wherever the probe was started from; the fixtures
+# this repo does keep are .cif and .pdb, and there is no .png it wants.
+*.png
 /notes.txt
