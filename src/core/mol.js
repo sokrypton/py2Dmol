@@ -8029,7 +8029,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Keep SSE asserted "these frames are one molecule moving" and let
             // the cache outlive the frame on that promise. It was REMOVED, and
             // the threshold it was covering for is the thing to fix: hysteresis
-            // on the bond test, which needs no flag and no mode.
+            // on the bond test, which needs no flag and no mode. The whole of
+            // that argument, with the measurements and the dead ends, is in
+            // docs/FRAME_STABILITY.md - read it before rebuilding any of it.
             const segmentCacheHolds = this.cachedSegmentIndicesCoords === this.coords
                 && this.cachedSegmentIndicesFrame === this.currentFrame
                 && this.cachedSegmentIndicesObjectName === this.currentObjectName;

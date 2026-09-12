@@ -22,7 +22,7 @@ SSE was removed, with the pin taken away by hand. The station table auto-enables
 for any multi-frame object (see paintgl.js, the stationAuto block), so that
 configuration ships today and nothing checked it: this probe only ever ran the
 table beside the pin. Whatever the revisit does about keeping an assignment, it
-should start here.
+should start here - see docs/FRAME_STABILITY.md.
 
 What it still does, faithfully: runs both arms over the same frames in one
 process, compares the picture pixel for pixel against a rebuild, and reports how

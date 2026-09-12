@@ -11185,8 +11185,8 @@ if (typeof window !== 'undefined' && window.py2dmolCartoon) {
 // current frame's letters into `obj.sse` for all 494 protein positions - a
 // provably stable assignment, 0 letters differing across a frame step - still
 // rebuilt twice. Neither half of the flag paid alone either. Whatever is worth
-// having here is in the CACHE KEY and not in the secondary structure, which is
-// where a revisit should start.
+// having here is in the CACHE KEY and not in the secondary structure. See
+// docs/FRAME_STABILITY.md, which is the clean slate this was cleared for.
 const secCacheKey = (renderer, n) => (
     ((renderer._coordsKey ? renderer._coordsKey()
             : `${renderer.currentObjectName}|${renderer.currentFrame}|${n}`

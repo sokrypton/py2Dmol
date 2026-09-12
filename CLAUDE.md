@@ -2259,6 +2259,20 @@ public downloads is exercised on every run.
   selection (a sequence-strip drag, Select all, a click in any mode), and a
   setting hidden inside one mode is findable only from inside it. It also keeps
   Focus a one-click latch instead of a button that means two things.
+🔴 **AND FRAME-TO-FRAME STABILITY IS A CLEARED SITE, NOT A SOLVED PROBLEM.**
+Keep SSE - the mode that pinned the secondary structure across a trajectory's
+frames so the station fast path's mapping would hold - was REMOVED in `0a523bd`
+to make room for a better mechanism. `docs/FRAME_STABILITY.md` is that clean
+slate: the problem stated without a solution in it, what the mode bought (the
+fast path on nearly every step, against 22 of 33 without it), what it cost (a
+correctness promise the caller could not verify), and the two dead ends measured
+on the way out - **pinning the assignment is NOT what paid** (letters provably
+frozen, 0 differing, still 2 rebuilds) and **neither half of the flag pays
+alone**. It also names the thing to fix first: the station fast path already
+draws a frame **0.083% different from a rebuild** on a folding trajectory, which
+ships today through the auto-enable and which nothing checked, because the one
+probe credited with checking it only ever ran beside the pin.
+
   `docs/SELECTION_MARK.md` is the tuning menu: six treatments drawn side by
   side, the two rejected before the shortlist, and the costs - **0.02 ms
   between the cheapest and the dearest**, which is 0.1% of a frame, so this is

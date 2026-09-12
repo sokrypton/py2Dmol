@@ -8590,7 +8590,8 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
         // _traj_unfold.pdb it reports 0.083% of pixels differing from a rebuild
         // of the same frame, worst channel 223, and the same numbers appear on
         // the commit before Keep SSE was removed. So the auto-enable ships a
-        // configuration whose correctness nothing checks. OPEN.
+        // configuration whose correctness nothing checks. OPEN, and the first
+        // thing docs/FRAME_STABILITY.md says to fix.
         //
         // The table is worth having on any trajectory:
         // Interleaved medians of four, both orders:
