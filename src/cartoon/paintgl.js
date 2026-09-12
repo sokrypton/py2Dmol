@@ -1409,7 +1409,15 @@ in vec3 aEdgeCol;
 // device ratio the way the geometry does, and the perspective factor the way
 // the 2D pass does.
 in float aEdgeW;
+// WHOSE RESIDUE THIS EDGE OUTLINES, or -1 for an edge that belongs to none -
+// a contact, which is annotation laid across the chain. The same coverage
+// texture the fills are tested against, so an outline fades with the fill it
+// draws the edge of rather than standing over a ghost at full strength.
+in float aEdgeRes;
+uniform sampler2D uVis;
+uniform float uVisW, uVisN;
 out vec3 vInk;
+out float vFade;
 out float vZv;        // view z, for the clip slab in the fragment
 uniform mat3 uRot; uniform vec2 uSize, uZRange, uShadeRange;
 uniform float uScale, uWidth, uBias, uPersp, uFL;
@@ -1433,6 +1441,16 @@ bool faces(vec3 n, vec3 at) {
 }
 void main() {
   vInk = vec3(0.0);          // set on every path: an early return still runs
+  // ...and so does this: a varying the fragment reads and a path leaves unset
+  // is whatever was in the register.
+  vFade = 1.0;
+  if (uVisW > 0.5 && aEdgeRes >= 0.0) {
+    int w = int(uVisW);
+    int ri = clamp(int(aEdgeRes + 0.5), 0, int(uVisN) - 1);
+    float cover = texelFetch(uVis, ivec2(ri % w, ri / w), 0).r;
+    if (cover <= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+    vFade = cover;
+  }
   float aStickBit = mod(aEdgeStick, 2.0) > 0.5 ? 1.0 : 0.0;
   float aOuter = mod(floor(aEdgeStick / 2.0), 2.0) > 0.5 ? 1.0 : 0.0;
   if ((aStickBit > 0.5 ? uShowSticks : uShowRibbon) < 0.5) {
@@ -1686,6 +1704,15 @@ in float aCapA, aCapB;
 in vec2 aJCol;
 // 1 = annotation (a contact): the 2D pass excludes these from shading
 in float aNoAO;
+// THE TWO POSITIONS THIS SEGMENT RUNS BETWEEN, and the per-residue coverage
+// texture they index - the same texel the cartoon's fills are tested against,
+// read here so a ghosted selection fades the tube too. Averaged over the two
+// ends, so a segment between a faded residue and a solid one is half faded
+// rather than snapping to whichever end happened to be written first.
+in float aResA, aResB;
+uniform sampler2D uVis;
+uniform float uVisW, uVisN;
+out float vFade;
 uniform mat3 uRot;
 uniform vec2 uSize;
 uniform vec2 uZRange;
@@ -1721,6 +1748,23 @@ void main() {
   vB = vec2(uSize.x * 0.5 + b.x * uScale * peB, uSize.y * 0.5 - b.y * uScale * peB);
   vZA = a.z; vZB = b.z;
   vCapA = aCapA; vCapB = aCapB; vNoAO = aNoAO;
+  // THIS SEGMENT'S COVERAGE, from the two residues it runs between. The same
+  // texel VS3D reads, through the same clamp: an out-of-range texelFetch
+  // returns 0, which reads as hidden, so a stray index must not delete
+  // geometry. A contact is annotation laid across the chain and keeps its own
+  // ends, so it is not ghosted with the residues it happens to touch.
+  vFade = 1.0;
+  if (uVisW > 0.5 && aNoAO < 0.5) {
+    int w = int(uVisW);
+    int ra = clamp(int(aResA + 0.5), 0, int(uVisN) - 1);
+    int rb = clamp(int(aResB + 0.5), 0, int(uVisN) - 1);
+    float ca = texelFetch(uVis, ivec2(ra % w, ra / w), 0).r;
+    float cb = texelFetch(uVis, ivec2(rb % w, rb / w), 0).r;
+    vFade = (ca + cb) * 0.5;
+    // ...and a segment with nothing left of it is dropped outright rather than
+    // dithered down to no pixels, which is what the fills do at zero.
+    if (vFade <= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  }
   vJColA = vec3(floor(aJCol.x / 65536.0),
       floor(mod(aJCol.x / 256.0, 256.0)), floor(mod(aJCol.x, 256.0))) / 255.0;
   vJColB = vec3(floor(aJCol.y / 65536.0),
@@ -1923,6 +1967,7 @@ __CONSEXT__
 precision highp float;
 __CONSDECL__
 in vec2 vA, vB;
+in float vFade;         // this segment's coverage - see VSTUBE
 in float vRpx;
 in float vRfill;
 in float vZA, vZB;
@@ -2050,7 +2095,7 @@ void main() {
   // of the tube actually is in depth, so a capsule crossing the plane is opened
   // at it - a hole with the tube's own rim - which is what clipping into a
   // tube looks like. Cutting on the axis depth would take whole segments.
-  if (clipped(zSurf)) discard;
+  if (clipped(zSurf, vFade)) discard;
   // THE OUTLINE IS A SKIRT OUTSIDE THE TUBE, NOT A FATTER TUBE BEHIND IT.
   // This is the whole of what makes a depth buffer behave like the 2D pass's
   // painter, which strokes each segment's rim and then its fill, in depth
@@ -2244,11 +2289,11 @@ void main() { fragColor = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); }`;
 
 const FSINK = `#version 300 es
 precision highp float;
-in vec3 vInk; in float vZv; out vec4 fragColor;
+in vec3 vInk; in float vZv; in float vFade; out vec4 fragColor;
 ${CLIP_GLSL}
 ${GRAIN_GLSL}
 void main() {
-  if (clipped(vZv)) discard;
+  if (clipped(vZv, vFade)) discard;
   fragColor = vec4(grainAt(vInk), 1.0);
 }`;
 
@@ -2513,7 +2558,7 @@ const EMPTY_FILL = new Float32Array(0);
 // buildMeshPart's edge block and installParts reads it as well now - a
 // ReferenceError thrown mid-rebuild, which surfaced as the station table
 // failing to install with no reason given, four calls away.
-const ED_FLOATS = 19;           // p0, p1, n0, n1, always, stick, pal, col, w
+const ED_FLOATS = 20;           // p0, p1, n0, n1, always, stick, pal, col, w, res
 // AN EDGE'S PROVENANCE, seven integers a row: the two endpoint corners, the
 // two faces whose normals it holds, how many faces are incident, the crease
 // cosine it is judged by in millionths, and whether the letter decides it.
@@ -3353,9 +3398,14 @@ function setAllResiduesCover(v) {
 let visStamp = '';
 function applyResidueOpacity(renderer) {
     if (!visData) return;
-    const map = renderer ? renderer.residueOpacity : null;
+    // ...FROM THE OBJECTS THAT ARE DRAWN, each in its own numbering - see
+    // drawnOpacity in core/mol.js. The fade belongs to the object, so adding
+    // another one cannot take it away and loading another cannot inherit it.
+    const map = (renderer && typeof renderer.drawnOpacity === 'function')
+        ? renderer.drawnOpacity() : null;
     const ver = (renderer && renderer._opacityVersion) || 0;
-    const stamp = ver + '|' + visW + 'x' + visH + '|' + (map ? map.size : 0);
+    const stamp = ver + '|' + visW + 'x' + visH + '|' + (map ? map.size : 0)
+        + '|' + (renderer ? renderer.currentObjectName : '');
     if (stamp === visStamp) return;
     visStamp = stamp;
     setAllResiduesCover(255);
@@ -3887,7 +3937,13 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused) {
     // ...and it is FIVE when nothing will read the other four. eIn is allocated
     // and grown per build, so paying for four numbers a reader who never
     // pressed Keep SSE will never look at is the same tax as edgeSrc below.
-    const E_I = stationDraw ? 9 : 5;
+    const E_I = stationDraw ? 10 : 6;
+    // THE RESIDUE, at the end of whichever layout is in force. Put here rather
+    // than in the middle so the station slots keep the indices every reader
+    // already uses; one constant, written once and read once. It is what lets
+    // the OUTLINE be ghosted with the fill it outlines - see uVis in the ink
+    // vertex shader.
+    const E_RES = stationDraw ? 9 : 5;
     const EB_TWO = 1; const EB_NOINK = 2; const EB_STICK = 4;
     const EB_FULL = 8; const EB_SEAM = 16; const EB_OUTER = 32;
     const EB_COL = 64; const EB_N0 = 128; const EB_N1 = 256;
@@ -3931,7 +3987,7 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused) {
     // rounds twice over on every edge of every face; and the corners live in
     // the flat store, so an offset is all the endpoint needs to be.
     const addEdge = (oa, ob, ha, hb, nrm, isStick, pal, ghost, two, noInk, col,
-        full, seam, outer, sc, cross) => {
+        full, seam, outer, sc, cross, res) => {
         if (ha === hb) return;      // the repeated corner of a fan-padded quad
         const lo = ha < hb ? ha : hb;
         const other = ha < hb ? hb : ha;
@@ -3958,6 +4014,11 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused) {
             const i0 = e * E_I;
             eIn[i0] = 0; eIn[i0 + 1] = 0; eIn[i0 + 2] = 0;
             eIn[i0 + 3] = -1; eIn[i0 + 4] = 0;
+            // FROM THE FIRST FACE TO CLAIM THE EDGE, like the colour and the
+            // corners above it. An edge between two residues belongs to one of
+            // them for this purpose and either reads the same where neither is
+            // ghosted, which is every ordinary frame.
+            eIn[i0 + E_RES] = (res === undefined) ? -1 : res;
             // ...and WHICH corners these are, from the first face to claim the
             // edge. Both faces pass the same two geometric points; either set
             // recomputes to the same place. Written only when something will
@@ -4675,7 +4736,8 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused) {
                 const crossEdge = P0.rich && (i2 === 0 || i2 === 2)
                     && f.surf !== undefined && f.surf < 4;
                 addEdge(oa, ob, ka, kb, fInkN, fStick, fPal, ghost,
-                    fTwo, fNoInk, fCol, fFull, seamCross, fOuter, fSc, crossEdge);
+                    fTwo, fNoInk, fCol, fFull, seamCross, fOuter, fSc, crossEdge,
+                    f.res || 0);
             }
         }
 
@@ -4896,6 +4958,7 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused) {
             ed[eo++] = hasCol ? eF[ef + 13] : 0;
             ed[eo++] = hasCol ? eF[ef + 14] : 0;
             ed[eo++] = 0;              // 0 = take uWidth, the outline's own weight
+            ed[eo++] = eIn[eb + E_RES];     // ...and whose residue it outlines
         }
         // ---- CONTACTS ride through the same pass ---------------------------
         // A contact is a flat bright stroke, not a surface: it is drawn from
@@ -4916,6 +4979,10 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused) {
             ed[eo++] = always; ed[eo++] = 0; ed[eo++] = -1;   // not a stick, no slot
             ed[eo++] = col[0]; ed[eo++] = col[1]; ed[eo++] = col[2];
             ed[eo++] = w;
+            // A CONTACT IS ANNOTATION LAID ACROSS THE CHAIN and is not ghosted
+            // with either end: -1 is the row saying "no residue", which the
+            // shader reads as full coverage.
+            ed[eo++] = -1;
         };
         if (wantOutline) for (const c of contactEdges) putContact(c, 4, c.c, c.wA);
         for (const c of contactEdges) putContact(c, 3, c.c, c.wA);
@@ -7310,7 +7377,7 @@ function drawInk(cv, prm) {
     const stride = ED_FLOATS * 4;
     const binds = [['aP0', 3, 0], ['aP1', 3, 12], ['aN0', 3, 24],
         ['aN1', 3, 36], ['aAlways', 1, 48], ['aEdgeStick', 1, 52], ['aEdgePal', 1, 56],
-        ['aEdgeCol', 3, 60], ['aEdgeW', 1, 72]];
+        ['aEdgeCol', 3, 60], ['aEdgeW', 1, 72], ['aEdgeRes', 1, 76]];
     for (const [nm, sz, off] of binds) {
         const l = gl.getAttribLocation(progInk, nm);
         if (l < 0) continue;
@@ -7334,6 +7401,13 @@ function drawInk(cv, prm) {
     gl.uniform2f(gl.getUniformLocation(progInk, 'uShadeRange'), srI[0] + dzprogInk, srI[1] + dzprogInk);
     gl.uniform1f(gl.getUniformLocation(progInk, 'uScale'), drawScale());
     uploadClip(progInk);
+    // THE COVERAGE TEXTURE, as the fills and the tube bind it for themselves.
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, visTex);
+    gl.uniform1i(gl.getUniformLocation(progInk, 'uVis'), 0);
+    gl.uniform1f(gl.getUniformLocation(progInk, 'uVisW'), visTex ? visW : 0);
+    gl.uniform1f(gl.getUniformLocation(progInk, 'uVisN'),
+        (resMap && resMap.nBase) ? resMap.nBase : 1);
     gl.uniform1f(gl.getUniformLocation(progInk, 'uPersp'), isPersp() ? 1 : 0);
     gl.uniform1f(gl.getUniformLocation(progInk, 'uFL'), focalLength());
     gl.uniform1f(gl.getUniformLocation(progInk, 'uShowRibbon'), showRibbon ? 1 : 0);
@@ -9419,7 +9493,10 @@ function restoreTube(sig) {
     return activateTube(m);
 }
 
-const TUBE_FLOATS = 15;      // ...the last two are the ends' ball colours
+// ...the two before the residues are the ends' ball colours, and the two after
+// them are the POSITIONS the segment runs between - carried so the tube can be
+// ghosted the way the cartoon is. See uVis in VSTUBE.
+const TUBE_FLOATS = 17;
 function buildTube(renderer, S) {
     if (!gl) return false;
     const co = renderer.coords || [];
@@ -9576,6 +9653,11 @@ function buildTube(renderer, S) {
         slotOf[k] = count;
         data[o++] = packed;
         data[o++] = packed;
+        // WHICH TWO RESIDUES THIS SEGMENT RUNS BETWEEN. Both, not one: a
+        // segment spanning a ghosted residue and a solid one is half of each,
+        // and taking a single end would snap it to whichever end was written.
+        data[o++] = i1;
+        data[o++] = i2;
         count++;
         const dax = a.x - cx; const day = a.y - cy; const daz = a.z - cz;
         const da = dax * dax + day * day + daz * daz;
@@ -9695,8 +9777,18 @@ function drawTube(cv, renderer, prm) {
     bind('aP0', 3, 0); bind('aP1', 3, 12); bind('aRad', 1, 24); bind('aTCol', 3, 28);
     bind('aCapA', 1, 40); bind('aCapB', 1, 44); bind('aNoAO', 1, 48);
     bind('aJCol', 2, 52);
+    bind('aResA', 1, 60); bind('aResB', 1, 64);
     const R = currentRot();
     const u = (nm, v) => gl.uniform1f(gl.getUniformLocation(progTube, nm), v);
+    // ...AND THE COVERAGE TEXTURE, which the fills program binds for itself a
+    // few hundred lines up. Without it uVisW is 0 here and the tube reads as
+    // solid whatever the ghosting says - the shader's own "nothing to fade"
+    // path, reached by forgetting rather than by meaning it.
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, visTex);
+    gl.uniform1i(gl.getUniformLocation(progTube, 'uVis'), 0);
+    u('uVisW', visTex ? visW : 0);
+    u('uVisN', (resMap && resMap.nBase) ? resMap.nBase : 1);
     gl.uniformMatrix3fv(gl.getUniformLocation(progTube, 'uRot'), false,
         new Float32Array([R[0][0], R[1][0], R[2][0],
             R[0][1], R[1][1], R[2][1], R[0][2], R[1][2], R[2][2]]));
@@ -10035,6 +10127,16 @@ function renderTubeApp(renderer, ctx, displayWidth, displayHeight, S) {
             tubeLive.sig = key;
         }
         if (!tubeCount) return false;
+        // THE COVERAGE TEXTURE IS THE CARTOON PATH'S AND THIS PATH NEVER
+        // TOUCHED IT. A tube page never called ensureVisTexture, so uVisW was
+        // 0 and the shader took its own "nothing to fade" branch - the ghosting
+        // reached the tube's shader and was then read out of a texture nobody
+        // had sized. Set up here exactly as renderApp does it: the map, the
+        // texture, and then what the renderer says is ghosted.
+        setResidueMap({ nBase: renderer.coords ? renderer.coords.length : 0,
+            sidechainMap: renderer.sidechainMap || null });
+        ensureVisTexture(renderer.coords ? renderer.coords.length : 1);
+        applyResidueOpacity(renderer);
         if (!drawTube(appCv, renderer,
             { outlineWidthPx: S.outlineWidthPx || 0, hasOcclusion: !!S.renderShadows,
                 displayWidth })) return false;
@@ -10245,6 +10347,13 @@ window.py2dmolCartoonGPU = {
             // outlineMode off and concluded "it is not the outline" was
             // comparing pictures that both still had one.
             inkBuf: readBuf(bufInk, edgeCount * ED_FLOATS),
+            // ...AND HOW WIDE A ROW IS, because a reader that knows it by
+            // heart is a third copy of a number that must agree. It was 19 in
+            // tests/sheet_merge.py and the row grew to 20 for the outline's
+            // residue: the probe strode into the middle of each row and
+            // reported 154 outlines drawn across a merged sheet - the fault it
+            // exists for, wearing the fix.
+            edgeFloats: ED_FLOATS,
             edSrc: residentEdges && residentEdges.edSrc ? Array.from(residentEdges.edSrc) : null,
         };
     },

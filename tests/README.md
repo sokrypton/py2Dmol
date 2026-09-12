@@ -148,7 +148,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `na_bench.py` | tool | Benchmark: does the nucleic backbone's ribbon face point at the BASE? |
 | `na_frame.js` | node | Score the NUCLEIC RAIL FRAME the renderer ends up with. |
 | `na_table.py` | tool | Fit the base-frame table the cartoon predicts nucleotide bases with. |
-| `named_object.py` | ui | A request that NAMES an object must reach that object, drawn or not. |
+| `named_object.py` | gpu | A request that NAMES an object must reach that object, drawn or not. |
 | `notebook_narrow.py` | ui | The notebook shell in a cell too narrow for canvas-plus-panel. |
 | `nucleic_multi.py` | ui | A nucleic object keeps its atoms when the viewer drops out of Multi. |
 | `object_reload.py` | ui | Loading another file must not disturb the objects already loaded. |
@@ -166,6 +166,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `pick_index.py` | gpu | THE PICK INDEX MUST ANSWER WHAT THE SCAN ANSWERS, POINT BY POINT. |
 | `play_stop.py` | ui | The play button has to survive being pressed WHILE IT IS PLAYING. |
 | `python_multi.py` | ui | WHAT PYTHON ASKS FOR, AND WHETHER THE PAGE DOES IT. |
+| `python_opacity.py` | gpu | set_opacity from Python: does it reach the picture, and survive a session? |
 | `python_page.py` | ui | The PYTHON api's own page, with two objects, checked in a real browser. |
 | `rebuild_actions.py` | gpu | WHAT A SESSION REBUILDS, ACTION BY ACTION, AND WHY. |
 | `rebuild_returns.py` | gpu | COMING BACK TO A PICTURE ALREADY BUILT MUST NOT REBUILD IT. |

@@ -1070,9 +1070,21 @@ function updateSelectionToolsState() {
     // here. A slider that resets to 1 on every pick says the selection is
     // solid when it is not, which is the one thing a panel on a selection is
     // for - see the SSE menu above, which had the same fault.
+    //
+    // 🔴 AND IT IS WITHHELD WHERE IT CANNOT DO ANYTHING, which is this panel's
+    // standing rule - "a control the shared panel shows and no shell can
+    // honour is worse than no control", the same reason the Align row above
+    // hides itself. The fade is a texel dropped through an ordered dither, and
+    // all three GPU programs read it now - the cartoon's fills, its outlines
+    // and the tube. What has none of that is the 2D painter: no dither, no
+    // visibility texture, and a slider there would slide and change nothing.
     {
         const os = byId('selOpacitySlider');
-        if (os && !none) os.value = selectionOpacity(picked);
+        const row = byId('opacityRow');
+        const r = selectionHost.renderer();
+        const canFade = !!(r && r.gpuDrewLastFrame);
+        if (row) row.hidden = none || !canFade;
+        if (os && !none && canFade) os.value = selectionOpacity(picked);
     }
     syncSelectionToggles(picked, none);
     // The side-chain row is offered only when there is something to show:

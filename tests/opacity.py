@@ -26,9 +26,18 @@ WHAT IS MEASURED:
   * across the whole sweep the mesh build stamp never moves;
   * 0 hides and 1 is solid, so the two ends still mean what every existing
     caller of that texel meant by them;
-  * the OUTLINES stay - a ghosted region is a line drawing over a faded fill,
-    which is the look that was chosen, so a region at opacity 0.05 still has
-    ink in it. Measured as dark pixels surviving where the fill has gone.
+  * the OUTLINES FADE WITH THE FILLS. They did not at first - the ink pass had
+    no residue index and its instance row was exactly nineteen floats - and a
+    ghosted region was a line drawing at full strength over a faded fill. A
+    face already carries `f.res`, which is the value the fills shader looks up,
+    so the row is twenty floats now and the ink reads the same texel. Measured
+    at every residue faded to nothing: 1,528 dark pixels before, 0 after.
+
+  * ...AND SO DOES THE TUBE, whose own program never touched that texture at
+    all - a fade there moved 0 pixels, on the style large structures default
+    to. Its instances carry the two residues each segment runs between and
+    average them, so a segment between a ghosted residue and a solid one is
+    half faded rather than snapping to one end.
 """
 import http.server, json, os, shutil, socketserver, sys, threading, time
 
@@ -141,7 +150,127 @@ window.addEventListener('load', () => {
     r.render();
     await settle(4);
     const back = shot();
+
+    // 🔴 THE FADE BELONGS TO THE OBJECT, and both halves of that were wrong
+    // in turn. Keyed by DRAWN position on the renderer, it followed the
+    // indices into the next structure loaded - 38 residues of a protein that
+    // had nothing to do with it came up faded. Guarding that by dropping the
+    // fade whenever the position count changed then LOST IT the moment
+    // anything was added, which is the ordinary way a notebook is used.
+    // Stored against the object in the object's own numbering, like its side
+    // chains and its base plates, neither can happen.
+    r.setOpacity({positions: half}, 0.1);
+    r.render(); await settle(4);
+    const firstName = r.currentObjectName;
+    const other = await (await fetch('/6MRR.cif')).text();
+    await window.processFiles([{name: '6MRR.cif',
+        readAsync: () => Promise.resolve(other)}], true);
+    await until(loaded, 60000);
+    if (r.setStyle) r.setStyle('cartoon');
+    await settle(10);
+    const arrived = shot();
+    // ...counted as a plain object, which is what OBJECT_STATE's `plain` kind
+    // is and what remapPositionMap renumbers - see src/core/objstate.js.
+    const held = (o) => Object.keys((o || {}).opacity || {}).length;
+    const heldAcross = held(r.objectsData[firstName]);
+    const appliedAcross = (r.drawnOpacity() || new Map()).size;
+    r.setOpacity(null, 1); r.render(); await settle(6);
+    const solidThere = diff(arrived, shot());
+    // ...AND GOING BACK TO THE FIRST ONE STILL FINDS IT GHOSTED, which is the
+    // half a "drop it when anything changes" guard passes and a reader does
+    // not forgive.
+    r._switchToObject(firstName); r.setFrame(0); await settle(10);
+    const backOn = shot();
+    const appliedOnReturn = (r.drawnOpacity() || new Map()).size;
+    r.setOpacity(null, 1); r.render(); await settle(8);
+    const stillFaded = diff(backOn, shot());
+    // ...AND IN A MERGED VIEW IT LANDS AT THAT OBJECT'S OFFSET. The map is in
+    // the object's own numbering and the picture is one array; showing both is
+    // the only arm where the two differ, so it is the only one that can catch
+    // an offset dropped on the way through.
+    // 🔴 GHOSTING THE SECOND OBJECT, NOT THE FIRST. The first sits at offset 0
+    // in the merge, so its own numbering and the drawn array's are the same
+    // numbers and an offset dropped on the way through is invisible. The
+    // second starts where the first ends, which is the only place the two can
+    // disagree.
+    r.setShownObjects([firstName, '6MRR']);
+    await settle(12);
+    r.setOpacity({object: '6MRR', positions: half}, 0.1);
+    r.render(); await settle(8);
+    const mergedFaded = (r.drawnOpacity() || new Map());
+    const mergedCount = mergedFaded.size;
+    const mergedMin = mergedCount ? Math.min(...mergedFaded.keys()) : -1;
+    const mergedMax = mergedCount ? Math.max(...mergedFaded.keys()) : -1;
+    const mergedOff = r.localRangeOf ? (r.localRangeOf('6MRR').off || 0) : 0;
+    r.setOpacity({object: '6MRR'}, 1);
+    r.setShownObjects([firstName]);
+    await settle(10);
+    r.setOpacity(null, 1); r.render(); await settle(6);
+
+    // 🔴 AND A PARTIAL FADE, WHICH IS THE ONLY ARM THAT SEES THE INK FADE AT
+    // ALL. At opacity 0 the vertex shader drops the instance before the
+    // coverage is ever used, so "everything vanished" is the HIDE path and
+    // says nothing about the dither: stripping the ink's fade entirely left
+    // this gate green until this arm existed. Half coverage keeps every
+    // instance and halves its pixels, ink included.
+    //
+    // 🔴 AND IT IS ISOLATED BY DIFFERENCE, NOT COUNTED. A count of dark pixels
+    // does not measure ink: dithering half a SOLID fill away lets paper
+    // through and puts MORE pixels in the mid band than the solid fill had -
+    // measured, 14,008 at half coverage against 11,801 solid. What the ink is,
+    // exactly, is the pixels that change when the outline width goes to zero.
+    const inkAt = async (alpha) => {
+      r.setOpacity(null, alpha);
+      r.render(); await settle(6);
+      const on = shot();
+      const kept = r.relativeOutlineWidth;
+      r.relativeOutlineWidth = 0;
+      if (r.invalidateMesh) r.invalidateMesh();
+      r.render(); await settle(6);
+      const off = shot();
+      r.relativeOutlineWidth = kept;
+      if (r.invalidateMesh) r.invalidateMesh();
+      r.render(); await settle(6);
+      return diff(on, off);
+    };
+    const inkSolid = await inkAt(1);
+    const inkHalf = await inkAt(0.5);
+    r.setOpacity(null, 1); r.render(); await settle(6);
+
+    // ...AND THE TUBE, on the style a large structure defaults to.
+    if (r.setStyle) r.setStyle('tube');
+    await settle(10);
+    r.setOpacity(null, 1); r.render(); await settle(6);
+    const tubeSolid = shot();
+    r.setOpacity({positions: half}, 0.1); r.render(); await settle(6);
+    const tubeMoved = diff(tubeSolid, shot());
+    r.setOpacity(null, 1);
+
+    // ...AND THE PANEL OFFERS THE CONTROL IN BOTH, now that both can honour
+    // it. It withheld the row in tube while that was untrue, so this is the
+    // half that says the withholding was lifted when the reason went.
+    const rowHidden = () => {
+      const row = document.querySelector('#opacityRow');
+      if (!row) return null;
+      return !!row.hidden || getComputedStyle(row).display === 'none';
+    };
+    r.setResidueSelection([1, 2, 3]);
+    if (window.updateSelectionToolsState) window.updateSelectionToolsState();
+    await settle(4);
+    const rowInTube = rowHidden();
+    if (r.setStyle) r.setStyle('cartoon');
+    await settle(10);
+    r.setResidueSelection([1, 2, 3]);
+    if (window.updateSelectionToolsState) window.updateSelectionToolsState();
+    await settle(4);
+    const rowInCartoon = rowHidden();
+    r.clearResidueSelection();
+
     return {
+      heldAcross, appliedAcross, solidThere, tubeMoved,
+      appliedOnReturn, stillFaded, mergedCount, mergedMin, mergedMax, mergedOff,
+      inkSolid, inkHalf,
+      rowInTube, rowInCartoon,
       positions: n, faded: half.length,
       solidInk: ink(solid), solidHist: hist(solid),
       steps,
@@ -196,6 +325,18 @@ for s in R['steps']:
 print(f"  all faded: {R['steps'][-1]['ink']} ink px, and"
       f" {R['allZeroNoOutline']} with the outlines off")
 print(f"  restored to {R['restored']} px difference, mesh rebuilt {R['rebuilt']}x")
+print(f"  across a load: {R['heldAcross']} kept on the first object,"
+      f" {R['appliedAcross']} applied while the new one is drawn,"
+      f" {R['solidThere']} px between its arrival and fully solid")
+print(f"  back on the first: {R['appliedOnReturn']} applied,"
+      f" {R['stillFaded']} px of fade still in the picture")
+print(f"  merged: the SECOND object's {R['mergedCount']} ghosted positions land"
+      f" at {R['mergedMin']}..{R['mergedMax']}; it starts at {R['mergedOff']}")
+print(f"  the outlines themselves: {R['inkSolid']} px solid,"
+      f" {R['inkHalf']} px at half coverage")
+print(f"  tube: a fade moves {R['tubeMoved']} px;"
+      f" the Opacity row is hidden={R['rowInTube']} there"
+      f" and hidden={R['rowInCartoon']} in cartoon")
 
 if not R.get('sawStamp'):
     bad.append("there is no window.__rebuild stamp on this page, so the"
@@ -218,24 +359,71 @@ if by[0.0]['changed'] <= by[0.05]['changed']:
 # region is a line drawing over a faded fill, and at 0.05 there must still be
 # ink where the fill has gone.
 all0 = by['all0']
-if all0['ink'] < R['allZeroNoOutline'] * 2:
-    bad.append(f"with EVERY residue at opacity 0 there are {all0['ink']} dark"
-               f" pixels, against {R['allZeroNoOutline']} for the same frame"
-               ' with the outlines turned off - the ink went with the fills,'
-               ' which is not the look that was chosen')
-if all0['ink'] <= R['allZeroNoOutline'] * 1.5:
+# EVERYTHING FADED TO NOTHING LEAVES NOTHING - fills and outlines alike. The
+# outlines-off arm is the control: if the two differ, something is still being
+# drawn that the fade does not reach.
+if all0['ink'] > R['solidInk'] * 0.02:
+    bad.append(f"with every residue at opacity 0 there are still {all0['ink']}"
+               f" dark pixels of {R['solidInk']} - something survives the fade")
+if all0['ink'] != R['allZeroNoOutline']:
     bad.append(f"every residue faded to 0 leaves {all0['ink']} dark pixels with"
-               f" outlines on and {R['allZeroNoOutline']} with them off - so"
-               ' what survives the fade is not the ink, and the check above is'
-               ' reading something else')
-if all0['ink'] > R['solidInk'] * 0.9:
-    bad.append(f"with every residue at opacity 0 there are still"
-               f" {all0['ink']} dark pixels of {R['solidInk']} - the fills did"
-               ' not go anywhere, so this is measuring the wrong thing')
+               f" outlines on and {R['allZeroNoOutline']} with them off - the"
+               ' ink is not fading with the fill it outlines')
 if R['restored'] != 0:
     bad.append(f"putting the opacity back to 1 left {R['restored']} px"
                " different from before the sweep - the texel path leaves"
                " something behind")
+
+if R['heldAcross'] == 0:
+    bad.append('the first object lost its fade when another was added - it is'
+               " the object's own and adding a second cannot touch it")
+if R['appliedAcross'] != 0:
+    bad.append(f"{R['appliedAcross']} residues are ghosted while the NEW object"
+               ' is the one drawn - the fade followed the indices into it')
+if R['solidThere'] != 0:
+    bad.append(f"the new structure arrived {R['solidThere']} px away from fully"
+               ' solid - something of the other one\'s fade reached the picture')
+if R['appliedOnReturn'] != R['heldAcross'] or R['stillFaded'] < 1000:
+    bad.append(f"going back to the first object applied {R['appliedOnReturn']}"
+               f" of its {R['heldAcross']} and left {R['stillFaded']} px of"
+               ' fade in the picture - it was kept and then not used')
+# ...and the offset. Merged, the first object's positions start at its offset,
+# so a fade written in its own numbering has to be read back shifted by it.
+# THE SECOND OBJECT'S FADE, READ BACK IN THE MERGED ARRAY. Its positions are
+# its own 0..37 and must appear at its OFFSET; landing at 0..37 means the
+# mapping was skipped, and the FIRST object's residues are the ones ghosted.
+if not R['mergedOff']:
+    bad.append('the second object sits at offset 0 in the merge, so this arm'
+               ' cannot tell a mapped index from an unmapped one')
+elif R['mergedCount'] != 38:
+    bad.append(f"merged, {R['mergedCount']} of 38 ghosted positions survived"
+               ' the mapping')
+elif R['mergedMin'] < R['mergedOff']:
+    bad.append(f"merged, the second object's fade lands at {R['mergedMin']}.."
+               f"{R['mergedMax']} and it starts at {R['mergedOff']} - the"
+               ' offset was dropped')
+# THE INK'S SHARE, AND THAT IT FADED. With every residue at half coverage the
+# outlines keep about half their pixels; leaving them at full strength puts
+# them all back, which is the state this arm was written to catch.
+if R['inkSolid'] < 500:
+    bad.append(f"the outlines are only {R['inkSolid']} px at full strength -"
+               ' this arm is not measuring ink, so what follows means nothing')
+if R['inkHalf'] >= R['inkSolid'] * 0.8:
+    bad.append(f"the outlines are {R['inkHalf']} px at half coverage against"
+               f" {R['inkSolid']} solid - the ink is not fading with the fill"
+               ' it outlines')
+if R['tubeMoved'] < 1000:
+    bad.append(f"a fade in TUBE style moved {R['tubeMoved']} px - the tube's"
+               ' own program reads the same coverage texture, and a large'
+               ' structure defaults to that style')
+
+if R['rowInTube'] is None or R['rowInCartoon'] is None:
+    bad.append('there is no #opacityRow on this page, so neither half of the'
+               ' check below means anything')
+elif R['rowInTube'] or R['rowInCartoon']:
+    bad.append(f"the Opacity row is hidden in tube={R['rowInTube']},"
+               f" cartoon={R['rowInCartoon']} - both can fade now, so the row"
+               ' belongs in both')
 
 print()
 for b in bad:

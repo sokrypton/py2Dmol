@@ -1549,6 +1549,13 @@ class view:
                 current_metadata["sse"] = {
                     str(k): v for k, v in obj["sse"].items()
                 }
+            # ...and the ghosting, which is the same kind of thing by the same
+            # argument: a map keyed by position index, set by set_opacity, and
+            # useless anywhere but against this object.
+            if obj.get("opacity"):
+                current_metadata["opacity"] = {
+                    str(k): v for k, v in obj["opacity"].items()
+                }
             # ...and each FRAME's own colour, which set_color(frame=N) writes.
             # A frame is delivered once and once only - _sent_frame_count sees
             # to that - so a colour set on a frame the viewer already has could
@@ -1820,7 +1827,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             for py_obj in static_data:
                 # Skip objects with no frames AND no metadata
                 if not py_obj.get("frames") and not any(
-                    py_obj.get(key) for key in ["scatter_config", "contacts", "bonds", "color", "sse", "rotation_matrix", "center"]
+                    py_obj.get(key) for key in ["scatter_config", "contacts", "bonds", "color", "sse", "opacity", "rotation_matrix", "center"]
                 ):
                     continue
 
@@ -1903,6 +1910,10 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 if py_obj.get("sse"):
                     obj_to_serialize["sse"] = {
                         str(k): v for k, v in py_obj["sse"].items()
+                    }
+                if py_obj.get("opacity"):
+                    obj_to_serialize["opacity"] = {
+                        str(k): v for k, v in py_obj["opacity"].items()
                     }
 
                 # Add scatter_config if it exists
@@ -2918,6 +2929,45 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # persistence=False: Replace all frames (streaming mode, no history)
             target_obj["frames"] = [frame_data]
 
+    def _positions_on_object(self, verb, name, chain, position, target_obj=None):
+        """(the object, the position indices) for a per-object setter.
+
+        ONE READING OF position= AND chain=, for the verbs that write a map
+        keyed by position index onto an object - set_sse and set_opacity. It
+        was written out inside set_sse, and a second copy in the next verb is
+        a second place for the tuple rule to be half-remembered.
+        """
+        if target_obj is None:
+            if not self.objects:
+                print(f"Error: No objects loaded. Cannot {verb}.")
+                return None, []
+            target_obj = self.objects[-1] if name is None else next(
+                (o for o in self.objects if o.get("name") == name), None)
+            if target_obj is None:
+                print(f'Error: Object "{name}" not found.')
+                return None, []
+        indices = []
+        if position is not None:
+            if isinstance(position, int):
+                indices = [int(position)]
+            elif isinstance(position, tuple) and len(position) == 2:
+                indices = list(range(int(position[0]), int(position[1])))
+            elif isinstance(position, (list, range)):
+                indices = [int(p) for p in position]
+            else:
+                raise ValueError(
+                    "position must be an int, list, range or (start, end) tuple.")
+        if chain is not None:
+            frames = target_obj.get("frames") or []
+            chains = frames[0].get("chains") if frames else None
+            if not chains:
+                print("Error: object has no chain information.")
+                return None, []
+            indices += [i for i, c in enumerate(chains) if c == chain]
+        if not indices:
+            raise ValueError(f"{verb} needs position= and/or chain=.")
+        return target_obj, indices
+
     @staticmethod
     def _selector(name=None, chain=None, position=None):
         """
@@ -3202,26 +3252,10 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             print(f'Error: Object "{name}" not found.')
             return
 
-        indices = []
-        if position is not None:
-            if isinstance(position, int):
-                indices = [int(position)]
-            elif isinstance(position, tuple) and len(position) == 2:
-                indices = list(range(int(position[0]), int(position[1])))
-            elif isinstance(position, (list, range)):
-                indices = [int(p) for p in position]
-            else:
-                raise ValueError(
-                    "position must be an int, list, range or (start, end) tuple.")
-        if chain is not None:
-            frames = target_obj.get("frames") or []
-            chains = frames[0].get("chains") if frames else None
-            if not chains:
-                print("Error: object has no chain information.")
-                return
-            indices += [i for i, c in enumerate(chains) if c == chain]
-        if not indices:
-            raise ValueError("set_sse needs position= and/or chain=.")
+        target_obj, indices = self._positions_on_object(
+            "set_sse", name, chain, position, target_obj)
+        if target_obj is None:
+            return
 
         # Stored on the object so it travels with it, exactly like `color`.
         current = dict(target_obj.get("sse") or {})
@@ -3234,6 +3268,58 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         target_obj["sse"] = current or None
         # Same live-update path set_color uses, so a change lands immediately in
         # an already-displayed viewer and is simply picked up by show() otherwise.
+        if self._is_live:
+            self._send_incremental_update()
+
+    def set_opacity(self, opacity, name=None, chain=None, position=None):
+        """
+        Fade residues so what is behind them shows through.
+
+        The case this exists for is a side chain INSIDE the fold: drawn, in the
+        scene, and hidden by the cartoon in front of it from every angle worth
+        looking from - so moving the camera is not a fix. Fade the backbone
+        over it instead.
+
+        Args:
+            opacity (float): 1 is solid, 0 hides it, anything between ghosts it.
+            name (str, optional): Object name. Defaults to the last added.
+            chain (str, optional): Chain id.
+            position (int, list, tuple, range, optional): Position index/indices.
+                A 2-tuple is a half-open range, matching set_color.
+
+        Examples:
+            view.set_opacity(0.25, position=(40, 90))   # ghost 40-89
+            view.set_opacity(0.3, chain="A")            # ghost a whole chain
+            view.set_opacity(1, chain="A")              # ...and back to solid
+
+        Note:
+            Stored by POSITION INDEX against the object, like set_sse and
+            set_color, so it travels with the object and survives a save.
+
+            🔴 IT IS A GPU EFFECT. The fade is drawn by dropping pixels on an
+            ordered dither, which the WebGL painter does and the 2D fallback
+            does not - a viewer that has fallen back to the canvas painter
+            draws the structure solid. The panel hides its own slider there for
+            the same reason.
+        """
+        try:
+            alpha = float(opacity)
+        except (TypeError, ValueError):
+            raise ValueError(f"opacity must be a number in 0..1 - got {opacity!r}")
+        if not (0.0 <= alpha <= 1.0):
+            raise ValueError(f"opacity must be in 0..1 - got {alpha}")
+        target_obj, indices = self._positions_on_object(
+            "set_opacity", name, chain, position)
+        if target_obj is None:
+            return
+        current = dict(target_obj.get("opacity") or {})
+        for i in indices:
+            if alpha >= 1.0:
+                current.pop(i, None)
+                current.pop(str(i), None)
+            else:
+                current[i] = alpha
+        target_obj["opacity"] = current or None
         if self._is_live:
             self._send_incremental_update()
 
@@ -4489,6 +4575,14 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 obj_to_serialize["sse"] = {
                     str(k): v for k, v in obj["sse"].items()
                 }
+            # ...and the ghosting, which src/core/objstate.js declares as
+            # per-object state with `json: 'opacity'` - so a session written by
+            # the PAGE carries it and one written here has to as well, or the
+            # two disagree about what a session is.
+            if obj.get("opacity"):
+                obj_to_serialize["opacity"] = {
+                    str(k): v for k, v in obj["opacity"].items()
+                }
             # Add scatter_config and scatter_metadata if present
             if "scatter_config" in obj and obj["scatter_config"] is not None:
                 obj_to_serialize["scatter_config"] = obj["scatter_config"]
@@ -4614,6 +4708,10 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     # keys come back from JSON as strings; set_ss works in ints
                     self.objects[-1]["sse"] = {
                         int(k): v for k, v in obj_data["sse"].items()
+                    }
+                if obj_data.get("opacity"):
+                    self.objects[-1]["opacity"] = {
+                        int(k): float(v) for k, v in obj_data["opacity"].items()
                     }
                 # Restore scatter config (prefer scatter_config, but accept legacy scatter_metadata)
                 scatter_cfg = obj_data.get("scatter_config")

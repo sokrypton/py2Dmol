@@ -1554,6 +1554,7 @@ if self.config["scatter"]["enabled"]:
 | `new_obj(name, scatter_config)` | Create new object | `name`, `scatter_config` |
 | `set_color(color, name)` | Set object color | `color`, `name`, `chain`, `position`, `frame` |
 | `set_sse(sse, name)` | Override secondary structure | `sse` (`"H"`/`"E"`/`"C"`/`None`), `chain`, `position`; stored per object as `sse`, beside `color` |
+| `set_opacity(opacity, name)` | Fade residues so what is behind shows through | `opacity` 0..1, `name`, `chain`, `position`; stored per object as `opacity`, beside `sse`. A GPU effect - the 2D fallback draws solid |
 | `_send_incremental_update()` | Send incremental update to viewer (live mode) | Tracks new frames and changed metadata |
 | `to_html(title, bundle)` | Standalone document as a string | `bundle`: `inline` / `external` / a src |
 | `save_html(filepath, ...)` | Write one, plus the external bundle | `filepath`, `title`, `bundle` |

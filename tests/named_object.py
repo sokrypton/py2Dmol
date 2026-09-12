@@ -18,9 +18,11 @@ purposes for as long as it existed; nothing else did.
 
 WHY NOBODY HIT IT: the page always opened on the first object, and a script
 that loads one structure and asks about it by name is asking about the drawn
-one. It surfaced when the default object changed (see mostFramesOf) and a
-notebook's `show_sidechains(name='ubq', ...)` stopped arriving - which is a
-second bug, in the guard, and is checked here too.
+one. It surfaced during an attempt to change which object a page opens on - an
+attempt since declined, see tests/default_object.py - because a notebook's
+`show_sidechains(name='ubq', ...)` stopped arriving the moment the page opened
+on something else. That is a second bug, in the guard, and is checked here too.
+Both outlive the change that exposed them.
 
 WHAT IS MEASURED, with two structures loaded and the SECOND one drawn:
 

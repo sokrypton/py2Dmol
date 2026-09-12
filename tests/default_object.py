@@ -2,40 +2,38 @@
 
     python3 tests/default_object.py
 
-🔴 A STATIC BACKDROP BESIDE AN ANIMATED OBJECT OPENED ON THE BACKDROP, and the
-viewer then had no play controls at all: the trajectory was there, one switcher
-click away, and every sign that it existed was behind that click. Reported as
-"the player doesn't have the protein visible".
+TWO SHELLS, TWO RULES, AND BOTH ARE DELIBERATE:
 
-🔴 AND THE TWO SHELLS HAD DIFFERENT RULES, which is why the report was right
-about one and inverted for the other. The page's drop path took the LAST object
-loaded; the notebook's static path took `[0]`. Neither is a statement about
-which object is worth looking at - the number of FRAMES is.
+  * the NOTEBOOK opens on the FIRST object added. That is the order the author
+    of the page chose, and it is the only thing about the set of objects they
+    did choose;
+  * the PAGE opens on the file just DROPPED. A drop is a request to look at
+    what was dropped, whatever is already loaded.
 
-WHAT IS MEASURED, in the notebook shell, on the payload viewer.py writes:
+🔴 AND CHOOSING BY FRAME COUNT WAS BUILT, MEASURED AND DECLINED. A static
+backdrop added before an animated object opens on the backdrop, whose frame
+strip reads 1 / 1 and which has no play controls at all - reported as "the
+player doesn't have the protein visible". Opening on whichever object has the
+most frames fixes that case and was turned down: a viewer that reorders your
+objects behind your back is a surprise of its own. The remedy for that report
+is to add the animated object first, or to use the Object menu.
 
-  * animated first, static second -> opens on the animated one;
-  * static first, animated second -> the same, which is the arrangement that
-    reproduces the report and the one the old `[0]` rule got wrong;
-  * TWO STATIC OBJECTS -> opens on the first, exactly as before. The rule fires
-    only when something strictly wins, so every arrangement that worked is
-    untouched, and this is the arm that says so;
-  * TWO TRAJECTORIES -> likewise the first, for the same reason.
+This gate exists BECAUSE of that attempt. Neither rule was gated anywhere
+before it, which is why moving them was easy and the consequences were not.
 
-🔴 AND THE WEB DROP PATH IS A SECOND ARM, because the first version of this
-covered only the notebook and the regression landed in the other one. The
-page's loader builds `newNames` from the batch, and that list ALSO carries an
-object already in the renderer that the batch names again - so choosing from it
-let a structure already on the page beat the file just dropped, and a static
-file dropped onto a page holding a trajectory stopped being shown at all. It
-was tests/station_rows.py that caught it, by measuring its own coverage: its
-tail arm loads 1EHZ over a trajectory and went from 4 draws with a tail span to
-0. A gate for a rule has to exercise the shell the rule runs in.
+WHAT IS MEASURED, in the notebook shell, on the payload viewer.py writes: four
+arrangements of a static object and an animated one, all of which must open on
+the first. Then the page's own loader: a trajectory, then a static file dropped
+on top, which must show the file that was dropped.
 
-🔴 AND THE PLAY CONTROLS ARE READ, NOT INFERRED. "It opened on the right
-object" is a field on the renderer; what the reporter saw was a frame counter
-reading 1 / 1. Both are checked, because a viewer that names the animated
-object and still shows no player is the same bug wearing the fix.
+🔴 AND THE FRAME STRIP IS READ, NOT INFERRED. "It opened on the right object"
+is a field on the renderer; what a reader sees is the counter. Both, because
+they can disagree.
+
+🔴 AND "TWO FILES DROPPED TOGETHER" IS NOT A MULTI-OBJECT CASE HERE, which cost
+an arm to find out: the page COMBINES a batch into one object, so 1UBQ.cif
+dropped with a 30-model trajectory is a single `1UBQ` of 31 frames. Several
+objects on a page come from SUCCESSIVE drops.
 """
 import http.server, json, os, shutil, socketserver, sys, threading, time, types
 
@@ -105,29 +103,25 @@ ASK = """(() => {
   });
 })()"""
 
+# Every arrangement opens on the first, INCLUDING the two where the animated
+# object is second - which are the ones a frames-based rule would move, and so
+# the ones that say this rule is the one running.
 ARMS = [
     ('moving then still', ['moving', 'still'], 'moving'),
-    ('still then moving', ['still', 'moving'], 'moving'),
-    # ...and the two that must not move. `still` and `still2` both have one
-    # frame, `moving` and `moving2` four each: nothing wins, so each keeps the
-    # answer its shell always gave - the first, here.
+    ('still then moving', ['still', 'moving'], 'still'),
     ('two static', ['still', 'still2'], 'still'),
     ('two trajectories', ['moving', 'moving2'], 'moving'),
 ]
 
 
 # THE PAGE'S OWN LOADER, which is a different rule in a different file from
-# the notebook's - see the header.
+# the notebook's - see the header. A trajectory, then a static file dropped on
+# top: the dropped one is what the reader asked to see.
 #
-# 🔴 AND "TWO FILES DROPPED TOGETHER" IS NOT A MULTI-OBJECT CASE HERE, which
-# cost an arm to find out: the page COMBINES a batch into one object, so
-# dropping 1UBQ.cif with a 30-model trajectory gives a single `1UBQ` of 31
-# frames. Several objects on the page come from SUCCESSIVE drops instead - and
-# that is the case the rule must not touch, because the file just dropped is
-# the one the reader is asking to see whatever is already there. It is also the
-# case the first version of this broke: `newNames` carries objects already in
-# the renderer as well as new ones, so the trajectory already on the page beat
-# the file being dropped and the new one was never shown.
+# 🔴 THIS IS THE ARM THE DECLINED RULE BROKE. Choosing by frame count read a
+# list that carries objects already in the renderer as well as new ones, so the
+# trajectory already on the page beat the file being dropped and the new one
+# was never shown at all. Nothing covered this shell until then.
 DROP = """(async () => {
  try {
   const get = async (f) => ({name: f,
@@ -177,9 +171,14 @@ try:
         if R['opened'] != want:
             bad.append(f"{label}: opened on {R['opened']!r}, wanted {want!r}"
                        f" - the objects are {R['names']}")
-        if want.startswith('moving') and R['counter'] in ('1 / 1', '1/1'):
-            bad.append(f"{label}: the frame strip reads {R['counter']!r} - it"
-                       ' named the animated object and still shows no player')
+        # ...and the strip agrees with the object that was opened. A static
+        # object reading 1 / 1 is CORRECT here and is the whole of what the
+        # declined rule was trying to avoid; what must never happen is the two
+        # disagreeing.
+        want_strip = f"1 / {R['frames']}"
+        if R['counter'] and R['counter'].replace(' ', '') != want_strip.replace(' ', ''):
+            bad.append(f"{label}: opened on a {R['frames']}-frame object and the"
+                       f" strip reads {R['counter']!r}, not {want_strip!r}")
     # ---- and the page's loader -------------------------------------------
     from probe_js import HELPERS  # noqa: E402
     probe = os.path.join(ROOT, '_dobj_web.html')

@@ -1545,6 +1545,13 @@ if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (windo
                     renderer.objectsData[obj.name].sse = obj.sse;
                     renderer._invalidateSegmentCache();
                 }
+                // ...and the ghosting (Python's set_opacity), for the same
+                // reason. It needs no cache invalidation: the fade is a texel
+                // the shader reads, not geometry - see drawnOpacity.
+                if (obj.opacity && renderer.objectsData[obj.name]) {
+                    renderer.objectsData[obj.name].opacity = obj.opacity;
+                    renderer._opacityVersion = (renderer._opacityVersion || 0) + 1;
+                }
 
                 // Store rotation matrix and center for view transform if present
                 if (obj.rotation_matrix && obj.center) {
@@ -1559,15 +1566,25 @@ if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (windo
                 }
             }
         }
-        // Set view to the first frame of the object worth opening on - the
-        // one with a trajectory where there is one, and the first otherwise,
-        // which is what this always did. See mostFramesOf in core/mol.js: a
-        // static backdrop added beside an animated object opened on the
-        // backdrop, and a viewer showing it has no play controls at all.
+        // Set view to the first frame of the FIRST object, and deliberately.
+        //
+        // 🔴 CHOOSING BY FRAME COUNT WAS TRIED AND DECLINED. A static backdrop
+        // added beside an animated object opens on the backdrop, which has no
+        // play controls - reported as "the player doesn't have the protein
+        // visible" - and the obvious repair is to open on whichever object has
+        // the most frames. It was built, measured and turned down: a viewer
+        // that reorders your objects behind your back is a surprise of its own,
+        // and the order they were added in is the one thing the author of the
+        // page actually chose. The remedy for that report is to add the
+        // animated object first, or to use the Object menu.
+        //
+        // What the attempt cost, kept because it is worth knowing: moving this
+        // line moves what EVERY load-time request resolves against, and one of
+        // those - show_sidechains(name=...) - silently stopped arriving. See
+        // _writeTargets in parts/sidechains.js, which is the real bug it found
+        // and which stays fixed.
         if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && window.py2dmol_staticData[viewerId].length > 0) {
-            const staticNames = window.py2dmol_staticData[viewerId].map((o) => o.name);
-            const openOn = renderer.mostFramesOf
-                ? renderer.mostFramesOf(staticNames, staticNames[0]) : staticNames[0];
+            const openOn = window.py2dmol_staticData[viewerId][0].name;
             renderer.currentObjectName = openOn;
             renderer.objectSelect.value = openOn;
 
@@ -1720,6 +1737,14 @@ const applyMetadataToObject = (obj, meta) => {
     // replacing it invalidates the cached assignment and geometry by itself.
     if ('sse' in meta) {
         obj.sse = meta.sse || null;
+        needsRerender = true;
+    }
+    // ...and the ghosting, which arrives the same way and by the same
+    // argument - a map keyed by position index that means nothing except
+    // against this object.
+    if ('opacity' in meta) {
+        obj.opacity = meta.opacity || null;
+        renderer._opacityVersion = (renderer._opacityVersion || 0) + 1;
         needsRerender = true;
     }
 

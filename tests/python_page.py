@@ -152,10 +152,11 @@ window.addEventListener('load', () => {
       // show(10..14) then hide(12) is four residues and not five.
       //
       // 🔴 `map` AND `table` ARE THE RENDERER'S, WHICH MEANS THE DRAWN
-      // OBJECT'S - so reading them here read whichever object the page had
-      // opened on, and this leg only ever passed because that was ubq. They
-      // are taken below, after ubq is picked, where they are ubq's. `set` is
-      // the object's own and is right from anywhere.
+      // OBJECT'S - so reading them here reads whichever object the page opened
+      // on, and this leg passed only because that is ubq. It is ubq again, and
+      // they are still taken below, after ubq is picked: a leg that measures
+      // the right thing for a reason it does not state is one line from
+      // measuring the wrong one.
       R.sc = {
         set: [...((r.objectsData.ubq || {}).sidechains || [])].sort((a, b) => a - b),
       };
@@ -272,17 +273,11 @@ if VIEWER_OWN != ({'object': 'ubq', 'positions': [0, 1, 2, 3, 4]}, ['ubq', 'pep'
 if WEB_FRAMES != [1, 1]:
     bad.append(f"a state file saved by the WEB - which carries shown_objects and"
                f" a per-object viewerState - loaded as {WEB_FRAMES}")
-# 🔴 'nochain', NOT 'ubq', AND THAT IS THE RULE RATHER THAN A DRIFT. This page
-# carries four objects and `nochain` is the only one with more than one frame
-# (it is added twice, for the inheritance check below) - so mostFramesOf opens
-# on it. See core/mol.js: a page that opens on a single-frame object beside an
-# animated one shows no play controls at all, which was the reported fault.
-# What this line is really asserting is that ONE object is the resting state,
-# and that half is unchanged.
-if R['drawn'] != ['nochain'] or R['merged']:
+# THE FIRST OBJECT, which is the order the page's author chose. Opening on the
+# one with the most FRAMES instead was built and declined - see parts/ui.js.
+if R['drawn'] != ['ubq'] or R['merged']:
     bad.append(f"a Python page opened showing {R['drawn']} - one object is the"
-               " resting state there as everywhere else, and it is the one"
-               " with the frames")
+               " resting state there as everywhere else, and it is the first")
 if R['bothDrawn'] != ['ubq', 'pep'] or not R['bothMerged']:
     bad.append(f"showing both left {R['bothDrawn']}")
 sc = R.get('sc') or {}

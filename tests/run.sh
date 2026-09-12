@@ -219,6 +219,8 @@ probe_cap () {
     (export_html) print 300 ;;
     (default_object) print 300 ;;
     (opacity) print 200 ;;
+    (python_opacity) print 200 ;;
+    (named_object) print 200 ;;
     (*) print $CAP ;;
   esac
 }
@@ -247,7 +249,6 @@ if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
   UI=(pick_empty selection_mark focus_mode hover_echo heatmap_objects heatmap_visibility hidden_reload cut_ligands
       sidechain_toggle nucleic_multi save_multi selection_panel minimal_input
       object_reload python_page python_multi style_per_object align_objects embed panel
-      named_object
       msa_paired_ui selection_shells mobile_layout notebook_narrow play_stop heatmap_maps heatmap_names
       render_page)
   pids=(); names=()
@@ -269,7 +270,7 @@ if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "gpu" ]]; then
-  for t in gpu_recolour gpu_mesh_reuse gpu_tube_reuse gpu_mixed_style gpu_stick_flat stable_topology disulfides sequence_connectivity dev_rebuild_light colour_repaint station_shader station_corners station_pixels station_frames station_foldcuts station_integrated station_overlay station_sidechains topology_survey station_controls rebuild_actions rebuild_returns render_counts diffusion_connectivity pick_index halo_partial load_work station_unpinned panel_idle frame_share colour_cache ss_agree splice_window station_rows station_edges sheet_merge outline_sync capture_once arrow_rebuilds ss_axis resize_reuse frame_revisit export_html opacity default_object; do
+  for t in gpu_recolour gpu_mesh_reuse gpu_tube_reuse gpu_mixed_style gpu_stick_flat stable_topology disulfides sequence_connectivity dev_rebuild_light colour_repaint station_shader station_corners station_pixels station_frames station_foldcuts station_integrated station_overlay station_sidechains topology_survey station_controls rebuild_actions rebuild_returns render_counts diffusion_connectivity pick_index halo_partial load_work station_unpinned panel_idle frame_share colour_cache ss_agree splice_window station_rows station_edges sheet_merge outline_sync capture_once arrow_rebuilds ss_axis resize_reuse frame_revisit export_html opacity default_object python_opacity named_object; do
     run_probe $t || fail=1
   done
   # ...and the same file again with a TAIL in it: 1EHZ's nine ions are rebuilt

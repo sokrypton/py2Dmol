@@ -3688,9 +3688,21 @@ t('every draw path asks the same clip test', () => {
     // the GPU cuts per fragment. They must at least be reading the same slab.
     const gpu = fs.readFileSync('src/cartoon/paintgl.js', 'utf8');
     const cart = L.cartoon;
-    if (!/clipped\(vZv\)/.test(gpu) || !/clipped\(zSurf\)/.test(gpu)) {
+    // 🔴 THE FADE RIDES THROUGH THE SAME CALL, so the second argument is
+    // allowed: clipped(z) and clipped(z, fade) are one test - see CLIP_GLSL,
+    // where the two coverages compose as min() and go through one dither. This
+    // read `clipped\(vZv\)` exactly and failed the day the ghosting reached
+    // the outlines, on a change that gave the clip MORE to do rather than less.
+    if (!/clipped\(vZv[,)]/.test(gpu) || !/clipped\(zSurf[,)]/.test(gpu)) {
         throw new Error('a GPU program draws without the clip test - the ribbon '
             + 'and the tube must both be cut');
+    }
+    // ...and all THREE of them: the fills, the outlines and the tube. Naming
+    // two was enough while the ink shared the fills' test; it does not now.
+    const clipCalls = (gpu.match(/if \(clipped\(/g) || []).length;
+    if (clipCalls < 3) {
+        throw new Error('only ' + clipCalls + ' GPU draw path(s) ask the clip '
+            + 'test - the fills, the outlines and the tube each have their own');
     }
     if (!/setClipSlab\(renderer\.clipSlabOn/.test(gpu)) {
         throw new Error('the GPU never reads the slab off the renderer');

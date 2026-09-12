@@ -116,7 +116,9 @@ window.addEventListener('load', () => {
     for (let i = run.a; i <= run.b; i++) merged[i] = 'E';
     const broken = merged.slice(); broken[mid] = 'C';
 
-    const ink = () => { const s = G.stationTexels(); return {inkBuf: s && s.inkBuf, edSrc: s && s.edSrc}; };
+    const ink = () => { const s = G.stationTexels();
+      return {inkBuf: s && s.inkBuf, edSrc: s && s.edSrc,
+              edgeFloats: s && s.edgeFloats}; };
 
     // build with the gap OPEN, then step to the next frame with it CLOSED
     r._forceSec = broken.join(''); r.setFrame(0);
@@ -172,7 +174,20 @@ shutil.rmtree(profile_dir, ignore_errors=True)
 if out.get("error"):
     sys.exit("page error: " + out["error"][:400])
 
-ED = 19
+# 🔴 NOT A CONSTANT HERE. The row was 19 floats and grew to 20 when the outline
+# learned to fade with the fill it draws - and this probe, striding by the
+# number it remembered, walked into the middle of every row and reported 154
+# outlines drawn across a merged sheet: exactly the fault it exists to catch,
+# with nothing wrong in the renderer. The mesh reports its own row width.
+def _edge_floats(d):
+    for key in ("fast", "fresh"):
+        v = d.get(key)
+        if isinstance(v, dict) and v.get("edgeFloats"):
+            return int(v["edgeFloats"])
+    return None
+
+
+ED = _edge_floats(out) or 19
 ED_SRC = 7
 DRAWN = {2.0, 5.0}
 

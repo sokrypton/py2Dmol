@@ -89,6 +89,13 @@ const OBJECT_STATE = [
         remap: remapPositionMap },
     { key: 'sidechainColor', kind: 'plain', absent: 'none', json: 'sidechain_color',
         remap: remapPositionMap },
+    // position -> how solidly it is drawn, 0..1. Absent is SOLID, which is
+    // what a structure nobody has ghosted looks like. Saved: it is a choice
+    // the reader made about their own figure - the same argument as the
+    // side-chain colours above it - and a session that came back solid would
+    // have thrown it away.
+    { key: 'opacity', kind: 'plain', absent: 'none', json: 'opacity',
+        remap: remapPositionMap },
     // only the `position` map inside the tree is keyed by index
     { key: 'color', kind: 'plain', absent: 'none', json: 'color',
         remap: remapColorTree },

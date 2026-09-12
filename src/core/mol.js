@@ -4701,68 +4701,85 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * @param {*} sel      any selector selectTo takes, or null for all
          * @param {number} a   0 hides, 1 is solid; anything between ghosts
          */
-        setOpacity(sel, a) {
-            const alpha = Math.max(0, Math.min(1, Number(a)));
-            const named = (sel === null || sel === undefined)
-                ? null : positionsFor(this, sel);
-            const next = new Map(this.residueOpacity || []);
-            if (named === null) {
-                // ALL, which is how a fade is taken off again: a full map of
-                // ones would work and would also be a map that never empties,
-                // so every later frame would walk it.
-                next.clear();
-                if (alpha < 1) {
-                    for (let i = 0; i < this.coords.length; i++) next.set(i, alpha);
+        setOpacity(sel, alphaIn) {
+            const alpha = Math.max(0, Math.min(1, Number(alphaIn)));
+            // 🔴 ON THE OBJECT, IN THE OBJECT'S OWN NUMBERING - like its side
+            // chains, their colours, its elements and its base plates. It was
+            // a Map on the RENDERER, keyed by drawn position, on the argument
+            // that ghosting is a way of LOOKING at a structure rather than a
+            // property of one. That argument produced two wrong behaviours in
+            // a row: the fade followed the indices into the next structure
+            // loaded, and guarding against that dropped the fade whenever
+            // anything was ADDED, because adding changes the position count.
+            // Both are the same mistake - a per-position fact keyed by a
+            // number that means different things at different times.
+            const groups = (typeof this._writeTargets === 'function')
+                ? this._writeTargets(sel === undefined ? null : sel)
+                : [{ object: this.objectsData[this.currentObjectName],
+                     name: this.currentObjectName,
+                     positions: [...positionsFor(this, sel)] }];
+            let changed = false;
+            for (const g of groups) {
+                if (!g.object) continue;
+                // 🔴 ALREADY IN THE OBJECT'S OWN NUMBERING. writeGroups exists
+                // to do exactly that conversion - "the positions in ITS
+                // numbering" - and objectPositions never leaves it. Taking the
+                // offset off again here stored a merged second object's fade
+                // at NEGATIVE indices, which read back at the FIRST object's
+                // residues: ghosting 6MRR faded 1UBQ instead.
+                // A PLAIN OBJECT keyed by position, exactly like
+                // sidechainColor beside it in OBJECT_STATE - which is what
+                // remapPositionMap renumbers and what a session saves. A Map
+                // would need its own case in both and would be a second shape
+                // for the same idea.
+                const cur = g.object.opacity
+                    ? Object.assign({}, g.object.opacity) : {};
+                for (const local of g.positions) {
+                    const was = (cur[local] === undefined) ? 1 : cur[local];
+                    if (was !== alpha) changed = true;
+                    if (alpha >= 1) delete cur[local]; else cur[local] = alpha;
                 }
-            } else {
-                for (const i of named) {
-                    if (alpha >= 1) next.delete(i); else next.set(i, alpha);
-                }
+                g.object.opacity = Object.keys(cur).length ? cur : null;
             }
-            this.residueOpacity = next.size ? next : null;
-            this._opacityVersion = (this._opacityVersion || 0) + 1;
+            if (changed) this._opacityVersion = (this._opacityVersion || 0) + 1;
+            return changed;
         }
 
         /**
-         * WHICH OBJECT A VIEWER SHOULD OPEN ON, when several arrive together.
+         * What every drawn position is drawn at, as a Map of the ones that are
+         * not solid. Empty - null - is the ordinary case and costs nothing.
          *
-         * 🔴 A STATIC BACKDROP BESIDE AN ANIMATED ONE OPENED ON THE BACKDROP,
-         * and the viewer then had no play controls at all - the trajectory was
-         * there, one switcher click away, and every sign that it existed was
-         * behind that click. Reported as "the player doesn't have the protein
-         * visible".
-         *
-         * Both shells had the fault and NEITHER had the same rule: the page's
-         * drop path took the LAST object loaded and the notebook's static path
-         * took `[0]` - the first. So the report's own account of it was right
-         * about the notebook and inverted for the web, and it is the same bug
-         * either way: the order things arrived in is not a statement about
-         * which of them is worth looking at.
-         *
-         * FRAMES ARE. An object with a trajectory is the one a reader came to
-         * see, and one with a single frame beside it is scenery.
-         *
-         * 🔴 AND ONLY WHEN SOMETHING ACTUALLY WINS. `fallback` is the caller's
-         * existing answer and it is returned whenever nothing has strictly
-         * more frames than the rest - so two trajectories, two static objects,
-         * or one object of either kind all open exactly where they did before.
-         * The new rule fires only in the case that was broken.
+         * This is the read side of setOpacity: the fade is stored per object
+         * and the picture is drawn from one array, so somebody has to put the
+         * two together. Built here rather than in the painter because the
+         * mapping is the renderer's - see ownerOf and localRangeOf - and a
+         * painter that worked it out itself would be a second copy of it.
          */
-        mostFramesOf(names, fallback) {
-            let best = null; let most = 0; let tied = false;
-            for (const name of (names || [])) {
+        drawnOpacity() {
+            const names = this.drawnObjects ? this.drawnObjects() : [];
+            let out = null;
+            for (const name of names) {
                 const o = this.objectsData && this.objectsData[name];
-                const n = (o && o.frames) ? o.frames.length : 0;
-                if (n > most) { most = n; best = name; tied = false; }
-                else if (n === most) tied = true;
+                const map = o && o.opacity;
+                if (!map) continue;
+                const keys = Object.keys(map);
+                if (!keys.length) continue;
+                const off = this.localRangeOf
+                    ? (this.localRangeOf(name).off || 0) : 0;
+                if (!out) out = new Map();
+                for (const k of keys) out.set(Number(k) + off, map[k]);
             }
-            return (best && !tied && most > 1) ? best : fallback;
+            return out;
         }
 
         /** What this position is drawn at, 1 unless something ghosted it. */
         opacityOf(idx) {
-            const m = this.residueOpacity;
-            const v = m ? m.get(idx) : undefined;
+            const owner = this.ownerOf ? this.ownerOf(idx) : null;
+            const name = owner ? owner.name : this.currentObjectName;
+            const local = owner ? owner.local : idx;
+            const o = this.objectsData && this.objectsData[name];
+            const map = o && o.opacity;
+            const v = map ? map[local] : undefined;
             return (v === undefined) ? 1 : v;
         }
 

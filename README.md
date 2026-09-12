@@ -489,6 +489,20 @@ for frame in range(60):
     viewer.add(coords)
 ```
 
+## Seeing inside the fold
+A side chain in the middle of a protein is drawn, and hidden by the cartoon in
+front of it from every angle - so turning the camera does not help. Fade the
+fold over it instead:
+```python
+viewer.show_sidechains(position=(45, 48))
+viewer.set_opacity(0.2, position=(0, 40))    # ghost the front of the chain
+viewer.set_opacity(1, position=(0, 40))      # ...and back to solid
+```
+The fade is per residue and belongs to the object, so it survives adding
+another structure and is written into `save_state`. It is drawn by dropping
+pixels rather than blending, which needs the WebGL painter - a viewer that has
+fallen back to the 2D one draws the structure solid.
+
 ## Exporting a standalone page
 `save_html` writes a file that opens on its own - no notebook, no server, no
 kernel. Use it for a slide deck, a report, or anything that has to work from a
