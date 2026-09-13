@@ -1050,17 +1050,33 @@ const SELECTION_PANEL_ROWS = [
         { kind: 'color', id: 'scColor',
           title: 'Colour the selected side chains',
           aria: 'Colour the selected side chains' },
+        // 🔴 THREE BUTTONS, AND EACH ONE NAMES WHAT YOU GET. This was a
+        // Show/Hide pair with a separate Plate switch beside it, and Show then
+        // meant "whichever way it was last drawn" - which on a nucleotide is
+        // the plate. So pressing Show on RNA gave you a plate, and a plate is
+        // emitted per BASE PAIR: on a tRNA 42 of 76 bases have one, on
+        // single-stranded RNA none at all. The reader pressed the button that
+        // says Show and nothing appeared, which is github.com/sokrypton/py2Dmol#28.
+        //
+        // Show is the real atoms now, which every residue has and which always
+        // draws. Plate is the schematic, offered only where one can exist.
+        // Nothing here decides between them on the reader's behalf any more.
+        //
+        // The third button is added to the SAME `pair` kind rather than a new
+        // one: the builder already loops over `buttons`, and the row wants one
+        // segmented control rather than a control plus a modifier - which is
+        // what the old arrangement was, and why the question had two shapes.
         { kind: 'pair', id: 'sidechainPair',
-          aria: 'Draw side chains for the selected residues', buttons: [
+          aria: 'How the selected residues are drawn', buttons: [
             { id: 'sidechainShowButton', label: 'Show',
-              title: 'Draw side chains for the selected residues' },
+              title: 'Draw the real side-chain atoms of the selected residues' },
             { id: 'sidechainHideButton', label: 'Hide',
-              title: 'Hide the side chains of the selected residues' }] },
-        // ...AND HOW, FOR A NUCLEOTIDE, which is the only thing with two ways
-        // of being drawn: the plate or its real atoms.
-        { kind: 'toggle', id: 'plateShowToggle', label: 'Plate',
-          title: 'Draw the bases as plates rather than atoms',
-          aria: 'Draw the selected bases as plates' },
+              title: 'Draw neither atoms nor plates for the selected residues' },
+            // ...offered only where a plate can exist, which is a nucleotide.
+            // A protein side chain has one way of being drawn, so the row is
+            // two buttons there - see syncSelectionToggles.
+            { id: 'sidechainPlateButton', label: 'Plate',
+              title: 'Draw the selected bases as flat plates rather than atoms' }] },
         // Element colours ride WITH the side chains rather than in a row of
         // their own: they are a property of the atoms this row draws. "Elem",
         // not "Elements" - the full word pushed the row onto a second line.

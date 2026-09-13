@@ -5896,16 +5896,6 @@ function makeResident(faces, scale, prm, lines) {
         // that rebuilt every time.
         const cameFromCache = !!part;
         if (g === 0) {
-            console.log('BUILD G=0:', JSON.stringify({
-                cameFromCache,
-                slotExists: !!slot,
-                slotHash: slot ? slot.hash : null,
-                newHash: hash,
-                hashDiff: slot ? (slot.hash ^ hash) : null,
-                facesLen: face.length,
-                scale,
-                rowsUnused
-            }));
             RB.ribbonReused = cameFromCache;
             if (typeof window !== 'undefined') {
                 if (cameFromCache) window.__sidechainBuilds = (window.__sidechainBuilds || 0) + 1;

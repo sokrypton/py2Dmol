@@ -51,19 +51,17 @@ window.addEventListener('load', () => {
     // 🔴 PRESS THE REAL BUTTON. The fault is in what the panel computes from
     // the selection before it calls anything, so a probe that called
     // setSelectionSidechains itself would test around it.
-    // 🔴 THE PLATE TOGGLE IS PINNED, because it is an INPUT to what Show
-    // computes and the panel leaves it alone while nothing is drawn - so its
-    // value carries over from whatever the previous leg did and the legs
-    // silently depend on their order. Set directly rather than dispatched: the
-    // Show handler reads `.checked`, and firing `change` would run the plate
-    // handler instead, which is a different action.
-    const press = async (ids, plateOn) => {
+    // 🔴 PRESS THE BUTTON THAT NAMES WHAT IS WANTED. The row is three buttons
+    // now - Show is the atoms, Plate is the schematic, Hide is neither - so a
+    // leg says which one it presses instead of pinning a modifier switch and
+    // pressing Show. That the modifier is gone is half the point of the change:
+    // it was an INPUT to what Show computed, the panel left it alone while
+    // nothing was drawn, and so the legs silently depended on their order.
+    const press = async (ids, which) => {
       r.setResidueSelection(new Set(ids));
       await settle(10);
-      const plate = document.getElementById('plateShowToggle');
-      if (plate) { plate.checked = plateOn; plate.indeterminate = false; }
-      const btn = document.getElementById('sidechainShowButton');
-      if (!btn) return {noButton: true};
+      const btn = document.getElementById(which);
+      if (!btn) return {noButton: true, wanted: which};
       btn.click();
       await settle(16);
       const sc = obj().sidechains instanceof Set ? obj().sidechains : new Set();
@@ -84,22 +82,24 @@ window.addEventListener('load', () => {
       await settle(8);
     };
 
+    const SHOW = 'sidechainShowButton', PLATE = 'sidechainPlateButton';
     const out = {};
     // a mixed selection: some protein, some nucleotide - the reported case.
-    // BOTH WAYS ROUND, because the plate toggle decides what the nucleotides
-    // get and the protein residues must be drawn either way.
+    // BOTH BUTTONS, because Plate decides what the nucleotides get and the
+    // protein residues must be drawn either way.
     const mixed = [...prot.slice(0, 30), ...nuc.slice(0, 8)];
-    await clear(); out.mixedPlate = await press(mixed, true);
-    await clear(); out.mixedAtoms = await press(mixed, false);
+    await clear(); out.mixedPlate = await press(mixed, PLATE);
+    await clear(); out.mixedAtoms = await press(mixed, SHOW);
     // ...and the two pure controls, BOTH of which pass against the bug
-    await clear(); out.protein = await press(prot.slice(30, 60), true);
-    await clear(); out.nucleic = await press(nuc.slice(8, 20), true);
+    await clear(); out.protein = await press(prot.slice(30, 60), SHOW);
+    await clear(); out.nucleic = await press(nuc.slice(8, 20), PLATE);
+    await clear(); out.nucleicShow = await press(nuc.slice(8, 20), SHOW);
     // ...AND HIDE, WHICH IS THE OTHER HALF OF THE SAME SPLIT. `none` is an
     // answer every residue has, so it must reach all of them - and with the
     // list split by kind it is the branch that is easy to drop. Pressed on the
     // mixed selection while its side chains are out.
     await clear();
-    await press(mixed, false);
+    await press(mixed, SHOW);
     r.setResidueSelection(new Set(mixed));
     await settle(10);
     const hide = document.getElementById('sidechainHideButton');
@@ -187,14 +187,27 @@ if p["shownProtein"] != p["askedProtein"]:
 
 n = o["nucleic"]
 if n["platedNuc"] != n["askedNuc"]:
-    bad.append(f"a pure NUCLEIC selection: {n['platedNuc']} of {n['askedNuc']}"
-               " nucleotides came back with a plate. Show on a nucleotide means"
-               " the plate unless the menu says otherwise, and drawing them all"
-               " as atoms instead would pass the protein legs above")
+    bad.append(f"Plate on a pure NUCLEIC selection: {n['platedNuc']} of"
+               f" {n['askedNuc']} nucleotides came back with a plate")
 if n["shownNucAtoms"]:
-    bad.append(f"a pure NUCLEIC selection drew {n['shownNucAtoms']} nucleotides as"
-               " ATOMS - Show should bring back the plate, which is how they were"
-               " last drawn")
+    bad.append(f"Plate drew {n['shownNucAtoms']} nucleotides as ATOMS - the two"
+               " are alternatives, and asking for one must not give the other")
+
+# 🔴 AND SHOW ON A NUCLEOTIDE MEANS ITS ATOMS, which is the change itself.
+# Show used to mean "whichever way it was last drawn" - the plate - and a plate
+# is emitted per base PAIR, so on single-stranded RNA the button said Show and
+# drew nothing at all. Every residue has atoms; not every base has a plate.
+sa = o.get("nucleicShow") or {}
+print(f"  {'nucShow':<11} asked {sa.get('askedNuc')} nucleotide  ->  atoms"
+      f" {sa.get('shownNucAtoms')} / plates {sa.get('platedNuc')}")
+if sa.get("shownNucAtoms") != sa.get("askedNuc"):
+    bad.append(f"Show on a pure nucleic selection drew {sa.get('shownNucAtoms')}"
+               f" of {sa.get('askedNuc')} as atoms. Show must mean the atoms -"
+               " a plate exists only where there is a base pair to hang it on,"
+               " so a button that resolves to one can draw nothing at all")
+if sa.get("platedNuc"):
+    bad.append(f"Show left {sa['platedNuc']} nucleotides wearing a plate -"
+               " the atoms and the plate are alternatives")
 
 h = o.get("hidden") or {}
 print(f"  {'hide':<11} asked {h.get('asked')} mixed  ->  still shown"

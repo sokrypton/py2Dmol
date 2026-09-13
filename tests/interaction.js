@@ -591,7 +591,20 @@ const panelBody = (() => {
         }
         return appSrc.slice(i, kk + 1);
     };
-    return appSrc.slice(a, k + 1) + '\n' + lift('syncSelectionToggles')
+    // 🔴 AND THE CONSTANT setSelectionPair READS, which is not a function and
+    // so is not lifted by shape. The side-chain row is three buttons now and
+    // SIDECHAIN_MODE_BUTTONS is the one place that says which is which - the
+    // sync that lights a button and the handler that presses one both read it,
+    // which is what stops them disagreeing about `plate`. Left out, every
+    // panel test throws `SIDECHAIN_MODE_BUTTONS is not defined` at the first
+    // sync, which is a harness fault wearing a product fault's clothes.
+    const constLine = (name) => {
+        const i = appSrc.indexOf('const ' + name + ' = ');
+        if (i < 0) throw new Error(name + ' not found in src/app/');
+        return appSrc.slice(i, appSrc.indexOf(';', i) + 1);
+    };
+    return constLine('SIDECHAIN_MODE_BUTTONS') + '\n'
+        + appSrc.slice(a, k + 1) + '\n' + lift('syncSelectionToggles')
         + '\n' + lift('setSelectionPair')
         // ...and the two the toggles read: which of them is a ligand row, and
         // how much of it is drawn
@@ -617,29 +630,28 @@ const SEL_HOST = 'const selectionHost = { renderer: () => viewerApi && viewerApi
 // was - checked when the first is filled, Mixed when neither is - because that
 // is exactly what the pair means, and every test that scored the switch is
 // scoring the same three states.
-function pairNode() {
+// 🔴 AND IT TAKES A COUNT, because the side-chain row is THREE buttons now -
+// Show, Hide and Plate, each naming what it gives you. `checked` and
+// `indeterminate` still mean what they meant, so every test that scored this as
+// a switch still scores the same states; `mode` is the index of the lit button,
+// which is what a row with more than two of them has to be read by.
+function pairNode(n = 2) {
     const mk = () => {
-        const b = { on: false, attrs: {} };
+        const b = { on: false, hidden: null, attrs: {} };
         b.classList = { toggle: (c, v) => { if (c === 'is-on') b.on = !!v; } };
         b.setAttribute = (k, v) => { b.attrs[k] = v; };
         return b;
     };
-    const on = mk(); const off = mk();
-    const node = { hidden: null, buttons: [on, off],
-        querySelectorAll: () => [on, off], addEventListener() {} };
-    Object.defineProperty(node, 'checked', { get: () => on.on });
-    Object.defineProperty(node, 'indeterminate', { get: () => !on.on && !off.on });
+    const btns = []; for (let k = 0; k < n; k++) btns.push(mk());
+    const node = { hidden: null, buttons: btns,
+        querySelectorAll: () => btns, addEventListener() {} };
+    Object.defineProperty(node, 'checked', { get: () => btns[0].on });
+    Object.defineProperty(node, 'indeterminate',
+        { get: () => !btns.some((b) => b.on) });
+    Object.defineProperty(node, 'mode', { get: () => btns.findIndex((b) => b.on) });
     // the pair hides itself, where the switch hid the label around it
     node.label = node;
     return node;
-}
-
-// The Plate switch, as much of one as the panel touches: checked, mixed, and a
-// label that carries the word (the checkbox itself is invisible).
-function plateToggleNode() {
-    const label = { hidden: null };
-    return { checked: false, indeterminate: false, hidden: null,
-        closest: () => label, label };
 }
 function panelRun(selection, sidechained = new Set(), hasContact = false, types = null,
     shown = null, ligEls = new Set(), visible = null, sse = null, basesOff = null,
@@ -663,8 +675,10 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
                 closest: () => label, label };
         })(),
         mainchainPair: pairNode(),
-        plateShowToggle: plateToggleNode(),
-        sidechainPair: pairNode(),
+        // the three-way row, and its Plate button under the id the panel hides
+        // it by - the same object, so a hide is observable from either side
+        ...(() => { const p3 = pairNode(3);
+            return { sidechainPair: p3, sidechainPlateButton: p3.buttons[2] }; })(),
         contactAddButton: { hidden: null },
         contactDeleteButton: { hidden: null },
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
@@ -912,7 +926,7 @@ t('the panel head says Selection and nothing about the selection', () => {
 
 t('the panel keeps two matching part rows, with SSE and Copy below them', () => {
     const items = L.selectionItems();
-    const need = ['plateShowToggle', 'sidechainPair', 'elementsShowToggle',
+    const need = ['sidechainPlateButton', 'sidechainPair', 'elementsShowToggle',
         'mainchainPair', 'contactAddButton', 'contactDeleteButton',
         'scColorButton', 'selColorButton', 'selSsSelect'];
     for (const id of need) {
@@ -956,7 +970,7 @@ t('the panel keeps two matching part rows, with SSE and Copy below them', () => 
     }
     // Each control must SAY what it is - the visible text is its accessible
     // name - and carry a title, since "Show" alone does not say show what.
-    for (const id of ['elementsShowToggle', 'plateShowToggle']) {
+    for (const id of ['elementsShowToggle', 'sidechainPlateButton']) {
         if (!items[id].label) {
             throw new Error(id + ' has no visible label, so it has no name');
         }
@@ -1204,8 +1218,8 @@ t('Elements is offered only where there are atoms to colour', () => {
     const NUC = ['D', 'D'];
     // side chains drawn as atoms - the panel reads Full
     const full = panelRun([0, 1], new Set([0, 1]), false, PROT, new Set([0, 1]));
-    if (full.plateShowToggle.checked !== false
-        || full.plateShowToggle.label.hidden !== true) {
+    // 0 Show (atoms), 1 Hide, 2 Plate - and a protein has no Plate button
+    if (full.sidechainPair.mode !== 0 || full.sidechainPlateButton.hidden !== true) {
         throw new Error('the harness did not reach Full on a protein');
     }
     if (full.elementsShowToggle.label.hidden !== false) {
@@ -1221,7 +1235,7 @@ t('Elements is offered only where there are atoms to colour', () => {
     }
     // a plate has no elements in it either
     const plate = panelRun([0, 1], new Set(), false, NUC);
-    if (plate.plateShowToggle.checked !== true) {
+    if (plate.sidechainPair.mode !== 2) {
         throw new Error('the harness did not reach Plate');
     }
     if (plate.elementsShowToggle.label.hidden !== true) {
@@ -1235,62 +1249,71 @@ t('Elements is offered only where there are atoms to colour', () => {
     }
 });
 
-t('Show comes first on every row, and the style menu after it', () => {
-    // EVERY ROW ON THIS PANEL ANSWERS "IS THIS DRAWN" WITH A SWITCH. The
-    // side-chain row answered it with a three-way menu wherever the selection
-    // had a nucleotide - so the same question had two shapes depending on what
-    // was picked, and None hid inside a list where every other row has a
-    // switch. The switch is the question; the menu is the second question,
-    // WHICH WAY, and only a nucleotide has two answers to it.
+t('every button on the side-chain row names what it gives you', () => {
+    // 🔴 THE ROW IS SHOW / HIDE / PLATE, AND NOTHING IS INFERRED. It was a
+    // Show/Hide switch with a Plate modifier beside it, and Show then meant
+    // "whichever way it was last drawn" - which on a nucleotide is the plate.
+    // A plate is emitted per base PAIR, so on a tRNA 42 bases of 76 have one
+    // and on single-stranded RNA none do: the reader pressed Show and nothing
+    // appeared. github.com/sokrypton/py2Dmol#28.
+    //
+    // Show is the real atoms, which every residue has and which always draws.
+    // Plate is the schematic, offered only where one can exist.
     const NUC = ['D', 'D'];
     const PROT = ['P', 'P'];
     const prot = panelRun([0, 1], new Set([0, 1]), false, PROT, new Set([0, 1]));
     if (prot.sidechainPair.label.hidden !== false) {
-        throw new Error('a protein selection has no Show switch');
+        throw new Error('a protein selection has no Show/Hide control');
     }
-    if (prot.plateShowToggle.label.hidden !== true) {
-        throw new Error('a protein is offered a Plate switch, and it has no plate');
+    if (prot.sidechainPlateButton.hidden !== true) {
+        throw new Error('a protein is offered a Plate button, and it has no plate');
     }
-    // A NUCLEOTIDE KEEPS THE SWITCH TOO, with the menu beside it
+    // A NUCLEOTIDE GETS THE THIRD BUTTON, and a plate reads as Plate rather
+    // than as a switch that happens to be on
     const nuc = panelRun([0, 1], new Set(), false, NUC);
     if (nuc.sidechainPair.label.hidden !== false) {
-        throw new Error('a nucleic selection lost its Show switch');
+        throw new Error('a nucleic selection lost its side-chain control');
     }
-    if (nuc.sidechainPair.checked !== true) {
-        throw new Error('a nucleotide drawn as a plate does not read as shown');
+    if (nuc.sidechainPlateButton.hidden !== false) {
+        throw new Error('a nucleotide is not offered the Plate button');
     }
-    if (nuc.plateShowToggle.label.hidden !== false
-        || nuc.plateShowToggle.checked !== true) {
-        throw new Error('the Plate switch is missing or does not read on');
+    if (nuc.sidechainPair.mode !== 2) {
+        throw new Error('a nucleotide drawn as a plate does not light Plate');
     }
-    // ...AND THE MENU GOES WITH THE THING IT DESCRIBES. A way of drawing
-    // something that is not drawn is a control for nothing.
+    // ...and nothing drawn lights Hide, which is a button of its own rather
+    // than the absence of one
     const off = panelRun([0, 1], new Set(), false, NUC, null, new Set(), null,
         null, new Set([0, 1]));
-    if (off.sidechainPair.checked !== false) {
-        throw new Error('a hidden nucleotide reads as shown');
+    if (off.sidechainPair.mode !== 1) {
+        throw new Error('a hidden nucleotide does not light Hide');
     }
-    if (off.plateShowToggle.label.hidden !== true) {
-        throw new Error('the Plate switch is offered for something not drawn');
+    // 🔴 AND THE PLATE BUTTON STAYS ON THE ROW WHILE NOTHING IS DRAWN. The
+    // switch it replaces was hidden there, on the reasoning that a way of
+    // drawing an undrawn thing is a control for nothing - true of a MODIFIER
+    // and false of a button that does the drawing itself. Hidden here, Plate
+    // would be unreachable from Hide: the only way back to a plate would be to
+    // press Show, look at atoms you did not ask for, and then press Plate.
+    if (off.sidechainPlateButton.hidden !== false) {
+        throw new Error('Plate is taken off the row while nothing is drawn, so'
+            + ' there is no way back to a plate from Hide');
     }
-    // BOTH READ THE SAME ANSWER, worked out once from the object.
+    // ONE ANSWER, worked out once from the object and read by the button that
+    // lights and the button that is pressed.
     const app = L.app;
     if (!/const mode = modes\.size === 1 \? \[\.\.\.modes\]\[0\] : '';/.test(app)) {
-        throw new Error('the two controls no longer share one answer');
+        throw new Error('the row no longer works its state out in one place');
     }
-    // ...and Show brings back the way it was last drawn rather than jumping to
-    // the atoms, which is not a plain switch's decision to make
-    if (!/setSelectionSidechainMode\(p2, v \? style : 'none'\)/.test(app)) {
-        throw new Error('Show does not drive the style the menu names');
+    if (!/const SIDECHAIN_MODE_BUTTONS = \['full', 'none', 'plate'\];/.test(app)) {
+        throw new Error('the button order is not stated in one place, so the'
+            + ' button that lights and the button that acts can disagree');
     }
-    if (!/nuc \? \(\(plate && !plate\.checked\) \? 'full' : 'plate'\) : 'full'/.test(app)) {
-        throw new Error('switching a nucleotide on no longer defaults to the plate');
+    if (!/setSelectionSidechainMode\(p2, SIDECHAIN_MODE_BUTTONS\[k\] \|\| 'none'\)/.test(app)) {
+        throw new Error('the row does not drive the mode from the button pressed');
     }
-    // LEFT ALONE, NOT RESET. Clearing the Plate switch while nothing is drawn
-    // loses the answer Show needs when it comes back: pick atoms, hide them,
-    // show them again, and the plate returns instead.
-    if (!/if \(mode === 'plate' \|\| mode === 'full'\) \{\s*\n\s*scSel\.checked = mode === 'plate';/.test(app)) {
-        throw new Error('the Plate switch forgets its answer while it is hidden');
+    // ...AND NOTHING INFERS A STYLE ANY MORE, which is the whole fault
+    if (/\? 'full' : 'plate'/.test(app)) {
+        throw new Error("Show still picks a style on the reader's behalf - that is"
+            + ' what drew a plate for someone who asked for atoms');
     }
 });
 
@@ -1303,11 +1326,18 @@ t('a nucleotide is drawn as a plate or as its atoms, on one row', () => {
     if (L.selectionRowIds().includes('basesRow')) {
         throw new Error('the plate row is back');
     }
-    if (!L.selectionItems().plateShowToggle) throw new Error('no Plate switch');
+    if (!L.selectionItems().sidechainPlateButton) throw new Error('no Plate button');
     const app = L.app;
-    if (!/onToggle\('plateShowToggle', \(p2, v\) => \{/.test(app)
-        || !/setSelectionSidechainMode\(p2, v \? 'plate' : 'full'\)/.test(app)) {
-        throw new Error('the Plate switch is not wired');
+    // ...and it is one of the row's buttons, driven by the same index the
+    // other two are - not a modifier with a handler of its own
+    if (L.selectionItems().sidechainPlateButton.label !== 'Plate') {
+        throw new Error('the Plate button is not labelled Plate');
+    }
+    const scRow2 = L.selectionRows().find((r) => r.id === 'sidechainRow');
+    const pair2 = (scRow2.items || []).find((i) => i.id === 'sidechainPair');
+    if (!pair2 || !(pair2.buttons || []).some((b) => b.id === 'sidechainPlateButton')) {
+        throw new Error('Plate is not one of the side-chain row\'s own buttons -'
+            + ' a modifier beside the control is what made Show mean two things');
     }
     // ...and it means what it says: plate on for the nucleotides, atoms off,
     // and the other way round for full.
@@ -1343,12 +1373,12 @@ t('a nucleotide is drawn as a plate or as its atoms, on one row', () => {
     // question there
     const NUC = ['D', 'D'];
     const PROT = ['P', 'P'];
-    if (panelRun([0, 1], new Set(), false, NUC).plateShowToggle.label.hidden !== false) {
-        throw new Error('the Plate switch is hidden on a nucleic selection');
+    if (panelRun([0, 1], new Set(), false, NUC).sidechainPlateButton.hidden !== false) {
+        throw new Error('the Plate button is hidden on a nucleic selection');
     }
     if (panelRun([0, 1], new Set([0, 1]), false, PROT, new Set([0, 1]))
-        .plateShowToggle.label.hidden !== true) {
-        throw new Error('a Plate switch is offered on a protein selection');
+        .sidechainPlateButton.hidden !== true) {
+        throw new Error('a Plate button is offered on a protein selection');
     }
 
     // A BASE IS A SIDE CHAIN, in the table as well as on the panel: the
@@ -4283,7 +4313,7 @@ t('a ligand row is Colour, Show, and Elements while it is shown', () => {
     if (lig.sidechainPair.checked !== true) {
         throw new Error('a ligand nobody has hidden reads as not shown');
     }
-    if (lig.plateShowToggle.label.hidden !== true) {
+    if (lig.sidechainPlateButton.hidden !== true) {
         throw new Error('the Plate switch is on a ligand row - a ligand has no'
             + ' plate to draw');
     }
@@ -5888,6 +5918,16 @@ function baseViewer(types) {
     v.currentObjectName = 'obj';
     v.objectsData = { obj: {} };
     v.positionTypes = types;
+    // 🔴 AND THE TWO THINGS setBasesFor CALLS WHEN IT CHANGES SOMETHING. A
+    // plate is a FACE - a rung of the nucleic ribbon, built in the capture -
+    // so turning the bases off has to drop the mesh that still has them, and
+    // the verb says so itself rather than leaving it to whoever called it.
+    // Counted rather than stubbed away: a change that stops invalidating is
+    // the 1YNE fault back (hide, plate, hide, and the hairpin comes back as
+    // two spheres and some stray lines), so the tests below assert it happened.
+    v.invalidated = 0; v.reloaded = 0;
+    v._invalidateSegmentCache = function () { this.invalidated++; };
+    v.reloadDrawn = function () { this.reloaded++; };
     return v;
 }
 
@@ -5916,6 +5956,20 @@ t('hiding a base starts from ALL of them, not from none', () => {
             + ' materialised empty instead of full');
     }
     if (b.has(3)) throw new Error('a protein residue was added to the base set');
+    // 🔴 AND IT SAID SO. A plate is a face, so the resident mesh that still
+    // carries it is wrong the moment this returns - and the station fast path
+    // will happily rewrite positions into it rather than rebuild, which is
+    // exactly how 1YNE came back as two spheres and a handful of stray lines.
+    if (!v.invalidated || !v.reloaded) {
+        throw new Error('changing the bases did not invalidate the drawing:'
+            + ` ${v.invalidated} invalidations, ${v.reloaded} reloads`);
+    }
+    // ...and a call that changes NOTHING must not pay for a rebuild
+    const before = v.reloaded;
+    v.setBasesFor([1], false);
+    if (v.reloaded !== before) {
+        throw new Error('hiding an already-hidden base rebuilt the drawing');
+    }
 });
 
 t('hiding every base leaves an empty set, not a missing one', () => {
@@ -5983,7 +6037,9 @@ t('the global Bases checkbox is gone from the style panel', () => {
     }
     // ...and the plate is offered where it belongs: as one of the side-chain
     // modes on the selection panel, not as a row of its own
-    if (!L.selectionItems().plateShowToggle) {
+    // ...as one of the side-chain row's three buttons, rather than a row or a
+    // modifier switch of its own
+    if (!L.selectionItems().sidechainPlateButton) {
         throw new Error('the selection tools cannot draw a base plate');
     }
 });
@@ -7073,8 +7129,8 @@ t('the selection toggles show all, none and mixed', () => {
         sidechainRow: { hidden: null,
             querySelector: (sel) => (sel.indexOf('label') >= 0
                 ? { textContent: '' } : { hidden: null }) },
-        plateShowToggle: plateToggleNode(),
-        sidechainPair: pairNode(),
+        ...(() => { const p3 = pairNode(3);
+            return { sidechainPair: p3, sidechainPlateButton: p3.buttons[2] }; })(),
         elementsShowToggle: (() => {
             const label = { hidden: null };
             return { checked: false, indeterminate: false, hidden: null,
@@ -7107,11 +7163,11 @@ t('the selection toggles show all, none and mixed', () => {
     // A PROTEIN HAS ONE WAY OF BEING DRAWN, so Show is the whole question and
     // the style menu is not on the row at all - drawn or not.
     let n2 = run([1, 2], new Set([1, 2]));
-    if (n2.plateShowToggle.label.hidden !== true || n2.sidechainPair.checked !== true) {
+    if (n2.sidechainPlateButton.hidden !== true || n2.sidechainPair.mode !== 0) {
         throw new Error('a protein with its side chains drawn reads wrong');
     }
     n2 = run([1, 2], new Set());
-    if (n2.plateShowToggle.label.hidden !== true || n2.sidechainPair.checked !== false) {
+    if (n2.sidechainPlateButton.hidden !== true || n2.sidechainPair.mode !== 1) {
         throw new Error('a protein with nothing drawn reads wrong');
     }
     // A MIXED selection - one drawn, one not - is neither, so the SWITCH reads
@@ -7123,8 +7179,7 @@ t('the selection toggles show all, none and mixed', () => {
     }
     // ...and with nothing selected the controls read blank rather than stale
     n2 = run([], new Set([1, 2]));
-    if (n2.plateShowToggle.checked !== false
-        || n2.sidechainPair.checked !== false) {
+    if (n2.sidechainPair.mode !== -1) {
         throw new Error('an empty selection left a stale state');
     }
 });
@@ -7292,8 +7347,7 @@ t('every selection toggle has a name of its own', () => {
     // ...and the switches, which say one word each and repeat it in the same
     // way. Every one of them is announced by its aria, so every one must have
     // one and no two may share it.
-    for (const id of ['sidechainPair', 'mainchainPair', 'elementsShowToggle',
-        'plateShowToggle']) {
+    for (const id of ['sidechainPair', 'mainchainPair', 'elementsShowToggle']) {
         if (!items[id]) throw new Error('no ' + id);
         const label = items[id].aria;
         if (!label) throw new Error(id + ' has no aria-label: it is announced by'
@@ -8139,6 +8193,10 @@ t('a merged view gives each object a colour of its own', () => {
 // raw, lands on the first object's residues.
 function xlateViewer() {
     const v = new Cls();
+    // ...and what setBasesFor calls when it changes something - see baseViewer
+    v.invalidated = 0; v.reloaded = 0;
+    v._invalidateSegmentCache = function () { this.invalidated++; };
+    v.reloadDrawn = function () { this.reloaded++; };
     v.coords = new Array(5).fill(0);
     v.positionTypes = ['D', 'D', 'D', 'P', 'P'];
     v.objectsData = { A: {}, B: {} };

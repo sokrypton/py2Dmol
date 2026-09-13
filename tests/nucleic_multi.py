@@ -82,9 +82,14 @@ window.addEventListener('load', () => {
       R.selected = sel.length;
       r.residueSelection = new Set(sel);
       window.updateSelectionToolsState && window.updateSelectionToolsState();
-      const plate = document.getElementById('plateShowToggle');
+      // 🔴 SHOW MEANS THE ATOMS NOW. The row is Show/Hide/Plate - three
+      // buttons, each naming what it gives you - where it was a Show/Hide
+      // switch with a Plate modifier beside it, and Show then meant "whichever
+      // way it was last drawn". Asking for the real atoms is a press of Show.
+      const plate = document.getElementById('sidechainPlateButton');
+      const showBtn = document.getElementById('sidechainShowButton');
       R.plateControl = !!plate;
-      if (plate) { plate.checked = false; plate.dispatchEvent(new Event('change', {bubbles: true})); }
+      if (showBtn) showBtn.click();
       await settle();
       R.steps.push(st(r, 'full atoms'));
 

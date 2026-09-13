@@ -381,10 +381,9 @@ window.addEventListener('load', () => {
       // ("atoms exist now, so Elements joins the row too") was wrong, and the
       // row was measured with four controls when the case that overflows has
       // five. That is the state this panel was reported wrapping in.
-      {
-        const plate = document.getElementById('plateShowToggle');
-        if (plate && plate.checked) { plate.click(); await settle(); }
-      }
+      // Plate is one of the row's three buttons now, so "atoms rather than
+      // plates" is a press of Show rather than clearing a modifier.
+      await press('sidechainShowButton');
       // (defined above its second use so the protein row can be measured too)
       R.fit = {sidechain: rowFit('sidechainRow'), mainchain: rowFit('mainchainRow'),
                contact: rowFit('contactRow'),
@@ -413,8 +412,18 @@ window.addEventListener('load', () => {
                   faceX: Math.round(fb.left - r0.left),
                   faceRight: Math.round(fb.right - r0.left)};
         };
-        R.which = {pair: at('sidechainPair'), plate: at('plateShowToggle'),
-                   elem: at('elementsShowToggle')};
+        // ...and the three buttons INSIDE the segmented control, which is
+        // where Plate lives now: the gaps a reader sees are between their
+        // faces, and a segmented control's own members must not drift apart
+        // any more than two neighbouring controls may.
+        const btns = [...document.getElementById('sidechainPair')
+          .querySelectorAll('.selection-switch-btn')].filter((b) => !b.hidden);
+        const r0b = row.getBoundingClientRect();
+        R.which = {pair: at('sidechainPair'), plate: at('sidechainPlateButton'),
+                   elem: at('elementsShowToggle'),
+                   inner: btns.map((b) => { const g = b.getBoundingClientRect();
+                     return {id: b.id, x: Math.round(g.left - r0b.left),
+                             right: Math.round(g.right - r0b.left)}; })};
       }
       await select(r, [2, 3]);
       await press('sidechainHideButton');
@@ -694,16 +703,35 @@ for row in ('sidechain', 'mainchain', 'contact'):
 which = R.get("which") or {}
 print("  nucleotide row: " + ", ".join(f"{k}={v}" for k, v in which.items()))
 pair, plate, elem = which.get('pair'), which.get('plate'), which.get('elem')
+inner = which.get('inner') or []
+# 🔴 PLATE IS INSIDE THE CONTROL NOW, NOT BESIDE IT. The row was a Show/Hide
+# pair plus a Plate modifier plus Elem - five things - and the nucleotide case
+# is where that did not fit. It is Show/Hide/Plate as ONE segmented control
+# plus Elem, so the row is four, and the outer gap to measure is pair -> Elem
+# while the three buttons' own spacing is measured inside it.
+if len(inner) != 3:
+    bad.append(f"the side-chain row has {len(inner)} buttons on a nucleotide"
+               f" selection, not the three of Show/Hide/Plate: {inner}")
 if not plate or not elem:
     bad.append("Plate and Elem are not both on the row, so their layout is not"
                f" being measured: {which}")
 elif not pair:
-    bad.append("no Show/Hide pair to place them against")
+    bad.append("no Show/Hide/Plate control to place Elem against")
 else:
-    if not (pair['y'] == plate['y'] == elem['y']):
-        bad.append(f"the three are on different lines: pair y{pair['y']},"
-                   f" Plate y{plate['y']}, Elem y{elem['y']} - five controls do"
-                   " not fit unless the caption and the padding give the room")
+    # 🔴 THE TWO OUTER CONTROLS, NOT THE BUTTON INSIDE ONE OF THEM. Plate sits
+    # a pixel down from the group that contains it - that is its border, not a
+    # wrap - so comparing its y with the group's fails against a row that is
+    # perfectly laid out. What "one line" means here is that Elem did not fall
+    # under the caption, which is the report this check exists for.
+    if pair['y'] != elem['y']:
+        bad.append(f"the row is on more than one line: pair y{pair['y']},"
+                   f" Elem y{elem['y']} - four controls do not fit unless the"
+                   " caption and the padding give the room")
+    # the segmented control's own members: adjacent, and evenly so
+    igaps = [inner[k + 1]['x'] - inner[k]['right'] for k in range(len(inner) - 1)]
+    if igaps and (max(igaps) > 2 or len(set(igaps)) > 1):
+        bad.append(f"the three buttons of the segmented control are {igaps}px"
+                   " apart - they are one control and must read as one")
     # 🔴 MINIMAL AND EQUAL SPACE, MEASURED BETWEEN THE FACES. The gap between
     # two buttons is what a reader sees between the two coloured rectangles, not
     # what the flex row was told - and those differed by 20px, because each
@@ -714,9 +742,8 @@ else:
     # something on another row and the arithmetic reports nonsense beside the
     # real failure - measured as `Elem:-251px` while the row was two lines high.
     gaps = []
-    same_line = pair['y'] == plate['y'] == elem['y']
-    for name, a, b in ((('Plate', pair, plate), ('Elem', plate, elem))
-                       if same_line else ()):
+    same_line = pair['y'] == elem['y']
+    for name, a, b in ((('Elem', pair, elem),) if same_line else ()):
         if b['faceX'] < a['faceRight']:
             bad.append(f"{name} overlaps the control before it:"
                        f" x{b['faceX']} against {a['faceRight']}")
@@ -731,6 +758,9 @@ else:
     if len({g for _, g in gaps}) > 1:
         bad.append(f"the gaps are uneven: {gaps}. Even spacing is the whole"
                    " tell that nothing is carrying padding of its own")
+    print("  segmented control: "
+          + " ".join(f"{b['id'].replace('sidechain', '')}@{b['x']}-{b['right']}"
+                     for b in inner))
 
 for m in bad: print("FAIL:", m)
 sys.exit(1 if bad else 0)

@@ -573,20 +573,21 @@ def judge(tag, R, want_panel, nucleic=False):
         sc = (after.get('rows') or {}).get('sidechainRow') or {}
         kids = {str(k['id']): k for k in sc.get('kids', []) if not k['hidden']}
         pair = kids.get('sidechainPair')
-        plate = kids.get('plateShowToggle')
+        # 🔴 PLATE IS INSIDE THE CONTROL NOW, not a sibling of it. The row is
+        # one segmented Show/Hide/Plate where it was a pair plus a modifier, so
+        # what the shell has to fit is FOUR controls rather than five - and the
+        # overlap this used to check cannot happen between a button and the
+        # group that contains it. What is still worth asking is that the third
+        # button is THERE on a nucleic selection, and that the group it is in
+        # did not grow past the row.
+        plate = kids.get('sidechainPlateButton')
         print(f"  nucleotide row: {sc.get('h')}px, "
               + ', '.join(f"{n}@x{k['x']}..{k['right']}"
                           for n, k in kids.items()
-                          if n in ('sidechainPair', 'plateShowToggle',
-                                   'elementsShowToggle')))
-        if not plate:
-            bad.append(f'{tag}: no Plate control on a nucleic selection - this'
-                       ' leg is measuring nothing')
-        elif not pair:
-            bad.append(f'{tag}: no Show/Hide pair beside it')
-        elif plate['top'] == pair['top'] and plate['x'] < pair['right']:
-            bad.append(f'{tag}: Plate overlaps the pair - x{plate["x"]} against'
-                       f' its right edge at {pair["right"]}')
+                          if n in ('sidechainPair', 'elementsShowToggle')))
+        if not pair:
+            bad.append(f'{tag}: no Show/Hide/Plate control on a nucleic'
+                       ' selection - this leg is measuring nothing')
         # 🔴 AND NOT "BESIDE THE PAIR", WHICH IS THE CARD'S ANSWER. A caption, a
         # swatch, Show/Hide AND Plate want 221px of a 180px row, so here Plate
         # takes the line below - exactly as the main chain's SSE menu does, and

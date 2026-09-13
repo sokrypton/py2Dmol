@@ -9825,6 +9825,34 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 changed = true;
                 g.object.bases = cur;
             }
+            // 🔴 AND A CHANGE HERE IS A CHANGE TO THE GEOMETRY, so it has to
+            // say so. A base plate is built in the CAPTURE - it is a rung
+            // between two rails, in group 1 of the mesh beside the ligands -
+            // so turning the bases off removes faces from the drawing, and a
+            // plain repaint draws the resident mesh that still has them.
+            //
+            // Nothing else was saying it. The panel's own path happens to
+            // invalidate whenever the SIDE CHAINS also changed, because
+            // _setSidechains does - and it returns early when they did not, so
+            // Hide on a structure with no side chains shown (which is every
+            // nucleic structure at rest) changed the bases and rebuilt nothing.
+            // Reported on 1YNE: hide, plate, hide, and the hairpin came back as
+            // two translucent spheres and a handful of stray lines, drawn from
+            // a mesh built for a state that no longer existed. The 2D painter
+            // drew the same state correctly throughout, which is what said the
+            // geometry was right and the MESH was stale.
+            //
+            // The same shape as every other cache fault in this file, and the
+            // same fix: the verb that changes what is drawn is the verb that
+            // invalidates. Doing it here rather than in the panel also gives it
+            // to the embed's and the notebook's routes, which never touched the
+            // panel at all.
+            if (changed) {
+                this._invalidateSegmentCache();
+                // ...a RELOAD, not a repaint: the plates are geometry, and the
+                // capture is what builds them
+                this.reloadDrawn(true);
+            }
             return changed;
         }
 

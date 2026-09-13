@@ -521,16 +521,31 @@ function syncSseSelect(sel, renderer, picked) {
  * The wrapper carries `hidden` for the rows that come and go, so callers
  * hide the pair rather than reaching for a label around a checkbox.
  */
+// WHICH BUTTON OF A SEGMENTED CONTROL IS LIT.
+//
+// `true` and `false` are the two-button spelling of buttons 0 and 1, which is
+// what every other row on this panel uses; a NUMBER names the button directly,
+// which is what the side-chain row's three-way Show/Hide/Plate needs. `null` is
+// "the selection does not agree", and lights nothing - the state a mixed
+// selection is honestly in.
 function setSelectionPair(id, state) {
     const pair = byId(id);
     if (!pair) return;
-    const [on, off] = pair.querySelectorAll('.selection-switch-btn');
-    if (!on || !off) return;
-    on.classList.toggle('is-on', state === true);
-    off.classList.toggle('is-on', state === false);
-    on.setAttribute('aria-pressed', state === true ? 'true' : 'false');
-    off.setAttribute('aria-pressed', state === false ? 'true' : 'false');
+    const btns = pair.querySelectorAll('.selection-switch-btn');
+    if (!btns.length) return;
+    const active = state === true ? 0
+        : state === false ? 1
+        : typeof state === 'number' ? state : -1;
+    btns.forEach((b, k) => {
+        b.classList.toggle('is-on', k === active);
+        b.setAttribute('aria-pressed', k === active ? 'true' : 'false');
+    });
 }
+
+// WHICH BUTTON OF THE SIDE-CHAIN ROW A MODE IS. One translation, read by the
+// sync that lights a button and by the handler that presses one, so the picture
+// and the action cannot disagree about what `plate` means.
+const SIDECHAIN_MODE_BUTTONS = ['full', 'none', 'plate'];
 
 function syncSelectionToggles(picked, none) {
     const renderer = selectionHost.renderer();
@@ -552,7 +567,7 @@ function syncSelectionToggles(picked, none) {
         return null;
     };
     if (none || !renderer || !obj) {
-        for (const id of ['elementsShowToggle', 'plateShowToggle']) {
+        for (const id of ['elementsShowToggle']) {
             set(id, false);
         }
         for (const id of ['sidechainPair', 'mainchainPair']) {
@@ -626,7 +641,6 @@ function syncSelectionToggles(picked, none) {
     };
     const modes = new Set(res.map(modeOf));
     const mode = modes.size === 1 ? [...modes][0] : '';
-    const scSel = byId('plateShowToggle');
     const scTog = byId('sidechainPair');
     // WHICH OF THE TWO IS ON THE ROW. A protein side chain is drawn or it
     // is not; only a nucleotide has the plate as well, and only there is a
@@ -655,25 +669,24 @@ function syncSelectionToggles(picked, none) {
     const scNothing = !scAble.length && !hasNuc;
     if (scTog) {
         scTog.hidden = scNothing && !ligPos;
+        // THE BUTTON THAT IS LIT IS THE MODE THE SELECTION IS IN, and a
+        // selection that does not agree lights none of them. On a ligand row
+        // the control is the ligand's own visibility, which is buttons 0 and 1.
         setSelectionPair('sidechainPair', ligPos ? ligShown
-            : (mode === '' ? null : mode !== 'none'));
+            : (mode === '' ? null : SIDECHAIN_MODE_BUTTONS.indexOf(mode)));
     }
-    if (scSel) {
-        // ...and the Plate switch only while something IS drawn: a way of
-        // drawing a thing that is not drawn is a control for nothing. By
-        // its LABEL, which is what carries the word - the checkbox is
-        // invisible on its own.
-        const wrapPlate = scSel.closest ? scSel.closest('label') : null;
-        (wrapPlate || scSel).hidden = !hasNuc || mode === 'none' || mode === '';
-        // ON MEANS PLATE, off means the real atoms. Left alone while
-        // nothing is drawn, so the answer survives a switch off and on:
-        // pick atoms, hide them, show them again, and they are still atoms.
-        if (mode === 'plate' || mode === 'full') {
-            scSel.checked = mode === 'plate';
-            scSel.indeterminate = false;
-        } else if (mode === '') {
-            scSel.indeterminate = true;
-        }
+    // 🔴 AND PLATE IS ON THE ROW ONLY WHERE A PLATE CAN EXIST, which is a
+    // nucleotide. A protein side chain has one way of being drawn and a ligand
+    // has none, so offering the word there is a control that cannot do
+    // anything - the rule this panel already applies to Draw, to Align and to
+    // the Plate switch this replaces.
+    //
+    // Hidden rather than disabled, and hidden by the BUTTON itself: it is a
+    // <button> with its own text, unlike the checkbox this replaces, whose
+    // label carried the word and had to be hidden instead.
+    if (scTog) {
+        const plateBtn = byId('sidechainPlateButton');
+        if (plateBtn) plateBtn.hidden = !hasNuc || !!ligPos;
     }
     // ELEMENT COLOURS ARE A PROPERTY OF ATOMS, so the control only makes
     // sense while there are atoms drawn. On None there is nothing to
@@ -1705,7 +1718,9 @@ function wireSelectionPanel() {
             const btns = pair.querySelectorAll('.selection-switch-btn');
             btns.forEach((btn, k) => {
                 btn.addEventListener('click', withSelection((positions) => {
-                    fn(positions, k === 0);
+                    // the boolean is the two-button spelling; `k` is what a
+                    // row with more than two buttons reads
+                    fn(positions, k === 0, k);
                     updateSelectionToolsState();
                 }));
             });
@@ -1748,23 +1763,21 @@ function wireSelectionPanel() {
         // the protein form of the same control: two states, one switch - and on
         // a ligand row the same switch draws the ligand itself, which is the
         // visibility mask rather than a side chain nothing there owns
-        onPair('sidechainPair', (p2, v) => {
+        // 🔴 EACH BUTTON IS ITS OWN ANSWER, AND NOTHING IS INFERRED. Show used
+        // to mean "whichever way it was last drawn", which on a nucleotide is
+        // the plate - so the button saying Show gave you a plate, and a plate
+        // exists only where there is a base PAIR to hang it on. On a tRNA that
+        // is 42 bases of 76 and on single-stranded RNA it is none, so Show
+        // drew nothing and said nothing. github.com/sokrypton/py2Dmol#28.
+        //
+        // Show is the atoms, which every residue has; Plate is the schematic,
+        // and it is on the row only where one can exist.
+        onPair('sidechainPair', (p2, v, k) => {
             const lig = ligandRowPositions(p2);
-            if (lig) { setSelectionVisible(lig, v); return; }
-            // SHOW MEANS "DRAWN", AND THE MENU SAYS HOW. Switching on a
-            // nucleotide brings back whichever way it was last drawn - the
-            // plate unless the menu says otherwise - rather than jumping to the
-            // atoms, which is not what a plain Show should decide.
-            const r = selectionHost.renderer();
-            const plate = byId('plateShowToggle');
-            const nuc = !!(r && r.hasBasesFor && r.hasBasesFor(p2));
-            const style = nuc ? ((plate && !plate.checked) ? 'full' : 'plate') : 'full';
-            setSelectionSidechainMode(p2, v ? style : 'none');
-        });
-        // PLATE OR ATOMS, for a nucleotide that is being drawn at all. Show
-        // owns whether; this owns which.
-        onToggle('plateShowToggle', (p2, v) => {
-            setSelectionSidechainMode(p2, v ? 'plate' : 'full');
+            // ...on a ligand row the same control is the ligand's own
+            // visibility, which has two states and no plate
+            if (lig) { setSelectionVisible(lig, k === 0); return; }
+            setSelectionSidechainMode(p2, SIDECHAIN_MODE_BUTTONS[k] || 'none');
         });
         // ...and the two buttons that replace the pair, each with one job
         const onPress = (id, fn) => {
