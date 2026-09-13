@@ -165,6 +165,11 @@ const CIF_LOOPS_READ = [
     '_struct_conn.',
     '_chem_comp.',
     '_chem_comp_bond.',
+    // ONE ROW PER MONOMER OF EACH POLYMER ENTITY, which is the cheapest exact
+    // count of how long a polymer is - and the atom scanner needs that BEFORE
+    // it reads a row, to know whether it may throw the row away. See
+    // smallEntities below.
+    '_entity_poly_seq.',
     '_pdbx_struct_assembly_gen.',
     '_pdbx_struct_oper_list.',
 ];
@@ -197,12 +202,13 @@ const PARSE_SLICE_BYTES = 12 << 20;
 
 function* parseCIFSteps(text) {
 
-    // THE FIVE LOOPS ANYONE ACTUALLY READS.
+    // THE SIX LOOPS ANYONE ACTUALLY READS.
     //
-    // Three are read below - struct_conn for explicit bonds, chem_comp for
-    // modified-residue detection, chem_comp_bond for ligand connectivity - and
-    // two more by extractCIFBiounitOperations, which is handed these same loops
-    // as `cachedLoops` rather than re-walking the file. Nothing else consumes
+    // Four are read below - struct_conn for explicit bonds, chem_comp for
+    // modified-residue detection, chem_comp_bond for ligand connectivity, and
+    // entity_poly_seq for how long each polymer is - and two more by
+    // extractCIFBiounitOperations, which is handed these same loops as
+    // `cachedLoops` rather than re-walking the file. Nothing else consumes
     // parseCIF's `loops` (cachedLoops in src/app/main.js is its only reader).
     const loops = parseMinimalCIF_light(text, CIF_LOOPS_READ);
 
@@ -360,6 +366,41 @@ function* parseCIFSteps(text) {
         }
     }
 
+    // ====================================================================
+    // WHICH POLYMER ENTITIES ARE SHORT ENOUGH TO KEEP WHOLE
+    //
+    // The atom scanner below throws away a standard residue's N, C and O
+    // because only its CA ever reaches `coords` - 38.6% of a capsid's rows,
+    // abandoned before they are even tokenised. That premise stops being true
+    // for a peptide short enough to be drawn as a LIGAND, where every atom is
+    // a position: 1A09's inhibitor came out with its glutamate holding CA and
+    // a side chain and no backbone at all, detached from the residue before it.
+    //
+    // 🔴 AND THIS GATE IS DELIBERATELY LOOSER THAN THE RULE IT SERVES. The
+    // classifier's rule counts PROTEIN residues in a chain; an entity carries
+    // its caps and any other hetero monomer beside them, so 1A09's two-residue
+    // peptide is a four-monomer entity. This decides only what is KEPT, never
+    // what is drawn - keeping a handful of atoms for a tiny entity costs
+    // nothing, and being too tight here is the one failure that is invisible
+    // until a molecule is missing its middle.
+    const SMALL_ENTITY_MONOMERS = 8;
+    const smallEntities = new Set();
+    {
+        const epsL = getLoop('_entity_poly_seq.entity_id');
+        if (epsL) {
+            const c = epsL[0], rows = epsL[1];
+            const ei = c.indexOf('_entity_poly_seq.entity_id');
+            const per = new Map();
+            if (ei >= 0) {
+                for (const r of rows) {
+                    const id = r[ei];
+                    if (id !== undefined) per.set(id, (per.get(id) || 0) + 1);
+                }
+            }
+            for (const [id, n] of per) if (n <= SMALL_ENTITY_MONOMERS) smallEntities.add(id);
+        }
+    }
+
     const modelMap = new Map();
     const lines = text.split('\n');
 
@@ -402,6 +443,13 @@ function* parseCIFSteps(text) {
     const idxB = headerMap['_atom_site.B_iso_or_equiv'];
     const idxElement = headerMap['_atom_site.type_symbol'];
     const idxModelID = modelIDKey ? headerMap[modelIDKey] : -1;
+    // ...and which entity a row belongs to, read ONLY where some entity is
+    // small enough for the answer to change anything. On every other file the
+    // index stays -1, the scanner stops at the column it always stopped at,
+    // and nothing below this costs a thing.
+    const idxEntity = smallEntities.size
+        ? (headerMap['_atom_site.label_entity_id'] !== undefined
+            ? headerMap['_atom_site.label_entity_id'] : -1) : -1;
 
     // Parse data - optimized for performance
     // A row only has to reach the columns we actually read. Requiring the full
@@ -414,7 +462,8 @@ function* parseCIFSteps(text) {
     // substrings on 4UG0 and dropped them all. The mask says which column
     // indices matter, and readCIFCols slices those and counts past the others.
     const wantIdx = [idxRecord, idxAtomName, idxResName, idxChain, idxResSeq,
-        headerMap['_atom_site.auth_seq_id'], idxX, idxY, idxZ, idxB, idxElement, idxModelID];
+        headerMap['_atom_site.auth_seq_id'], idxX, idxY, idxZ, idxB, idxElement, idxModelID,
+        idxEntity];
     let maxWanted = -1;
     for (const w of wantIdx) if (w >= 0 && w > maxWanted) maxWanted = w;
     // A STANDARD RESIDUE'S N, C AND O ARE READ BY NOTHING, so they are never
@@ -434,14 +483,17 @@ function* parseCIFSteps(text) {
     // fact and does not license it: reconstruction says where a KNOWN residue's
     // backbone is; the classifier asks whether an unknown residue is one.
     const dropAfter = (idxAtomName >= 0 && idxResName >= 0)
-        ? Math.max(idxAtomName, idxResName) + 1 : -1;
+        ? Math.max(idxAtomName, idxResName, idxEntity) + 1 : -1;
     //   - ...EXCEPT PROLINE'S N, which its side chain closes a ring through.
     //     Dropped with the rest, a proline draws as a three-atom arm hanging
     //     off the CA rather than as the pyrrolidine it is. One atom per
     //     proline, and prolines are about a twentieth of a structure.
     const dropTest = (out) => DROPPABLE_BACKBONE.has(out[idxAtomName])
         && STANDARD_AMINO_ACIDS.has(out[idxResName])
-        && SIDECHAIN_KEEP_BACKBONE[out[idxResName]] !== out[idxAtomName];
+        && SIDECHAIN_KEEP_BACKBONE[out[idxResName]] !== out[idxAtomName]
+        //   - ...AND EXCEPT IN A SHORT POLYMER, every atom of which can become
+        //     a position. See smallEntities.
+        && !(idxEntity >= 0 && smallEntities.has(out[idxEntity]));
     const wantMask = new Uint8Array(maxWanted + 1);
     for (const w of wantIdx) if (w >= 0) wantMask[w] = 1;
     // reused across rows; a column is only read when it is < nCols, and every
@@ -1522,6 +1574,63 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
     // draw path unless a residue is actually selected - see buildSidechainTable.
     yield 0.45;
     const sidechainEntries = [];
+
+    // ====================================================================
+    // A PEPTIDE TOO SHORT TO HAVE A SHAPE IS DRAWN AS WHAT IT IS: A LIGAND
+    //
+    // A cartoon is a statement about SECONDARY STRUCTURE, and two residues
+    // have none - what it draws is one segment between two alpha carbons,
+    // which says nothing a reader wanted to know and throws away every atom
+    // that did. 1A09's inhibitor is the case: the file annotates
+    // ACE-PTH-GLU-DIP as a polymer entity, so the two residues in the middle
+    // that look like amino acids took the CA branch and the phosphotyrosine
+    // ring - the entire point of the molecule - was not drawn at all, while
+    // the ACE and DIP caps either side of it were, being HETATM. Half a
+    // ligand, cut down the middle by a rule about polymers.
+    //
+    // 🔴 THE ENTITY ANNOTATION CANNOT ANSWER THIS, which is why the rule is a
+    // length. 1A09 declares `2 polymer man 'ACE-FORMYL PHOSPHOTYR-GLU-(N,N-
+    // DIPENTYL AMINE)'` - the file means it, and it is right: chemically that
+    // IS a polymer. It is just not one a ribbon can say anything about.
+    //
+    // 🔴 AND PROTEIN ONLY. A two-nucleotide RNA is not the same case: a
+    // nucleotide carries its own base plate and reads perfectly well one at a
+    // time, and 1CWP's encapsidated fragments (chains A, B and C, of 4, 2 and
+    // 4) would lose their plates and their trace for nothing.
+    //
+    // 🔴 AND NOT IN PAE MODE. `includeAllResidues` exists to map a matrix onto
+    // residues one for one; demoting a residue to a handful of atoms there
+    // changes the count the matrix is indexed by.
+    //
+    // Two, because that is where "no shape to describe" stops being arguable:
+    // three residues is a turn, and the threshold should refuse the cases it
+    // cannot justify rather than the ones it can. Over the repo's structures
+    // it reclassifies exactly 1A09's chains B and D.
+    const SHORT_PEPTIDE_MAX = 2;
+    // WHICH RESIDUES ARE PROTEIN, ASKED ONCE. The loop below needs the answer
+    // per residue anyway and the count needs it per chain first, so it is
+    // computed here and read there - the same number of isRealAminoAcid calls
+    // as before, which matters because that one walks a residue's neighbours
+    // and this file already records it being asked 313,000 times for nothing.
+    const isProt = new Uint8Array(allResidues.length);
+    const shortPeptideChains = new Set();
+    {
+        const protPerChain = new Map();
+        for (let idx = 0; idx < allResidues.length; idx++) {
+            const r = allResidues[idx];
+            const yes = includeAllResidues
+                ? isRealAminoAcid(r, modresMap, chemCompMap, null, -1)
+                : isRealAminoAcid(r, modresMap, chemCompMap, allResidues, idx);
+            isProt[idx] = yes ? 1 : 0;
+            if (yes) protPerChain.set(r.chain, (protPerChain.get(r.chain) || 0) + 1);
+        }
+        if (!includeAllResidues) {
+            for (const [chain, n] of protPerChain) {
+                if (n <= SHORT_PEPTIDE_MAX) shortPeptideChains.add(chain);
+            }
+        }
+    }
+
     const CONVERT_SLICE_RESIDUES = 60000;
     for (let idx = 0; idx < allResidues.length; idx++) {
         if (idx > 0 && idx % CONVERT_SLICE_RESIDUES === 0) {
@@ -1540,16 +1649,46 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
         // capsid with no nucleic acid anywhere in it. isRealNucleicAcid is a
         // pure function of the residue and its neighbours, so not asking is
         // the same answer.
-        let is_protein, nucleicType;
-        if (includeAllResidues) {
-            // For PAE mapping: include all residues, skip connectivity checks
-            is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, null, -1);
-            nucleicType = is_protein ? null
-                : isRealNucleicAcid(residue, modresMap, chemCompMap, null, -1);
-        } else {
-            // Normal mode: use connectivity checks
-            is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, allResidues, idx);
-            nucleicType = is_protein ? null
+        // ...the protein answer is the one computed above, so that the count
+        // this loop's short-peptide rule reads and the branch it takes cannot
+        // come from two different questions.
+        const is_protein = !!isProt[idx];
+        // A SHORT PEPTIDE IS STILL PROTEIN; it is just drawn as a ligand. Kept
+        // as two facts rather than one because the nucleic question below is
+        // asked only where the PROTEIN answer was no, and a demoted residue
+        // must not start paying for a check whose answer is already known.
+        //
+        // 🔴 AND IT IS DEMOTED ONLY IF ITS BACKBONE IS ACTUALLY THERE, which is
+        // the precondition rather than a proxy for one. The mmCIF scanner drops
+        // a STANDARD residue's N, C and O before anything knows what chain it is
+        // in, and spares them only where the file DECLARED a short entity
+        // (see smallEntities) - so on a hand-written mmCIF with no
+        // entity_poly_seq the atoms are already gone by the time we get here.
+        // Demoting anyway is how the first version of this produced a glutamate
+        // holding a CA and a side chain and no backbone, detached from the
+        // residue before it, with six atoms where two were expected and every
+        // count-based check passing.
+        //
+        // Asking the residue is better than keeping the scanner's rule and this
+        // one in step, which is two answers to one question and the fault this
+        // file records a dozen of. It is also right on every path for its own
+        // reason: a PDB file drops nothing, so a short peptide there is drawn
+        // whole whether or not anything declared an entity.
+        const hasBackbone = () => {
+            let n = false, c = false;
+            for (const a of residue.atoms) {
+                if (a.atomName === 'N') n = true;
+                else if (a.atomName === 'C') c = true;
+                if (n && c) return true;
+            }
+            return false;
+        };
+        const shortPeptide = is_protein && shortPeptideChains.has(residue.chain)
+            && hasBackbone();
+        let nucleicType = null;
+        if (!is_protein) {
+            nucleicType = includeAllResidues
+                ? isRealNucleicAcid(residue, modresMap, chemCompMap, null, -1)
                 : isRealNucleicAcid(residue, modresMap, chemCompMap, allResidues, idx);
         }
         // Whether it IS a nucleotide is per residue; which KIND it is falls
@@ -1561,7 +1700,7 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
             nucleicType = chainNucleic.get(residue.chain);
         }
 
-        if (is_protein) {
+        if (is_protein && !shortPeptide) {
             // Use cached CA atom instead of .find()
             const ca = residue.caAtom || residue.atoms.find(a => a.atomName === 'CA');
             if (ca) {
@@ -1611,7 +1750,7 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
                         newIndex);
                 }
             }
-        } else if (includeAllResidues || residue.record === 'HETATM') {
+        } else if (shortPeptide || includeAllResidues || residue.record === 'HETATM') {
             // If includeAllResidues is true, include everything (even unclassified residues)
             // Otherwise, only include HETATM records as ligands
             // For ligands or unclassified residues, use all non-H atoms (like Python code)
