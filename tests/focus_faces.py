@@ -132,6 +132,8 @@ window.addEventListener('load', () => {
     r.enterFocusMode(); await camSettle();
     r.focusOn([Math.floor(n * 0.35)]); await camSettle();
     r.exitFocusMode(); await camSettle();
+    out.push(await sweep('just left focus mode, nothing re-shown'));
+
     if (r.showSidechains) r.showSidechains(sc);
     await settle(10);
     out.push(await sweep('after focus mode, side chains shown again'));

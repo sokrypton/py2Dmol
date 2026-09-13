@@ -1,13 +1,36 @@
 # A focus click rebuilds the ribbon — the clean slate
 
-**Status: SOLVED.** The change that gets the ribbon reused is committed and
-measured. The 2.4–4.8% outline regression was caused by `installStations`
-silently refusing on structures with ligands (like 4HHB): `stationMeshOf` was
-stationing ligand sticks into `scratch.faceStation` (11,050 faces) while
-`stationFillFaces` held only ribbon and side chains (9,228), so `faceCount > rows`
-declined and `refreshEdgesFromStations` never ran. Restricting `stationMeshOf`
-stick/joint faces to `p.sc` lets `installStations` install and rewrite endpoints,
-bringing outline pixel differences from 2.4–4.8% to exact **0.0000%**.
+**Status: REVERTED, AND THE PROBLEM IS OPEN AGAIN.** This file briefly said
+SOLVED. It was not: the change shipped, drew side chains in the wrong place
+after a visit to focus mode, survived three separate fixes, and was taken out
+in `8261f7c`. `src/cartoon/paintgl.js` and `geom.js` are back at `0719bb3`, the
+focus click costs its ~28-52 ms of mesh rebuild again, and everything below
+about the problem and its measurements still stands.
+
+🔴 **THE PREMISE IS WHAT FAILED, NOT THE THREE BUGS FOUND IN IT.** The mesh is
+built in a space measured from the CAMERA. It survives a ZOOM exactly - proved
+twice, bit-identical digests - and it does NOT survive a PAN: `tests/scale_indep.py`
+measures an 8 A pan changing every corner, fill `4052370906` -> `3722347299`.
+That measurement was taken, seen, and talked past, on the reasoning that
+`viewShift = capCentre - liveCentre` would absorb it. It does not, because a
+KEPT ribbon and a freshly BUILT side-chain part then sit against two different
+cameras with one `capCentre` recorded for the pair.
+
+So the way to have this is to build the mesh about the **structure** rather
+than about the view centre, and let the camera be a uniform the way the
+rotation already is. Patching `capCentre` after the fact was tried three times
+(`7c7e677`, `c1b67a5`, and the `installStations` coverage gate) and cured
+nothing.
+
+🔴 **AND NO PROBE IN THIS REPO CAN SEE THAT CLASS OF FAULT.** `focus_faces`,
+`focus_pixels`, `ribbon_bypass` and `scale_indep` all compare a frame against
+THE SAME FRAME REBUILT - and a bad cache key produces a consistently wrong
+answer that a rebuild reproduces faithfully, so the difference is zero while
+the picture is wrong. All four reported green throughout. The fault was found
+by a reader looking at the screen, and confirmed by a by-hand bisect. **Before
+this is attempted again, write something ABSOLUTE** - same camera, same state,
+before and after - and make sure its control cannot be the thing being
+measured, which is where the first attempt at one went wrong.
 
 ## The problem, stated without a solution in it
 
