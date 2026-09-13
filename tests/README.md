@@ -113,6 +113,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `focus_faces.py` | tool | SIDE-CHAIN FACES THAT GO MISSING AFTER A VISIT TO FOCUS MODE. |
 | `focus_mode.py` | ui | Focus is a MODE: it borrows the viewer and gives it back. |
 | `focus_pixels.py` | tool | A focus click that reused the ribbon must draw what a forced rebuild of the |
+| `focus_rebuilds.py` | tool | A FOCUS SESSION MUST NOT REBUILD THE RIBBON. |
 | `frame_policy.py` | ui | Two objects of DIFFERENT LENGTH share one timeline, and the policy is what |
 | `frame_revisit.py` | tool | A FRAME DRAWN AGAIN IS THE SAME FRAME - including the outline. |
 | `frame_share.py` | tool | A TRAJECTORY'S FRAMES DESCRIBE ONE MOLECULE, AND ONLY ITS COORDINATES MOVE. |
@@ -211,6 +212,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `station_sidechains.py` | tool | Side chains, ligands and contacts are never drawn from a stale row. |
 | `station_unpinned.py` | tool | A TRAJECTORY TAKES THE STATION PATH WITHOUT BEING ASKED, AND DRAWS THE SAME. |
 | `style_per_object.py` | ui | The style belongs to the object, and its settings belong to the style. |
+| `test_absolute_focus.py` | tool | ABSOLUTE FOCUS TEST: Compares renders before entering focus mode directly against |
 | `topology_survey.py` | tool | WHICH CONTROLS ACTUALLY CHANGE THE MESH'S TOPOLOGY, and which only move it. |
 
 <!-- END INDEX -->

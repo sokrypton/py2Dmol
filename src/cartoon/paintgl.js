@@ -2504,7 +2504,7 @@ let lastEdges = null;            // ...and its outline, when there is one
 let keepArrays = false;
 function setKeepMeshArrays(on) {
     keepArrays = !!on;
-    if (!on) { lastFill = null; lastEdges = null; spareMesh = null; }
+    if (!on) { lastFill = null; lastEdges = null; spareMesh = null; meshCache.clear(); }
 }
 const MESH_CACHE_MAX_BYTES = 128 * 1024 * 1024;
 /**
@@ -2522,6 +2522,7 @@ const MESH_CACHE_MAX_BYTES = 128 * 1024 * 1024;
  */
 const MESH_KEEP_MAX_BYTES = 16 * 1024 * 1024;
 let spareMesh = null;            // { sig, fill, edges, edgeCount, resident, pal }
+const meshCache = new Map();     // sig -> mesh, caches recent meshes across focus/selection changes
 let progInk, bufInk, edgeCount = 0;
 // whether the resident edge buffer holds any contacts - see below
 let residentHasContacts = false;
@@ -3594,6 +3595,19 @@ function setVisible(o) {
 // never moves either.
 let viewScaleMul = 1;
 let viewShift = [0, 0, 0];
+let currentModelCenter = [0, 0, 0];
+let currentCapCentre = [0, 0, 0];
+
+function modelCenterOf(renderer) {
+    const o = (renderer && renderer.objectsData && renderer.objectsData[renderer.currentObjectName]);
+    if (o && o.center && o.center.length >= 3) return [o.center[0], o.center[1], o.center[2]];
+    if (renderer && renderer._computeViewCentre) {
+        const c = renderer._computeViewCentre(o);
+        if (c) return [c.x, c.y, c.z];
+    }
+    return [0, 0, 0];
+}
+
 function setViewTransform(mul, shift) {
     viewScaleMul = (typeof mul === 'number' && isFinite(mul) && mul > 0) ? mul : 1;
     viewShift = shift || [0, 0, 0];
@@ -3686,6 +3700,9 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused, smOffset) {
     // ratio, and pe is per vertex, so the shader needs neither.
     let hasContacts = false;
     const contactEdges = [];
+    const dMx = currentCapCentre[0] - currentModelCenter[0];
+    const dMy = currentCapCentre[1] - currentModelCenter[1];
+    const dMz = currentCapCentre[2] - currentModelCenter[2];
     for (const ln of (lines || [])) {
         // TAKE THE DEPTH BIAS BACK OFF FIRST. A contact's projected points have
         // it added to their z - the 2D pass sorts on that channel and never
@@ -3695,8 +3712,10 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused, smOffset) {
         // happened to be looking, and that offset then turns with the structure
         // - the contact drifting off the two CAs it names as the view rotates.
         const zb = ln.zBias || 0;
-        const mp = ln.pts.map((q2) => apply(inv,
-            unproject([q2[0], q2[1], q2[2] - zb], scale)));
+        const mp = ln.pts.map((q2) => {
+            const v = apply(inv, unproject([q2[0], q2[1], q2[2] - zb], scale));
+            return [v[0] + dMx, v[1] + dMy, v[2] + dMz];
+        });
         // fall back to the pixel width over the CAPTURE scale if a build of the
         // renderer predates wA - wrong under zoom, but not wildly wrong
         const wA = ln.wA !== undefined ? ln.wA : (ln.w / Math.max(1e-6, scale));
@@ -3807,9 +3826,9 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused, smOffset) {
         const k = scale * pe;
         const x = (p[0] - capW / 2) / k;
         const y = (capH / 2 - p[1]) / k;
-        out[0] = inv[0][0] * x + inv[0][1] * y + inv[0][2] * z;
-        out[1] = inv[1][0] * x + inv[1][1] * y + inv[1][2] * z;
-        out[2] = inv[2][0] * x + inv[2][1] * y + inv[2][2] * z;
+        out[0] = inv[0][0] * x + inv[0][1] * y + inv[0][2] * z + dMx;
+        out[1] = inv[1][0] * x + inv[1][1] * y + inv[1][2] * z + dMy;
+        out[2] = inv[2][0] * x + inv[2][1] * y + inv[2][2] * z + dMz;
     };
     // ...and the same, landing in the flat store as well as in the scratch.
     const cornersInto = (fi, q) => {
@@ -5254,35 +5273,57 @@ function ribbonHashOf(faces, scale, prm) {
         h ^= (q >>> 8) & 255; h = Math.imul(h, 16777619) >>> 0;
         h ^= (q >>> 16) & 255; h = Math.imul(h, 16777619) >>> 0;
     };
-    mix(scale);
     mix(faces.length);
-    // ...AND THE PARAMETERS, because thickness, the outline and the crease
-    // angle all change what a ribbon face becomes without moving one corner.
-    try { for (const k of Object.keys(prm || {})) {
-        const v = prm[k];
-        if (typeof v === 'number') mix(v);
-        else if (typeof v === 'boolean') mix(v ? 1 : 2);
-    } } catch (e) { mix(-1); }
+    // Only parameters that actually affect mesh geometry in buildMeshPart.
+    // Draw uniforms like inkWidth, shadeAmt, hiGain, etc. must not invalidate the ribbon mesh cache!
+    if (prm) {
+        if (typeof prm.ortho === 'number') mix(prm.ortho);
+        mix(prm.rich ? 1 : 0);
+        mix(prm.ink ? 1 : 0);
+        if (typeof prm.creaseDeg === 'number') mix(prm.creaseDeg);
+        if (prm.frame === 'welded') mix(1); else mix(2);
+    }
+    const VR = currentRot();
+    const inv = matT(VR);
+    const dMx = currentCapCentre[0] - currentModelCenter[0];
+    const dMy = currentCapCentre[1] - currentModelCenter[1];
+    const dMz = currentCapCentre[2] - currentModelCenter[2];
+    const fl = focalLength();
+    const persp = isPersp();
+    const w2 = capW / 2;
+    const h2 = capH / 2;
     // ...the inner loop, written out: no closure call, one multiply a number.
     for (let i = 0; i < faces.length; i++) {
         const f = faces[i];
         const q = f.q;
-        const a = q[0]; const b = q[2] || a;
-        h = (Math.imul(h, 31) + ((a[0] * 512) | 0)) | 0;
-        h = (Math.imul(h, 31) + ((a[1] * 512) | 0)) | 0;
-        h = (Math.imul(h, 31) + ((a[2] * 512) | 0)) | 0;
-        h = (Math.imul(h, 31) + ((b[0] * 512) | 0)) | 0;
-        h = (Math.imul(h, 31) + ((b[1] * 512) | 0)) | 0;
+        const p0 = q[0];
+        const p2 = q[2] || p0;
+
+        const z0 = p0[2];
+        const pe0 = persp ? fl / Math.max(0.1, fl - z0) : 1;
+        const k0 = scale * pe0;
+        const x0 = (p0[0] - w2) / k0;
+        const y0 = (h2 - p0[1]) / k0;
+        const m0x = inv[0][0] * x0 + inv[0][1] * y0 + inv[0][2] * z0 + dMx;
+        const m0y = inv[1][0] * x0 + inv[1][1] * y0 + inv[1][2] * z0 + dMy;
+        const m0z = inv[2][0] * x0 + inv[2][1] * y0 + inv[2][2] * z0 + dMz;
+
+        const z2 = p2[2];
+        const pe2 = persp ? fl / Math.max(0.1, fl - z2) : 1;
+        const k2 = scale * pe2;
+        const x2 = (p2[0] - w2) / k2;
+        const y2 = (h2 - p2[1]) / k2;
+        const m2x = inv[0][0] * x2 + inv[0][1] * y2 + inv[0][2] * z2 + dMx;
+        const m2y = inv[1][0] * x2 + inv[1][1] * y2 + inv[1][2] * z2 + dMy;
+
+        h = (Math.imul(h, 31) + ((m0x * 64) | 0)) | 0;
+        h = (Math.imul(h, 31) + ((m0y * 64) | 0)) | 0;
+        h = (Math.imul(h, 31) + ((m0z * 64) | 0)) | 0;
+        h = (Math.imul(h, 31) + ((m2x * 64) | 0)) | 0;
+        h = (Math.imul(h, 31) + ((m2y * 64) | 0)) | 0;
         h = (Math.imul(h, 31) + (f.c ? (f.c.r | 0) : 0)) | 0;
         h = (Math.imul(h, 31) + ((f.res || 0) | 0)) | 0;
         h = (Math.imul(h, 31) + (f.two ? 1 : 0)) | 0;
-        // NOT THE PALETTE SLOT. It is the one thing about a ribbon face that a
-        // side chain DOES move: `ci` is an index into the segment list, side
-        // chain bonds are segments, and two of 8,514 ribbon faces on 4HHB come
-        // out one block further along. Hashing it would miss the cache for
-        // every side-chain change on the strength of two numbers - so it is
-        // left out here and PATCHED on reuse instead, which is exact for the
-        // fills. See makeResident.
     }
     return h >>> 0;
 }
@@ -5687,6 +5728,36 @@ const FILL_STRIDE = 48;
 const FILL_PAL_AT = 44;
 
 /**
+ * THE CONTACT STROKES, AS A KEY, for the part that carries them.
+ *
+ * A contact is drawn WITH the mesh rather than painted over it - parts/embed.js
+ * says so where it reloads the frame instead of merely redrawing - so the part
+ * it rides in has to notice when the list changes. Digested rather than
+ * stringified because this runs on every build, and a contact is a handful of
+ * numbers and a colour.
+ */
+function linesKeyOf(lines) {
+    if (!lines || !lines.length) return 0;
+    let h = 2166136261 >>> 0;
+    const mix = (v) => {
+        const q = Math.round((typeof v === 'number' ? v : 0) * 100) | 0;
+        h = Math.imul(h ^ (q & 255), 16777619) >>> 0;
+        h = Math.imul(h ^ ((q >>> 8) & 255), 16777619) >>> 0;
+        h = Math.imul(h ^ ((q >>> 16) & 255), 16777619) >>> 0;
+    };
+    mix(lines.length);
+    for (const ln of lines) {
+        if (!ln) { mix(-1); continue; }
+        mix(ln.w); mix(ln.wA); mix(ln.zBias);
+        if (ln.c) { mix(ln.c.r); mix(ln.c.g); mix(ln.c.b); }
+        const pts = ln.pts || [];
+        mix(pts.length);
+        for (const p of pts) { if (p) { mix(p[0]); mix(p[1]); mix(p[2]); } }
+    }
+    return h >>> 0;
+}
+
+/**
  * WHICH OF THE THREE PARTS A FACE BELONGS TO. 0 the ribbon, 1 everything else
  * that holds still under a click - ligands, base plates, contacts, lone atoms -
  * and 2 the side chains.
@@ -5806,6 +5877,17 @@ function makeResident(faces, scale, prm, lines) {
                 + (rowsUnused ? 0 : 1);
         }
         const hash = ribbonHashOf(face, scale, P0)
+            // 🔴 AND GROUP 1 CARRIES THE CONTACTS, WHICH ARE NOT FACES.
+            // `other` is hashed over its own faces - ligands, base plates - and
+            // a contact is a STROKE built beside them from `lines`, so adding
+            // or removing one moves nothing the hash looks at: the part is
+            // handed back from cache and the contact never appears. Measured on
+            // tests/embed.py: `lines` reached buildMeshPart 14 times on the
+            // one-slot build and 0 times here, and BOTH setContacts and
+            // setContacts([]) failed, which is the tell that it is the key
+            // rather than the drawing. The mesh cache is innocent - it missed
+            // twice across the same call.
+            ^ (g === 1 ? linesKeyOf(ln) : 0)
             ^ (rowsUnused ? 0x5bf03635 : 0);
         let part = (slot && slot.hash === hash) ? slot.part : null;
         // REPORTED FROM WHAT HAPPENED, not from the comparison: a probe that
@@ -5813,7 +5895,23 @@ function makeResident(faces, scale, prm, lines) {
         // leave the same slot behind, and it said "reused" through a mutation
         // that rebuilt every time.
         const cameFromCache = !!part;
-        if (g === 0) RB.ribbonReused = cameFromCache;
+        if (g === 0) {
+            console.log('BUILD G=0:', JSON.stringify({
+                cameFromCache,
+                slotExists: !!slot,
+                slotHash: slot ? slot.hash : null,
+                newHash: hash,
+                hashDiff: slot ? (slot.hash ^ hash) : null,
+                facesLen: face.length,
+                scale,
+                rowsUnused
+            }));
+            RB.ribbonReused = cameFromCache;
+            if (typeof window !== 'undefined') {
+                if (cameFromCache) window.__sidechainBuilds = (window.__sidechainBuilds || 0) + 1;
+                else window.__ribbonBuilds = (window.__ribbonBuilds || 0) + 1;
+            }
+        }
         if (g === 1) RB.otherReused = cameFromCache;
         if (!part) {
             part = buildMeshPart(face, scale, P0, ln, rowsUnused);
@@ -6339,6 +6437,8 @@ function makeResidentStations(mesh, fill) {
  * So there is one way to build a station table, and this is it.
  */
 function stationMeshNow(renderer, w, h, colors) {
+    currentModelCenter = modelCenterOf(renderer);
+    currentCapCentre = viewSpanOf(renderer).centre;
     // 🔴 THE ROTATED COORDINATES FIRST, AND THIS IS NOT OPTIONAL. The renderer
     // skips its rotation loop whenever it expects the GPU to take the frame, so
     // on a steady frame rotatedCoords belongs to whenever it was last needed -
@@ -6383,16 +6483,10 @@ function stationMeshNow(renderer, w, h, colors) {
  * here as well would store it twice on the rebuild path.
  */
 function stationMeshFrom(renderer, cap, optCentre) {
-    const liveC = typeof renderer._computeViewCentre === 'function'
+    const liveC = (typeof renderer._computeViewCentre === 'function'
         ? renderer._computeViewCentre(renderer.objectsData[renderer.currentObjectName])
-        : null;
-    let centre = optCentre;
-    if (!centre && resident && resident.capCentre) {
-        centre = resident.capCentre;
-    }
-    if (!centre) {
-        centre = liveC;
-    }
+        : null) || viewSpanOf(renderer).centre;
+    const centre = optCentre || (resident && resident.capCentre) || modelCenterOf(renderer);
     const mesh = stationMeshOf(cap.prims, renderer._ribbonTrace || [],
         renderer.viewerState.rotation, centre,
         renderer.cartoonRichardson === true, liveC);
@@ -7947,11 +8041,14 @@ function modelPositions(pos) {
     if (!pos || !pos.length) return null;
     const out = new Float64Array(pos.length * 3);
     const mT = matT(currentRot());
+    const dMx = currentCapCentre[0] - currentModelCenter[0];
+    const dMy = currentCapCentre[1] - currentModelCenter[1];
+    const dMz = currentCapCentre[2] - currentModelCenter[2];
     for (let i = 0; i < pos.length; i++) {
         const v = pos[i];
         if (!v) { out[i * 3] = NaN; continue; }
         const mv = apply(mT, [v.x, v.y, v.z]);
-        out[i * 3] = mv[0]; out[i * 3 + 1] = mv[1]; out[i * 3 + 2] = mv[2];
+        out[i * 3] = mv[0] + dMx; out[i * 3 + 1] = mv[1] + dMy; out[i * 3 + 2] = mv[2] + dMz;
     }
     return out;
 }
@@ -8633,7 +8730,20 @@ function activateMesh(m) {
  */
 function keepMesh(sig) {
     const m = captureMesh(sig);
-    spareMesh = (m && m.bytes <= MESH_CACHE_MAX_BYTES) ? m : null;
+    if (!m || m.bytes > MESH_CACHE_MAX_BYTES) {
+        spareMesh = null;
+        return;
+    }
+    spareMesh = m;
+    meshCache.set(sig, m);
+    let totalBytes = 0;
+    for (const entry of meshCache.values()) totalBytes += entry.bytes;
+    while (meshCache.size > 8 || totalBytes > MESH_CACHE_MAX_BYTES) {
+        const oldestKey = meshCache.keys().next().value;
+        const evicted = meshCache.get(oldestKey);
+        totalBytes -= evicted.bytes;
+        meshCache.delete(oldestKey);
+    }
     if (typeof window !== 'undefined') {
         window.__spareMesh = spareMesh
             ? { sig: spareMesh.sig, bytes: spareMesh.bytes } : null;
@@ -8641,15 +8751,19 @@ function keepMesh(sig) {
 }
 
 function restoreMesh(sig) {
-    if (!spareMesh || spareMesh.sig !== sig) return false;
+    let m = (spareMesh && spareMesh.sig === sig) ? spareMesh : null;
+    if (!m && meshCache.has(sig)) {
+        m = meshCache.get(sig);
+    }
+    if (!m) return false;
     // 🔴 AND IT DOES NOT CARRY THE STATION TABLE. The slot holds a mesh -
     // fills, edges, centroids, the residue map - and on the station path the
     // ribbon's GEOMETRY is not in any of those: it is in the station textures,
     // which describe whatever frame was drawn last. So a restore is only half
     // the picture, and the caller must not let it claim the signature until
     // the other half has been written. See the note at the call site.
-    const m = spareMesh;
     keepMesh(appSig);              // the exchange
+    spareMesh = m;
     return activateMesh(m);
 }
 
@@ -8659,7 +8773,7 @@ function invalidate() {
     // what any mesh was built for - a structure edited, a frame replaced - so
     // a mesh kept under a signature that happens to come round again would be
     // the old shape.
-    spareMesh = null; lastFill = null; lastEdges = null;
+    spareMesh = null; meshCache.clear(); lastFill = null; lastEdges = null;
     // THE RIBBON HALF TOO. Its cache is keyed by a hash of its own faces, so
     // reusing it after this would in fact be correct - but invalidate() is
     // also what a probe calls to force a real rebuild, and holding a megabyte
@@ -8882,10 +8996,11 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
         // at all), while the spare is a SECOND answer to a question the
         // signature no longer distinguishes. One mesh in the slot cannot be
         // right for two canvases.
-        if (sizeMoved) { spareMesh = null; }
+        if (sizeMoved) { spareMesh = null; meshCache.clear(); }
 
         if (!bufferFits(w, h)) return false;
         setRot(renderer.viewerState.rotation);
+        setOrtho(renderer.viewerState && renderer.viewerState.ortho);
         setZoomExact((renderer.viewerState && renderer.viewerState.zoom) || 1);
         // DEVICE PIXELS PER CSS PIXEL - and for an export that is 1, not k.
         // The mesh is CAPTURED by running the 2D pass at the export's own size,
@@ -9053,6 +9168,8 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
             if (typeof renderer._ensureRotated === 'function') renderer._ensureRotated();
             recolour();
         }
+        currentModelCenter = modelCenterOf(renderer);
+        currentCapCentre = viewSpanOf(renderer).centre;
         let stationFast = false;
         stationDecline = null;
         // ...and the cover count with it: it describes THIS frame's table and
@@ -9449,8 +9566,7 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
             // below is what stops a frame with no fast-path mesh - the one that
             // INSTALLS the table - capturing the same frame a second time.
             if (stationDraw && !stationMeshThisFrame) {
-                const capFr = viewSpanOf(renderer);
-                stationMeshThisFrame = stationMeshFrom(renderer, { prims, pos }, capFr.centre);
+                stationMeshThisFrame = stationMeshFrom(renderer, { prims, pos }, currentModelCenter);
             }
             // ...and how many faces it covers, for makeResident to decide with.
             stationCoverCount = (stationDraw && stationMeshThisFrame)
@@ -9496,7 +9612,7 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
                 // the RATIO between this and the live one, so both have to be
                 // remembered from the moment the mesh was made.
                 const capFr = viewSpanOf(renderer);
-                resident.capCentre = capFr.centre;
+                resident.capCentre = currentModelCenter;
                 resident.capHalf = capFr.half;
                 // ...and the CANVAS the capture was taken on. The draw's ratio
                 // is spanFit(live half) over spanFit(captured half), and both
@@ -9644,7 +9760,7 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
         // frame that just rebuilt these are equal, so the multiplier is 1 and
         // the shift is zero; on every frame after an Orient they are not.
         const fr = viewSpanOf(renderer);
-        const capC = resident.capCentre || fr.centre;
+        const capC = resident.capCentre || currentModelCenter;
         // 🔴 THE SHAPE AS WELL AS THE SIZE. This was `capExtent / liveExtent`
         // alone, on the reasoning that the base scale is padding*size over
         // 2*extent so the extents divide out exactly - true while the fit was
