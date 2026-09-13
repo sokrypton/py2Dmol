@@ -119,11 +119,11 @@ function residueOf(p) {
  *   OPT-IN, because emptying a caller's array is a surprising thing for a
  *   function to do and the lab harnesses read their prims back.
  */
-function facesOf(prims, prm, consume, skipRibbon) {
+function facesOf(prims, prm, consume) {
     const P0 = prm || defaultParams();
     const skipKinds = {};
     const lines = [];
-    let palComplete = skipRibbon ? (residentRibbonPal !== false) : true;
+    let palComplete = true;
     const faces = [];
     let skipped = 0;
     let pieces = 0;
@@ -131,7 +131,6 @@ function facesOf(prims, prm, consume, skipRibbon) {
         const p = prims[pi];
         if (consume) prims[pi] = null;
         if (p.kind === 'rib' && p.Lp) {
-            if (skipRibbon) continue;
             const ns = p.Lp.length;
             // oK is ub·k - the inner-ness of the +b face, and the one shading
             // input that does not depend on the camera, so it travels as a
@@ -5235,11 +5234,6 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused, smOffset) {
  * It costs about a millisecond and it fails safe - a miss rebuilds.
  */
 let ribbonPart = null;           // { hash, part }
-let residentRibbonFaces = null;  // retained ribbon faces for CPU bypass
-let residentRibbonHash = null;   // cached model-space hash of residentRibbonFaces
-let residentRibbonSig = null;    // signature of backbone state when ribbon was built
-let residentRibbonPal = true;    // paletteComplete status of ribbon faces
-let residentStationMesh = null;  // retained model-space station mesh for capture bypass
 let otherPart = null;            // ...and the ligands, plates and contacts
 /**
  * ...AND IT HAS TO BE CHEAP, or it eats what it saves. The first version
@@ -5252,7 +5246,7 @@ let otherPart = null;            // ...and the ligands, plates and contacts
  * ribbons that agree on 8,514 faces' sampled fields and differ elsewhere,
  * which is not a thing geometry does. 0.6 ms against 10.
  */
-function ribbonHashOf(faces, scale, prm, centre) {
+function ribbonHashOf(faces, scale, prm) {
     let h = 2166136261 >>> 0;
     const mix = (v) => {
         const q = Math.round(v * 1000) | 0;
@@ -5260,49 +5254,7 @@ function ribbonHashOf(faces, scale, prm, centre) {
         h ^= (q >>> 8) & 255; h = Math.imul(h, 16777619) >>> 0;
         h ^= (q >>> 16) & 255; h = Math.imul(h, 16777619) >>> 0;
     };
-    // 🔴 NOT THE SCALE, AND NOT THE PROJECTED CORNERS. This mixed `scale` and
-    // then hashed each face's `f.q` as it stands, which is PROJECTED - so the
-    // key moved whenever the camera zoomed, and the part was rebuilt for a
-    // mesh that had not changed. Measured on 4HHB: every click inside focus
-    // mode re-captured and rebuilt all 9,128 ribbon faces, because a focus
-    // flight moves the capture scale on every frame it lands on -
-    // 9.827 -> 10.883 -> 11.272 -> 11.669 -> 12.412 -> 12.888 -> 13.315, with
-    // the face count constant at 9,128 and the key different every time.
-    //
-    // The CONTENT was never scale-dependent: buildMeshPart unprojects every
-    // corner into model space, and the mesh built at zoom 1.0 and at 1.6 is
-    // bit-identical - fill 3498732323 over 10,952 rows and edges 438750288,
-    // the same at both, with the station path off so the ribbon's own rows are
-    // built rather than skipped. Only the KEY was. So the key is taken in the
-    // space the content is in.
-    //
-    // `unproject` is the inverse and it factors: x_model * pe = (px - capW/2)
-    // / scale, where pe is the perspective term, which depends on the focal
-    // length and on z and NOT on the scale. So dividing the two screen axes by
-    // the scale is exactly scale-invariant, and costs two subtractions and two
-    // divisions a corner rather than a full unprojection. z survives
-    // projection untouched and needs nothing.
-    //
-    // The quantum suits the new units better than the old: at ~10 px/A a 1 A
-    // move was 5,120 steps of the old `* 512` on pixels and is 512 here, which
-    // is 0.002 A - finer than anything that can change a face without changing
-    // the face list.
-    const sInv = (typeof scale === 'number' && Math.abs(scale) > 1e-9)
-        ? 1 / scale : 1;
-    const cx = capW / 2; const cy = capH / 2;
-    // 🔴 AND WITHOUT A CENTRE IT IS EXACTLY WHAT IT WAS. `centre` is the view
-    // centre the capture was taken about, and it is passed ONLY where the
-    // part's positions are re-derived from the station table rather than read
-    // out of its own rows - see makeResident. Everywhere else the key stays
-    // camera-dependent, because there the corners in the part ARE the drawn
-    // geometry and a camera move really does change them.
-    const model = !!centre;
-    const cx0 = model ? (centre.x !== undefined ? centre.x : (centre[0] || 0)) : 0;
-    const cy0 = model ? (centre.y !== undefined ? centre.y : (centre[1] || 0)) : 0;
-    const cz0 = model ? (centre.z !== undefined ? centre.z : (centre[2] || 0)) : 0;
-    if (!model) mix(scale);
-    const fl = focalLength();
-    const persp = isPersp();
+    mix(scale);
     mix(faces.length);
     // ...AND THE PARAMETERS, because thickness, the outline and the crease
     // angle all change what a ribbon face becomes without moving one corner.
@@ -5316,25 +5268,11 @@ function ribbonHashOf(faces, scale, prm, centre) {
         const f = faces[i];
         const q = f.q;
         const a = q[0]; const b = q[2] || a;
-        if (model) {
-            // unproject, written out so it allocates nothing: the perspective
-            // term is recoverable from z, which projection leaves untouched,
-            // and the centre puts the corner back where the structure is
-            // rather than where the camera is looking.
-            const ka = sInv / (persp ? (fl / Math.max(0.1, fl - a[2])) : 1);
-            const kb = sInv / (persp ? (fl / Math.max(0.1, fl - b[2])) : 1);
-            h = (Math.imul(h, 31) + ((((a[0] - cx) * ka + cx0) * 512) | 0)) | 0;
-            h = (Math.imul(h, 31) + ((((cy - a[1]) * ka + cy0) * 512) | 0)) | 0;
-            h = (Math.imul(h, 31) + (((a[2] + cz0) * 512) | 0)) | 0;
-            h = (Math.imul(h, 31) + ((((b[0] - cx) * kb + cx0) * 512) | 0)) | 0;
-            h = (Math.imul(h, 31) + ((((cy - b[1]) * kb + cy0) * 512) | 0)) | 0;
-        } else {
-        h = (Math.imul(h, 31) + (((a[0] - cx) * sInv * 512) | 0)) | 0;
-        h = (Math.imul(h, 31) + (((cy - a[1]) * sInv * 512) | 0)) | 0;
+        h = (Math.imul(h, 31) + ((a[0] * 512) | 0)) | 0;
+        h = (Math.imul(h, 31) + ((a[1] * 512) | 0)) | 0;
         h = (Math.imul(h, 31) + ((a[2] * 512) | 0)) | 0;
-        h = (Math.imul(h, 31) + (((b[0] - cx) * sInv * 512) | 0)) | 0;
-        h = (Math.imul(h, 31) + (((cy - b[1]) * sInv * 512) | 0)) | 0;
-        }
+        h = (Math.imul(h, 31) + ((b[0] * 512) | 0)) | 0;
+        h = (Math.imul(h, 31) + ((b[1] * 512) | 0)) | 0;
         h = (Math.imul(h, 31) + (f.c ? (f.c.r | 0) : 0)) | 0;
         h = (Math.imul(h, 31) + ((f.res || 0) | 0)) | 0;
         h = (Math.imul(h, 31) + (f.two ? 1 : 0)) | 0;
@@ -5347,69 +5285,6 @@ function ribbonHashOf(faces, scale, prm, centre) {
         // fills. See makeResident.
     }
     return h >>> 0;
-}
-
-/**
- * WHAT THE BACKBONE RIBBON DEPENDS ON.
- *
- * Captures all properties that affect ribbon geometry and face derivations in
- * model space: backbone coordinates, segment count, visibility, hidden backbones,
- * secondary structure assignment, cartoon parameters, and the colour key.
- *
- * When this signature matches residentRibbonSig, the ribbon's faces in model space
- * are guaranteed identical, and facesOf can skip processing rib prims entirely.
- */
-function backboneColourKeyOf(colors, baseCount) {
-    if (!colors || !colors.length) return 'nocol';
-    const n = Math.min(colors.length, baseCount || colors.length);
-    let a = n >>> 0;
-    for (let i = 0; i < n; i++) {
-        const c = colors[i];
-        if (!c) { a = (a * 31 + 7) >>> 0; continue; }
-        a = (Math.imul(a, 16777619) ^ (((c.r | 0) << 16) | ((c.g | 0) << 8) | (c.b | 0))) >>> 0;
-    }
-    return 'bc' + n + ':' + a.toString(36);
-}
-
-function ribbonSigOf(r, colors) {
-    if (!r) return '';
-    const bb = r.hiddenBackbones;
-    const baseCount = typeof r._baseCount === 'function' ? r._baseCount() : (r.coords ? r.coords.length : 0);
-    const co = r.coords;
-    let s = '';
-    if (co && baseCount > 0) {
-        for (const i of [0, baseCount >> 1, baseCount - 1]) {
-            const p = co[i];
-            if (p) {
-                const px = p.x !== undefined ? p.x : p[0];
-                const py = p.y !== undefined ? p.y : p[1];
-                const pz = p.z !== undefined ? p.z : p[2];
-                s += (((px + py * 3 + pz * 7) * 1000) | 0) + ',';
-            }
-        }
-    }
-    const C = (typeof window !== 'undefined') ? window.py2dmolCartoon : null;
-    const sse = (C && C.sseKey) ? C.sseKey(r) : '';
-    const pairs = (C && C.pairsKey) ? C.pairsKey(r) : '';
-    const colKey = backboneColourKeyOf(colors || appColors, baseCount);
-    return [
-        r.currentObjectName,
-        r.currentFrame,
-        baseCount + ':' + s,
-        (bb && bb.size) ? 'nobb' + setKeyOf(bb) : 'bb',
-        r.visiblePositions ? setKeyOf(r.visiblePositions) : 'all',
-        r.cartoonDetail,
-        r.cartoonThickness,
-        r.cartoonSheetFlat,
-        r.cartoonRichardson === true,
-        r.cartoonHelixThRel,
-        r.cartoonArrows,
-        r.cartoonGpuRibbonThick,
-        r.cartoonGpuHelixTh,
-        sse,
-        pairs,
-        colKey,
-    ].join('|');
 }
 
 /**
@@ -5437,7 +5312,7 @@ function ribbonSigOf(r, colors) {
  * face collapsed onto the origin, which is a spike through the middle of the
  * structure and reads as a geometry bug rather than a missing input.
  */
-function stationMeshOf(prims, trace, rot, centre, rich, liveCentre, baseMesh) {
+function stationMeshOf(prims, trace, rot, centre, rich, liveCentre) {
     // 🔴 WRITTEN INTO TYPED ARRAYS THAT SURVIVE THE FRAME, not pushed into JS
     // ones and copied. A 5,000-residue chain has 34,555 stations, so the plain
     // version pushed 553,000 numbers a frame, then allocated a Float32Array and
@@ -5454,7 +5329,6 @@ function stationMeshOf(prims, trace, rot, centre, rich, liveCentre, baseMesh) {
     // question and these three counters are the answer to it. Static 1EHZ was
     // diagnosed with exactly this.
     const why = { noFrame: 0, noCentre: 0, badStation: 0 };
-    let ribSo = -1, ribPo = -1, ribFo = -1;
     const room = (need) => {
         if (scratch.stations.length < need) {
             const grown = new Float32Array(Math.max(need, scratch.stations.length * 2));
@@ -5479,20 +5353,6 @@ function stationMeshOf(prims, trace, rot, centre, rich, liveCentre, baseMesh) {
             scratch.pieces = grown;
         }
     };
-    if (baseMesh) {
-        ribSo = baseMesh.stationCount * 16;
-        ribPo = baseMesh.pieceCount * 8;
-        ribFo = baseMesh.faceCount;
-        so = ribSo; po = ribPo; fo = ribFo;
-        room(so);
-        pieceRoom(po);
-        faceRoom(fo);
-        scratch.stations.set(baseMesh.stations.subarray ? baseMesh.stations.subarray(0, so) : baseMesh.stations.slice(0, so));
-        scratch.pieces.set(baseMesh.pieces.subarray ? baseMesh.pieces.subarray(0, po) : baseMesh.pieces.slice(0, po));
-        scratch.faceStation.set(baseMesh.faceStation.subarray ? baseMesh.faceStation.subarray(0, fo) : baseMesh.faceStation.slice(0, fo));
-        scratch.faceSurf.set(baseMesh.faceSurf.subarray ? baseMesh.faceSurf.subarray(0, fo) : baseMesh.faceSurf.slice(0, fo));
-        scratch.facePiece.set(baseMesh.facePiece.subarray ? baseMesh.facePiece.subarray(0, fo) : baseMesh.facePiece.slice(0, fo));
-    }
     // 🔴 THE CAPTURE IS IN ROTATED SPACE AND THE MESH IS NOT. geom.js says so
     // where it builds the frame probe - "ROTATED space, like everything else
     // here; the consumer un-rotates" - and buildMeshPart duly un-rotates every
@@ -5526,23 +5386,6 @@ function stationMeshOf(prims, trace, rot, centre, rich, liveCentre, baseMesh) {
     const dCx = Lx - Cx;
     const dCy = Ly - Cy;
     const dCz = Lz - Cz;
-    if (baseMesh && baseMesh.centre) {
-        const bC = baseMesh.centre;
-        const bCx = bC.x !== undefined ? bC.x : (bC[0] !== undefined ? bC[0] : 0);
-        const bCy = bC.y !== undefined ? bC.y : (bC[1] !== undefined ? bC[1] : 0);
-        const bCz = bC.z !== undefined ? bC.z : (bC[2] !== undefined ? bC[2] : 0);
-        const dx = bCx - Cx;
-        const dy = bCy - Cy;
-        const dz = bCz - Cz;
-        if (Math.abs(dx) > 1e-6 || Math.abs(dy) > 1e-6 || Math.abs(dz) > 1e-6) {
-            const S = scratch.stations;
-            for (let k = 0; k < ribSo; k += 16) {
-                S[k] += dx;
-                S[k + 1] += dy;
-                S[k + 2] += dz;
-            }
-        }
-    }
     const R = rot || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
     const un = (v) => [
         R[0][0] * v[0] + R[1][0] * v[1] + R[2][0] * v[2],
@@ -5554,10 +5397,7 @@ function stationMeshOf(prims, trace, rot, centre, rich, liveCentre, baseMesh) {
     let segPieceId = 0;
     for (const p of prims) {
         if (!p) continue;
-        if ((p.kind === 'stickFace' || p.kind === 'joint') && ribFo === -1) {
-            ribSo = so; ribPo = po; ribFo = fo;
-        }
-        if (p.kind === 'stickFace' && p.stA && p.stB && p.sc) {
+        if (p.kind === 'stickFace' && p.stA && p.stB) {
             if (p.segId !== lastSegId) {
                 lastSegId = p.segId;
                 segBaseStation = so / 16;
@@ -5615,7 +5455,7 @@ function stationMeshOf(prims, trace, rot, centre, rich, liveCentre, baseMesh) {
             fo += 1;
             continue;
         }
-        if (p.kind === 'joint' && p.pts && p.pts.length >= 3 && p.sc) {
+        if (p.kind === 'joint' && p.pts && p.pts.length >= 3) {
             const pts = p.pts;
             const p0 = un(pts[0]);
             p0[0] += dCx; p0[1] += dCy; p0[2] += dCz;
@@ -5824,7 +5664,6 @@ function stationMeshOf(prims, trace, rot, centre, rich, liveCentre, baseMesh) {
             }
         }
     }
-    if (ribFo === -1) { ribSo = so; ribPo = po; ribFo = fo; }
     if (!fo) return null;
     // Subarrays, not copies: the caller reads them and either uploads or
     // compares, both before the next capture overwrites them.
@@ -5837,9 +5676,6 @@ function stationMeshOf(prims, trace, rot, centre, rich, liveCentre, baseMesh) {
         pieces: scratch.pieces.subarray(0, po),
         pieceCount: po / 8,
         faceCount: fo,
-        ribbonStationCount: ribSo / 16,
-        ribbonPieceCount: ribPo / 8,
-        ribbonFaceCount: ribFo,
         missing, missingWhy: why,
     };
 }
@@ -5849,9 +5685,6 @@ function stationMeshOf(prims, trace, rot, centre, rich, liveCentre, baseMesh) {
 // slot is the first float of the third. Keep in step with the emit pass.
 const FILL_STRIDE = 48;
 const FILL_PAL_AT = 44;
-// ...and the same lane in an outline row: p0, p1, n0, n1 is twelve floats,
-// then `always` and the stick/outer bits, and the palette slot is next.
-const ED_PAL_AT = 14;
 
 /**
  * WHICH OF THE THREE PARTS A FACE BELONGS TO. 0 the ribbon, 1 everything else
@@ -5875,7 +5708,7 @@ function faceGroup(f) {
     return 0;
 }
 
-function makeResident(faces, scale, prm, lines, capCentre, renderer) {
+function makeResident(faces, scale, prm, lines) {
     const P0 = prm || defaultParams();
     // THREE GROUPS, AND EACH ONE CHANGES FOR ITS OWN REASONS.
     //
@@ -5911,11 +5744,6 @@ function makeResident(faces, scale, prm, lines, capCentre, renderer) {
     // all along.
     const groups = [[], [], []];
     for (const f of faces) groups[faceGroup(f)].push(f);
-    let cameFromSkip = false;
-    if (groups[0].length === 0 && residentRibbonFaces && residentRibbonFaces.length > 0) {
-        groups[0] = residentRibbonFaces;
-        cameFromSkip = true;
-    }
     // 🔴 WHETHER THE SIDE CHAINS ARE STATIONED IS NEEDED BEFORE THE LOOP, NOT
     // AFTER IT. It used to be read where the parts are concatenated, which is
     // past the point where each part is BUILT - and the build has to know,
@@ -5939,9 +5767,6 @@ function makeResident(faces, scale, prm, lines, capCentre, renderer) {
         // does.
         const ln = (g === 1) ? lines : null;
         if (g === 2) {                      // always rebuilt: it is the change
-            if (typeof window !== 'undefined' && face.length > 0) {
-                window.__sidechainBuilds = (window.__sidechainBuilds || 0) + 1;
-            }
             // 🔴 AND IT IS DRAWN FROM THE STATIONS TOO, SO IT IS BUILT LIKE
             // THEM. stationFillFaces is the ribbon's faces followed by these,
             // so their rows are never issued either - and, more than a saving,
@@ -5956,15 +5781,7 @@ function makeResident(faces, scale, prm, lines, capCentre, renderer) {
                 sideRowsUnused, sideRowsUnused ? groups[0].length : 0));
             continue;
         }
-        // 🔴 A PART BUILT WITHOUT STATIONS MUST NOT BE REUSED ON THE STATION PATH.
-        // With stationDraw off, edgeSrc is not allocated and cross edges are dropped
-        // as ghostOnly. Handing that part to a frame that uses stations leaves
-        // refreshEdgesFromStations without edgeSrc to update endpoints, and leaves
-        // outline cross edges missing across all frames until an explicit rebuild.
-        let slot = g === 0 ? ribbonPart : otherPart;
-        if (slot && slot.part && stationDraw && g === 0 && !slot.part.edgeSrc) {
-            slot = null;
-        }
+        const slot = g === 0 ? ribbonPart : otherPart;
         // 🔴 THE RIBBON'S INSTANCE ROWS ARE NOT DRAWN WHEN THE TABLE COVERS IT.
         // drawResident issues part 0 from the station buffer, so the 48 floats
         // a face contributes here are built, uploaded and never read. The test
@@ -5988,54 +5805,16 @@ function makeResident(faces, scale, prm, lines, capCentre, renderer) {
             window.__ribbonRowsBuilt = (window.__ribbonRowsBuilt || 0)
                 + (rowsUnused ? 0 : 1);
         }
-        // 🔴 THE KEY IS CAMERA-FREE ONLY WHERE THE POSITIONS ARE.  With the
-        // rows unused the ribbon's own 48-float rows are not built and not
-        // drawn - every corner the card sees comes from the station table,
-        // rewritten from THIS frame's capture - so what the part still carries
-        // is topology, colour and provenance, and none of those move with the
-        // camera. That is the case a focus click is: the geometry is the same
-        // and only the camera has moved. Without the rows skipped the corners
-        // in the part ARE what is drawn, and the key stays as it was.
-        const hash = (g === 0 && cameFromSkip && residentRibbonHash !== null)
-            ? residentRibbonHash
-            : (ribbonHashOf(face, scale, P0, rowsUnused ? capCentre : null)
-                ^ (rowsUnused ? 0x5bf03635 : 0));
+        const hash = ribbonHashOf(face, scale, P0)
+            ^ (rowsUnused ? 0x5bf03635 : 0);
         let part = (slot && slot.hash === hash) ? slot.part : null;
+        // REPORTED FROM WHAT HAPPENED, not from the comparison: a probe that
+        // reads the slot cannot tell a reuse from a rebuild that happened to
+        // leave the same slot behind, and it said "reused" through a mutation
+        // that rebuilt every time.
         const cameFromCache = !!part;
-        if (typeof window !== 'undefined' && window.__hashTrace) {
-            window.__hashTrace.push({
-                g,
-                facesLen: face.length,
-                scale,
-                capCentre: capCentre ? Object.assign({}, capCentre) : null,
-                rowsUnused,
-                stationDraw,
-                stationCoverCount,
-                hash,
-                slotHash: slot ? slot.hash : null,
-                hit: cameFromCache
-            });
-        }
-        if (g === 0) {
-            RB.ribbonReused = cameFromCache;
-            if (typeof window !== 'undefined' && face.length > 0) {
-                if (cameFromCache) {
-                    window.__ribbonReuses = (window.__ribbonReuses || 0) + 1;
-                } else {
-                    window.__ribbonBuilds = (window.__ribbonBuilds || 0) + 1;
-                }
-            }
-        }
-        if (g === 1) {
-            RB.otherReused = cameFromCache;
-            if (typeof window !== 'undefined' && face.length > 0) {
-                if (cameFromCache) {
-                    window.__otherReuses = (window.__otherReuses || 0) + 1;
-                } else {
-                    window.__otherBuilds = (window.__otherBuilds || 0) + 1;
-                }
-            }
-        }
+        if (g === 0) RB.ribbonReused = cameFromCache;
+        if (g === 1) RB.otherReused = cameFromCache;
         if (!part) {
             part = buildMeshPart(face, scale, P0, ln, rowsUnused);
             if (g === 0) {
@@ -6053,22 +5832,8 @@ function makeResident(faces, scale, prm, lines, capCentre, renderer) {
                 window.__edgeStatsRibbon = Object.assign({}, window.__edgeStats);
             }
             const keep = (part.bytes <= MESH_KEEP_MAX_BYTES) ? { hash, part } : null;
-            if (g === 0) {
-                ribbonPart = keep;
-                if (keep) {
-                    residentRibbonFaces = face;
-                    residentRibbonHash = hash;
-                    residentRibbonPal = (appPalComplete !== false);
-                    if (renderer) residentRibbonSig = ribbonSigOf(renderer);
-                }
-            } else otherPart = keep;
+            if (g === 0) ribbonPart = keep; else otherPart = keep;
         } else {
-            if (g === 0 && (!residentRibbonFaces || !cameFromSkip)) {
-                residentRibbonFaces = face;
-                residentRibbonHash = hash;
-                residentRibbonPal = (appPalComplete !== false);
-                if (renderer) residentRibbonSig = ribbonSigOf(renderer);
-            }
             patchPalette(part, face, RB);
         }
         parts.push(part);
@@ -6095,20 +5860,10 @@ function makeResident(faces, scale, prm, lines, capCentre, renderer) {
  * later colour change (which repaints from the palette without rebuilding)
  * exact.
  *
- * 🔴 AND THE OUTLINE'S SLOTS ARE PATCHED TOO NOW. They were not, on the
- * grounds that "an edge takes its slot from whichever face claimed it first and
- * the build does not record which that was" - and the provenance row does
- * record a face: `edgeSrc` lane 2 is the face whose normal the edge carries, a
- * face of that edge by construction. Taking ITS slot is a choice rather than a
- * reconstruction of the build's, so it is measured rather than argued: on a
- * focus click that reuses the ribbon it takes the frame from 0.159-0.205% of
- * the pixels against a rebuild to 0.0658%, which is what the same click costs
- * with nothing reused at all.
- *
- * It mattered little while a kept part was rare. The ribbon is now kept across
- * a camera move, so it is kept on every focus click, and an unpatched outline
- * tint went from a curiosity to the difference a reader sees while clicking
- * around a pocket.
+ * The OUTLINE's slots are not patched: an edge takes its slot from whichever
+ * face claimed it first and the build does not record which that was. That is
+ * the one approximation here - an outline tint on a couple of faces after a
+ * palette change, never a fill and never a shape.
  */
 function patchPalette(part, face, RB) {
     let patched = 0;
@@ -6116,17 +5871,6 @@ function patchPalette(part, face, RB) {
         const want = face[i].pal === undefined ? -1 : face[i].pal;
         const at = i * FILL_STRIDE + FILL_PAL_AT;
         if (part.fill[at] !== want) { part.fill[at] = want; patched++; }
-    }
-    const ed = part.edges; const es = part.edgeSrc;
-    if (ed && es) {
-        const rows = Math.min(ed.length / ED_FLOATS, es.length / ED_SRC);
-        for (let r = 0; r < rows; r++) {
-            const fa = es[r * ED_SRC + 2];
-            if (fa < 0 || fa >= face.length) continue;   // a contact, or no face
-            const want = face[fa].pal === undefined ? -1 : face[fa].pal;
-            const at = r * ED_FLOATS + ED_PAL_AT;
-            if (ed[at] !== want) { ed[at] = want; patched++; }
-        }
     }
     if (RB) RB.palPatched = (RB.palPatched || 0) + patched;
 }
@@ -6483,7 +6227,7 @@ function makeResidentStations(mesh, fill) {
     // and the fill comes back empty; the same numbers are read off the face.
     // tests/station_rows.py holds the two derivations to zero differing floats
     // over 47,533 rows, which is what makes the choice a matter of route.
-    const fromFill = fill.length >= mesh.faceCount * 48;
+    const fromFill = fill.length > 0;
     const rows = fromFill
         ? Math.min(mesh.faceCount, Math.floor(fill.length / 48))
         : mesh.faceCount;
@@ -6638,7 +6382,7 @@ function stationMeshNow(renderer, w, h, colors) {
  * 🔴 IT DOES NOT STORE THE TRACE. Both callers do that themselves, and doing it
  * here as well would store it twice on the rebuild path.
  */
-function stationMeshFrom(renderer, cap, optCentre, baseMesh) {
+function stationMeshFrom(renderer, cap, optCentre) {
     const liveC = typeof renderer._computeViewCentre === 'function'
         ? renderer._computeViewCentre(renderer.objectsData[renderer.currentObjectName])
         : null;
@@ -6651,7 +6395,7 @@ function stationMeshFrom(renderer, cap, optCentre, baseMesh) {
     }
     const mesh = stationMeshOf(cap.prims, renderer._ribbonTrace || [],
         renderer.viewerState.rotation, centre,
-        renderer.cartoonRichardson === true, liveC, baseMesh);
+        renderer.cartoonRichardson === true, liveC);
     // ...and THIS FRAME'S drawn positions travel with it. The capture already
     // produced them; without carrying them over, the overlay - halo, picking,
     // Orient - keeps projecting the frame the mesh was built at.
@@ -6711,8 +6455,7 @@ function installStations(mesh, fill) {
     // ...counted from whichever source the rows will come from. An empty fill
     // means the ribbon's rows were never built (see makeResident), and the face
     // list is then what has to cover the table.
-    const rows = (fill && mesh && fill.length >= mesh.faceCount * 48)
-        ? Math.floor(fill.length / 48)
+    const rows = (fill && fill.length) ? Math.floor(fill.length / 48)
         : (stationFillFaces ? stationFillFaces.length : 0);
     if (!mesh || !mesh.faceCount || mesh.faceCount > rows) {
         stationRefusal = `the station table describes ${mesh ? mesh.faceCount : 0}`
@@ -6722,51 +6465,12 @@ function installStations(mesh, fill) {
     }
     residentStations = makeResidentStations(mesh, fill);
     if (residentStations) residentStations.stale = false;
-    // 🔴 AND A KEPT PART'S EDGE ENDPOINTS ARE A CAMERA MOVE OUT OF DATE.
-    // The ribbon's part is now reused across a camera move - its key is taken
-    // in model space where its rows are not drawn (see ribbonHashOf) - and its
-    // FILL is empty there, so nothing stale reaches the card that way. Its
-    // EDGES are not empty: `ed` carries two endpoints a row, written when the
-    // part was built, at the camera of that build. Only the station fast path
-    // rewrote them, so on the rebuild frame itself they were the old camera's:
-    // measured on 4HHB, a focus click that reused the ribbon drew 0.159-0.205%
-    // of the frame differently from the same state rebuilt, against 0.066% for
-    // a click that did not reuse it.
-    //
-    // The pass that fixes it is the one the fast path already runs every frame
-    // and costs 1.8-3.4 ms on this structure. It is idempotent - it derives
-    // every endpoint from the station table - so running it on a build frame
-    // where nothing was reused writes back what was just written.
-    if (residentStations && residentEdges) refreshEdgesFromStations(mesh);
     // WHICH PRIMS THE TABLE COULD NOT DESCRIBE, kept for the same reason
     // stationDecline is: a prefix that stops short blocks the fast path for the
     // whole structure, and "9 rows in the tail" is not an answer until it says
     // which of the three ways a prim can fail to yield stations it was.
     lastMeshMissing = mesh.missingWhy
         ? Object.assign({ total: mesh.missing }, mesh.missingWhy) : null;
-    if (residentStations) {
-        const rfc = mesh.ribbonFaceCount || (residentRibbonFaces ? residentRibbonFaces.length : mesh.faceCount);
-        const rsc = mesh.ribbonStationCount || mesh.stationCount;
-        const rpc = mesh.ribbonPieceCount || mesh.pieceCount;
-        if (!residentStationMesh || mesh.stations !== residentStationMesh.stations) {
-            residentStationMesh = {
-                faceCount: rfc,
-                stationCount: rsc,
-                pieceCount: rpc,
-                centre: resident && resident.capCentre ? resident.capCentre.slice() : null,
-                stations: mesh.stations.slice(0, rsc * 16),
-                pieces: mesh.pieces.slice(0, rpc * 8),
-                faceStation: mesh.faceStation.slice(0, rfc),
-                facePiece: mesh.facePiece.slice(0, rfc),
-                faceSurf: mesh.faceSurf.slice(0, rfc),
-                missing: mesh.missing,
-                missingWhy: mesh.missingWhy,
-                pos: mesh.pos
-            };
-        } else {
-            residentStationMesh.pos = mesh.pos;
-        }
-    }
     return !!residentStations;
 }
 
@@ -7974,21 +7678,16 @@ function drawResident(cv, prm, prmAO) {
     // on the pointers.
     if (useStations && residentStations.count < resident.count) {
         // 🔴 WHERE THE TAIL ACTUALLY IS, NOT WHERE THE RIBBON'S FACE COUNT SAYS
-        // IT SHOULD BE. When stationedSide is true, parts are ordered [ribbon,
-        // sidechains, other] and residentStations covers both ribbon and sidechains;
-        // the unstationed tail (ligands, plates, contacts) is parts[2], not parts[1].
-        // Finding the span whose faceBase reaches residentStations.count locates
-        // the unstationed tail regardless of part ordering.
-        let restSpan = null;
-        if (residentPartSpans) {
-            for (const sp of residentPartSpans) {
-                if (sp.faceBase >= residentStations.count) {
-                    restSpan = sp;
-                    break;
-                }
-            }
-        }
-        const restAt = (restSpan ? restSpan.fillAt : residentStations.count * 48) * 4;
+        // IT SHOULD BE. This was `residentStations.count * 48 * 4`, which is
+        // right only while the ribbon occupies the first `count` rows of the
+        // combined fill - and that is the one assumption standing between here
+        // and not building those rows at all, since the station path never
+        // issues them. installParts already records where each part landed;
+        // reading the offset it wrote is both more direct and the same number
+        // today. The fallback is the old expression, for a mesh installed
+        // before the spans existed.
+        const restAt = (residentPartSpans && residentPartSpans[1]
+            ? residentPartSpans[1].fillAt : residentStations.count * 48) * 4;
         gl.useProgram(prog3);
         gl.bindBuffer(gl.ARRAY_BUFFER, buf3);
         const rest = [];
@@ -8668,7 +8367,7 @@ function signatureOf(r, w, h, colors, topological) {
 // ONE 2D RENDER WITH THE PAINTER SWITCHED OFF. The three hooks are set and
 // cleared around it so a renderer that is also being drawn normally is never
 // left in probe mode.
-function captureFrom(renderer, w, h, colors, skipRibbon) {
+function captureFrom(renderer, w, h, colors) {
     // ONE 2D GEOMETRY PASS PER FRAME IS THE CLAIM heldCapture MAKES. Counted,
     // because it is the most expensive thing a fast frame does - the whole
     // ribbon pipeline, assignment and all - and a second one would double it
@@ -8684,7 +8383,6 @@ function captureFrom(renderer, w, h, colors, skipRibbon) {
         noFoldCuts: renderer._noFoldCuts,
         thick: renderer.cartoonThickness, hxRel: renderer.cartoonHelixThRel,
         clipNear: renderer.clipNear, clipFar: renderer.clipFar,
-        skipRibbon: renderer._skipRibbonPrims,
     };
     // NOTHING IS CLIPPED WHILE CAPTURING, for the same reason nothing is
     // view-culled: this is harvesting GEOMETRY, not painting a frame. The 2D
@@ -8805,7 +8503,6 @@ function captureFrom(renderer, w, h, colors, skipRibbon) {
     // ...and never with the grain: it is composited over the finished frame,
     // and there is no finished frame here.
     renderer.cartoonPencil = 0;
-    renderer._skipRibbonPrims = !!skipRibbon;
     setCapturing(true);
     try {
         window.py2dmolCartoon.render(renderer, nullCtx(w, h), w, h, colors);
@@ -8827,7 +8524,6 @@ function captureFrom(renderer, w, h, colors, skipRibbon) {
             window.__captureMs = (window.__captureMs || 0) + (performance.now() - capT0);
         }
         setCapturing(false);
-        renderer._skipRibbonPrims = keep.skipRibbon;
         renderer._noFoldCuts = keep.noFoldCuts;
         renderer._noViewCull = keep.noViewCull;
         renderer._frameProbe = keep.frameProbe;
@@ -8970,10 +8666,6 @@ function invalidate() {
     // of fills for geometry the page has been told to forget is not what
     // "invalidate" means.
     ribbonPart = null;
-    residentRibbonFaces = null;
-    residentRibbonHash = null;
-    residentRibbonSig = null;
-    residentStationMesh = null;
     otherPart = null;
     spareTube = null; tubeLive = null; tubeCount = 0;
     clearResident();
@@ -9285,11 +8977,19 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
         if (!stationDraw && renderer._autoStationTable !== false
             && stationGaveUpFor !== renderer.currentObjectName) {
             const ob = (renderer.objectsData || {})[renderer.currentObjectName];
-            if ((ob && ob.frames && ob.frames.length > 1) || renderer._focusMode) {
+            if (ob && ob.frames && ob.frames.length > 1) {
                 setStationDraw(true);
                 stationAuto = true;
                 stationTries = 0;
                 stationEverFast = false;
+                // 🔴 AND THE TOPOLOGICAL KEY WITH IT, OR THE FIRST FRAME OF A
+                // TRAJECTORY COSTS TWO REBUILDS. It is computed above, where
+                // stationDraw was still false, so it was null - and the build
+                // that follows records a null key. The next frame then finds
+                // "there was no previous topological key to compare against"
+                // and rebuilds a second time to record one. Two builds at the
+                // start of every playback, which is how it was reported:
+                // "video still rebuilding at times when first played".
                 topoSig = signatureOf(renderer, w, h, colors, true);
             }
         }
@@ -9726,16 +9426,8 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
             // for one answer. See heldCapture.
             const reuse = heldCapture;
             heldCapture = null;
-            const willSkipRibbon = stationDraw
-                && !reuse
-                && !!ribbonPart && !!ribbonPart.part
-                && !!ribbonPart.part.edgeSrc
-                && !!residentRibbonFaces && residentRibbonFaces.length > 0
-                && !!residentStationMesh
-                && residentStationMesh.faceCount >= residentRibbonFaces.length
-                && ribbonSigOf(renderer, colors) === residentRibbonSig;
             const { prims, scale, pos, trace } = reuse || captureFrom(renderer,
-                displayWidth, displayHeight, colors, willSkipRibbon);
+                displayWidth, displayHeight, colors);
             if (typeof window !== 'undefined' && reuse) {
                 window.__capturesReused = (window.__capturesReused || 0) + 1;
             }
@@ -9744,12 +9436,12 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
             // this the samples exist for a moment and are dropped. Stored in
             // the pre-rotation space by _storeRibbonTrace, because THIS is the
             // path where the mesh outlives the rotation it was captured at.
-            if (trace && !willSkipRibbon && renderer._storeRibbonTrace) {
+            if (trace && renderer._storeRibbonTrace) {
                 renderer._storeRibbonTrace(trace);
             }
             hm('afterCapture', prims.length);
             RB.capture = +(performance.now() - RB.t0).toFixed(1);
-            if (!prims.length && !(willSkipRibbon && residentRibbonFaces && residentRibbonFaces.length > 0)) return false;
+            if (!prims.length) return false;
             // 🔴 THE STATION TABLE'S MESH, FROM THESE PRIMS, BEFORE facesOf
             // EATS THEM. facesOf(consume) nulls each prim as it reads it and
             // the array is emptied straight after, so this is the last moment
@@ -9758,8 +9450,7 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
             // INSTALLS the table - capturing the same frame a second time.
             if (stationDraw && !stationMeshThisFrame) {
                 const capFr = viewSpanOf(renderer);
-                stationMeshThisFrame = stationMeshFrom(renderer, { prims, pos }, capFr.centre,
-                    willSkipRibbon ? residentStationMesh : null);
+                stationMeshThisFrame = stationMeshFrom(renderer, { prims, pos }, capFr.centre);
             }
             // ...and how many faces it covers, for makeResident to decide with.
             stationCoverCount = (stationDraw && stationMeshThisFrame)
@@ -9769,15 +9460,7 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
                 window.__lastStations = Float32Array.from(stationCoverMesh.stations);
                 window.__lastPieces = Float32Array.from(stationCoverMesh.pieces);
             }
-            const canSkipRibbon = willSkipRibbon || (stationDraw && !!ribbonPart && !!ribbonPart.part
-                && !!ribbonPart.part.edgeSrc
-                && !!residentRibbonFaces && residentRibbonFaces.length > 0
-                && stationCoverCount >= residentRibbonFaces.length
-                && ribbonSigOf(renderer, colors) === residentRibbonSig);
-            if (canSkipRibbon && typeof window !== 'undefined') {
-                window.__ribbonFacesSkipped = (window.__ribbonFacesSkipped || 0) + 1;
-            }
-            const { faces, lines, paletteComplete } = facesOf(prims, prm, true, canSkipRibbon);
+            const { faces, lines, paletteComplete } = facesOf(prims, prm, true);
             // 🔴 THE REBUILD COUNTER, AND THIS IS THE LINE THAT DEFINES ONE.
             // Not "renderApp ran" and not "the signature changed" - a rebuild
             // is the capture turned into faces and a mesh, which is the work
@@ -9797,7 +9480,7 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
             prims.length = 0;
             hm('primsDropped');
             RB.facesOf = +(performance.now() - RB.t0).toFixed(1);
-            makeResident(faces, scale, prm, lines, viewSpanOf(renderer).centre, renderer);
+            makeResident(faces, scale, prm, lines);
             hm('afterMesh');
             // ...and the stage-1 measurement, when a probe asks. Here as well
             // as after a station update, because a structure that never moves
@@ -10981,7 +10664,6 @@ window.py2dmolCartoonGPU = {
     // WHY THE LAST FRAME REBUILT, in one string, surviving that rebuild.
     stationDecline: () => stationDecline,
     meshMissing: () => lastMeshMissing,
-    residentCap: () => resident ? { capCentre: resident.capCentre, capHalf: resident.capHalf, capW: resident.capW, capH: resident.capH, viewShift } : null,
     // HOW THE MESH IS DIVIDED, which is what decides whether the tail can be
     // refreshed: part 0 must be exactly what the station table describes.
     partSpans: () => (residentPartSpans || []).map((p) => p.count),

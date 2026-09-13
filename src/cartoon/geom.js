@@ -7825,7 +7825,6 @@ function drawRun(runIdx, ctx) {
                 protHalfW[j] = halfW(j);
             }
         }
-        if (renderer && renderer._skipRibbonPrims) return;
 
         // Is interval j part of the same ribbon element as type t?
         // (Used for end caps: an element boundary closes the outline with
