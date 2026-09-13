@@ -210,6 +210,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `station_integrated.py` | tool | THE STATION PATH END TO END - AN INSTRUMENT NOW, NOT A GATE. |
 | `station_overlay.py` | tool | What is drawn ON TOP of the canvas follows the station fast path. |
 | `station_pixels.py` | tool | The station path draws the same picture. |
+| `station_restore.py` | ui | A MESH TAKEN BACK OUT OF THE CACHE, AND THE STATION TABLE IT IS DRAWN FROM. |
 | `station_rows.py` | tool | THE STATION ROW'S FIFTEEN STATIC FLOATS, DERIVED BOTH WAYS. |
 | `station_shader.py` | tool | The station shader compiles, links, and has not forked from VS3D. |
 | `station_sidechains.py` | tool | Side chains, ligands and contacts are never drawn from a stale row. |

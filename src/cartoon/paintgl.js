@@ -6308,6 +6308,79 @@ function stationRowsFromFaces(faces, rows) {
     return out;
 }
 
+// ONE WAY TO PUT A STATION TEXTURE ON THE CARD. A build allocates one from the
+// capture and a restore allocates one from the cached copy, and two copies of
+// the filter and wrap settings are two chances for a restored mesh to sample
+// its table differently from the mesh it was built beside.
+function stationTexture(padded, w, h) {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, padded);
+    return t;
+}
+
+// ====================================================================
+// A CACHED MESH HOLDS ITS STATION TABLE AS DATA, NEVER AS GL OBJECTS
+//
+// A station table is CPU arrays - the mapping, the static rows, the padded
+// geometry - plus three GL handles: the row buffer and the station and piece
+// textures. The card owns ONE live set of those, and clearResidentStations
+// deletes it whenever a new table is installed.
+//
+// 🔴 captureMesh kept the table with `Object.assign({}, residentStations)`,
+// which copied the HANDLES along with the arrays. The very next build deleted
+// the objects they named, so every mesh in the cache was holding a table whose
+// buffer and textures no longer existed - and a restore handed that table back.
+// Every check on the fast path reads the arrays, which were intact, so all of
+// them agreed: mapping equal, counts equal, `stale` false. updateStations wrote
+// into a deleted texture, which WebGL no-ops without a word, and the draw bound
+// objects that were gone. Measured on 1YNE, Hide / Plate / Hide and
+// Hide / Show / Hide: the third press takes the station path with
+// `live: false`, and the hairpin comes back as two translucent spheres and a
+// handful of stray lines. The 2D painter drew every one of those states
+// correctly, and a forced invalidate() - which throws both halves away - always
+// fixed it, which is how it read as a cache fault for three rounds before the
+// handles were checked.
+//
+// So the cache holds a SNAPSHOT: every field but the handles. A restore makes
+// the live set from it, the same way activateMesh already re-uploads the fill
+// and the edges from the CPU arrays a mesh keeps - so the card's objects always
+// belong to exactly one table, the live one, and there is nothing in the cache
+// for a delete to leave dangling. The cost is paid on a mesh EXCHANGE - one
+// buffer and two texture uploads of data already in hand - and not on a frame
+// step, which never exchanges a mesh.
+function stationsSnapshot(t) {
+    if (!t) return null;
+    const snap = Object.assign({}, t);
+    snap.buf = null; snap.stationTex = null; snap.pieceTex = null;
+    return snap;
+}
+
+// ...and the live set made from one. The pads are COPIED: updateStations writes
+// into the live table's pads in place, and the snapshot stays in the cache
+// after a restore, so sharing them would let a later frame rewrite a cached
+// mesh from under itself.
+function activateStations(snap) {
+    clearResidentStations();
+    if (!gl || !snap || !snap.rows || !snap.stationPad || !snap.piecePad
+        || !(snap.stationW > 0) || !(snap.pieceW > 0)) return;
+    const live = Object.assign({}, snap);
+    live.stationPad = new Float32Array(snap.stationPad);
+    live.piecePad = new Float32Array(snap.piecePad);
+    live.buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, live.buf);
+    gl.bufferData(gl.ARRAY_BUFFER, live.rows, gl.STATIC_DRAW);
+    live.stationTex = stationTexture(live.stationPad, snap.stationW,
+        live.stationPad.length / (snap.stationW * 4));
+    live.pieceTex = stationTexture(live.piecePad, snap.pieceW,
+        live.piecePad.length / (snap.pieceW * 4));
+    residentStations = live;
+}
+
 function makeResidentStations(mesh, fill) {
     if (!gl || !mesh || !fill) return null;
     // 🔴 TWO SOURCES FOR FIFTEEN FLOATS, AND THE FILL IS THE OPTIONAL ONE NOW.
@@ -6367,13 +6440,7 @@ function makeResidentStations(mesh, fill) {
         const h = Math.ceil(texels / w);
         const padded = new Float32Array(w * h * 4);
         padded.set(floats.subarray(0, Math.min(floats.length, w * h * 4)));
-        const t = gl.createTexture();
-        gl.bindTexture(gl.TEXTURE_2D, t);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, padded);
+        const t = stationTexture(padded, w, h);
         // ...and KEEP the padded copy. updateStations allocates exactly this
         // array on the first fast frame and holds it from then on, so nothing
         // is added at the peak - what changes is that the two paths leave the
@@ -8674,7 +8741,8 @@ function captureMesh(sig) {
         edSrc: residentEdges ? residentEdges.edSrc : null,
         edgeRich: edgeRichPreset,
         spans: residentPartSpans,
-        residentStations: residentStations ? Object.assign({}, residentStations) : null,
+        // a SNAPSHOT: the arrays without the GL handles - see stationsSnapshot
+        residentStations: stationsSnapshot(residentStations),
         hasContacts: residentHasContacts,
         bytes: lastFill.byteLength + (lastEdges ? lastEdges.byteLength : 0),
     };
@@ -8694,7 +8762,10 @@ function activateMesh(m) {
     residentEdges = (m.edges && m.edSrc) ? { ed: m.edges, edSrc: m.edSrc } : null;
     edgeRichPreset = !!m.edgeRich;
     residentPartSpans = m.spans || [];
-    if (m.residentStations) residentStations = m.residentStations;
+    // 🔴 ALWAYS, AND FROM DATA. This assigned the cached table only when there
+    // was one - so a mesh cached without a table left the OUTGOING table in
+    // place beside it - and assigned it by reference, handles and all.
+    activateStations(m.residentStations);
     residentHasContacts = !!m.hasContacts;
     resident = m.resident;
     appPalComplete = m.pal;
@@ -10788,6 +10859,15 @@ window.py2dmolCartoonGPU = {
         stations: residentStations.stationCount,
         pieces: residentStations.pieceCount,
         bytes: residentStations.bytes,
+        // 🔴 WHETHER THE CARD STILL HAS THE OBJECTS THIS TABLE NAMES. A table is
+        // CPU arrays plus three GL handles, and every comparison on the fast path
+        // reads the arrays - so a table whose buffer or textures were deleted
+        // agrees with everything and draws through objects that no longer exist.
+        // WebGL does not throw on that; it no-ops the write and draws garbage.
+        live: !!(gl && residentStations.buf && gl.isBuffer(residentStations.buf)
+            && gl.isTexture(residentStations.stationTex)
+            && gl.isTexture(residentStations.pieceTex)),
+        stale: !!residentStations.stale,
     } : null),
     // WHAT THE CARD IS ACTUALLY HOLDING, for a probe that needs to know which
     // half of the fast path is stale. The station textures carry this frame's
