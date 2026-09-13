@@ -5296,6 +5296,9 @@ function ribbonHashOf(faces, scale, prm, centre) {
     // camera-dependent, because there the corners in the part ARE the drawn
     // geometry and a camera move really does change them.
     const model = !!centre;
+    const cx0 = model ? (centre.x !== undefined ? centre.x : (centre[0] || 0)) : 0;
+    const cy0 = model ? (centre.y !== undefined ? centre.y : (centre[1] || 0)) : 0;
+    const cz0 = model ? (centre.z !== undefined ? centre.z : (centre[2] || 0)) : 0;
     if (!model) mix(scale);
     const fl = focalLength();
     const persp = isPersp();
@@ -5319,11 +5322,11 @@ function ribbonHashOf(faces, scale, prm, centre) {
             // rather than where the camera is looking.
             const ka = sInv / (persp ? (fl / Math.max(0.1, fl - a[2])) : 1);
             const kb = sInv / (persp ? (fl / Math.max(0.1, fl - b[2])) : 1);
-            h = (Math.imul(h, 31) + ((((a[0] - cx) * ka + centre.x) * 512) | 0)) | 0;
-            h = (Math.imul(h, 31) + ((((cy - a[1]) * ka + centre.y) * 512) | 0)) | 0;
-            h = (Math.imul(h, 31) + (((a[2] + centre.z) * 512) | 0)) | 0;
-            h = (Math.imul(h, 31) + ((((b[0] - cx) * kb + centre.x) * 512) | 0)) | 0;
-            h = (Math.imul(h, 31) + ((((cy - b[1]) * kb + centre.y) * 512) | 0)) | 0;
+            h = (Math.imul(h, 31) + ((((a[0] - cx) * ka + cx0) * 512) | 0)) | 0;
+            h = (Math.imul(h, 31) + ((((cy - a[1]) * ka + cy0) * 512) | 0)) | 0;
+            h = (Math.imul(h, 31) + (((a[2] + cz0) * 512) | 0)) | 0;
+            h = (Math.imul(h, 31) + ((((b[0] - cx) * kb + cx0) * 512) | 0)) | 0;
+            h = (Math.imul(h, 31) + ((((cy - b[1]) * kb + cy0) * 512) | 0)) | 0;
         } else {
         h = (Math.imul(h, 31) + (((a[0] - cx) * sInv * 512) | 0)) | 0;
         h = (Math.imul(h, 31) + (((cy - a[1]) * sInv * 512) | 0)) | 0;
@@ -5913,7 +5916,15 @@ function makeResident(faces, scale, prm, lines, capCentre, renderer) {
                 sideRowsUnused, sideRowsUnused ? groups[0].length : 0));
             continue;
         }
-        const slot = g === 0 ? ribbonPart : otherPart;
+        // 🔴 A PART BUILT WITHOUT STATIONS MUST NOT BE REUSED ON THE STATION PATH.
+        // With stationDraw off, edgeSrc is not allocated and cross edges are dropped
+        // as ghostOnly. Handing that part to a frame that uses stations leaves
+        // refreshEdgesFromStations without edgeSrc to update endpoints, and leaves
+        // outline cross edges missing across all frames until an explicit rebuild.
+        let slot = g === 0 ? ribbonPart : otherPart;
+        if (slot && slot.part && stationDraw && g === 0 && !slot.part.edgeSrc) {
+            slot = null;
+        }
         // 🔴 THE RIBBON'S INSTANCE ROWS ARE NOT DRAWN WHEN THE TABLE COVERS IT.
         // drawResident issues part 0 from the station buffer, so the 48 floats
         // a face contributes here are built, uploaded and never read. The test
@@ -9678,6 +9689,7 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
                 window.__lastPieces = Float32Array.from(stationCoverMesh.pieces);
             }
             const canSkipRibbon = stationDraw && !!ribbonPart && !!ribbonPart.part
+                && !!ribbonPart.part.edgeSrc
                 && !!residentRibbonFaces && residentRibbonFaces.length > 0
                 && stationCoverCount >= residentRibbonFaces.length
                 && ribbonSigOf(renderer) === residentRibbonSig;

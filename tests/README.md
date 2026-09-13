@@ -110,6 +110,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `embed.py` | ui | The embed bundle, in a browser, on a page that has nothing else. |
 | `export_html.py` | tool | Four exported files, opened one at a time: do they draw? |
 | `focus_cost.py` | tool | What a focus click costs, step by step: mesh rebuilds, what was rebuilt, |
+| `focus_faces.py` | tool | SIDE-CHAIN FACES THAT GO MISSING AFTER A VISIT TO FOCUS MODE. |
 | `focus_mode.py` | ui | Focus is a MODE: it borrows the viewer and gives it back. |
 | `focus_pixels.py` | tool | A focus click that reused the ribbon must draw what a forced rebuild of the |
 | `frame_policy.py` | ui | Two objects of DIFFERENT LENGTH share one timeline, and the policy is what |
