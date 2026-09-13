@@ -1310,12 +1310,33 @@ t('a nucleotide is drawn as a plate or as its atoms, on one row', () => {
         throw new Error('the Plate switch is not wired');
     }
     // ...and it means what it says: plate on for the nucleotides, atoms off,
-    // and the other way round for full
+    // and the other way round for full.
+    //
+    // 🔴 AND `plate` REACHES THE NUCLEOTIDES ONLY. This asked for
+    // `setSelectionSidechains(positions, mode === 'full')` - the whole
+    // selection, one answer - which is right while a selection is all one kind
+    // and silently destructive the moment it is not: a protein residue has one
+    // way of being drawn, so `plate` over it resolves to "do not draw it".
+    // github.com/sokrypton/py2Dmol#28 is that, on a selection of 8 nucleotides
+    // and 40 protein residues where Show drew none of the 40. So the text this
+    // looks for is the SPLIT, and `wantAtoms` is where the per-kind rule lives.
     const body = app.slice(app.indexOf('function setSelectionSidechainMode'),
         app.indexOf('function syncSelectionVisibility'));
-    if (!/setBasesFor\(nuc, mode === 'plate'\)/.test(body)
-        || !/setSelectionSidechains\(positions, mode === 'full'\)/.test(body)) {
-        throw new Error('the three modes do not drive the two stores');
+    if (!/setBasesFor\(nuc, mode === 'plate'\)/.test(body)) {
+        throw new Error('the three modes do not drive the plate store');
+    }
+    if (/setSelectionSidechains\(positions, mode === 'full'\)/.test(body)) {
+        throw new Error("the atom store is still driven from the whole selection at"
+            + " once - one nucleotide in it then hides every protein side chain");
+    }
+    if (!/mode === 'plate' && !\(t\[i\] === 'D' \|\| t\[i\] === 'R'\)/.test(body)) {
+        throw new Error('nothing exempts a non-nucleotide from `plate`, which is an'
+            + ' answer only a nucleotide has');
+    }
+    if (!/setSelectionSidechains\(on, true\)/.test(body)
+        || !/setSelectionSidechains\(off, false\)/.test(body)) {
+        throw new Error('the split does not reach both stores - `none` is an answer'
+            + ' every residue has and must still clear all of them');
     }
     // the menu itself is offered only where the selection HAS nucleotides: a
     // protein side chain has one way of being drawn, so Show is the whole

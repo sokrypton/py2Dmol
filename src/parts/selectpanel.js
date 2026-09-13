@@ -781,8 +781,32 @@ function setSelectionSidechainMode(positions, mode) {
     if (nuc.length && renderer.setBasesFor) {
         renderer.setBasesFor(nuc, mode === 'plate');
     }
+    // 🔴 AND `plate` IS AN ANSWER ONLY A NUCLEOTIDE HAS, so it is applied only
+    // to the nucleotides. This asked `mode === 'full'` of the whole selection,
+    // which is right while a selection is all one kind and silently destructive
+    // the moment it is not: a protein residue has ONE way of being drawn, so
+    // "draw it as a plate" resolves to "do not draw it".
+    //
+    // Reported as github.com/sokrypton/py2Dmol#28 - 3Q0R, select chain B, Find
+    // interactions, press Show, nothing happens. Chain B there is an
+    // 8-nucleotide RNA rather than the ligand it looks like, so the 48 residues
+    // the Find had just gathered were 8 nucleotides and 40 protein; Show asks
+    // hasBasesFor about the SET, gets true, picks `plate` - and that then turned
+    // the side chains OFF for all 48, including the 40 the reader was looking
+    // for. On 121P, whose chain C is a ligand and carries no nucleotide, the
+    // same press picks `full` and works, which is exactly the report.
+    //
+    // So the style question is per KIND, not per selection: the nucleotides
+    // take the plate-or-atoms answer, and everything else is drawn whenever
+    // anything is. `none` is still every residue, because "nothing drawn" is
+    // an answer they all have.
+    const wantAtoms = (i) => (mode === 'full')
+        || (mode === 'plate' && !(t[i] === 'D' || t[i] === 'R'));
+    const on = positions.filter(wantAtoms);
+    const off = positions.filter((i) => !wantAtoms(i));
     // ...and the atoms, which are a frame RELOAD rather than a repaint
-    setSelectionSidechains(positions, mode === 'full');
+    if (on.length) setSelectionSidechains(on, true);
+    if (off.length) setSelectionSidechains(off, false);
     syncSelectionVisibility(positions);
     renderer.render('selection side chain mode');
 }

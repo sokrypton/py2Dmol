@@ -142,6 +142,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `load_work.py` | tool | WHAT LOADING A STRUCTURE COSTS, IN THINGS DONE RATHER THAN MILLISECONDS. |
 | `math.js` | node | The 3x3 linear algebra that replaced numeric.js. |
 | `minimal_input.py` | ui | The bare minimum: an Nx3 array of CA coordinates and nothing else. |
+| `mixed_sidechains.py` | ui | SHOW, OVER A SELECTION THAT IS NOT ALL ONE KIND OF RESIDUE. |
 | `mobile_layout.py` | ui | index.html at real phone widths: it must FIT, not merely not overflow. |
 | `msa_paired.js` | node | A PAIRED MSA: ONE ALIGNMENT, SEVERAL CHAINS. |
 | `msa_paired_ui.py` | ui | A paired MSA reaches the panel, is drawn with its chains apart, and points |
