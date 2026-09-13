@@ -98,6 +98,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `config.js` | node | EVERY SETTING PYTHON SENDS HAS TO SURVIVE THE TRANSLATION. |
 | `contacts_forms.py` | node | The three spellings of a contact, and the one that draws nothing. |
 | `copy_selection.js` | node | What a COPY of part of a structure carries with it: |
+| `covalent_links.js` | node | A COVALENT BOND WHOSE PROTEIN END IS A SIDE-CHAIN ATOM. |
 | `cut_ligands.py` | ui | What an edit leaves behind: the object's LIGAND GROUPS. |
 | `cyclic_bench.js` | node | Score the renderer's secondary structure on CYCLIC peptides. |
 | `cyclic_bench.py` | node | Build the cyclic-peptide secondary-structure benchmark. |

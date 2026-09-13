@@ -4147,6 +4147,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 && data.disulfideResidues !== null) {
                 object.disulfideResidues = data.disulfideResidues;
             }
+            // ...and the file's other covalent links, by residue and atom name
+            // - a haem's thioether bonds to its cysteines, an inhibitor bonded
+            // to a side chain. Same reasoning, same lifetime.
+            if (data.covalentLinks !== undefined && data.covalentLinks !== null) {
+                object.covalentLinks = data.covalentLinks;
+                // ...and the residues they name open with their side chains
+                // out, because the link cannot be drawn without them. See
+                // _seedCovalentSidechains: once, at load, never per frame.
+                if (this._seedCovalentSidechains) this._seedCovalentSidechains(object);
+            }
 
             // Store frame-level color if provided in data
             // Color is handled entirely through the hierarchy resolver in getAtomColor
@@ -5103,6 +5113,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             for (const f of frames) {
                 if (f && f.disulfideResidues && f.disulfideResidues.length) {
                     object.disulfideResidues = f.disulfideResidues;
+                    break;
+                }
+            }
+            // ...and the same for the other covalent links, for the same
+            // reason: what the file declares about the molecule does not
+            // change from one frame to the next.
+            for (const f of frames) {
+                if (f && f.covalentLinks && f.covalentLinks.length) {
+                    object.covalentLinks = f.covalentLinks;
+                    if (this._seedCovalentSidechains) this._seedCovalentSidechains(object);
                     break;
                 }
             }
@@ -7687,6 +7707,44 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
             this.disulfides = ssFound;
+
+            // 🔴 AND THE FILE'S OTHER COVALENT LINKS, WHICH NEED THE SAME
+            // MACHINERY AND NOT THE DISTANCE RULE. A `covale` record naming a
+            // side-chain atom - CYS SG to a haem's CAB, an inhibitor's CF to
+            // CYS 188 on 1A09 - resolves to nothing while the protein is one
+            // position per residue, so src/io/parse.js keeps it as a residue
+            // plus an atom NAME and this is where it becomes a bond.
+            //
+            // NO DISTANCE FALLBACK HERE, deliberately, where the disulfides
+            // have one. A disulfide is an SG to an SG at a length nothing else
+            // in a protein takes, so a geometric rule can find them; a covalent
+            // link is any atom to any atom at any of the lengths an ordinary
+            // contact also has, and guessing them would draw sticks through
+            // every bound ligand in the corpus. What is not declared is not
+            // drawn.
+            //
+            // ONLY BETWEEN MATERIALISED ATOMS, the same rule the disulfides
+            // get for free: an end naming a side-chain atom exists only while
+            // that side chain is shown, and a link with one end missing is not
+            // half a bond, it is no bond. An end with NO atom name is a ligand
+            // atom, which is a position whether anything is shown or not.
+            const links = ssObj && ssObj.covalentLinks;
+            if (links && links.length) {
+                // (residue, atom name) -> the position it materialised as
+                const atomOf = new Map();
+                for (const [row, idx] of idxOf) {
+                    const o = map.get(idx);
+                    if (o && o.owner !== undefined) {
+                        atomOf.set(o.owner + ':' + sc.names[row], idx);
+                    }
+                }
+                for (const [ra, rb, na, nb] of links) {
+                    const a = na ? atomOf.get(ra + ':' + na) : ra;
+                    const b = nb ? atomOf.get(rb + ':' + nb) : rb;
+                    if (a === undefined || b === undefined) continue;
+                    bondsOut.push([a, b]);
+                }
+            }
             // VISIBILITY LAST, once every appended position exists. It walks the
             // side-chain map and gives each atom its owner's visibility, and the
             // midpoints created by bond splitting are appended AFTER the atoms -

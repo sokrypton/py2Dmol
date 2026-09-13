@@ -121,6 +121,15 @@ const OBJECT_STATE = [
     // that is what this line is for.
     { key: 'disulfideResidues', kind: 'plain', absent: 'none', json: null,
         remap: remapIndexPairs },
+    // [resA, resB, atomA, atomB] - the file's own `covale` records whose ends
+    // could not be resolved as positions because a protein residue is one
+    // position and the record names a side-chain atom of it. An empty atom
+    // name means the position IS the atom, which is what a ligand's is.
+    // Indices first, so this renumbers exactly as `bonds` and `contacts` do;
+    // remapIndexPairs keeps the tail. json:null for the same reason as the
+    // disulfides - it is read from the file and hoisted at load.
+    { key: 'covalentLinks', kind: 'plain', absent: 'none', json: null,
+        remap: remapIndexPairs },
     // NOT REMAPPED, deliberately: a copy starts fully visible rather than
     // inheriting what was hidden in the original, and Delete renumbers the
     // record in place (it is the one piece of this that has a live twin).

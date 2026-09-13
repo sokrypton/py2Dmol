@@ -1676,6 +1676,13 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
     // 2. Process CIF _struct_conn records
     const disulfideResidues = [];
     let disulfUnresolved = 0;
+    // [resA, resB, atomA, atomB] - a declared covalent bond that could not be
+    // resolved as a pair of POSITIONS, kept by residue and atom name so
+    // _materialiseSidechains can bond it once the atoms exist. An empty atom
+    // name means the position itself is the atom, which is what a ligand's is.
+    // Indices first, so remapIndexPairs renumbers it across a copy for free -
+    // the same shape `contacts` has.
+    const covalentLinks = [];
     if (structConn && structConn.length > 0) {
         const processedBonds = new Set();
 
@@ -1738,6 +1745,45 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
                     bonds.push([minIdx, maxIdx]);
                     processedBonds.add(bondKey);
                 }
+                continue;
+            }
+
+            // 🔴 AND A `covale` WHOSE PROTEIN END IS A SIDE-CHAIN ATOM IS THE
+            // SAME FAULT THE DISULFIDE BRANCH ABOVE EXISTS FOR, one step wider.
+            // The record names chain:seq:SG and a protein residue contributes
+            // exactly one position - its CA - so the lookup above finds nothing
+            // and a real covalent bond to a ligand disappears in silence.
+            // Reported on 1A09, where CYS 188's SG is bonded to the inhibitor
+            // peptide's CF at 1.803 A and no stick was drawn; the same records
+            // are how a c-type cytochrome's haem is attached (1BBH: four
+            // thioether bonds to two cysteines per chain, all four dropped) and
+            // how a phycobilin is attached to its apoprotein (1BJP, four more).
+            //
+            // A side-chain atom is not a position until its side chain is
+            // MATERIALISED, so the durable form is the one the disulfides
+            // already use: the residue, plus the name of the atom within it.
+            // _materialiseSidechains resolves the pair against the atoms that
+            // exist this frame, which is also what makes "only if both ends are
+            // shown" fall out for free.
+            //
+            // THROUGH CA, AND SO PROTEIN ONLY. A nucleotide's one position is
+            // its C4', and every `covale` row a nucleic file writes is the
+            // O3'-P phosphodiester backbone the trace already draws - 25 rows
+            // each on 1EHZ and 4TNA. Resolving those through C4' would stitch a
+            // second, wrong backbone over the real one, so they are left alone.
+            const endOf = (chain, seq, atom, idx) => {
+                // an end that IS a position - a ligand atom - needs no name
+                if (idx !== undefined) return [idx, ''];
+                const ca = atomIdToIndex.get(`${chain}:${seq}:CA`);
+                return ca === undefined ? null : [ca, atom];
+            };
+            if (conn.type !== 'covale') continue;
+            const e1 = endOf(conn.chain1, conn.seq1, conn.atom1, idx1);
+            const e2 = endOf(conn.chain2, conn.seq2, conn.atom2, idx2);
+            // ...and never a residue to itself: an intra-residue covale is the
+            // component's own connectivity, which _chem_comp_bond carries.
+            if (e1 && e2 && e1[0] !== e2[0]) {
+                covalentLinks.push([e1[0], e2[0], e1[1], e2[1]]);
             }
         }
     }
@@ -1865,6 +1911,36 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
     }
     if (sidechains) {
         result.sidechains = sidechains;
+    }
+
+    // 🔴 AND A LINK IS KEPT ONLY WHERE THE ATOM IT NAMES REALLY IS A
+    // SIDE-CHAIN ATOM, which is why this sits below the table rather than
+    // beside the loop that built the list. Two things fall out of asking, and
+    // both matter more than the check itself:
+    //
+    // A BACKBONE ATOM IS NOT IN THE TABLE, so an ordinary peptide bond written
+    // as a `covale` - `C(i)` to `N(i+1)`, which 1HVR writes four of and 1A09
+    // three - is dropped here rather than drawn as a stick over the ribbon that
+    // already draws it. The table keeps exactly one backbone atom on purpose,
+    // proline's ring-closing N, and that one IS a real attachment point: 1BJP's
+    // phycobilin is bonded to the N-terminal proline's nitrogen.
+    //
+    // AND A RESIDUE THAT RESOLVED TO THE WRONG PLACE ANSWERS NO. The disulf
+    // branch guards the same risk by requiring both ends to be cysteines - an
+    // auth/label seq mix-up finds a residue that exists and is simply a
+    // different one - and this is that check without a fixed residue name to
+    // compare against: an SG belongs to a cysteine, and asking the table is
+    // asking the structure rather than a table of my own.
+    if (covalentLinks.length > 0) {
+        const known = new Set();
+        if (sidechains) {
+            for (let k = 0; k < sidechains.pos.length; k++) {
+                known.add(sidechains.pos[k] + ':' + sidechains.names[k]);
+            }
+        }
+        const kept = covalentLinks.filter(([a, b, na, nb]) =>
+            (!na || known.has(a + ':' + na)) && (!nb || known.has(b + ':' + nb)));
+        if (kept.length) result.covalentLinks = kept;
     }
 
     return result;

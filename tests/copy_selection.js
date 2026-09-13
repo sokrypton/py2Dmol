@@ -281,6 +281,13 @@ test('every per-object key is in the field list or excluded on purpose', () => {
         '_appliedToRenderer',
         // per-object camera / view transform, not keyed by position
         'viewerState',
+        // "this object's declared covalent links have already been allowed to
+        // switch their residues' side chains on". A latch, not state: it says
+        // the STARTING side chains have been chosen, which is why it must not
+        // be remapped onto a copy - an extracted selection is a new object and
+        // gets the question asked again, against whatever links survived the
+        // renumbering. See _seedCovalentSidechains.
+        '_covalentSeeded',
     ]);
     const registered = new Set(OBJECT_STATE.map((f) => f.key));
     const missed = [...written].filter((k) => !NOT_DISPLAY.has(k) && !registered.has(k));

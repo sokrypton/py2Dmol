@@ -2019,6 +2019,13 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
             // frame on anything that moves.
             disulfideResidues: frameData.disulfideResidues
                 ? frameData.disulfideResidues.map((q) => [...q]) : undefined,
+            // ...and the file's other covalent links - [resA, resB, atomA,
+            // atomB] - named here for exactly the reason above it: this copy is
+            // field by field, so a field nobody writes down is dropped without
+            // a word, and the renderer would never learn the haem is bonded to
+            // anything.
+            covalentLinks: frameData.covalentLinks
+                ? frameData.covalentLinks.map((q) => [...q]) : undefined,
             // A LIGAND ATOM'S OWN NAME AND ELEMENT, present only where the file
             // had a ligand in it. The element is what colour-by-element reads;
             // the name is what the atom is called.

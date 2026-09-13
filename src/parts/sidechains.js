@@ -121,6 +121,48 @@
             return true;
         },
 
+        // ====================================================================
+        // A COVALENTLY BOUND LIGAND OPENS ATTACHED
+        //
+        // The file's `covale` records name a side-chain ATOM - CYS SG to a
+        // haem's CAB - and src/io/parse.js keeps them as `covalentLinks` for
+        // _materialiseSidechains to resolve. That resolution needs the atom to
+        // EXIST, which it does only while its side chain is shown, so on a
+        // structure nobody has clicked yet the bond the file declares is a bond
+        // nothing can draw: the ligand opens floating beside a ribbon with no
+        // visible attachment, which is the picture github.com/sokrypton/py2Dmol#29
+        // reported.
+        //
+        // So the residues at the ends of a DECLARED link open with their side
+        // chains out. It is a small set by construction - one residue per chain
+        // on 1A09, two on 1BBH, one on 1BJP - because it is not "residues near
+        // a ligand", which is a binding site and a different picture; it is the
+        // handful the file went out of its way to say are BONDED to one.
+        //
+        // 🔴 ONCE, AT LOAD, NOT A RULE RE-APPLIED PER FRAME. A reader who turns
+        // one of these off has said something, and a default that came back on
+        // the next frame step would be overriding them. The flag is what makes
+        // it a starting state rather than a policy, and it is on the OBJECT so
+        // a second structure loaded beside the first gets its own.
+        _seedCovalentSidechains(object) {
+            if (!object || object._covalentSeeded) return false;
+            object._covalentSeeded = true;
+            const links = object.covalentLinks;
+            if (!links || !links.length) return false;
+            const set = object.sidechains instanceof Set
+                ? new Set(object.sidechains) : new Set();
+            const before = set.size;
+            for (const [ra, rb, na, nb] of links) {
+                // ...an end with no atom name is a ligand atom, which is a
+                // position already and has no side chain to turn on
+                if (na) set.add(ra);
+                if (nb) set.add(rb);
+            }
+            if (set.size === before) return false;
+            object.sidechains = set;
+            return true;
+        },
+
         /** Draw these residues' side chains. */
         showSidechains(sel) { this._setSidechains(sel, true); return this; },
 
