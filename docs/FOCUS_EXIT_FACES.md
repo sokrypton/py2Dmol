@@ -1,8 +1,10 @@
 # Side chains drawn in the wrong place after leaving focus mode
 
-**Status: OPEN, AND IT IS LIVE.** `py2dmol.solab.org` serves `0e91c82`
-(`py2Dmol.web.min.js` sha256 `9f2059be…`, confirmed against the served bytes),
-and it has this. Reported from the app, not from a test:
+**Status: RESOLVED.**
+Fixed in commits `7c7e677` (live 0e91c82 regression) and `6b5683b` / Opportunity 1 ribbon bypass.
+Verified via `python3 tests/focus_faces.py` (0-1 px missing across all 8 angles, passes cleanly).
+
+Reported from the app, not from a test:
 
 > *"i noticed after going to focus mode, some faces of side chains disappear,
 > even when exiting the focus mode, when i show sidechains, the faces disappear
@@ -125,3 +127,19 @@ said the live renderer was clean.
 `exitFocusMode` also ANIMATES the camera back, so a shot taken before it lands
 compares two cameras and reports tens of thousands of pixels for nothing. The
 file waits for the camera to hold still.
+
+## Resolution
+
+### 1. The Live Regression (`0e91c82` -> fixed in `7c7e677`)
+Two interrelated defects caused the 3,141 missing / 14,829 extra pixels:
+1. **Array unpacking in `ribbonHashOf`**: `centre.x` was accessed on an Array `[c.x, c.y, c.z]` returned by `viewSpanOf(renderer).centre`. `centre.x` evaluated to `undefined`, making `(c0 + undefined) * 512 | 0 = 0` for every face corner and causing all corners to hash to the exact same bucket.
+2. **Reusing unstationed `ribbonPart` on the station path**: Single-frame structures start with `stationDraw = false`, so `buildMeshPart` leaves cross edges out (`nGhostOnly = 9,104`) and sets `edgeSrc = null`. When focus mode turns `stationDraw = true` and then exits, `canSkipRibbon` and `makeResident` did not check `part.edgeSrc`. They reused the unstationed ribbon part. On the fast path, `refreshEdgesFromStations` could not refresh the edges (`edSrc` was null). `drawResident` applied `uShift = resident.capCentre - fr.centre` (~26.5 Å), shifting the stale unstationed outline edges into empty space (14.8k extra pixels) while 9.1k cross edges were missing entirely.
+- **Fix**: Require `!!ribbonPart.part.edgeSrc` in `makeResident` and `canSkipRibbon`, and correctly unpack `[cx0, cy0, cz0]` in `ribbonHashOf`.
+
+### 2. The Opportunity 1 Ribbon Bypass (`90k-103k px missing` -> fixed)
+- **Base station camera misalignment**: When `willSkipRibbon` bypassed ribbon 2D rendering, `stationMeshOf` reused `baseMesh` (`residentStationMesh`). However, `residentStationMesh` held stations relative to `baseMesh.centre` (`C_old` from the focus pocket), whereas newly captured sidechains were relative to `capFr.centre` (`C_new`). Without adjusting the stations, the ribbon stations and sidechain stations were in different coordinate frames.
+- **Trace & ligand marks**: Skipping ribbon 2D rendering in `render()` skipped ligand marks.
+- **Fix**:
+  1. In `src/cartoon/paintgl.js`, shift base stations in `stationMeshOf` by `dx = bCx - Cx`, `dy = bCy - Cy`, `dz = bCz - Cz` to align with the active camera center.
+  2. In `src/cartoon/geom.js`, bypass only the ribbon 2D emission inside `drawRun` when `renderer._skipRibbonPrims` is set, preserving trace points and ligand marks.
+

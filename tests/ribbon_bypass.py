@@ -80,9 +80,13 @@ window.addEventListener('load', () => {
     let toggle = 0;
     const forceBuild = async () => {
       toggle += 1;
-      const m = [];
-      for (let i = Math.floor(n * 0.30); i < Math.floor(n * (0.40 + 0.02 * (toggle % 2))); i++) m.push(i);
-      if (r.showSidechains) r.showSidechains(m);
+      const extra = [];
+      for (let i = Math.floor(n * 0.40); i < Math.floor(n * 0.42); i++) extra.push(i);
+      if (toggle % 2 === 1) {
+        if (r.showSidechains) r.showSidechains(extra);
+      } else {
+        if (r.hideSidechains) r.hideSidechains(extra);
+      }
       await settle(8);
     };
     const leg = async (name, fn) => {
