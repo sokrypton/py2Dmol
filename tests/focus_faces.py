@@ -18,6 +18,16 @@ version called one and fell back to writing V.rotationY, which nothing reads,
 so eight angles were one view eight times. Every row reading identical numbers
 is what gave that away - a sweep whose rows do not differ has not swept.
 
+🔴 AND THE STATION PATH IS NOT FORCED ON, WHICH IS THE WHOLE FINDING. An
+earlier version of this file called setStationDraw(true) before the first
+build and reported the deployed renderer CLEAN. It is not: renderApp turns the
+path on BY ITSELF the moment focus mode is entered - `|| renderer._focusMode` -
+so a single-frame structure reaches it with a mesh that was built without
+stations and has the path switched on underneath. Forcing it on up front is a
+different state from the one a reader reaches, and it is the one state where
+this does not reproduce. A probe that arranges the conditions it wants is
+measuring its own arrangement.
+
 🔴 AND THE "NEVER FOCUSED" GROUP IS THE CONTROL. It exercises the same sweep on
 the same structure with the same side chains and must come back clean; without
 it, a difference could as easily be the probe as the renderer.
@@ -44,7 +54,13 @@ window.addEventListener('load', () => {
     if (r.setStyle) r.setStyle('cartoon'); else r.style = 'cartoon';
     await settle(12);
     const G = window.py2dmolCartoonGPU;
-    G.setStationDraw(true); await settle(8);
+    // 🔴 NOT FORCED. The app turns the station path on BY ITSELF the moment
+    // focus mode is entered - `|| renderer._focusMode` in renderApp - and a
+    // single-frame structure would never have it on otherwise. Forcing it here
+    // is a different state from the one a reader reaches, and the one a reader
+    // reaches is a mesh built WITHOUT stations that the path is switched on
+    // underneath.
+    await settle(4);
     const shot = () => { const c = document.createElement('canvas');
       c.width = r.canvas.width; c.height = r.canvas.height;
       c.getContext('2d').drawImage(r.canvas, 0, 0);
