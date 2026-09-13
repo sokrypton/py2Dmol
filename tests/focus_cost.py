@@ -27,11 +27,15 @@ window.addEventListener('load', () => {
     const out = [];
     const act = async (name, fn) => {
       window.__faceBuilds = 0; window.__stationFastPath = 0;
+      window.__ribbonBuilds = 0; window.__sidechainBuilds = 0; window.__otherBuilds = 0;
       window.__rebuild = {}; window.__hashTrace = [];
       const t0 = performance.now();
       await fn();
       await settle(4);
       out.push({name, builds: window.__faceBuilds || 0,
+                ribbonBuilds: window.__ribbonBuilds || 0,
+                sidechainBuilds: window.__sidechainBuilds || 0,
+                otherBuilds: window.__otherBuilds || 0,
                 fast: window.__stationFastPath || 0,
                 ms: +(performance.now() - t0).toFixed(1),
                 rb: Object.assign({}, window.__rebuild || {}),
@@ -86,14 +90,18 @@ o = json.loads(cdp.evaluate(ws, f"window.__go({json.dumps(FILE)}).then(JSON.stri
 print(f"{o['file']}: {o['positions']} positions, station path on")
 for row in o["out"]:
     rb = row["rb"] or {}
-    print(f"  {row['name']:<18} builds {row['builds']:<3} fast {row['fast']:<3}"
+    print(f"  {row['name']:<18} builds {row['builds']:<3} (rib {row.get('ribbonBuilds', 0)} sc {row.get('sidechainBuilds', 0)}) fast {row['fast']:<3}"
           f" {row['ms']:>7} ms  ribbonReused={rb.get('ribbonReused')}"
           f" otherReused={rb.get('otherReused')}"
           f" nRib={rb.get('nRibbon')} nSide={rb.get('nSide')}"
           f" capture={rb.get('capture')} total={rb.get('total')}")
+    # ...the cache key's own terms, when paintgl is carrying the trace. It is
+    # temporary instrumentation rather than a shipped counter, so this prints
+    # whatever is there and nothing when there is nothing.
     for h in (row.get("hashes") or []):
-        print(f"      rib: n={h['n']} scale={h['scale']} rowsUnused={h['rowsUnused']}"
-              f" hash={h['hash']} had={h['had']} pOnly={h['pOnly']}")
+        print("      rib: " + "  ".join(f"{k}={h[k]}" for k in
+                                        ("n", "scale", "rowsUnused", "hash", "had", "pOnly")
+                                        if k in h))
         row["_prm"] = h.get("prm")
 prev = None
 for row in o["out"]:

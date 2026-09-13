@@ -109,7 +109,9 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `edge_phases.py` | tool | WHERE A RIBBON BUILD'S TIME GOES, phase by phase, medians over rounds. |
 | `embed.py` | ui | The embed bundle, in a browser, on a page that has nothing else. |
 | `export_html.py` | tool | Four exported files, opened one at a time: do they draw? |
+| `focus_cost.py` | tool | What a focus click costs, step by step: mesh rebuilds, what was rebuilt, |
 | `focus_mode.py` | ui | Focus is a MODE: it borrows the viewer and gives it back. |
+| `focus_pixels.py` | tool | A focus click that reused the ribbon must draw what a forced rebuild of the |
 | `frame_policy.py` | ui | Two objects of DIFFERENT LENGTH share one timeline, and the policy is what |
 | `frame_revisit.py` | tool | A FRAME DRAWN AGAIN IS THE SAME FRAME - including the outline. |
 | `frame_share.py` | tool | A TRAJECTORY'S FRAMES DESCRIBE ONE MOLECULE, AND ONLY ITS COORDINATES MOVE. |
@@ -174,6 +176,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `render_page.py` | ui | render.html - drop a folder of structures in, get every picture out. |
 | `resize_reuse.py` | ui | A RESIZE IS A CAMERA, NOT A REBUILD - and it draws what a rebuild draws. |
 | `save_multi.py` | ui | A Multi session comes back the way it was saved. |
+| `scale_indep.py` | tool | Is the built mesh the SAME mesh at two zooms? The ribbon part's cache key |
 | `selection_mark.py` | ui | Three ways to mark a selection, and each has to do its own job. |
 | `selection_panel.py` | ui | The selection panel's Show / Hide pairs, driven as a user drives them. |
 | `selection_shells.py` | ui | The selection panel in the two shells that never had it. |

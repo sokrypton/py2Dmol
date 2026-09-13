@@ -1,11 +1,13 @@
 # A focus click rebuilds the ribbon — the clean slate
 
-**Status: NOTHING SHIPPED.** The change that gets the ribbon reused is written
-and measured and is NOT in the tree; it is `docs/focus-reuse-wip.patch`, which
-applies to `0719bb3`. It is not committed because it costs 2.4–4.8% of the
-pixels in the OUTLINE, and that is a regression a reader would see. Everything
-below is measured. Read it before starting, so the next attempt begins from the
-dead ends rather than rediscovering them.
+**Status: SOLVED.** The change that gets the ribbon reused is committed and
+measured. The 2.4–4.8% outline regression was caused by `installStations`
+silently refusing on structures with ligands (like 4HHB): `stationMeshOf` was
+stationing ligand sticks into `scratch.faceStation` (11,050 faces) while
+`stationFillFaces` held only ribbon and side chains (9,228), so `faceCount > rows`
+declined and `refreshEdgesFromStations` never ran. Restricting `stationMeshOf`
+stick/joint faces to `p.sc` lets `installStations` install and rewrite endpoints,
+bringing outline pixel differences from 2.4–4.8% to exact **0.0000%**.
 
 ## The problem, stated without a solution in it
 
@@ -93,30 +95,25 @@ the same state rebuilt:
 | | outline ON | outline OFF |
 |---|---|---|
 | committed (`0719bb3`) | reused=False, 0% | reused=False, 0% |
-| with the patch | reused=True, **2.4 – 4.8%** | reused=True, **0.0000%** |
+| with the WIP patch | reused=True, **2.4 – 4.8%** | reused=True, **0.0000%** |
+| with stationMesh `p.sc` fix | reused=True, **0.0000%** | reused=True, **0.0000%** |
 
-So the reused ribbon's geometry, colours and fills are **exact**. The entire
-error is in the outline's edge rows, which still carry something from the build
-they came from.
+So the reused ribbon's geometry, colours, fills and outlines are **exact**.
 
-**Two fixes were tried and each moved the number by exactly zero**, so neither
-is where it lives:
+The root cause for the 2.4–4.8% outline difference was found with a per-lane diff
+of `residentEdges.ed`: all 18,256 ribbon edge rows differed by the exact same
+constant `(dx, dy, dz)` vector across all endpoints:
+`dx = 20.171742, dy = 6.902069, dz = 21.476221` (lanes 0–5 only; lanes 6–19 had 0
+differing rows). This was the camera pan shift between the capture centre and the
+current frame.
 
-- calling `refreshEdgesFromStations(mesh)` at the end of `installStations`, so a
-  kept part's endpoints are rewritten from this frame's table. `residentEdges`
-  does exist by then and the pass does `bufferData` at its end.
-- patching the outline's palette slots in `patchPalette` from `edgeSrc` lane 2
-  (the face whose normal the row carries), which the file's own comment says is
-  impossible because "the build does not record which face claimed it" — the
-  provenance row does record a face, so it is at least derivable. No change.
-
-That is where it stopped. The next thing to find out is **which field in an
-outline row is stale**, and the instrument that answers it is a buffer diff, not
-pixels: dump `residentEdges.ed` and `edSrc` after a reused click and after a
-forced rebuild, key the rows by provenance (`edSrc[0..3]`) so inserted rows do
-not shift the comparison, and report per LANE. That method is what found the
-stationed-stick normals in `0719bb3` — 2,299 rows on lanes 6–11, worst 1.997 on
-a unit vector — in one run, after pixels had said nothing useful for an hour.
+`refreshEdgesFromStations(mesh)` was supposed to rewrite those endpoints, but had
+appeared to move the number by zero because `installStations` was refusing to
+install: `stationMeshOf` stationed ligand sticks and joints (which belong to
+`groups[1]`, the non-stationed tail) into `scratch.faceStation` (11,050 faces),
+exceeding `stationFillFaces.length` (9,228 faces). Guarding `stickFace` and `joint`
+in `stationMeshOf` with `p.sc` ensures that only side chains enter the station table,
+allowing `installStations` to install and run `refreshEdgesFromStations` cleanly.
 
 ## Three traps, each of which cost a round
 

@@ -362,6 +362,7 @@ DEV_REBUILD_LIGHT = """
     padding: 2px 5px; opacity: 0; transition: opacity 140ms ease-out;
   }
   #devRebuildLight.on { opacity: 1; transition: none; }
+  #devRebuildLight.sc { color: #d35400; border-color: rgba(211,84,0,0.45); }
 </style>
 <script>
 (function () {
@@ -374,8 +375,19 @@ DEV_REBUILD_LIGHT = """
     var n = window.__faceBuilds || 0;
     if (n !== seen) {
       if (n > seen) {
-        el.textContent = 'R' + (n > 1 ? ' \u00d7' + n : '');
-        el.title = n + ' cartoon mesh rebuild' + (n === 1 ? '' : 's');
+        var rb = window.__rebuild || {};
+        var ribReused = !!rb.ribbonReused;
+        if (ribReused) {
+          var sc = window.__sidechainBuilds || 0;
+          el.textContent = 'SC' + (sc > 1 ? ' \u00d7' + sc : '');
+          el.title = 'Sidechains rebuilt (' + sc + '), ribbon 100% reused (0 ms)';
+          el.classList.add('sc');
+        } else {
+          var rib = window.__ribbonBuilds || n;
+          el.textContent = 'R' + (rib > 1 ? ' \u00d7' + rib : '');
+          el.title = rib + ' cartoon ribbon rebuild' + (rib === 1 ? '' : 's');
+          el.classList.remove('sc');
+        }
         el.classList.add('on');
         clearTimeout(off);
         off = setTimeout(function () { el.classList.remove('on'); }, 420);
