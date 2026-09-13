@@ -27,15 +27,18 @@ window.addEventListener('load', () => {
     const out = [];
     const act = async (name, fn) => {
       window.__faceBuilds = 0; window.__stationFastPath = 0;
+      window.__ribbonFacesSkipped = 0;
       window.__ribbonBuilds = 0; window.__sidechainBuilds = 0; window.__otherBuilds = 0;
       window.__rebuild = {}; window.__hashTrace = [];
       const t0 = performance.now();
       await fn();
       await settle(4);
-      out.push({name, builds: window.__faceBuilds || 0,
+      out.push({name, skipped: window.__ribbonFacesSkipped || 0,
+                builds: window.__faceBuilds || 0,
                 ribbonBuilds: window.__ribbonBuilds || 0,
                 sidechainBuilds: window.__sidechainBuilds || 0,
                 otherBuilds: window.__otherBuilds || 0,
+                ribbonFacesSkipped: window.__ribbonFacesSkipped || 0,
                 fast: window.__stationFastPath || 0,
                 ms: +(performance.now() - t0).toFixed(1),
                 rb: Object.assign({}, window.__rebuild || {}),
@@ -92,9 +95,9 @@ for row in o["out"]:
     rb = row["rb"] or {}
     print(f"  {row['name']:<18} builds {row['builds']:<3} (rib {row.get('ribbonBuilds', 0)} sc {row.get('sidechainBuilds', 0)}) fast {row['fast']:<3}"
           f" {row['ms']:>7} ms  ribbonReused={rb.get('ribbonReused')}"
-          f" otherReused={rb.get('otherReused')}"
           f" nRib={rb.get('nRibbon')} nSide={rb.get('nSide')}"
-          f" capture={rb.get('capture')} total={rb.get('total')}")
+          f" capture={rb.get('capture')} facesOf={rb.get('facesOf')} stickMs={rb.get('stickMs')} total={rb.get('total')}"
+          f" skip={row.get('ribbonFacesSkipped', 0)}")
     # ...the cache key's own terms, when paintgl is carrying the trace. It is
     # temporary instrumentation rather than a shipped counter, so this prints
     # whatever is there and nothing when there is nothing.

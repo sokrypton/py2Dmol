@@ -103,7 +103,24 @@ window.addEventListener('load', () => {
         for (let i = 0; i < d.length; i += 4)
           if (d[i] < 245 || d[i+1] < 245 || d[i+2] < 245) k += 1;
         return k; };
+      // 🔴 AND `armed 0` IS TWO DIFFERENT ANSWERS, so it is disambiguated here
+      // rather than reported as one. The bypass declining can mean the
+      // signature CHANGED - which is the right answer, the term is named and
+      // the ribbon rebuilt - or it can mean a precondition was not met, in
+      // which case the leg exercised nothing and the term is still untested.
+      // This second build changes NOTHING: if the bypass arms now, the
+      // preconditions were available all along and the decline above was the
+      // signature doing its job.
+      window.__ribbonFacesSkipped = 0;
+      await forceBuild();
+      r.render('ctl'); await settle(3);
+      r.render('ctl2'); await settle(3);
+      const ctlGot = shot();
+      const ctlArmed = window.__ribbonFacesSkipped || 0;
+      G.invalidate(); r.render('ctlforced'); await settle(3);
+      const ctlWant = shot();
       out.push({name, armed, inkGot: ink(got), inkWant: ink(want),
+                ctlArmed, ctlD: diff(ctlGot, ctlWant),
                 faces: (window.__rebuild || {}).nRibbon || 0, d: diff(got, want)});
     };
 
@@ -185,17 +202,29 @@ armedAny = 0
 print(f"{o['file']}: a skipped ribbon against the same frame rebuilt")
 for row in o["out"]:
     armedAny += row["armed"]
-    note = "" if row["armed"] else "   (bypass never armed - asserts nothing)"
+    if row["armed"]:
+        note = "bypass took it"
+    elif row.get("ctlArmed"):
+        note = "declined, and it arms on the very next build - the signature named this"
+    else:
+        note = "declined AND would not arm after - this leg tested nothing"
     print(f"  {row['name']:<20} armed {row['armed']}"
           f"  {row['d']['moved']:>8}% of pixels, worst {row['d']['worst']}"
-          f"  ink {row.get('inkGot')} vs {row.get('inkWant')}  nRib={row.get('faces')}{note}")
+          f"  ink {row.get('inkGot')} vs {row.get('inkWant')}  nRib={row.get('faces')}")
+    print(f"  {'':<20} -> {note}"
+          f"  (control build after: armed {row.get('ctlArmed')},"
+          f" {row.get('ctlD', {}).get('moved')}%)")
+    if row.get("ctlArmed") and row.get("ctlD", {}).get("moved", 0) > 0.01:
+        bad.append(f"{row['name']}: the build AFTER it took the bypass and drew"
+                   f" {row['ctlD']['moved']}% differently from a rebuild - the ribbon"
+                   " kept under this setting is not the ribbon this setting draws")
     if row["armed"] and row["d"]["moved"] > 0.01:
         why = ("the skip itself is dropping faces" if row["name"] == "nothing changed"
                else "a term ribbonSigOf does not name")
         bad.append(f"{row['name']}: the skipped ribbon differs from a rebuilt one by"
                    f" {row['d']['moved']}% of pixels (worst {row['d']['worst']},"
                    f" ink {row.get('inkGot')} against {row.get('inkWant')}) - {why}")
-if not armedAny:
+if not (armedAny or any(r.get("ctlArmed") for r in o["out"])):
     bad.append("the bypass never armed on any leg, so this file measured nothing")
 
 print()
