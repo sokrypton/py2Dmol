@@ -15,8 +15,12 @@ how the first version of this reported one bad angle and seven clean ones.
 
 🔴 AND THE ROTATION IS A MATRIX ON viewerState. There is no rotateBy; the first
 version called one and fell back to writing V.rotationY, which nothing reads,
-so eight angles were one view eight times. Every row reading identical numbers
-is what gave that away - a sweep whose rows do not differ has not swept.
+so eight angles were one view eight times. That the rows all read the same is
+what gave it away - but it is NOT how the file checks any more: on a renderer
+that is exact every row reads 0/0/0 legitimately, and inferring "identical rows
+means it never turned" failed a clean tree on 1EHZ. `distinctViews` digests the
+drawn frames themselves, which differ when the structure turns whatever the
+diffs say.
 
 🔴 AND THE STATION PATH IS NOT FORCED ON, WHICH IS THE WHOLE FINDING. An
 earlier version of this file called setStationDraw(true) before the first
@@ -114,13 +118,24 @@ window.addEventListener('load', () => {
         r.render('forced2'); await settle(3);
         ref.push(shot()); kB.push(camKey());
       }
+      // 🔴 AND WHETHER THE SWEEP TURNED IS ASKED OF THE PICTURES, NOT OF THE
+      // DIFFS. The first version inferred it - "if every row reads the same, the
+      // structure never moved" - and that cannot tell a sweep which did not turn
+      // from a renderer which is simply EXACT: on 1EHZ every row is 0/0/0,
+      // correctly, and the guard failed a clean tree. The drawn frames
+      // themselves differ when the structure turns, whatever the diffs say.
+      const digest = (d) => { let h = 2166136261;
+        for (let i = 0; i < d.length; i += 4001) {
+          h = Math.imul(h ^ d[i], 16777619) >>> 0; }
+        return h >>> 0; };
+      const seen = new Set();
+      for (let a = 0; a < 8; a++) seen.add(digest(drawn[a]));
       const rows = [];
       for (let a = 0; a < 8; a++) {
         const c = cmp(drawn[a], ref[a]);
-        rows.push({deg: (a + 1) * 45, miss: c.miss, extra: c.extra, worst: c.worst,
-                   });
+        rows.push({deg: (a + 1) * 45, miss: c.miss, extra: c.extra, worst: c.worst});
       }
-      return {tag, rows};
+      return {tag, rows, distinctViews: seen.size};
     };
 
     const out = [];
@@ -168,10 +183,10 @@ ctl = next((g for g in o if "never focused" in g["tag"]), None)
 if ctl and max(r["miss"] for r in ctl["rows"]) > 200:
     bad.append("the control sweep - side chains that never saw focus mode - is"
                " already losing ink, so this file cannot attribute anything")
-if ctl and len({(r["miss"], r["extra"]) for r in ctl["rows"]}) == 1 \
-        and len({r["worst"] for r in ctl["rows"]}) == 1:
-    bad.append("every angle of the control reads identically - the sweep is not"
-               " turning the structure, so 'at certain angles' was never tested")
+if ctl and ctl.get("distinctViews", 0) < 4:
+    bad.append(f"the control swept {ctl.get('distinctViews')} distinct pictures"
+               " across 8 angles - the sweep is not turning the structure, so"
+               " 'at certain angles' was never tested")
 for grp in o:
     worst = max(r["miss"] for r in grp["rows"])
     if worst > 200:

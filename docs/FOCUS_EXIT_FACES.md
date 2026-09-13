@@ -1,26 +1,24 @@
 # Side chains drawn in the wrong place after leaving focus mode
 
-**Status: FIXED BY REVERT, in `8261f7c`.** Not by the two fixes this file used
-to credit. `7c7e677` corrected a real bug and did not cure this; `c1b67a5`
-realigned the reused stations and did not either. What cured it was taking
-`src/cartoon/paintgl.js` and `geom.js` back to `0719bb3` - so the ribbon is no
-longer kept across a camera move, and the facesOf bypass built on top of that
-is gone with it. Live serves the revert and is clean.
+**Status: FIXED.** First by reverting the premise that caused it (`8261f7c`),
+then properly in `acc8357`, which rebuilds the mesh about the STRUCTURE rather
+than the view centre and keeps the focus-click speedup. Verified on 4HHB,
+3PTB, 1EHZ and 1AOI: `focus_faces` clean, `test_absolute_focus` 0/0.
 
-🔴 AND THE BISECT WAS DONE BY EYE, BECAUSE EVERY PROBE SAID IT WAS FINE.
-On a server sending `no-store`, with the served bytes hash-checked against each
-commit so nothing stale could reach the page:
+The bisect that found it, done by eye on a server sending `no-store` with the
+served bytes hash-checked against each commit, because every automated probe
+read green throughout:
 
 ```
 0719bb3   clean
 d723a62   BROKEN     the ribbon starts being kept across a camera move
 7c7e677   BROKEN     the centre unpacked correctly - not sufficient
 c1b67a5   BROKEN     stations realigned by the delta - not sufficient
-revert    clean
+8261f7c   clean      reverted
+acc8357   clean      rebuilt about the structure
 ```
 
-See `docs/FOCUS_REBUILD.md` for what the premise was and what it would take to
-get the speed back honestly.
+See `docs/FOCUS_REBUILD.md` for the premise and what it took to hold it.
 
 Reported from the app, not from a test:
 

@@ -1,36 +1,40 @@
 # A focus click rebuilds the ribbon — the clean slate
 
-**Status: REVERTED, AND THE PROBLEM IS OPEN AGAIN.** This file briefly said
-SOLVED. It was not: the change shipped, drew side chains in the wrong place
-after a visit to focus mode, survived three separate fixes, and was taken out
-in `8261f7c`. `src/cartoon/paintgl.js` and `geom.js` are back at `0719bb3`, the
-focus click costs its ~28-52 ms of mesh rebuild again, and everything below
-about the problem and its measurements still stands.
+**Status: SOLVED, ON THE THIRD PREMISE.** The first two kept the ribbon in a
+space measured from the CAMERA and both were reverted; `acc8357` builds the
+mesh about the STRUCTURE - `currentModelCenter` is the structure's own centre,
+every corner is carried into that frame, and the camera stays a uniform, which
+is what the section below said it would take.
 
-🔴 **THE PREMISE IS WHAT FAILED, NOT THE THREE BUGS FOUND IN IT.** The mesh is
-built in a space measured from the CAMERA. It survives a ZOOM exactly - proved
-twice, bit-identical digests - and it does NOT survive a PAN: `tests/scale_indep.py`
-measures an 8 A pan changing every corner, fill `4052370906` -> `3722347299`.
-That measurement was taken, seen, and talked past, on the reasoning that
-`viewShift = capCentre - liveCentre` would absorb it. It does not, because a
-KEPT ribbon and a freshly BUILT side-chain part then sit against two different
-cameras with one `capCentre` recorded for the pair.
+  focus click                 ribbonReused=true, the 9,128 ribbon faces kept
+  48 real-button interactions 0 ribbon rebuilds, against 4 on the reverted
+                              tree - the positive control that makes 0 mean
+                              something
 
-So the way to have this is to build the mesh about the **structure** rather
-than about the view centre, and let the camera be a uniform the way the
-rotation already is. Patching `capCentre` after the fact was tried three times
-(`7c7e677`, `c1b67a5`, and the `installStations` coverage gate) and cured
-nothing.
+🔴 WHAT FAILED TWICE, SO IT IS NOT TRIED A FOURTH TIME. `d723a62` gave the
+ribbon a model-space key and read `centre.x` on what viewSpanOf returns as an
+ARRAY, so every corner hashed to zero and the key matched when it should not
+have. That was a real bug, `7c7e677` fixed it, and the picture was still
+wrong; `c1b67a5` realigned the stations by the camera-centre delta and it was
+still wrong. The premise was the fault: the mesh survives a ZOOM exactly and
+does NOT survive a PAN - `tests/scale_indep.py`, an 8 A pan changing every
+corner, fill `4052370906` -> `3722347299`. Patching `capCentre` afterwards
+cannot reach that, and three commits proved it.
 
-🔴 **AND NO PROBE IN THIS REPO CAN SEE THAT CLASS OF FAULT.** `focus_faces`,
-`focus_pixels`, `ribbon_bypass` and `scale_indep` all compare a frame against
-THE SAME FRAME REBUILT - and a bad cache key produces a consistently wrong
-answer that a rebuild reproduces faithfully, so the difference is zero while
-the picture is wrong. All four reported green throughout. The fault was found
-by a reader looking at the screen, and confirmed by a by-hand bisect. **Before
-this is attempted again, write something ABSOLUTE** - same camera, same state,
-before and after - and make sure its control cannot be the thing being
-measured, which is where the first attempt at one went wrong.
+🔴 AND A CONTACT IS NOT A FACE. Group 1 carries the ligands, the base plates
+AND the contact strokes, and it is hashed over its FACES - so adding or
+removing a contact moved nothing the key looked at and the strokes were never
+built. Found only by `tests/embed.py`, because the app renderer has no
+`setContacts` at all and two probes written through `objectsData` tested
+nothing on either tree. `linesKeyOf` digests the strokes into that hash.
+
+🔴 AND THE PROBES STILL CANNOT SEE EVERYTHING. `focus_faces`, `focus_pixels`,
+`ribbon_bypass` and `scale_indep` all compare a frame against THE SAME FRAME
+REBUILT, and a bad key gives a consistently wrong answer a rebuild reproduces
+faithfully - all four read green through both reverted attempts while the
+picture was wrong. `tests/test_absolute_focus.py` is the answer to that: it
+compares against pictures taken BEFORE focus, with no rebuild anywhere in it,
+and it earns its pass - run against `d723a62` it fails, miss 774.
 
 ## The problem, stated without a solution in it
 
