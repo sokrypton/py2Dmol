@@ -119,11 +119,11 @@ function residueOf(p) {
  *   OPT-IN, because emptying a caller's array is a surprising thing for a
  *   function to do and the lab harnesses read their prims back.
  */
-function facesOf(prims, prm, consume) {
+function facesOf(prims, prm, consume, skipRibbon) {
     const P0 = prm || defaultParams();
     const skipKinds = {};
     const lines = [];
-    let palComplete = true;
+    let palComplete = skipRibbon ? (residentRibbonPal !== false) : true;
     const faces = [];
     let skipped = 0;
     let pieces = 0;
@@ -131,6 +131,7 @@ function facesOf(prims, prm, consume) {
         const p = prims[pi];
         if (consume) prims[pi] = null;
         if (p.kind === 'rib' && p.Lp) {
+            if (skipRibbon) continue;
             const ns = p.Lp.length;
             // oK is ub·k - the inner-ness of the +b face, and the one shading
             // input that does not depend on the camera, so it travels as a
@@ -5234,6 +5235,10 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused, smOffset) {
  * It costs about a millisecond and it fails safe - a miss rebuilds.
  */
 let ribbonPart = null;           // { hash, part }
+let residentRibbonFaces = null;  // retained ribbon faces for CPU bypass
+let residentRibbonHash = null;   // cached model-space hash of residentRibbonFaces
+let residentRibbonSig = null;    // signature of backbone state when ribbon was built
+let residentRibbonPal = true;    // paletteComplete status of ribbon faces
 let otherPart = null;            // ...and the ligands, plates and contacts
 /**
  * ...AND IT HAS TO BE CHEAP, or it eats what it saves. The first version
@@ -5338,6 +5343,69 @@ function ribbonHashOf(faces, scale, prm, centre) {
         // fills. See makeResident.
     }
     return h >>> 0;
+}
+
+/**
+ * WHAT THE BACKBONE RIBBON DEPENDS ON.
+ *
+ * Captures all properties that affect ribbon geometry and face derivations in
+ * model space: backbone coordinates, segment count, visibility, hidden backbones,
+ * secondary structure assignment, cartoon parameters, and the colour key.
+ *
+ * When this signature matches residentRibbonSig, the ribbon's faces in model space
+ * are guaranteed identical, and facesOf can skip processing rib prims entirely.
+ */
+function backboneColourKeyOf(colors, baseCount) {
+    if (!colors || !colors.length) return 'nocol';
+    const n = Math.min(colors.length, baseCount || colors.length);
+    let a = n >>> 0;
+    for (let i = 0; i < n; i++) {
+        const c = colors[i];
+        if (!c) { a = (a * 31 + 7) >>> 0; continue; }
+        a = (Math.imul(a, 16777619) ^ (((c.r | 0) << 16) | ((c.g | 0) << 8) | (c.b | 0))) >>> 0;
+    }
+    return 'bc' + n + ':' + a.toString(36);
+}
+
+function ribbonSigOf(r, colors) {
+    if (!r) return '';
+    const bb = r.hiddenBackbones;
+    const baseCount = typeof r._baseCount === 'function' ? r._baseCount() : (r.coords ? r.coords.length : 0);
+    const co = r.coords;
+    let s = '';
+    if (co && baseCount > 0) {
+        for (const i of [0, baseCount >> 1, baseCount - 1]) {
+            const p = co[i];
+            if (p) {
+                const px = p.x !== undefined ? p.x : p[0];
+                const py = p.y !== undefined ? p.y : p[1];
+                const pz = p.z !== undefined ? p.z : p[2];
+                s += (((px + py * 3 + pz * 7) * 1000) | 0) + ',';
+            }
+        }
+    }
+    const C = (typeof window !== 'undefined') ? window.py2dmolCartoon : null;
+    const sse = (C && C.sseKey) ? C.sseKey(r) : '';
+    const pairs = (C && C.pairsKey) ? C.pairsKey(r) : '';
+    const colKey = backboneColourKeyOf(colors || appColors, baseCount);
+    return [
+        r.currentObjectName,
+        r.currentFrame,
+        baseCount + ':' + s,
+        (bb && bb.size) ? 'nobb' + setKeyOf(bb) : 'bb',
+        r.visiblePositions ? setKeyOf(r.visiblePositions) : 'all',
+        r.cartoonDetail,
+        r.cartoonThickness,
+        r.cartoonSheetFlat,
+        r.cartoonRichardson === true,
+        r.cartoonHelixThRel,
+        r.cartoonArrows,
+        r.cartoonGpuRibbonThick,
+        r.cartoonGpuHelixTh,
+        sse,
+        pairs,
+        colKey,
+    ].join('|');
 }
 
 /**
@@ -5764,7 +5832,7 @@ function faceGroup(f) {
     return 0;
 }
 
-function makeResident(faces, scale, prm, lines, capCentre) {
+function makeResident(faces, scale, prm, lines, capCentre, renderer) {
     const P0 = prm || defaultParams();
     // THREE GROUPS, AND EACH ONE CHANGES FOR ITS OWN REASONS.
     //
@@ -5800,6 +5868,11 @@ function makeResident(faces, scale, prm, lines, capCentre) {
     // all along.
     const groups = [[], [], []];
     for (const f of faces) groups[faceGroup(f)].push(f);
+    let cameFromSkip = false;
+    if (groups[0].length === 0 && residentRibbonFaces && residentRibbonFaces.length > 0) {
+        groups[0] = residentRibbonFaces;
+        cameFromSkip = true;
+    }
     // 🔴 WHETHER THE SIDE CHAINS ARE STATIONED IS NEEDED BEFORE THE LOOP, NOT
     // AFTER IT. It used to be read where the parts are concatenated, which is
     // past the point where each part is BUILT - and the build has to know,
@@ -5872,8 +5945,10 @@ function makeResident(faces, scale, prm, lines, capCentre) {
         // camera. That is the case a focus click is: the geometry is the same
         // and only the camera has moved. Without the rows skipped the corners
         // in the part ARE what is drawn, and the key stays as it was.
-        const hash = ribbonHashOf(face, scale, P0, rowsUnused ? capCentre : null)
-            ^ (rowsUnused ? 0x5bf03635 : 0);
+        const hash = (g === 0 && cameFromSkip && residentRibbonHash !== null)
+            ? residentRibbonHash
+            : (ribbonHashOf(face, scale, P0, rowsUnused ? capCentre : null)
+                ^ (rowsUnused ? 0x5bf03635 : 0));
         let part = (slot && slot.hash === hash) ? slot.part : null;
         const cameFromCache = !!part;
         if (typeof window !== 'undefined' && window.__hashTrace) {
@@ -5927,8 +6002,22 @@ function makeResident(faces, scale, prm, lines, capCentre) {
                 window.__edgeStatsRibbon = Object.assign({}, window.__edgeStats);
             }
             const keep = (part.bytes <= MESH_KEEP_MAX_BYTES) ? { hash, part } : null;
-            if (g === 0) ribbonPart = keep; else otherPart = keep;
+            if (g === 0) {
+                ribbonPart = keep;
+                if (keep) {
+                    residentRibbonFaces = face;
+                    residentRibbonHash = hash;
+                    residentRibbonPal = (appPalComplete !== false);
+                    if (renderer) residentRibbonSig = ribbonSigOf(renderer);
+                }
+            } else otherPart = keep;
         } else {
+            if (g === 0 && (!residentRibbonFaces || !cameFromSkip)) {
+                residentRibbonFaces = face;
+                residentRibbonHash = hash;
+                residentRibbonPal = (appPalComplete !== false);
+                if (renderer) residentRibbonSig = ribbonSigOf(renderer);
+            }
             patchPalette(part, face, RB);
         }
         parts.push(part);
@@ -6343,7 +6432,7 @@ function makeResidentStations(mesh, fill) {
     // and the fill comes back empty; the same numbers are read off the face.
     // tests/station_rows.py holds the two derivations to zero differing floats
     // over 47,533 rows, which is what makes the choice a matter of route.
-    const fromFill = fill.length > 0;
+    const fromFill = fill.length >= mesh.faceCount * 48;
     const rows = fromFill
         ? Math.min(mesh.faceCount, Math.floor(fill.length / 48))
         : mesh.faceCount;
@@ -6571,7 +6660,8 @@ function installStations(mesh, fill) {
     // ...counted from whichever source the rows will come from. An empty fill
     // means the ribbon's rows were never built (see makeResident), and the face
     // list is then what has to cover the table.
-    const rows = (fill && fill.length) ? Math.floor(fill.length / 48)
+    const rows = (fill && mesh && fill.length >= mesh.faceCount * 48)
+        ? Math.floor(fill.length / 48)
         : (stationFillFaces ? stationFillFaces.length : 0);
     if (!mesh || !mesh.faceCount || mesh.faceCount > rows) {
         stationRefusal = `the station table describes ${mesh ? mesh.faceCount : 0}`
@@ -8798,6 +8888,9 @@ function invalidate() {
     // of fills for geometry the page has been told to forget is not what
     // "invalidate" means.
     ribbonPart = null;
+    residentRibbonFaces = null;
+    residentRibbonHash = null;
+    residentRibbonSig = null;
     otherPart = null;
     spareTube = null; tubeLive = null; tubeCount = 0;
     clearResident();
@@ -9584,7 +9677,14 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
                 window.__lastStations = Float32Array.from(stationCoverMesh.stations);
                 window.__lastPieces = Float32Array.from(stationCoverMesh.pieces);
             }
-            const { faces, lines, paletteComplete } = facesOf(prims, prm, true);
+            const canSkipRibbon = stationDraw && !!ribbonPart && !!ribbonPart.part
+                && !!residentRibbonFaces && residentRibbonFaces.length > 0
+                && stationCoverCount >= residentRibbonFaces.length
+                && ribbonSigOf(renderer) === residentRibbonSig;
+            if (canSkipRibbon && typeof window !== 'undefined') {
+                window.__ribbonFacesSkipped = (window.__ribbonFacesSkipped || 0) + 1;
+            }
+            const { faces, lines, paletteComplete } = facesOf(prims, prm, true, canSkipRibbon);
             // 🔴 THE REBUILD COUNTER, AND THIS IS THE LINE THAT DEFINES ONE.
             // Not "renderApp ran" and not "the signature changed" - a rebuild
             // is the capture turned into faces and a mesh, which is the work
@@ -9604,7 +9704,7 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
             prims.length = 0;
             hm('primsDropped');
             RB.facesOf = +(performance.now() - RB.t0).toFixed(1);
-            makeResident(faces, scale, prm, lines, viewSpanOf(renderer).centre);
+            makeResident(faces, scale, prm, lines, viewSpanOf(renderer).centre, renderer);
             hm('afterMesh');
             // ...and the stage-1 measurement, when a probe asks. Here as well
             // as after a station update, because a structure that never moves
