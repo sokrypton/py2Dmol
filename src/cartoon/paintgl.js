@@ -8368,8 +8368,21 @@ function signatureOf(r, w, h, colors, topological) {
     const o = r.objectsData && r.objectsData[r.currentObjectName];
     return sharedGeometryKey(r, topological).concat([
         // the extent of what is DRAWN - the merge has its own, and the camera
-        // scale is built from it
-        ((r.drawnStats && r.drawnStats()) || o || {}).maxExtent,
+        // scale is built from it.
+        //
+        // 🔴 NOT WHEN THE VIEW SPAN IS SET. With viewerState.extent set - by
+        // the app, or by the orient flight and focus mode through setViewSpan -
+        // the scale is built from THAT (_viewHalfSpan: `extent || maxExtent`)
+        // and maxExtent reaches nothing that is drawn, so it is not topology and
+        // stays out of the topological key. Measured on protein_fighter, which
+        // pins its camera and steps two chains with replaceFrame: the held
+        // extent grows a quarter at a time as the fight spreads, and each
+        // grow step was one full rebuild - the first jump of a round (the apex
+        // is the highest point yet reached) and the fighters walking apart
+        // each landed one, 50-95 ms a hitch on the jump itself. With the term
+        // out those frames take the station path like every other.
+        (topological && r.viewerState && r.viewerState.extent > 0) ? 'pinned'
+            : ((r.drawnStats && r.drawnStats()) || o || {}).maxExtent,
         ...(topological ? [] : [w, h]),
         // 🔴 THICKNESS AND FLATNESS ARE NOT TOPOLOGY, so they are left out of
         // the topological key - the one the station fast path compares.
