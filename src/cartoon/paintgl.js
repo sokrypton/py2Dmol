@@ -9519,9 +9519,23 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
         // Counted here rather than inside the branch above because a frame can
         // decline before it gets that far (no previous key, a mapping that
         // moved), and every one of those is the same answer.
+        //
+        // 🔴 AND A MOVED KEY IS NOT ONE OF THOSE. A decline because the
+        // topological key moved is new geometry - a bond across the threshold,
+        // a letter changing - and says nothing about whether the table can
+        // follow this structure once it holds still; only a decline with the
+        // key MATCHED (the mapping moved, or updateStations refused) does. A
+        // diffusion trajectory opens with dozens of frames of noise, every one
+        // a moved key, and the twelfth switched the path off for the object:
+        // measured on 60 added frames, the first 40 noisy, and the 20 settled
+        // ones after them all rebuilt (__stationGaveUp 1). So a moved key
+        // starts the count over - the structure it is being asked about is a
+        // different one - and a key mismatch costs only the signature, since
+        // the capture is behind the match above.
         if (stationAuto && stationDraw && !stationFast && !stationEverFast
             && sig !== appSig) {
-            stationTries += 1;
+            if (topoSig !== appTopoSig) stationTries = 0;
+            else stationTries += 1;
             if (stationTries >= STATION_TRY_LIMIT) {
                 stationGaveUpFor = renderer.currentObjectName;
                 stationAuto = false;
