@@ -904,7 +904,25 @@ void main() {
   // two triangles over the quad's four corners; 0 and 1 sit at the near
   // station, 2 and 3 at the far one, which is what picks the frame
   // drawn with an index buffer, so gl_VertexID IS the corner (see quadIdx)
+  //
+  // 🔴 ...BUT WHICH DIAGONAL SPLITS THE QUAD IS DECIDED BY THE GEOMETRY, NOT
+  // BY THE LABELS. The index buffer cuts along 0-2. A ribbon frame's sign is a
+  // direction, not an orientation - geom.js's loop pass negates a whole element
+  // whenever that keeps a loop's twist under 90 degrees, and on a moving
+  // structure that decision sits on a knife edge (dp crossing zero between two
+  // frames). Negating the frame relabels the corners 0<->1 and 2<->3, so the
+  // same four points were cut along the OTHER diagonal: a twisted quad is not
+  // planar, so its silhouette moved and its normals blended across a different
+  // pair of triangles - a loop's sides trading light and dark from one frame to
+  // the next. The SHORTER diagonal names the same two points whichever way the
+  // labels run. Rotating the labels by one keeps the winding, and everything
+  // below reads the rotated label, so near and far still pick the right frame.
   int corner = gl_VertexID;
+  {
+    vec3 e02 = aC2 - aC0;
+    vec3 e13 = aC3 - aC1;
+    if (dot(e02, e02) > dot(e13, e13)) corner = (corner + 1) % 4;
+  }
   // coincident at THIS end of the quad - corners 0 and 1 sit at the near
   // station, 2 and 3 at the far one, the same split the frames use. Declared
   // after the corner index because GLSL does not hoist: one line earlier
