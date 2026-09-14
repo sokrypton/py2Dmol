@@ -901,6 +901,25 @@ public downloads is exercised on every run.
   lands on the frame's original coordinates to within 0, and the neighbouring
   frames are untouched. **A count check alone would pass against a call that
   did nothing**, so the travel is asserted beside it.
+  🔴 **AND A STEP OF THE SAME MOLECULE IS NOT RE-MEASURED.** After the pop,
+  `addFrame`'s `_recomputeObjectStats` saw the replacement alone, so every step
+  of a moving structure recentred the camera, moved the perspective's focal
+  length (it reads stdDev) and changed `maxExtent` - which is term 10 of the GPU
+  painter's topological key, so the station fast path declined EVERY frame.
+  Measured on protein_fighter (two 362-residue chains, `replaceFrame` at 60 Hz):
+  217 of 217 draws rebuilt at 16-17 ms. Now a replacement with the same position
+  count holds centre and spread and only GROWS the extent
+  (`_growHeldObjectStats`): 253 of 253 draws took the fast path at 7-8 ms, and
+  the camera did not move. A different count is a different structure and is
+  measured from scratch. `tests/embed.py` asserts the centre holds, the extent
+  widens for a frame moved 60 A, and does not narrow when the original returns.
+  **IT GROWS WITH A QUARTER TO SPARE.** Growing to exactly what was reached left
+  a spreading structure rebuilding whenever it went a hair further: through a
+  scripted fight and knockout, 26 of 593 draws rebuilt, every one at term 10 by a
+  fraction of an Angstrom. With the headroom: 2 of 613. **Secondary structure
+  changing is NOT a rebuild on this path**: 20 spot checks through the same run,
+  each the drawn frame against the same coordinates rebuilt from scratch, differ
+  by at most 0.0002% of pixels, and none declined for a moved mapping.
 - **KABSCH IS A FUNCTION NOW, NOT ONLY A SIDE EFFECT OF `addFrame`.** The fit
   has been in every bundle since the browser took the viewing geometry over
   from numpy, and the only way to reach it was to ask a FRAME to align itself

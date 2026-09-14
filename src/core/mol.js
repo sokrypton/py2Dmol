@@ -4212,7 +4212,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.render('addFrame-color');
             }
 
-            this._recomputeObjectStats(object);
+            // a replaceFrame of the same molecule keeps its measurements - see there
+            if (this._heldStats && this._heldStats.object === object) {
+                this._growHeldObjectStats(object, this._heldStats);
+            } else {
+                this._recomputeObjectStats(object);
+            }
             // ...AND THE CAMERA'S DISTANCE, when nothing else will set it. The
             // ortho slider recomputes the focal length on every input; a shell
             // without one (an embed, a notebook) never did, so a config asking
@@ -4322,6 +4327,37 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (!object) {
                 throw new Error(`replaceFrame: no object ${JSON.stringify(name)}`);
             }
+            // 🔴 AN ANIMATION STEP DOES NOT RE-MEASURE THE OBJECT. addFrame
+            // recomputes centre, extent and spread from the frames it holds, and
+            // after the pop that is the replacement alone - so every step of a
+            // moving structure moved all three. Three things followed, and they
+            // are the faults parts/multi.js's _mergedStatsOfFrames already
+            // refused for a merge:
+            //
+            //  - THE CAMERA FOLLOWED THE STRUCTURE. _recomputeObjectStats
+            //    recentres the view, so a thing walking across a fixed stage
+            //    dragged the stage with it.
+            //  - THE PERSPECTIVE BREATHED. The focal length is set from stdDev on
+            //    the way out of addFrame, so the camera came closer as the
+            //    structure drew in and backed off as it spread.
+            //  - THE MESH WAS REBUILT ON EVERY STEP. maxExtent is a term of the
+            //    GPU painter's topological key, so a moving extent read as new
+            //    geometry and the station fast path declined every frame.
+            //    Measured driving two 362-residue chains at 60 Hz: 217 draws,
+            //    217 declined at "the topological key moved at 10".
+            //
+            // So a replacement with the SAME position count is the same molecule
+            // moving: the centre and spread are held, and the extent only ever
+            // GROWS to take in where the structure has been - a grow step is one
+            // rebuild, and holding still costs none. A different count is a
+            // different structure and is measured from scratch, as it always was.
+            let held = null;
+            const last = object.frames && object.frames[object.frames.length - 1];
+            if (frame && frame.coords && last && last.coords
+                && last.coords.length === frame.coords.length
+                && object.maxExtent > 0 && object.center) {
+                held = { object, center: object.center.slice(), maxExtent: object.maxExtent };
+            }
             if (object.frames && object.frames.length > 0) {
                 object.frames.pop();
                 // ...and the trackers, which name a frame index that has just
@@ -4335,7 +4371,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     object._lastPaeFrame = object.frames.length - 1;
                 }
             }
-            this.addFrame(frame, name);
+            this._heldStats = held;
+            try {
+                this.addFrame(frame, name);
+            } finally {
+                this._heldStats = null;
+            }
             return this;
         }
 
@@ -5238,6 +5279,36 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
             object.totalPositions = totalCount;
             object.globalCenterSum = new Vec3(globalCenter.x * totalCount, globalCenter.y * totalCount, globalCenter.z * totalCount);
+        }
+
+        /**
+         * The measurements a replaceFrame of the same molecule keeps: the centre
+         * and spread as they were, the camera where it was, and the extent
+         * widened - never narrowed - to reach every position of the new frame
+         * from that held centre. Narrowing it would put the rebuild back on
+         * every step that drew in, which is half the steps of anything moving.
+         */
+        _growHeldObjectStats(object, held) {
+            const [cx, cy, cz] = held.center;
+            let maxSq = held.maxExtent * held.maxExtent;
+            const frame = object.frames[object.frames.length - 1];
+            const co = frame && frame.coords;
+            if (co) {
+                for (let i = 0; i < co.length; i++) {
+                    const dx = co[i][0] - cx, dy = co[i][1] - cy, dz = co[i][2] - cz;
+                    const d = dx * dx + dy * dy + dz * dz;
+                    if (d > maxSq) maxSq = d;
+                }
+            }
+            // ...and when it does have to grow, it grows with a quarter to spare.
+            // Growing to exactly what was reached rebuilt the mesh on every frame a
+            // spreading structure went a hair further: measured on protein_fighter,
+            // 7 of 20 spot checks through a fight and a knockout were rebuilds, each
+            // for an extent a fraction of an Angstrom past the last (125.73 -> 125.85,
+            // 135.74 -> 135.85), and not one was for anything else.
+            const need = Math.sqrt(maxSq);
+            object.center = held.center;
+            object.maxExtent = need > held.maxExtent ? need * 1.25 : held.maxExtent;
         }
 
         _subsetFrames(object, keep) {

@@ -1166,6 +1166,32 @@ setTimeout(finish, 80000);
         // ...and the frame BEFORE it is untouched, which is the difference
         // between replacing one and rewriting the trajectory
         R.rfNeighbourIntact = framesOf()[0].coords[0][0] === base[0];
+        // ...and a replace of the same molecule is an animation step: the camera
+        // stays where it was and the extent only grows. Measured against the
+        // state before the moved frame went in, and again after the original
+        // comes back - a structure drawing in must not shrink the extent, or
+        // every such step rebuilds the mesh.
+        {
+            // ...further than `moved` went, because `moved` has already been
+            // in and the extent already reaches it
+            const o = rv.objectsData[objName];
+            const further = py2Dmol.frameFromText(PDB_TEXT);
+            further.coords = further.coords.map((p) => [p[0] + 60, p[1], p[2]]);
+            const c0 = { ...rv.viewerState.center };
+            rv.replaceFrame(py2Dmol.frameFromText(PDB_TEXT), objName);
+            const e0 = o.maxExtent;
+            const cBack = { ...rv.viewerState.center };
+            rv.replaceFrame(further, objName);
+            const cMoved = rv.viewerState.center;
+            R.rfCentreMoved = Math.max(
+                Math.hypot(cBack.x - c0.x, cBack.y - c0.y, cBack.z - c0.z),
+                Math.hypot(cMoved.x - c0.x, cMoved.y - c0.y, cMoved.z - c0.z));
+            R.rfExtentBefore = e0;
+            R.rfExtentMoved = o.maxExtent;
+            rv.replaceFrame(py2Dmol.frameFromText(PDB_TEXT), objName);
+            R.rfExtentBack = o.maxExtent;
+            rv.replaceFrame(moved, objName);
+        }
         // ...twice more, to show the count is stable rather than merely equal
         rv.replaceFrame(moved, objName);
         rv.replaceFrame(moved, objName);
@@ -2035,6 +2061,21 @@ if not (R.get('rfSwapped') or 0) > 20:
                ' nothing would pass every count check above')
 if not R.get('rfNeighbourIntact'):
     bad.append('replaceFrame disturbed the frame before it')
+print(f"  replaceFrame view: centre moved {R.get('rfCentreMoved')} A, extent"
+      f" {R.get('rfExtentBefore')} -> {R.get('rfExtentMoved')} moved ->"
+      f" {R.get('rfExtentBack')} back")
+if R.get('rfCentreMoved') is None or R.get('rfCentreMoved') > 1e-6:
+    bad.append(f"replaceFrame moved the camera by {R.get('rfCentreMoved')} A -"
+               ' an animation step recentred the view on the structure, so'
+               ' anything moving across a fixed stage drags the stage along')
+if not (R.get('rfExtentMoved') or 0) > (R.get('rfExtentBefore') or 1e9):
+    bad.append(f"moving the frame 60 A did not widen the extent"
+               f" ({R.get('rfExtentBefore')} -> {R.get('rfExtentMoved')}) -"
+               ' the structure can leave the view')
+if R.get('rfExtentBack') != R.get('rfExtentMoved'):
+    bad.append(f"putting the original frame back changed the extent"
+               f" ({R.get('rfExtentMoved')} -> {R.get('rfExtentBack')}) - it must"
+               ' only grow, or every step that draws in rebuilds the mesh')
 if not R.get('rfRefusesUnknown'):
     bad.append('replaceFrame accepted an object that does not exist instead of'
                ' saying so')
