@@ -11,7 +11,10 @@ transparent and carries only the overlays. What has to hold:
     the first canvas in the container is still the viewer's;
   * the ink is on the layer, and the viewer's canvas is clear where it is;
   * a second viewer on the page, without the option, still paints its own
-    canvas: one viewer owns the layer, the other keeps the blit;
+    canvas: one viewer owns the layer, the other keeps the blit - and when it
+    draws, the owner's last frame is kept on the owner's canvas and the layer
+    hidden (the GL canvas is the layer, so the second viewer's drawing would
+    have shown in the first's box), until the owner draws again;
   * an export renders into its own canvas and still carries the ink;
   * with the GPU switched off the layer hides and the 2D pass paints the
     viewer's canvas itself; switched back on, the layer returns;
@@ -75,6 +78,7 @@ window.addEventListener('load', () => {
       const b = py2Dmol.show(document.getElementById('plain'), text, {});
       await until(() => a.coords && a.coords.length && b.coords && b.coords.length, 20000);
       a.render('warm'); b.render('warm'); await settle(6);
+      a.render('last'); await settle(4);   // a draws last, so its layer is showing
       // 1. the layer, under a's canvas, the same size; the first canvas in the
       //    container is still a's
       const L = layer(a);
@@ -90,6 +94,14 @@ window.addEventListener('load', () => {
       out.steps.aAlphaAtInk = li.at ? alphaAt(a.canvas, li.at) : null;
       out.steps.bInkOwn = ink(b.canvas).n; out.steps.bLayer = !!layer(b);
       out.steps.aCssBackground = a.canvas.style.background;
+      // 2b. b draws again: a's last frame is kept on a's own canvas and the layer
+      //     hidden, since b drew into the GL canvas that is a's layer; a draws
+      //     again and has the layer back, its canvas clear
+      b.render('again'); await settle(4);
+      out.steps.otherDrewDisplay = L ? getComputedStyle(L).display : null; out.steps.otherDrewOwnInk = ink(a.canvas).n; out.steps.otherDrewState = G().directPresent();
+      a.render('back'); await settle(4);
+      out.steps.backState = G().directPresent(); out.steps.backDisplay = L ? getComputedStyle(L).display : null;
+      out.steps.backOwnInk = ink(a.canvas).n; out.steps.backLayerInk = L ? ink(L).n : 0;
       // 3. an export renders into its own canvas, and carries the ink
       const ex = document.createElement('canvas'); ex.width = 300; ex.height = 220;
       a._renderToContext(ex.getContext('2d'), 300, 220);
@@ -175,6 +187,10 @@ if S["aCssBackground"] != "transparent":
     bad.append(f"the viewer's canvas keeps a CSS background over the layer: {S['aCssBackground']!r}")
 if S["bInkOwn"] < 200 or S["bLayer"]:
     bad.append("the second viewer, without the option, did not paint its own canvas through the blit")
+if S["otherDrewDisplay"] != "none" or S["otherDrewOwnInk"] < 200:
+    bad.append("another viewer drew and the owner's layer stayed showing (its picture), or the owner's frame was not kept on its canvas")
+if S["backDisplay"] == "none" or not S["backState"]["shown"] or S["backLayerInk"] < 200 or S["backOwnInk"] > 50:
+    bad.append("after another viewer drew, the owner's next draw did not bring the layer back and clear its canvas")
 if S["exportInk"] < 200:
     bad.append(f"an export lost the drawing ({S['exportInk']} ink pixels)")
 if not S["afterExport"]["shown"]:

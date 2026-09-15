@@ -9070,6 +9070,7 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
                 appCv = null; appSig = null; clearResident(); clearGL();
             });
         }
+        keepOwnerFrame(renderer);   // before the canvas is resized or drawn: it may be another viewer's layer
         const sizeMoved = appCv.width !== w || appCv.height !== h;
         if (sizeMoved) { appCv.width = w; appCv.height = h; }
         // A RESIZE DOES NOT DROP THE CONTEXT, but the first call must make one.
@@ -10730,6 +10731,7 @@ function renderTubeApp(renderer, ctx, displayWidth, displayHeight, S) {
                 clearResident(); clearGL();
             });
         }
+        keepOwnerFrame(renderer);   // before the canvas is resized or drawn: it may be another viewer's layer
         const fresh = !gl || appCv.width !== w || appCv.height !== h;
         if (appCv.width !== w || appCv.height !== h) { appCv.width = w; appCv.height = h; }
         if (!gl && !initGL(appCv)) return false;
@@ -10831,7 +10833,10 @@ function renderTubeApp(renderer, ctx, displayWidth, displayHeight, S) {
  * blit as before, so PNG and SVG are unaffected.
  *
  * ONE VIEWER OWNS IT. There is one GL canvas for the page, so the first
- * renderer to present keeps the layer; any other keeps the blit. A screen
+ * renderer to present keeps the layer; any other keeps the blit - and since
+ * the blit draws into that same canvas, the owner's last frame is copied onto
+ * its own canvas and the layer hidden before another viewer draws
+ * (keepOwnerFrame), until the owner presents again. A screen
  * frame the GPU did not draw - it declined, or the GPU is off - hides the
  * layer, so the 2D pass's drawing is not sitting over a stale frame: see
  * screenFrame, which core/mol.js calls around every screen frame.
@@ -10919,6 +10924,28 @@ function holdDirect() {
 }
 function hideDirect() {
     if (directShown && appCv) { appCv.style.display = 'none'; directShown = false; }
+}
+// 🔴 ANOTHER VIEWER'S DRAW WOULD SHOW ON THE OWNER'S LAYER. The GL canvas is one
+// per page and it IS the owner's layer, so a second viewer rendering into it
+// (to blit onto its own canvas) replaced the owner's picture on screen with its
+// own, sized to itself, stretched over the owner's box: a game with a small
+// preview viewer beside its arena saw the preview's protein in the arena. Called
+// before a viewer that is not the owner draws, while the layer shows: the
+// layer's picture, which is the owner's last frame, is copied onto the owner's
+// own canvas (a copy of a frame that is not being redrawn, once, not per frame)
+// and the layer hidden; the owner's next present clears its canvas and shows
+// the layer again (presentApp), as it does after any hide.
+function keepOwnerFrame(renderer) {
+    if (!directShown || !appCv || !directOwner || directOwner === renderer) return;
+    const ctx = directOwner.ctx;
+    if (ctx && ctx.drawImage) {
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        ctx.drawImage(appCv, 0, 0, ctx.canvas.width, ctx.canvas.height);
+        ctx.restore();
+    }
+    hideDirect();
 }
 // AROUND EVERY SCREEN FRAME: 'begin' before the renderer draws, 'end' after.
 // A frame that ended without presenting was drawn by the 2D pass - the GPU
