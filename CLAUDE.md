@@ -158,6 +158,7 @@ public downloads is exercised on every run.
 | `tests/station_corners.py` | the station table implies the mesh buildMeshPart uploaded. |
 | `tests/station_pixels.py` | ...and drawing from it gives the same picture. |
 | `tests/station_frames.py` | what a trajectory step costs when only the stations are uploaded. |
+| `tests/ss_every.py` | how often a MOVING structure reassigns its fold (`cartoonSecEvery`), and that a control still lands at once. |
 | `tests/station_integrated.py` | renderApp taking that path by itself, and declining where it must. |
 | `tests/station_foldcuts.py` | what dropping the orientation-fold cuts costs, and what it buys. |
 | `tests/make_traj.py` | the synthetic trajectories the animation probes read - one whose fold holds, one that unfolds. |

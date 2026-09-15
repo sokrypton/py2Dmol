@@ -5752,6 +5752,25 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
     let cacheRebuilt = false;
     let sec = renderer._cartoonSec;
     let ladders = renderer._cartoonLadder;
+    // 🔴 HOW OFTEN AN ANIMATION PAYS FOR THE ASSIGNMENT. The cache key holds the
+    // coordinates, so a structure that MOVES misses it every frame and reassigns:
+    // 1.9 ms a draw on a 1,068-residue scene in protein_fighter, the largest single
+    // item left in a frame there. A caller that knows its structure's fold changes
+    // slowly - a body walking, a trajectory of one molecule - sets
+    // `cartoonSecEvery` to how many changed frames may share one assignment.
+    // Default 1: every frame that moves is assigned, which is what every page did
+    // before this existed. Only the COORDINATES may go stale this way: the rest of
+    // the key (an sse override, forced pairing, the position count) is compared as
+    // before, so switching a control still reassigns on the spot.
+    const secEvery = Math.max(1, Math.round(renderer.cartoonSecEvery || 1));
+    const secStable = sseKey(renderer) + pairsKey(renderer) + '|' + n;
+    if (sec && secEvery > 1 && renderer._cartoonSecKey !== secKey
+        && renderer._cartoonSecStable === secStable
+        && (renderer._cartoonSecAge || 0) + 1 < secEvery) {
+        renderer._cartoonSecAge = (renderer._cartoonSecAge || 0) + 1;
+        renderer._cartoonSecKey = secKey;
+        renderer._cartoonLadderKey = secKey;
+    }
     if (!sec || renderer._cartoonSecKey !== secKey) {
         if (renderer._cartoonSecKey !== secKey) cacheRebuilt = true;
         // HOW OFTEN THE ASSIGNMENT IS ACTUALLY RECOMPUTED, and what it costs.
@@ -5786,6 +5805,8 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
         renderer._cartoonSecKey = secKey;
         renderer._cartoonLadder = ladders;
         renderer._cartoonLadderKey = secKey;
+        renderer._cartoonSecStable = secStable;
+        renderer._cartoonSecAge = 0;
         if (typeof window !== 'undefined') {
             window.__ssMs = (window.__ssMs || 0) + (performance.now() - secT0);
         }

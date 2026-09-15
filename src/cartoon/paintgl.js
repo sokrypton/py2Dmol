@@ -10890,20 +10890,8 @@ function presentApp(renderer, ctx) {
     // the app's canvas goes clear, so the layer shows through; parts/ui.js
     // paints the paper onto it on a background change, so this is per frame
     if (cv.style.background !== 'transparent') cv.style.background = 'transparent';
-    // PLACED BEFORE IT IS INSERTED. In the flow for even a moment it is a block
-    // as tall as itself, the canvas moves down by that, and the offsets read
-    // after are where the canvas was pushed to. Over the canvas's CONTENT box
-    // (inside its border, which the canvas keeps drawing over the layer), with
-    // its corners, since the embed rounds them.
-    const left = cv.offsetLeft + cv.clientLeft, top = cv.offsetTop + cv.clientTop;
-    const geom = left + ',' + top + ',' + cv.clientWidth + ',' + cv.clientHeight;
-    if (geom !== directGeom || !directShown) {
-        directGeom = geom;
-        appCv.style.cssText = 'position:absolute;left:' + left + 'px;top:' + top + 'px;width:'
-            + cv.clientWidth + 'px;height:' + cv.clientHeight + 'px;pointer-events:none;z-index:-1;border-radius:'
-            + (getComputedStyle(cv).borderRadius || '0') + ';';
-        directShown = true;
-    }
+    placeLayer(cv, !directShown);
+    directShown = true;
     if (appCv.parentNode !== cv.parentNode || cv.nextSibling !== appCv) cv.parentNode.insertBefore(appCv, cv.nextSibling);
     // the paper the 2D pass painted comes off, and the overlays go on over the layer
     ctx.save();
@@ -10911,6 +10899,48 @@ function presentApp(renderer, ctx) {
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
     ctx.restore();
     directDrew = true;
+}
+// WHERE THE LAYER GOES: over the canvas's CONTENT box (inside its border, which
+// the canvas keeps drawing over the layer), with its corners, since the embed
+// rounds them. PLACED BEFORE IT IS INSERTED - in the flow for even a moment it
+// is a block as tall as itself, the canvas moves down by that, and the offsets
+// read after are where the canvas was pushed to. Written only when the place
+// moved, or when `force` says the layer is coming back from hidden.
+function placeLayer(cv, force) {
+    const left = cv.offsetLeft + cv.clientLeft, top = cv.offsetTop + cv.clientTop;
+    const geom = left + ',' + top + ',' + cv.clientWidth + ',' + cv.clientHeight;
+    if (geom === directGeom && !force) return false;
+    directGeom = geom;
+    appCv.style.cssText = 'position:absolute;left:' + left + 'px;top:' + top + 'px;width:'
+        + cv.clientWidth + 'px;height:' + cv.clientHeight + 'px;pointer-events:none;z-index:-1;border-radius:'
+        + (getComputedStyle(cv).borderRadius || '0') + ';';
+    return true;
+}
+// 🔴 THE PAGE MOVES WITHOUT THE VIEWER DRAWING. The layer is absolutely placed
+// at offsets measured when the owner last presented, so anything that moved
+// the canvas since - a block inserted above it in its own parent, a font or an
+// image loading above it, a notebook output growing - left the picture where
+// the canvas used to be while the canvas and its overlays moved on: measured
+// 70px off on the website with a block inserted inside #canvasContainer, and a
+// whole embed's picture outside its box. Asked every frame from the renderer's
+// own animation loop (core/mol.js animate), which already runs every frame, so
+// this adds no wakeups: when nothing moved it is four property reads on a
+// layout that is already clean.
+function syncDirect(renderer) {
+    if (!directShown || !appCv || directOwner !== renderer || !appCv.parentNode) return false;
+    // 🔴 NOT AFTER A FRAME THAT DREW, ONCE. presentApp has just placed the layer for
+    // that frame, and placing it reads offsetLeft, clientWidth and getComputedStyle - a
+    // layout the page may owe, measured at 0.49 ms a frame of self time on a fight in
+    // protein_fighter, which draws on every frame. This exists for the frames where
+    // nothing drew and the page moved underneath, so the flag is CONSUMED rather than
+    // tested: the frame after a draw skips, and a page that then stops drawing is
+    // followed from the next frame on. Left as a plain test it skipped for good, since
+    // nothing clears the flag until the next draw - tests/gpu_direct.py's inserted
+    // block, which moves the canvas with no render, stayed 37 px behind.
+    if (directDrew) { directDrew = false; return false; }
+    const cv = renderer.canvas;
+    if (!cv || !cv.isConnected) return false;
+    return placeLayer(cv, false);
 }
 // HELD OFF WHILE SOMETHING READS THE APP'S CANVAS. A recording samples that
 // canvas (captureStream, or a GIF's drawImage of it), and with the layer on it
@@ -11286,7 +11316,7 @@ window.py2dmolCartoonGPU = {
     } : null),
     render: renderApp, renderTube: renderTubeApp, blit: blitApp,
     // the GL canvas on the page under the app's, instead of copied into it
-    setDirectPresent, directPresent, screenFrame, holdDirect,
+    setDirectPresent, directPresent, screenFrame, holdDirect, syncDirect,
     invalidate, paramsFromRenderer,
     available, initGL, hasGL, clearGL, setZoomExact,
     setResidueMap, setSize, setPaletteSource, setDefaultParams, setOrtho,

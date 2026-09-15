@@ -102,6 +102,19 @@ window.addEventListener('load', () => {
       a.render('back'); await settle(4);
       out.steps.backState = G().directPresent(); out.steps.backDisplay = L ? getComputedStyle(L).display : null;
       out.steps.backOwnInk = ink(a.canvas).n; out.steps.backLayerInk = L ? ink(L).n : 0;
+      // 2c. THE PAGE MOVES AND NOBODY DRAWS. A block inserted before a's canvas
+      //     in its own parent, then one above the container: the canvas moves,
+      //     and the layer has to move with it without a render being asked for.
+      const contentRect = (c) => { const r = c.getBoundingClientRect(); return [r.left + c.clientLeft, r.top + c.clientTop, c.clientWidth, c.clientHeight].map(Math.round); };
+      const inner = document.createElement('div'); inner.style.height = '37px'; a.canvas.parentNode.insertBefore(inner, a.canvas);
+      await settle(3);
+      out.steps.innerShift = { canvas: contentRect(a.canvas), layer: L ? rect(L) : null, display: L ? getComputedStyle(L).display : null };
+      const outer = document.createElement('div'); outer.style.height = '53px';
+      document.getElementById('direct').parentNode.insertBefore(outer, document.getElementById('direct'));
+      await settle(3);
+      out.steps.outerShift = { canvas: contentRect(a.canvas), layer: L ? rect(L) : null };
+      inner.remove(); outer.remove(); await settle(3);
+      out.steps.unshift = { canvas: contentRect(a.canvas), layer: L ? rect(L) : null };
       // 3. an export renders into its own canvas, and carries the ink
       const ex = document.createElement('canvas'); ex.width = 300; ex.height = 220;
       a._renderToContext(ex.getContext('2d'), 300, 220);
@@ -191,6 +204,12 @@ if S["otherDrewDisplay"] != "none" or S["otherDrewOwnInk"] < 200:
     bad.append("another viewer drew and the owner's layer stayed showing (its picture), or the owner's frame was not kept on its canvas")
 if S["backDisplay"] == "none" or not S["backState"]["shown"] or S["backLayerInk"] < 200 or S["backOwnInk"] > 50:
     bad.append("after another viewer drew, the owner's next draw did not bring the layer back and clear its canvas")
+for leg in ("innerShift", "outerShift", "unshift"):
+    if S[leg]["layer"] != S[leg]["canvas"]:
+        bad.append(f"{leg}: the page moved the canvas with no draw, and the layer stayed behind"
+                   f" ({S[leg]['layer']} against the canvas at {S[leg]['canvas']})")
+if S["innerShift"]["canvas"][1] == S["aRect"][1]:
+    bad.append("innerShift: the inserted block did not move the canvas, so the leg measured nothing")
 if S["exportInk"] < 200:
     bad.append(f"an export lost the drawing ({S['exportInk']} ink pixels)")
 if not S["afterExport"]["shown"]:
