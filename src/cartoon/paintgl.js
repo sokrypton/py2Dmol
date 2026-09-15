@@ -5844,8 +5844,17 @@ function makeResident(faces, scale, prm, lines) {
 
     // ...and the same question for the side chains, asked once: the table has
     // to cover the ribbon AND them, since it describes them in that order.
+    // 🔴 EXACTLY THE FACES THE TABLE WILL BE ACCEPTED FOR, and not "at least".
+    // installStations takes a table only when it describes no more faces than
+    // the rows it is handed (the ribbon's, and the stationed side group's after
+    // them); a table can describe MORE - a ligand's sticks carry stations and are
+    // counted by it, yet build into the `other` group, which is not a prefix of
+    // the mesh - and then it is refused. Skipping the rows on "at least" left
+    // that frame with a refused table and no rows to draw the ribbon from:
+    // hemoglobin loaded after another structure came up as outlines and nothing
+    // else, for good. The skip and the install now ask the same question.
     const sideRowsUnused = stationedSide && stationDraw
-        && stationCoverCount >= groups[0].length + groups[2].length
+        && stationCoverCount === groups[0].length + groups[2].length
         && !(typeof window !== 'undefined' && window.__stationRowCheck);
     // ...the two that are worth keeping, each against a hash of its own faces
     const parts = [];
@@ -5884,7 +5893,7 @@ function makeResident(faces, scale, prm, lines) {
         // path, so it would agree perfectly while proving nothing. The flag is
         // tests/station_rows.py's alone.
         const rowsUnused = (g === 0) && stationDraw
-            && stationCoverCount >= face.length && face.length > 0
+            && stationCoverCount === face.length + (stationedSide ? groups[2].length : 0) && face.length > 0   // exactly what installStations will accept: see sideRowsUnused
             && !(typeof window !== 'undefined' && window.__stationRowCheck);
         // ...and the cache is keyed on it, because a part built without its
         // rows must never be handed to a frame that will draw them.

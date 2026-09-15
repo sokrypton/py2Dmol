@@ -44,7 +44,12 @@
 set -u
 cd "$(dirname "$0")/.."
 LANE="${1:-all}"
-JOBS="${JOBS:-6}"
+# 🔴 TWO AT A TIME NOW, NOT SIX. The measurement above predates the GPU frame's own
+# layer under every canvas (cartoon/paintgl.js, direct presentation): with each page
+# compositing a full-size WebGL canvas through swiftshader, six at once starved the
+# probes into "page error: no result posted" - 15 of 33 in one run, 2 at JOBS=2, none
+# alone, all on the same code. The lane takes a little longer and says something.
+JOBS="${JOBS:-2}"
 fail=0
 
 if [[ "$LANE" == "all" || "$LANE" == "node" ]]; then
