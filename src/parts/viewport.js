@@ -63,6 +63,16 @@ function setupViewport(containerElement, config) {
     // ====================================================================
     const cssSized = !!(canvasContainer && canvasContainer.dataset
         && canvasContainer.dataset.autosize === 'css');
+    // A BARE EMBED FOLLOWS ITS HOST. py2Dmol.show on a plain element, with no
+    // width or height asked for, sized the canvas from the element ONCE and
+    // never again: a host whose box is fluid (a game filling the window, a
+    // panel the user drags) was left with a canvas of the old size until it
+    // rebuilt the viewer itself. The shell has #canvasContainer for the
+    // observer to watch; a bare canvas has the host element, which is what
+    // config.display.follow says to watch (parts/embed.js sets it when no
+    // size was given). Measured and applied exactly as the container is.
+    const followHost = !canvasContainer && !!config.display?.follow;
+    const followed = cssSized ? canvasContainer : followHost ? containerElement : null;
 
     // WHAT THE BOX ACTUALLY IS when CSS owns it, falling back to the config
     // when it cannot be measured - a container inside a `display: none`
@@ -133,8 +143,8 @@ function setupViewport(containerElement, config) {
     let lastWidth = width;
     let lastHeight = height;
     const measure = () => {
-        if (!canvasContainer || !cssSized) return null;
-        const r = canvasContainer.getBoundingClientRect();
+        if (!followed) return null;
+        const r = followed.getBoundingClientRect();
         if (!(r.width >= 1 && r.height >= 1)) return null;
         return [r.width, r.height];
     };
@@ -155,7 +165,7 @@ function setupViewport(containerElement, config) {
     };
 
     const attach = (renderer) => {
-        if (!canvasContainer) return;
+        if (!canvasContainer && !followed) return;
         if (!window.ResizeObserver) {
             console.warn('py2dmol: ResizeObserver not supported.'
                 + ' Canvas resizing will not work.');
@@ -173,7 +183,7 @@ function setupViewport(containerElement, config) {
             renderer._updateCanvasDimensions();
             renderer.render('ResizeObserver');
         });
-        observer.observe(canvasContainer);
+        observer.observe(followed || canvasContainer);
     };
 
     installFullscreen(containerElement, canvasContainer);

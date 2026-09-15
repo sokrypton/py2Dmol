@@ -151,6 +151,9 @@ function show(target, text, options) {
         rendering,
         display: Object.assign({}, opts.display, {
             size: [width, height],
+            // a bare canvas sized from its element keeps following it
+            // (parts/viewport.js); a size that was asked for is kept
+            follow: !wantsChrome && !opts.width && !opts.height,
             // ONE FLAG, TWO JOBS, and it has to be true for either. The
             // renderer reads display.controls to decide whether to show the
             // play strip (core/mol.js) and parts/ui.js reads the same field to

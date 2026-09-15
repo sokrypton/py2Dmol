@@ -990,6 +990,7 @@ const DEFAULT_CONFIG = {
     viewer_id: null,
     display: {
         size: [300, 300],
+        follow: false,
         rotate: false,
         autoplay: false,
         controls: true,
@@ -1108,6 +1109,7 @@ function normalizeConfig(rawConfig = {}) {
         viewer_id: cfg.viewer_id ?? DEFAULT_CONFIG.viewer_id,
         display: {
             size: cfg.display?.size || cfg.size || DEFAULT_CONFIG.display.size,
+            follow: cfg.display?.follow ?? DEFAULT_CONFIG.display.follow,   // a bare embed's canvas follows its host element (parts/viewport.js)
             rotate: cfg.display?.rotate ?? cfg.rotate ?? DEFAULT_CONFIG.display.rotate,
             autoplay: cfg.display?.autoplay ?? cfg.autoplay ?? DEFAULT_CONFIG.display.autoplay,
             controls: cfg.display?.controls ?? cfg.controls ?? DEFAULT_CONFIG.display.controls,

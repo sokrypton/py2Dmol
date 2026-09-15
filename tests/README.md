@@ -109,6 +109,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `disulfides.py` | tool | A disulfide comes from the file, and lands on two cysteines. |
 | `edge_phases.py` | tool | WHERE A RIBBON BUILD'S TIME GOES, phase by phase, medians over rounds. |
 | `embed.py` | ui | The embed bundle, in a browser, on a page that has nothing else. |
+| `embed_follow.py` | ui | A BARE EMBED FOLLOWS ITS HOST ELEMENT. |
 | `export_html.py` | tool | Four exported files, opened one at a time: do they draw? |
 | `focus_cost.py` | tool | What a focus click costs, step by step: mesh rebuilds, what was rebuilt, |
 | `focus_faces.py` | tool | SIDE-CHAIN FACES THAT GO MISSING AFTER A VISIT TO FOCUS MODE. |

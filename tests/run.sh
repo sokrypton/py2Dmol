@@ -250,7 +250,7 @@ if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
       sidechain_toggle mixed_sidechains station_restore nucleic_multi save_multi selection_panel minimal_input
       object_reload python_page python_multi style_per_object align_objects embed panel
       msa_paired_ui selection_shells mobile_layout notebook_narrow play_stop heatmap_maps heatmap_names
-      render_page frame_policy)
+      render_page frame_policy embed_follow)
   pids=(); names=()
   for t in $UI; do
     ( run_probe $t ) & pids+=($!); names+=($t)
