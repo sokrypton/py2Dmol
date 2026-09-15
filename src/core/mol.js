@@ -13680,14 +13680,39 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             // 4. Final render if needed
-            if (needsRender) {
-                this.render('animate loop');
-                if (previousFrame !== currentFrame) {
-                    this.lastRenderedFrame = currentFrame;
+            //
+            // 🔴 NOT WHILE THE CANVAS CANNOT BE SEEN. A viewer in a container
+            // that is display:none (a closed dialog, a collapsed panel) went on
+            // drawing every frame it had a reason to, auto-rotation being one -
+            // and the GPU painter keeps ONE mesh for the page, so each of its
+            // draws replaced the visible viewer's mesh and each of the visible
+            // viewer's draws rebuilt it back. Measured on protein_fighter: a
+            // closed preview dialog left spinning beside a 1,068-residue arena
+            // turned every arena draw into a full rebuild ("the topological key
+            // moved at 0: preview -> arena"), 1.9 frames a second at CPU x4
+            // against 4.3 with no second viewer. The draw is owed, not dropped:
+            // held until the canvas is shown, then made, frame change included.
+            if (needsRender || this._renderOwed) {
+                const cv = this.canvas;
+                const unseen = !!cv && (!cv.isConnected || cv.getClientRects().length === 0);
+                if (unseen) {
+                    this._renderOwed = true;
+                } else {
+                    this._renderOwed = false;
+                    this.render('animate loop');
+                    if (previousFrame !== currentFrame) {
+                        this.lastRenderedFrame = currentFrame;
+                    }
                 }
             }
 
-            // 5. Loop - keep animation alive even when dragging so playback continues
+            // 5. ...and the GPU frame's layer follows the canvas if the page
+            // moved it without a draw (cartoon/paintgl.js, syncDirect). A no-op
+            // unless this viewer owns a layer that is showing.
+            const G = window.py2dmolCartoonGPU;
+            if (G && typeof G.syncDirect === 'function') G.syncDirect(this);
+
+            // 6. Loop - keep animation alive even when dragging so playback continues
             this.animationFrameId = requestAnimationFrame(() => this.animate());
         }
 
