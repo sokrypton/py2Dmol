@@ -1029,7 +1029,27 @@ function superpose(mobile, reference, options) {
     return align_a_to_b(mobile, fitM, fitR, opts.reflection === true);
 }
 
-window.py2Dmol = { show, fetch: fetchStructure, frameFromText, framesFromText, superpose,
+/**
+ * A PAE matrix out of the JSON AlphaFold (and Boltz, Chai, ColabFold) write
+ * beside a model, as the viewer itself reads it: a flat n x n Uint8Array of
+ * the error in eighths of an angstrom (a value of 8 is 1 A; 31.75 A, the
+ * usual ceiling, is 254), or null when the JSON holds no matrix. Every
+ * format io/parse.js knows is taken: [{predicted_aligned_error}], a bare
+ * {predicted_aligned_error} or {pae}, or the matrix itself.
+ *
+ *     const pae = py2Dmol.paeFromJSON(await (await fetch(url)).json());
+ *     const n = Math.round(Math.sqrt(pae.length));
+ *     const angstroms = pae[i * n + j] / 8;
+ *
+ * HERE RATHER THAN IN A HOST, for the same reason as fetch: the formats are
+ * somebody else's and they multiply, and one reader is better than one per
+ * page. Protein Fighter draws AlphaFold DB's map under its own live one.
+ */
+function paeFromJSON(json) {
+    return extractPaeFromJSON(json);
+}
+
+window.py2Dmol = { show, fetch: fetchStructure, frameFromText, framesFromText, superpose, paeFromJSON,
     version: 1 };
 
 // A GETTER, BECAUSE THIS FILE LOADS BEFORE core/mol.js. HYDROPHOBICITY_BANDS
