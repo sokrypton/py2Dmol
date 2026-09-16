@@ -11049,7 +11049,12 @@ const LOOK_DEFAULTS = {
         // describes the ribbon alone.
         thickness: 1.0,
         outlineTint: 0,
-        highlight: 2.0,
+        // 3.0, as richardson's: the preset is shaded solid geometry with no ink, so the
+        // highlight is the only thing that states an edge, and at 2.0 a helix turning away
+        // read flat. Measured against 2.0 on a barrel: 12.4% of the inked pixels move, by
+        // a mean of 14 levels and a worst of 45 - the lit faces lift, the geometry is
+        // untouched. Asked for on protein_fighter, which draws its dark theme with it.
+        highlight: 3.0,
         sheetFlat: 1.0,
         pencil: 0,
         arrows: true,
