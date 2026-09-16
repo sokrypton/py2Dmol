@@ -86,15 +86,15 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `align.js` | node | TM-align, and the four decisions the viewer makes around it. |
 | `align_objects.py` | ui | Superposing one object onto another, in the browser. |
 | `anim_profile.py` | tool | A CPU profile of a trajectory being stepped, aggregated by function. |
-| `arrow_rebuilds.py` | tool | ARROWS NO LONGER MAKE A TRAJECTORY REBUILD, and this is the gate on that. |
+| `arrow_rebuilds.py` | gpu | ARROWS NO LONGER MAKE A TRAJECTORY REBUILD, and this is the gate on that. |
 | `bench.js` | tool | Render-time benchmark. Requires tests/out/bench.html (python tests/make_bench.py). |
 | `bleed.py` | tool | Does one amino acid bleed through one helical turn? Worked out, not drawn. |
 | `bundles.js` | node | WHAT EACH SHIPPED BUNDLE PUTS ON THE PAGE, AND WHAT IT MUST NOT. |
-| `capture_once.py` | tool | ONE 2D GEOMETRY PASS PER FRAME, rebuild or not. |
+| `capture_once.py` | gpu | ONE 2D GEOMETRY PASS PER FRAME, rebuild or not. |
 | `cartoon_station.js` | node | WHAT A RIBBON STATION IS, pinned as an invariant. |
 | `colab.py` | ui | COLAB PUTS EVERY CELL OUTPUT IN ITS OWN IFRAME, and that is the whole test. |
-| `colour_cache.py` | tool | THE SEGMENT COLOURS DO NOT READ A COORDINATE, SO A FRAME STEP NEED NOT |
-| `colour_repaint.py` | tool | A colour change is a texture upload, and these are the exceptions. |
+| `colour_cache.py` | gpu | THE SEGMENT COLOURS DO NOT READ A COORDINATE, SO A FRAME STEP NEED NOT |
+| `colour_repaint.py` | gpu | A colour change is a texture upload, and these are the exceptions. |
 | `config.js` | node | EVERY SETTING PYTHON SENDS HAS TO SURVIVE THE TRANSLATION. |
 | `contacts_forms.py` | node | The three spellings of a contact, and the one that draws nothing. |
 | `copy_selection.js` | node | What a COPY of part of a structure carries with it: |
@@ -103,33 +103,33 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `cyclic_bench.js` | node | Score the renderer's secondary structure on CYCLIC peptides. |
 | `cyclic_bench.py` | node | Build the cyclic-peptide secondary-structure benchmark. |
 | `cyclic_partner.js` | node | A CYCLIC PEPTIDE BOUND TO SOMETHING ELSE MUST NOT LOSE ITS STRANDS. |
-| `default_object.py` | tool | Which object a viewer opens on when several arrive together. |
-| `dev_rebuild_light.py` | tool | The dev page says when the cartoon mesh was rebuilt, and only then. |
-| `diffusion_connectivity.py` | tool | A SAMPLER TRAJECTORY IS NOT A MOLECULE YET, AND THE DISTANCE TEST KNOWS IT. |
-| `disulfides.py` | tool | A disulfide comes from the file, and lands on two cysteines. |
+| `default_object.py` | gpu | Which object a viewer opens on when several arrive together. |
+| `dev_rebuild_light.py` | gpu | The dev page says when the cartoon mesh was rebuilt, and only then. |
+| `diffusion_connectivity.py` | gpu | A SAMPLER TRAJECTORY IS NOT A MOLECULE YET, AND THE DISTANCE TEST KNOWS IT. |
+| `disulfides.py` | gpu | A disulfide comes from the file, and lands on two cysteines. |
 | `edge_phases.py` | tool | WHERE A RIBBON BUILD'S TIME GOES, phase by phase, medians over rounds. |
 | `embed.py` | ui | The embed bundle, in a browser, on a page that has nothing else. |
 | `embed_follow.py` | ui | A BARE EMBED FOLLOWS ITS HOST ELEMENT. |
-| `export_html.py` | tool | Four exported files, opened one at a time: do they draw? |
+| `export_html.py` | gpu | Four exported files, opened one at a time: do they draw? |
 | `focus_cost.py` | tool | What a focus click costs, step by step: mesh rebuilds, what was rebuilt, |
 | `focus_faces.py` | tool | SIDE-CHAIN FACES THAT GO MISSING AFTER A VISIT TO FOCUS MODE. |
 | `focus_mode.py` | ui | Focus is a MODE: it borrows the viewer and gives it back. |
 | `focus_pixels.py` | tool | A focus click that reused the ribbon must draw what a forced rebuild of the |
 | `focus_rebuilds.py` | tool | A FOCUS SESSION MUST NOT REBUILD THE RIBBON. |
 | `frame_policy.py` | ui | Two objects of DIFFERENT LENGTH share one timeline, and the policy is what |
-| `frame_revisit.py` | tool | A FRAME DRAWN AGAIN IS THE SAME FRAME - including the outline. |
-| `frame_share.py` | tool | A TRAJECTORY'S FRAMES DESCRIBE ONE MOLECULE, AND ONLY ITS COORDINATES MOVE. |
+| `frame_revisit.py` | gpu | A FRAME DRAWN AGAIN IS THE SAME FRAME - including the outline. |
+| `frame_share.py` | gpu | A TRAJECTORY'S FRAMES DESCRIBE ONE MOLECULE, AND ONLY ITS COORDINATES MOVE. |
 | `gpu3d_core.js` | tool | The GPU cartoon MEASUREMENT HARNESS, shared by gpu3d_lab.html (the numbers) |
 | `gpu_bench.py` | tool | Per-pass GPU timings for the tube path, on the real GPU, from the shell. |
-| `gpu_direct.py` | tool | THE GL CANVAS ON THE PAGE, not copied into the viewer's. |
-| `gpu_mesh_reuse.py` | tool | Switching an object off and on again reuses its mesh instead of rebuilding. |
-| `gpu_mixed_style.py` | tool | Two objects, two styles, one picture - and the depth buffer decides. |
+| `gpu_direct.py` | gpu | THE GL CANVAS ON THE PAGE, not copied into the viewer's. |
+| `gpu_mesh_reuse.py` | gpu | Switching an object off and on again reuses its mesh instead of rebuilding. |
+| `gpu_mixed_style.py` | gpu | Two objects, two styles, one picture - and the depth buffer decides. |
 | `gpu_prototype.js` | tool | WebGL2 painter: accumulates every quad into one interleaved buffer and draws |
-| `gpu_recolour.py` | tool | A colour change repaints the GPU mesh; it does not rebuild it. |
-| `gpu_stick_flat.py` | tool | A preset that asks for FLAT gets flat SIDE CHAINS, without touching a knob. |
-| `gpu_tube_reuse.py` | tool | An eye toggle in TUBE style comes back to the instance buffer it built. |
+| `gpu_recolour.py` | gpu | A colour change repaints the GPU mesh; it does not rebuild it. |
+| `gpu_stick_flat.py` | gpu | A preset that asks for FLAT gets flat SIDE CHAINS, without touching a knob. |
+| `gpu_tube_reuse.py` | gpu | An eye toggle in TUBE style comes back to the instance buffer it built. |
 | `grid.py` | node | A grid emits ONE output, and its viewers go live only once they are on it. |
-| `halo_partial.py` | tool | THE HALO MUST LAND WHERE IT LANDED, HOWEVER IT WAS PROJECTED. |
+| `halo_partial.py` | gpu | THE HALO MUST LAND WHERE IT LANDED, HOWEVER IT WAS PROJECTED. |
 | `heatmap_maps.py` | ui | The map panel shows more than one map, and the selection rules do not move. |
 | `heatmap_names.py` | ui | The panel is `heatmap` now, and the names other people hold still work. |
 | `heatmap_objects.py` | ui | The PAE panel belongs to one object, and Multi has no panel at all. |
@@ -141,7 +141,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `junction_math.py` | tool | Geometry of the ligand sticks in the cartoon renderer, derived and checked. |
 | `junction_sp3.py` | tool | Can an sp3 (tetrahedral) junction be mitred the way a planar one is? |
 | `lift.js` | tool | LIFTING SHIPPED CODE OUT OF THE SOURCE, from however many files it lives in. |
-| `load_work.py` | tool | WHAT LOADING A STRUCTURE COSTS, IN THINGS DONE RATHER THAN MILLISECONDS. |
+| `load_work.py` | gpu | WHAT LOADING A STRUCTURE COSTS, IN THINGS DONE RATHER THAN MILLISECONDS. |
 | `math.js` | node | The 3x3 linear algebra that replaced numeric.js. |
 | `minimal_input.py` | ui | The bare minimum: an Nx3 array of CA coordinates and nothing else. |
 | `mixed_sidechains.py` | ui | SHOW, OVER A SELECTION THAT IS NOT ALL ONE KIND OF RESIDUE. |
@@ -150,37 +150,37 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `msa_paired_ui.py` | ui | A paired MSA reaches the panel, is drawn with its chains apart, and points |
 | `multi_frame_fit.py` | ui | Focus never restores a camera that does not show what is drawn. |
 | `multi_object.py` | ui | Two objects on screen at once, in a real browser. |
-| `multi_step.py` | tool | A FRAME STEP WITH SEVERAL OBJECTS DRAWN MUST NOT REBUILD THE MESH. |
+| `multi_step.py` | gpu | A FRAME STEP WITH SEVERAL OBJECTS DRAWN MUST NOT REBUILD THE MESH. |
 | `na_axis.js` | tool | Score the BASE-PAIR AXIS the renderer builds its plates on. |
 | `na_bench.js` | tool | Score the base-frame prediction the renderer actually ships. |
 | `na_bench.py` | tool | Benchmark: does the nucleic backbone's ribbon face point at the BASE? |
 | `na_frame.js` | node | Score the NUCLEIC RAIL FRAME the renderer ends up with. |
 | `na_table.py` | tool | Fit the base-frame table the cartoon predicts nucleotide bases with. |
-| `named_object.py` | tool | A request that NAMES an object must reach that object, drawn or not. |
+| `named_object.py` | gpu | A request that NAMES an object must reach that object, drawn or not. |
 | `notebook_narrow.py` | ui | The notebook shell in a cell too narrow for canvas-plus-panel. |
 | `nucleic_multi.py` | ui | A nucleic object keeps its atoms when the viewer drops out of Multi. |
 | `object_reload.py` | ui | Loading another file must not disturb the objects already loaded. |
-| `opacity.py` | tool | Ghosting a selection: it must change the picture and rebuild nothing. |
-| `outline_sync.py` | tool | DOES THE OUTLINE MOVE WITH THE SURFACE, FRAME BY FRAME THROUGH A PLAY? |
+| `opacity.py` | gpu | Ghosting a selection: it must change the picture and rebuild nothing. |
+| `outline_sync.py` | gpu | DOES THE OUTLINE MOVE WITH THE SURFACE, FRAME BY FRAME THROUGH A PLAY? |
 | `packaging.py` | node | Every resource viewer.py opens must be in the wheel. |
 | `paint_order_audit.js` | tool | Paint-order audit, written once and plainly. |
 | `paint_order_bench.js` | tool | Comprehensive benchmark and regression tester for ribbon and side-chain paint ordering. |
 | `paint_trace.js` | node | WHAT THE PAINTER ACTUALLY DREW, as a hash you can diff. |
 | `panel.py` | ui | The built Style panel renders at a usable size, on the page's own skin. |
-| `panel_idle.py` | tool | A PANEL WITH NOTHING NEW TO SHOW DOES NOTHING PER FRAME. |
+| `panel_idle.py` | gpu | A PANEL WITH NOTHING NEW TO SHOW DOES NOTHING PER FRAME. |
 | `parse_ligand.py` | node | A RIBOSE IS NOT A NUCLEOTIDE ON ITS OWN. |
 | `paths.py` | node | Every repo path named in a comment or a doc must exist. |
 | `pick_empty.py` | ui | Clicking the viewer with every object switched off must select nothing. |
-| `pick_index.py` | tool | THE PICK INDEX MUST ANSWER WHAT THE SCAN ANSWERS, POINT BY POINT. |
+| `pick_index.py` | gpu | THE PICK INDEX MUST ANSWER WHAT THE SCAN ANSWERS, POINT BY POINT. |
 | `play_stop.py` | ui | The play button has to survive being pressed WHILE IT IS PLAYING. |
 | `python_multi.py` | ui | WHAT PYTHON ASKS FOR, AND WHETHER THE PAGE DOES IT. |
-| `python_opacity.py` | tool | set_opacity from Python: does it reach the picture, and survive a session? |
+| `python_opacity.py` | gpu | set_opacity from Python: does it reach the picture, and survive a session? |
 | `python_page.py` | ui | The PYTHON api's own page, with two objects, checked in a real browser. |
-| `rebuild_actions.py` | tool | WHAT A SESSION REBUILDS, ACTION BY ACTION, AND WHY. |
-| `rebuild_returns.py` | tool | COMING BACK TO A PICTURE ALREADY BUILT MUST NOT REBUILD IT. |
-| `render_counts.py` | tool | ONE ACTION, ONE RENDER. |
+| `rebuild_actions.py` | gpu | WHAT A SESSION REBUILDS, ACTION BY ACTION, AND WHY. |
+| `rebuild_returns.py` | gpu | COMING BACK TO A PICTURE ALREADY BUILT MUST NOT REBUILD IT. |
+| `render_counts.py` | gpu | ONE ACTION, ONE RENDER. |
 | `render_page.py` | ui | render.html - drop a folder of structures in, get every picture out. |
-| `resize_reuse.py` | ui | A RESIZE IS A CAMERA, NOT A REBUILD - and it draws what a rebuild draws. |
+| `resize_reuse.py` | gpu | A RESIZE IS A CAMERA, NOT A REBUILD - and it draws what a rebuild draws. |
 | `ribbon_bypass.py` | tool | A SKIPPED RIBBON MUST DRAW WHAT A BUILT ONE DRAWS, whatever was changed. |
 | `save_multi.py` | ui | A Multi session comes back the way it was saved. |
 | `scale_indep.py` | tool | Is the built mesh the SAME mesh at two zooms? The ribbon part's cache key |
@@ -188,38 +188,39 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `selection_panel.py` | ui | The selection panel's Show / Hide pairs, driven as a user drives them. |
 | `selection_shells.py` | ui | The selection panel in the two shells that never had it. |
 | `sequence.js` | node | The sequence strip's input layer, end to end: |
-| `sequence_connectivity.py` | tool | A chain break is a gap in the numbering, not a distance. |
+| `sequence_connectivity.py` | gpu | A chain break is a gap in the numbering, not a distance. |
 | `sheet_bench.js` | tool | Score the strand frames the cartoon draws sheets with. |
 | `sheet_bench.py` | tool | Fit the peptide table the cartoon rebuilds backbones with, and score the frames. |
-| `sheet_merge.py` | tool | A GAP IN A SHEET CLOSING MUST NOT LEAVE A LINE ACROSS IT. |
+| `sheet_merge.py` | gpu | A GAP IN A SHEET CLOSING MUST NOT LEAVE A LINE ACROSS IT. |
 | `short_peptide.js` | node | A PEPTIDE TOO SHORT TO HAVE A SHAPE IS DRAWN AS WHAT IT IS: A LIGAND. |
 | `sidechain_chain.js` | node | Side chains, end to end through the WEB APP's own chain: |
 | `sidechain_toggle.py` | ui | Side chains survive the eyes: toggling one object must not strip another's. |
 | `smoke.js` | node | Node smoke test for the cartoon renderer: loads cartoon/geom.js with |
-| `splice_window.py` | tool | HOW BIG A PARTIAL REBUILD'S WINDOW WOULD ACTUALLY BE. |
-| `ss_agree.py` | tool | THE ASSIGNMENT BEHIND THE COLOURS IS THE ONE BEHIND THE GEOMETRY. |
-| `ss_axis.py` | tool | DOES A SECONDARY-STRUCTURE CHANGE MOVE THE TOPOLOGY? |
+| `splice_window.py` | gpu | HOW BIG A PARTIAL REBUILD'S WINDOW WOULD ACTUALLY BE. |
+| `ss_agree.py` | gpu | THE ASSIGNMENT BEHIND THE COLOURS IS THE ONE BEHIND THE GEOMETRY. |
+| `ss_axis.py` | gpu | DOES A SECONDARY-STRUCTURE CHANGE MOVE THE TOPOLOGY? |
 | `ss_bench.js` | tool | Score the renderer's CA-only secondary structure against pydssp. |
 | `ss_bench.py` | tool | Score the renderer's secondary-structure assignment against pydssp. |
+| `ss_every.py` | gpu | HOW OFTEN A MOVING STRUCTURE PAYS FOR ITS SECONDARY STRUCTURE. |
 | `ss_legacy.js` | tool | THE SUPERSEDED C-ALPHA-ONLY SECONDARY STRUCTURE, kept as a baseline. |
 | `ss_tune.js` | tool | Tune the CA-only SS parameters against pydssp by coordinate descent. |
-| `station_controls.py` | tool | DOES THE STATION PATH DRAW WHAT A REBUILD DRAWS, CONTROL BY CONTROL? |
-| `station_corners.py` | tool | The corners a station table implies are the corners the mesh was built from. |
-| `station_edges.py` | tool | THE EDGE ARRAYS, BUILT TWICE AND DIFFED ELEMENT BY ELEMENT. |
+| `station_controls.py` | gpu | DOES THE STATION PATH DRAW WHAT A REBUILD DRAWS, CONTROL BY CONTROL? |
+| `station_corners.py` | gpu | The corners a station table implies are the corners the mesh was built from. |
+| `station_edges.py` | gpu | THE EDGE ARRAYS, BUILT TWICE AND DIFFED ELEMENT BY ELEMENT. |
 | `station_faces.js` | node | EVERY RIBBON FACE IS (a piece, a station, a surface) - the other half of |
-| `station_foldcuts.py` | tool | What dropping the orientation-fold cuts costs, and what it buys. |
-| `station_frames.py` | tool | What a trajectory step costs when only the stations are uploaded. |
+| `station_foldcuts.py` | gpu | What dropping the orientation-fold cuts costs, and what it buys. |
+| `station_frames.py` | gpu | What a trajectory step costs when only the stations are uploaded. |
 | `station_integrated.py` | tool | THE STATION PATH END TO END - AN INSTRUMENT NOW, NOT A GATE. |
-| `station_overlay.py` | tool | What is drawn ON TOP of the canvas follows the station fast path. |
-| `station_pixels.py` | tool | The station path draws the same picture. |
+| `station_overlay.py` | gpu | What is drawn ON TOP of the canvas follows the station fast path. |
+| `station_pixels.py` | gpu | The station path draws the same picture. |
 | `station_restore.py` | ui | A MESH TAKEN BACK OUT OF THE CACHE, AND THE STATION TABLE IT IS DRAWN FROM. |
-| `station_rows.py` | tool | THE STATION ROW'S FIFTEEN STATIC FLOATS, DERIVED BOTH WAYS. |
-| `station_shader.py` | tool | The station shader compiles, links, and has not forked from VS3D. |
-| `station_sidechains.py` | tool | Side chains, ligands and contacts are never drawn from a stale row. |
-| `station_unpinned.py` | tool | A TRAJECTORY TAKES THE STATION PATH WITHOUT BEING ASKED, AND DRAWS THE SAME. |
+| `station_rows.py` | gpu | THE STATION ROW'S FIFTEEN STATIC FLOATS, DERIVED BOTH WAYS. |
+| `station_shader.py` | gpu | The station shader compiles, links, and has not forked from VS3D. |
+| `station_sidechains.py` | gpu | Side chains, ligands and contacts are never drawn from a stale row. |
+| `station_unpinned.py` | gpu | A TRAJECTORY TAKES THE STATION PATH WITHOUT BEING ASKED, AND DRAWS THE SAME. |
 | `style_per_object.py` | ui | The style belongs to the object, and its settings belong to the style. |
 | `test_absolute_focus.py` | tool | ABSOLUTE FOCUS TEST: Compares renders before entering focus mode directly against |
-| `topology_survey.py` | tool | WHICH CONTROLS ACTUALLY CHANGE THE MESH'S TOPOLOGY, and which only move it. |
+| `topology_survey.py` | gpu | WHICH CONTROLS ACTUALLY CHANGE THE MESH'S TOPOLOGY, and which only move it. |
 
 <!-- END INDEX -->
 

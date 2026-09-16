@@ -39,7 +39,12 @@ HELPERS = {"cdp", "probe_js", "draw_diff", "build", "index"}
 def lane_of(run, name):
     for lane, pat in (("node", r"for f in ([a-z_0-9 ]+); do"),
                       ("ui", r"UI=\((.*?)\)"),
-                      ("gpu", r"for t in (gpu_recolour.*?); do")):
+                      # ...the gpu lane's loop, by its LOOP VARIABLE and not by
+                      # whichever probe happens to be first in it: anchored on
+                      # `gpu_recolour`, prepending one name to that list (ss_every)
+                      # made the pattern match nothing, so every gpu probe fell
+                      # through to the fallbacks and the index called them `tool`.
+                      ("gpu", r"for t in ([a-z_0-9 ]+); do\n\s*run_probe")):
         m = re.search(pat, run, re.S)
         if m and name in m.group(1).split():
             return lane
