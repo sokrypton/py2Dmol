@@ -61,6 +61,30 @@ window.addEventListener('load', () => {
       out.followMs = Math.round(performance.now() - t0);
       await settle(4);
       out.after = { a: dims(a), b: dims(b), builds: window.__ribbonBuilds || 0, followed, aInk: ink(a), bInk: ink(b) };
+      // 🔴 AND THE HOST'S BOX CONTAINS THE CANVAS. A host holding anything else -
+      // a caption, a toolbar - used to add that thing's height to the canvas on
+      // every pass, and the host grew by as much again: a 60px block took the
+      // canvas from 152 to 2,312px, with Chrome logging "ResizeObserver loop
+      // completed with undelivered notifications". The canvas may have the room
+      // that is LEFT, so the measurement is a fixed point.
+      // ...on a host with no height of its OWN, which is where it bit: there the
+      // host's height IS its contents, so the canvas was measuring itself.
+      {
+        const host = document.createElement('div');
+        document.body.appendChild(host);
+        const c = py2Dmol.show(host, text, {});
+        await until(() => c.coords && c.coords.length, 20000);
+        c.render('warm'); await settle(6);
+        const start = [c.canvas.offsetWidth, c.canvas.offsetHeight];
+        const note = document.createElement('div');
+        note.style.height = '60px'; note.textContent = 'caption';
+        host.insertBefore(note, host.firstChild);
+        await settle(6);
+        const first = [c.canvas.offsetWidth, c.canvas.offsetHeight];
+        await settle(25);
+        out.withNote = { start, first, settled: [c.canvas.offsetWidth, c.canvas.offsetHeight],
+                         host: Math.round(host.getBoundingClientRect().height) };
+      }
       out.errors = window.__errors;
       return out;
     } catch (e) { return { error: String((e && e.stack) || e) }; }
@@ -111,6 +135,17 @@ if A["builds"] != B["builds"]:
     bad.append(f"the follow rebuilt the mesh ({B['builds']} -> {A['builds']}); a resize redraws the mesh it has")
 if A["aInk"] < 200 or A["bInk"] < 200:
     bad.append("a drawing was lost in the change")
+W = res.get("withNote") or {}
+print(f"  a 60px caption inside an unsized host: canvas {W.get('start')} ->"
+      f" {W.get('first')} -> {W.get('settled')}, host {W.get('host')}px high")
+if W.get("first") != W.get("settled"):
+    bad.append(f"the canvas was still growing after a caption went into an unsized"
+               f" host: {W.get('first')} then {W.get('settled')} - that host's height IS"
+               " its contents, so a canvas measured against it reads its own answer back")
+if W.get("settled") and W.get("start") and W["settled"][1] > W["start"][1] + 2:
+    bad.append(f"the canvas grew when a 60px caption joined it in an unsized host:"
+               f" {W['start']} -> {W['settled']}; it may have the room that is LEFT,"
+               " never its own height plus the caption's")
 if res["errors"]:
     bad.append("page errors: " + "; ".join(res["errors"])[:300])
 print()

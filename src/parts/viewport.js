@@ -142,8 +142,48 @@ function setupViewport(containerElement, config) {
     };
     let lastWidth = width;
     let lastHeight = height;
+    // 🔴 A HOST'S BOX CONTAINS THE CANVAS, SO FOLLOWING IT WHOLE FEEDS BACK.
+    // #canvasContainer is a box of its own whose size the page sets, and the
+    // canvas fills it - no loop. A bare host is not: its height is whatever its
+    // contents come to, the canvas among them, so "make the canvas the height of
+    // its host" reads its own answer back. With anything else inside the host -
+    // a caption, a toolbar, one div - each pass added that thing's height to the
+    // canvas, the host grew by the same amount, and round it went: measured, a
+    // 60px block took a 152px canvas to 2,312px in under a second, with Chrome
+    // logging "ResizeObserver loop completed with undelivered notifications".
+    //
+    // What the canvas may have is the space LEFT: the host's content box, less
+    // everything else in it, less the canvas's own margins - which is exactly
+    // the canvas's current height when it is the only thing there, so the
+    // measurement is a fixed point and the loop cannot start. A host with a
+    // height of its own still hands over what it has, which is the case this
+    // follow exists for.
+    const px = (v) => parseFloat(v) || 0;
+    const outerHeight = (el, s) => (el.getBoundingClientRect().height
+        + px(s.marginTop) + px(s.marginBottom));
+    const hostBox = () => {
+        const s = getComputedStyle(followed);
+        const w2 = followed.clientWidth - px(s.paddingLeft) - px(s.paddingRight);
+        let h2 = followed.clientHeight - px(s.paddingTop) - px(s.paddingBottom);
+        for (const child of followed.children) {
+            // the canvas is what is being sized, and the GPU painter's layer is
+            // out of flow under it (cartoon/paintgl.js, direct presentation)
+            if (child === canvas || child.hasAttribute('data-py2dmol-layer')) continue;
+            const cs = getComputedStyle(child);
+            if (cs.position === 'absolute' || cs.position === 'fixed') continue;
+            h2 -= outerHeight(child, cs);
+        }
+        const cs = getComputedStyle(canvas);
+        h2 -= px(cs.marginTop) + px(cs.marginBottom);
+        return [w2, h2];
+    };
     const measure = () => {
         if (!followed) return null;
+        if (followHost) {
+            const b = hostBox();
+            if (!(b[0] >= 1 && b[1] >= 1)) return null;
+            return b;
+        }
         const r = followed.getBoundingClientRect();
         if (!(r.width >= 1 && r.height >= 1)) return null;
         return [r.width, r.height];
@@ -174,8 +214,13 @@ function setupViewport(containerElement, config) {
         const observer = new ResizeObserver((entries) => {
             if (!entries || entries.length === 0) return;
             markReal(entries[0].contentRect);
-            const newWidth = Math.max(entries[0].contentRect.width, 1);
-            const newHeight = Math.max(entries[0].contentRect.height, 1);
+            // ...and a followed HOST is asked what is left rather than how big
+            // it is, which is the same question `measure` answers and the one
+            // that does not feed the canvas its own size back - see hostBox.
+            const m = followHost ? measure() : null;
+            if (followHost && !m) return;
+            const newWidth = Math.max(m ? m[0] : entries[0].contentRect.width, 1);
+            const newHeight = Math.max(m ? m[1] : entries[0].contentRect.height, 1);
             if (!moved(newWidth, newHeight)) return;
             lastWidth = newWidth;
             lastHeight = newHeight;
