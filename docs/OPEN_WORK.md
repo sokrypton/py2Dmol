@@ -164,8 +164,9 @@ spare. Looked at side by side and chosen deliberately. `tests/ss_axis.py
 ## 9. protein_fighter vendors py2Dmol by hand
 
 `../protein_fighter/vendor/py2Dmol.embed.min.js` is a copy of this repo's embed
-bundle, updated by hand when the game needs a fix. At the time of writing it
-matches this repo's HEAD - which is ahead of `origin/main`, so the game runs
-code that is not deployed. Anything that changes the embed bundle's behaviour
-should ask whether that copy needs refreshing, and a py2Dmol deploy does not
-refresh it.
+bundle, updated by hand when the game needs a fix. Anything that changes the
+embed bundle's behaviour should ask whether that copy needs refreshing: a
+py2Dmol deploy does not touch it, and the game can sit on a bundle that is
+older - or newer - than what the site serves. It was last refreshed at
+`3e670c2` and this repo has moved on since, so check before assuming the two
+agree.
