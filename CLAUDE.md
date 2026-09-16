@@ -272,6 +272,28 @@ public downloads is exercised on every run.
   **The embeds still ship one painter each** (`py2Dmol.embed.min.js` WebGL2,
   `py2Dmol.embed.cpu.min.js` 2D and SVG-capable): they are served over HTTP and
   gzipped, so the trade there is a download and not a document.
+- **The GPU frame can be shown on its own canvas instead of copied into the
+  viewer's.** The painter renders to an offscreen WebGL canvas and, every frame,
+  `drawImage`s it into the viewer's 2D canvas: a resolve of the multisampled
+  frame, a full-canvas copy, and the compositor's draw of the copy - three
+  passes over three million pixels a frame on a 3x phone. `rendering.gpuDirect:
+  true` (or `py2dmolCartoonGPU.setDirectPresent(true)`) puts the GL canvas into
+  the page as the sibling before the viewer's canvas, over its content box,
+  makes the viewer's canvas transparent, clears the paper the 2D pass painted,
+  and lets the overlays land on the clear canvas above; a screen frame the GPU
+  did not draw hides the layer (`screenFrame`, called by `_renderToContext`
+  around every screen frame), an export renders into its own canvas and blits
+  as before, and one viewer owns the layer while another on the page keeps the
+  blit. **The default**, and `rendering.gpuDirect: false` puts the blit back
+  for a page. 🔴 **The viewer's canvas no longer holds the picture**: the drawing
+  is on the layer, the canvas's next sibling (marked `data-py2dmol-layer`, at
+  z-index -1 under the parent's own stacking context, so the first canvas in a
+  container is still the viewer's), and the canvas carries the overlays. A host
+  or a probe that reads pixels composes the two, layer first, or asks for the
+  blit - seventeen probes did one or the other when this became the default;
+  `probe_js.HELPERS` asks for the blit for every probe that carries it. A
+  recording takes a hold (`holdDirect`) and gets the blit back while it runs.
+  `tests/gpu_direct.py` is the contract.
 - 🔴 **A preset name reaches the cartoon in two steps, and the order is the
   whole thing.** `setPreset` assigns `style = 'cartoon'` but does none of the
   work of *arriving* there, so calling it from tube leaves every field saying

@@ -147,6 +147,17 @@ const viewerIn = (fr) => {
 
 window.addEventListener('load', async () => {
   const fr0 = [...document.querySelectorAll('iframe')];
+// THE PICTURE, layer and canvas together. The GPU painter shows its frame on a
+  // canvas layered under the viewer's by default (cartoon/paintgl.js, direct
+  // presentation), so the viewer's canvas alone holds only the overlays; the
+  // two are composed for reading. A canvas with no layer is read as it is.
+  const pic = (c) => {
+    const L = c && c.nextElementSibling;
+    if (!L || L.tagName !== 'CANVAS') return c;
+    const s = c.ownerDocument.createElement('canvas'); s.width = c.width; s.height = c.height;
+    const x = s.getContext('2d'); x.drawImage(L, 0, 0); x.drawImage(c, 0, 0);
+    return s;
+  };
   const t0 = performance.now();
   while (!viewerIn(fr0) && performance.now() - t0 < 25000) {
     await new Promise(r => setTimeout(r, 100));
@@ -166,7 +177,7 @@ window.addEventListener('load', async () => {
       if (!vs2 || !Object.keys(vs2).length) continue;
       const c2 = ww.document.querySelector('canvas');
       if (!c2) continue;
-      const g2 = c2.getContext('2d');
+      const g2 = pic(c2).getContext('2d');
       if (!g2 || !g2.getImageData) continue;
       const d2 = g2.getImageData(0, 0, c2.width, c2.height).data;
       const b2 = [d2[0], d2[1], d2[2]];
@@ -213,7 +224,7 @@ window.addEventListener('load', async () => {
       // in a run with three frames and in a run with none.
       const cv = w.document.querySelector('canvas');
       if (cv) {
-        const g = cv.getContext('2d');
+        const g = pic(cv).getContext('2d');
         if (g && g.getImageData) {
           const d = g.getImageData(0, 0, cv.width, cv.height).data;
           const b = [d[0], d[1], d[2]];

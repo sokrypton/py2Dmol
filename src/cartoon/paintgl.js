@@ -9056,6 +9056,8 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
             // fresh one, which is what the failure path below does too.
             appCv.addEventListener('webglcontextlost', (e) => {
                 e.preventDefault();
+                if (appCv && appCv.parentNode) appCv.parentNode.removeChild(appCv);
+                directShown = false; directGeom = '';
                 appCv = null; appSig = null; clearResident(); clearGL();
             });
         }
@@ -9939,8 +9941,10 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
         drawResident(appCv, prm, aoOpts);
         projectPositions(renderer, displayWidth, displayHeight);
         // ...and onto the canvas the app owns, under whatever transform it is
-        // holding, which is why this saves and restores it.
-        if (!compose || compose.blit !== false) blitApp(ctx);
+        // holding, which is why this saves and restores it - or, presenting
+        // directly, the layer is placed under that canvas and nothing is copied.
+        if (canPresent(renderer, ctx, compose)) presentApp(renderer, ctx);
+        else if (!compose || compose.blit !== false) blitApp(ctx);
         return true;
     } catch (err) {
         // A FAILURE HERE FALLS BACK, it does not break the viewer. The 2D path
@@ -10711,6 +10715,8 @@ function renderTubeApp(renderer, ctx, displayWidth, displayHeight, S) {
             appCv = document.createElement('canvas');
             appCv.addEventListener('webglcontextlost', (e) => {
                 e.preventDefault();
+                if (appCv && appCv.parentNode) appCv.parentNode.removeChild(appCv);
+                directShown = false; directGeom = '';
                 appCv = null; appSig = null; tubeSig = null;
                 clearResident(); clearGL();
             });
@@ -10778,7 +10784,8 @@ function renderTubeApp(renderer, ctx, displayWidth, displayHeight, S) {
         if (!drawTube(appCv, renderer,
             { outlineWidthPx: S.outlineWidthPx || 0, hasOcclusion: !!S.renderShadows,
                 displayWidth })) return false;
-        if (!compose || compose.blit !== false) blitApp(ctx);
+        if (canPresent(renderer, ctx, compose)) presentApp(renderer, ctx);
+        else if (!compose || compose.blit !== false) blitApp(ctx);
         return true;
     } catch (err) {
         if (window.console) window.console.warn('tube GPU path unavailable:', err);
@@ -10788,6 +10795,134 @@ function renderTubeApp(renderer, ctx, displayWidth, displayHeight, S) {
         appCv = null;
         return false;
     }
+}
+
+/* ------------------------------------------------------ direct presentation
+ * THE GL CANVAS ON THE PAGE ITSELF, instead of copied into the app's canvas.
+ *
+ * The blit below is a full-canvas copy every frame: the card resolves the
+ * multisampled frame, the browser copies it into the 2D canvas, and the
+ * compositor draws that. On a 3x phone that was three passes over three
+ * million pixels for every frame of an animation. With this on, the GL canvas
+ * is inserted into the page as the sibling just AFTER the app's canvas, under
+ * it at z-index -1, at the same place and size, the app's canvas is made transparent and cleared
+ * where the 2D pass had painted the paper, and the overlays the 2D pass draws
+ * after the GPU frame (the halo, the selection, the sequence) land on the
+ * transparent canvas over it. The paper is the card's clear colour, which the
+ * blit path already relied on.
+ *
+ * THE DEFAULT, and rendering.gpuDirect: false (or setDirectPresent(false))
+ * puts the blit back for a page. What changes for a host is that the app's
+ * canvas no longer holds the picture: the drawing is on the layer, the next
+ * sibling (marked data-py2dmol-layer), and the canvas carries the overlays.
+ * A host that reads pixels composes the two, layer first, or asks for the
+ * blit; seventeen probes of this suite did one or the other when this became
+ * the default. Recording takes a hold (holdDirect) and gets the blit back for
+ * its duration. An export renders into its own canvas and goes through the
+ * blit as before, so PNG and SVG are unaffected.
+ *
+ * ONE VIEWER OWNS IT. There is one GL canvas for the page, so the first
+ * renderer to present keeps the layer; any other keeps the blit. A screen
+ * frame the GPU did not draw - it declined, or the GPU is off - hides the
+ * layer, so the 2D pass's drawing is not sitting over a stale frame: see
+ * screenFrame, which core/mol.js calls around every screen frame.
+ */
+let directWant = true;   // the default; core/mol.js's DEFAULT_CONFIG.rendering.gpuDirect says the same
+let directOwner = null;     // the renderer whose canvas the layer sits under
+let directShown = false;    // the layer is in the page and visible
+let directGeom = '';        // where it was last placed, to place it again only when that moves
+let directDrew = false;     // this screen frame was presented (reset at 'begin')
+function setDirectPresent(on) {
+    directWant = !!on;
+    if (!directWant) releaseDirect();
+}
+function releaseDirect() {
+    if (appCv && appCv.parentNode) appCv.parentNode.removeChild(appCv);
+    if (directOwner && directOwner.canvas && directOwner.__directPaper !== undefined) {
+        directOwner.canvas.style.background = directOwner.__directPaper;
+        delete directOwner.__directPaper;
+        const parent = directOwner.canvas.parentNode;
+        if (parent && parent.__directIsolation !== undefined) { parent.style.isolation = parent.__directIsolation; delete parent.__directIsolation; }
+    }
+    directOwner = null; directShown = false; directGeom = '';
+}
+function canPresent(renderer, ctx, compose) {
+    // an owner whose canvas has left the page (show() built a new viewer in
+    // the same container, say) gives the layer up to the next one that asks
+    if (directOwner && directOwner !== renderer && !(directOwner.canvas && directOwner.canvas.isConnected)) releaseDirect();
+    return directWant && directHolds === 0 && !compose && !!renderer && !!renderer.canvas && ctx === renderer.ctx
+        && renderer.canvas.isConnected !== false
+        && (!directOwner || directOwner === renderer);
+}
+function presentApp(renderer, ctx) {
+    const cv = renderer.canvas;
+    if (directOwner !== renderer) {
+        directOwner = renderer;
+        renderer.__directPaper = cv.style.background;
+        if (getComputedStyle(cv).position === 'static') cv.style.position = 'relative';
+        // THE LAYER GOES AFTER THE CANVAS, at z-index -1, so a host or a probe
+        // that takes the first canvas in the container still gets the app's.
+        // Under the parent's own stacking context (isolation: isolate, which
+        // changes no layout), so -1 sits above the parent's background rather
+        // than behind it.
+        // ...and marked, for a host or a probe that counts canvases
+        appCv.setAttribute('data-py2dmol-layer', '');
+        const parent = cv.parentNode;
+        if (parent && parent.style && parent.__directIsolation === undefined) {
+            parent.__directIsolation = parent.style.isolation;
+            parent.style.isolation = 'isolate';
+        }
+    }
+    // the app's canvas goes clear, so the layer shows through; parts/ui.js
+    // paints the paper onto it on a background change, so this is per frame
+    if (cv.style.background !== 'transparent') cv.style.background = 'transparent';
+    // PLACED BEFORE IT IS INSERTED. In the flow for even a moment it is a block
+    // as tall as itself, the canvas moves down by that, and the offsets read
+    // after are where the canvas was pushed to. Over the canvas's CONTENT box
+    // (inside its border, which the canvas keeps drawing over the layer), with
+    // its corners, since the embed rounds them.
+    const left = cv.offsetLeft + cv.clientLeft, top = cv.offsetTop + cv.clientTop;
+    const geom = left + ',' + top + ',' + cv.clientWidth + ',' + cv.clientHeight;
+    if (geom !== directGeom || !directShown) {
+        directGeom = geom;
+        appCv.style.cssText = 'position:absolute;left:' + left + 'px;top:' + top + 'px;width:'
+            + cv.clientWidth + 'px;height:' + cv.clientHeight + 'px;pointer-events:none;z-index:-1;border-radius:'
+            + (getComputedStyle(cv).borderRadius || '0') + ';';
+        directShown = true;
+    }
+    if (appCv.parentNode !== cv.parentNode || cv.nextSibling !== appCv) cv.parentNode.insertBefore(appCv, cv.nextSibling);
+    // the paper the 2D pass painted comes off, and the overlays go on over the layer
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.restore();
+    directDrew = true;
+}
+// HELD OFF WHILE SOMETHING READS THE APP'S CANVAS. A recording samples that
+// canvas (captureStream, or a GIF's drawImage of it), and with the layer on it
+// would get the overlays alone. A hold counts; while any stands the frame is
+// blitted as it always was and the layer is hidden; the release puts it back.
+let directHolds = 0;
+function holdDirect() {
+    directHolds += 1;
+    let released = false;
+    return () => { if (!released) { released = true; directHolds = Math.max(0, directHolds - 1); } };
+}
+function hideDirect() {
+    if (directShown && appCv) { appCv.style.display = 'none'; directShown = false; }
+}
+// AROUND EVERY SCREEN FRAME: 'begin' before the renderer draws, 'end' after.
+// A frame that ended without presenting was drawn by the 2D pass - the GPU
+// declined it, or is switched off, or the style is not one it draws - and the
+// layer under it must not show.
+function screenFrame(renderer, phase) {
+    if (phase === 'begin') { directDrew = false; return; }
+    if (directOwner === renderer && !directDrew) hideDirect();
+}
+// after the frame: the layer's place and state, for a probe
+function directPresent() {
+    return { on: directWant, shown: directShown, owner: !!directOwner,
+        inPage: !!(appCv && appCv.parentNode), holds: directHolds };
 }
 
 /* THE OFFSCREEN CANVAS ONTO THE ONE THE APP OWNS, under whatever transform it
@@ -11114,6 +11249,8 @@ window.py2dmolCartoonGPU = {
         facePiece: Array.from(residentStations.facePiece || []),
     } : null),
     render: renderApp, renderTube: renderTubeApp, blit: blitApp,
+    // the GL canvas on the page under the app's, instead of copied into it
+    setDirectPresent, directPresent, screenFrame, holdDirect,
     invalidate, paramsFromRenderer,
     available, initGL, hasGL, clearGL, setZoomExact,
     setResidueMap, setSize, setPaletteSource, setDefaultParams, setOrtho,

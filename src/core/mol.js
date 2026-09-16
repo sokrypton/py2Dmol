@@ -1003,6 +1003,12 @@ const DEFAULT_CONFIG = {
         // to 2..8, so 0.5 came out as 2 - the LOWEST setting - for any
         // caller that went through normalizeConfig without naming one.
         detail: 4,
+        // THE GL CANVAS ON THE PAGE, under the viewer's, instead of copied into
+        // it every frame (cartoon/paintgl.js, direct presentation). On: the
+        // drawing is then on the layer under the canvas, and a host that reads
+        // pixels composes the two or asks for false. A recording holds it off
+        // while it runs.
+        gpuDirect: true,
         // thickness / cel / highlight / outline_tint / width / arrows /
         // pencil / sheet_flat are deliberately absent: they are resolved
         // per style in the renderer constructor (see PRESET_KEYS in
@@ -1129,6 +1135,7 @@ function normalizeConfig(rawConfig = {}) {
         rendering: {
             style: _styleName.style,
             detail: cfg.rendering?.detail ?? cfg.detail ?? DEFAULT_CONFIG.rendering.detail,
+            gpuDirect: cfg.rendering?.gpuDirect ?? cfg.gpuDirect ?? DEFAULT_CONFIG.rendering.gpuDirect,
             shadow: cfg.rendering?.shadow ?? cfg.shadow ?? DEFAULT_CONFIG.rendering.shadow,
             shadow_strength: cfg.rendering?.shadow_strength ?? cfg.shadow_strength ?? DEFAULT_CONFIG.rendering.shadow_strength,
             outline: cfg.rendering?.outline ?? cfg.outline ?? DEFAULT_CONFIG.rendering.outline,
@@ -1478,6 +1485,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.useGPU = (_gl && _2d)
                 ? config.rendering?.gpu === true      // both here: as configured
                 : _gl;                                 // otherwise: whatever is
+            // ...and whether its frame is shown on its own canvas rather than
+            // copied onto this one. Page-wide, like the painter it configures,
+            // and on by default: a config that says false turns it off for
+            // the page, as py2dmolCartoonGPU.setDirectPresent(false) does.
+            if (_gl && config.rendering?.gpuDirect === false
+                && typeof window.py2dmolCartoonGPU.setDirectPresent === 'function') {
+                window.py2dmolCartoonGPU.setDirectPresent(false);
+            }
             // Highlight gain: 0 = the old ceiling at the base colour, 1 = a
             // full lift toward white on faces pointing at the light.
             this.cartoonHighlight = _pick(config.rendering?.highlight, 'highlight', 1.8);
@@ -12453,6 +12468,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * through _installStyleProfile.
          */
         _renderToContext(ctx, displayWidth, displayHeight) {
+            // A SCREEN FRAME IS BRACKETED for the GPU painter, so a frame it
+            // did not draw hides the layer it may be presenting under this
+            // canvas (see paintgl's direct presentation). An export's context
+            // is not the screen and is not bracketed.
+            const G = window.py2dmolCartoonGPU;
+            const screen = ctx === this.ctx && !!G && typeof G.screenFrame === 'function';
+            if (screen) G.screenFrame(this, 'begin');
+            try {
+                this._renderStyled(ctx, displayWidth, displayHeight);
+            } finally {
+                if (screen) G.screenFrame(this, 'end');
+            }
+        }
+        _renderStyled(ctx, displayWidth, displayHeight) {
             const drawStyle = this._drawStyle();
             if (drawStyle === this.style) {
                 this._drawFrame(ctx, displayWidth, displayHeight);

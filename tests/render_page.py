@@ -227,7 +227,12 @@ def main():
         # canvas's own corner is the measurement - the checker behind it is
         # only visible THROUGH a transparent canvas.
         corner = """(() => {
-            const c = document.getElementById('viewer').querySelector('#canvas');
+            const cv = document.getElementById('viewer').querySelector('#canvas');
+            // the GPU painter's layer under the canvas carries the paper by
+            // default (cartoon/paintgl.js, direct presentation): read together
+            const layer = cv.nextElementSibling && cv.nextElementSibling.tagName === 'CANVAS' ? cv.nextElementSibling : null;
+            let c = cv;
+            if (layer) { c = document.createElement('canvas'); c.width = cv.width; c.height = cv.height; const x = c.getContext('2d'); x.drawImage(layer, 0, 0); x.drawImage(cv, 0, 0); }
             const d = c.getContext('2d').getImageData(2, 2, 1, 1).data;
             return { alpha: d[3],
                      checker: document.getElementById('viewer')

@@ -105,9 +105,12 @@ def render(viewer, tag):
     return json.loads(evaluate(ws, """(() => {
       const r = (Object.values(window.py2dmol_viewers || {})[0] || {}).renderer;
       if (!r) return JSON.stringify({error: 'no viewer'});
-      const cv = document.querySelector('canvas');
+      const cv = document.querySelector('canvas:not([data-py2dmol-layer])');
       const c = document.createElement('canvas');
       c.width = cv.width; c.height = cv.height;
+      // the GPU painter's layer under the canvas first, then the canvas (the overlays)
+      const layer = cv.nextElementSibling && cv.nextElementSibling.tagName === 'CANVAS' ? cv.nextElementSibling : null;
+      if (layer) c.getContext('2d').drawImage(layer, 0, 0);
       c.getContext('2d').drawImage(cv, 0, 0);
       const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
       let ink = 0;

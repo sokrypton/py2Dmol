@@ -88,7 +88,12 @@ def export(subdir, bundle, share):
 INK = """(async () => {
   const t0 = Date.now();
   while (Date.now() - t0 < 20000) {
-    const c = document.querySelector('canvas');
+    // the viewer's canvas, and under it by default the GPU painter's layer
+    // (cartoon/paintgl.js, direct presentation): read together
+    const cv = document.querySelector('canvas:not([data-py2dmol-layer])');
+    const layer = cv && cv.nextElementSibling && cv.nextElementSibling.tagName === 'CANVAS' ? cv.nextElementSibling : null;
+    let c = cv;
+    if (cv && layer) { c = document.createElement('canvas'); c.width = cv.width; c.height = cv.height; const x = c.getContext('2d'); x.drawImage(layer, 0, 0); x.drawImage(cv, 0, 0); }
     if (c && c.width > 0) {
       const gl = c.getContext('webgl2') || c.getContext('webgl');
       let ink = 0;

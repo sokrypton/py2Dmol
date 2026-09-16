@@ -45,6 +45,12 @@ Import it and interpolate it into the page script:
 
 
 HELPERS = """
+  // THE PICTURE ON THE CANVAS. These probes read the drawing off the viewer's
+  // canvas with getImageData; the GPU painter shows its frame on a layer under
+  // that canvas by default (cartoon/paintgl.js, direct presentation), which
+  // would leave them reading the overlays alone. They measure the painter, not
+  // the presentation - tests/gpu_direct.py does that - so they ask for the blit.
+  if (window.py2dmolCartoonGPU && window.py2dmolCartoonGPU.setDirectPresent) window.py2dmolCartoonGPU.setDirectPresent(false);
   const settle = async (n = 3) => {
     for (let k = 0; k < n; k++) {
       await new Promise((s) => requestAnimationFrame(() => s()));

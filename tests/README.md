@@ -120,6 +120,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `frame_share.py` | tool | A TRAJECTORY'S FRAMES DESCRIBE ONE MOLECULE, AND ONLY ITS COORDINATES MOVE. |
 | `gpu3d_core.js` | tool | The GPU cartoon MEASUREMENT HARNESS, shared by gpu3d_lab.html (the numbers) |
 | `gpu_bench.py` | tool | Per-pass GPU timings for the tube path, on the real GPU, from the shell. |
+| `gpu_direct.py` | tool | THE GL CANVAS ON THE PAGE, not copied into the viewer's. |
 | `gpu_mesh_reuse.py` | tool | Switching an object off and on again reuses its mesh instead of rebuilding. |
 | `gpu_mixed_style.py` | tool | Two objects, two styles, one picture - and the depth buffer decides. |
 | `gpu_prototype.js` | tool | WebGL2 painter: accumulates every quad into one interleaved buffer and draws |

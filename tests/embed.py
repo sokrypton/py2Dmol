@@ -83,10 +83,21 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"></head><body>
 <script src="py2Dmol/resources/bundles/py2Dmol.embed.min.js"></script>
 <script>
 const R = {errors: [], steps: []};
+// THE PICTURE, layer and canvas together. The GPU painter shows its frame on a
+// canvas layered under the viewer's by default (cartoon/paintgl.js, direct
+// presentation), so the viewer's canvas alone holds only the overlays; the
+// two are composed for reading. A canvas with no layer is read as it is.
+const pic = (c) => {
+  const L = c && c.nextElementSibling;
+  if (!L || L.tagName !== 'CANVAS') return c;
+  const s = c.ownerDocument.createElement('canvas'); s.width = c.width; s.height = c.height;
+  const x = s.getContext('2d'); x.drawImage(L, 0, 0); x.drawImage(c, 0, 0);
+  return s;
+};
 window.addEventListener('error', (e) => R.errors.push(String(e.message)));
 
 const ink = (c) => {
-  const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+  const d = pic(c).getContext('2d').getImageData(0, 0, c.width, c.height).data;
   let n = 0;
   for (let i = 0; i < d.length; i += 4) {
     if (d[i] < 240 || d[i + 1] < 240 || d[i + 2] < 240) n++;
@@ -114,7 +125,7 @@ const drivePage = async () => {
     return boxes.every((b) => {
       const c = b.querySelector('canvas');
       if (!c || !c.width) return false;
-      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      const d = pic(c).getContext('2d').getImageData(0, 0, c.width, c.height).data;
       for (let i = 0; i < d.length; i += 4) {
         if (d[i] < 240 || d[i + 1] < 240 || d[i + 2] < 240) return true;
       }
@@ -136,7 +147,7 @@ const drivePage = async () => {
   const sig = (id) => {
     const c = D.querySelector('#' + id + ' canvas');
     if (!c) return null;
-    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    const d = pic(c).getContext('2d').getImageData(0, 0, c.width, c.height).data;
     let ink = 0, h = 0;
     for (let i = 0; i < d.length; i += 4) {
       if (d[i] < 240 || d[i + 1] < 240 || d[i + 2] < 240) {
@@ -161,7 +172,7 @@ const drivePage = async () => {
   {
     const c = D.querySelector('#heatmapCanvas');
     if (c && c.width) {
-      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      const d = pic(c).getContext('2d').getImageData(0, 0, c.width, c.height).data;
       for (let i = 0; i < d.length; i += 4) {
         if (d[i] < 240 || d[i + 1] < 240 || d[i + 2] < 240) out.heatmap.ink++;
       }
@@ -286,7 +297,7 @@ const inked = async (id, ms) => {
 // the pixels themselves.
 const shot = (id) => {
   const c = canvasIn(id);
-  const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+  const d = pic(c).getContext('2d').getImageData(0, 0, c.width, c.height).data;
   let h = 0;
   for (let i = 0; i < d.length; i += 4) {
     h = (h * 31 + d[i] * 7 + d[i + 1] * 13 + d[i + 2] * 17) >>> 0;
@@ -396,7 +407,8 @@ setTimeout(finish, 80000);
     R.cifInk = await inked('two', 3000);
     R.cifPositions = v2.objectsData && v2.objectsData.structure
         ? v2.objectsData.structure.totalPositions : null;
-    R.twoCanvases = document.querySelectorAll('canvas').length;
+    // ...the viewers' own canvases: the GPU painter's layer under each is marked
+    R.twoCanvases = document.querySelectorAll('canvas:not([data-py2dmol-layer])').length;
     R.separate = canvasIn('one') !== canvasIn('two');
 
     // THE DEFAULT CARTOON IS RICHARDSON, AND MUST BE THE SAME RICHARDSON.
@@ -1209,7 +1221,7 @@ setTimeout(finish, 80000);
     {
         const px = (id) => {
             const c = canvasIn(id);
-            const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+            const d = pic(c).getContext('2d').getImageData(0, 0, c.width, c.height).data;
             let h = 0;
             for (let i = 0; i < d.length; i += 4) h = (h * 31 + d[i] * 7 + d[i + 1] * 13 + d[i + 2] * 17) >>> 0;
             return h;

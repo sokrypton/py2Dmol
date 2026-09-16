@@ -237,6 +237,14 @@
                 target.width = w; target.height = h;
                 octx = target.getContext('2d');
             }
+            // THE LIVE CANVAS IS WHAT IS SAMPLED, by captureStream or a GIF's
+            // getImageData - and with the GPU painter presenting on its own
+            // layer (cartoon/paintgl.js, direct presentation) the live canvas
+            // carries the overlays alone. Held off for the recording, so every
+            // frame is blitted onto the canvas as it used to be; released with
+            // the recording, whichever way it ends.
+            const GPU = window.py2dmolCartoonGPU;
+            const unhold = (!offscreen && GPU && typeof GPU.holdDirect === 'function') ? GPU.holdDirect() : () => {};
             // Re-render at the target size, exactly as the PNG export does:
             // _exportPxScale keeps the quantities that are PIXELS by definition
             // - outline width, selection ink - the size they are on screen,
@@ -327,8 +335,9 @@
                         if (octx) { paint(); blit(); } else this.render('capture');
                         shots.push(gctx.getImageData(0, 0, w, h).data);
                     },
-                    cancel: () => { shots.length = 0; },
+                    cancel: () => { unhold(); shots.length = 0; },
                     finish: (done) => {
+                        unhold();
                         if (!shots.length) { done(null); return; }
                         // Encoding a few hundred megapixels blocks the tab, so
                         // the status line is set BEFORE it starts rather than
@@ -397,12 +406,13 @@
                     }
                 },
                 cancel: () => {
+                    unhold();
                     onDone = null;
                     try { rec.stop(); } catch (e) { /* already stopped */ }
                 },
                 finish: (done) => {
-                    onDone = done;
-                    if (!started) { done(null, fmt.ext); return; }   // nothing was ever handed over
+                    onDone = (blob, ext) => { unhold(); done(blob, ext); };
+                    if (!started) { onDone(null, fmt.ext); return; }   // nothing was ever handed over
                     // let the last frame land in the stream before closing
                     setTimeout(() => { try { rec.stop(); } catch (e) { /* stopped */ } }, 1000 / fps);
                 },
