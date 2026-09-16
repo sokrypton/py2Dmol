@@ -943,6 +943,25 @@ public downloads is exercised on every run.
   changing is NOT a rebuild on this path**: 20 spot checks through the same run,
   each the drawn frame against the same coordinates rebuilt from scratch, differ
   by at most 0.0002% of pixels, and none declined for a moved mapping.
+  🔴 **AND AT DETAIL 2 THE ARROWHEAD WAS STILL CREATING STATIONS.** A station is
+  topology, so anything a LETTER can create is a rebuild - and the head was the
+  last of those. Above the floor it is paid for out of the interval's own
+  sampling (`dupSeam`, `cartoon/geom.js`), so the count holds; at the floor,
+  three stations, there was nothing to reallocate and the head laid out five of
+  its own. So a residue joining the end of a strand moved the topology - **+12
+  stations and +2 pieces on 1UBQ** - and the station fast path rebuilt: replaying
+  79 frames of a protein_fighter fight at Detail 2, **60 of 79 steps rebuilt**,
+  against 0 at Detail 3 and 0 with arrowheads switched off, which is what named
+  the head. The seam now MOVES onto a station the interval already has, so the
+  count is `nsub + 1` whatever the letter says: **0 of 79**.
+  **WHAT IT COSTS IS THE BARBS, AT THE FLOOR ONLY.** A square back edge needs two
+  stations at one point and there is no third to spare, so a Detail 2 arrowhead
+  tapers to a spearpoint instead of overhanging - looked at side by side and
+  chosen deliberately, because Detail 2 is the geometric floor and the setting
+  people animate at. Detail 3 and 4 are untouched, barbs and all: `paint_trace`
+  reports 11 fixtures unchanged. `tests/ss_axis.py --detail=2` is the gate and
+  is in `tests/run.sh` beside the default-Detail run, which is the one that
+  missed this.
 - **KABSCH IS A FUNCTION NOW, NOT ONLY A SIDE EFFECT OF `addFrame`.** The fit
   has been in every bundle since the browser took the viewing geometry over
   from numpy, and the only way to reach it was to ask a FRAME to align itself

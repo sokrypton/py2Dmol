@@ -282,6 +282,13 @@ if [[ "$LANE" == "all" || "$LANE" == "gpu" ]]; then
   # at the mesh's own scale and cannot follow a canvas change, so the path has
   # to stand down there. Both directions of that are the claim.
   run_probe resize_reuse 1EHZ.cif || fail=1
+  # ...and the SS axis at the FLOOR, which is where it used to break. The run
+  # above is at the shipped Detail; at Detail 2 an interval has three stations,
+  # and the arrowhead used to take two more of its own - so a residue joining a
+  # strand added stations and every such frame of an animation rebuilt (60 of 79
+  # replayed fight steps). The head takes an existing station there now, and
+  # this is the gate on it: the counts have to hold at the floor too.
+  run_probe ss_axis --detail=2 || fail=1
 fi
 
 print "=== $( (( fail == 0 )) && print ALL GREEN || print SOMETHING FAILED )"

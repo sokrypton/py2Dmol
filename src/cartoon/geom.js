@@ -8744,6 +8744,10 @@ function drawRun(runIdx, ctx) {
                 const us = [];
                 let seamIdx = -1;
                 let rimIdx = -1;
+                // the floor's head: the seam sits ON a station rather than
+                // being duplicated, so the barb step is a ramp and not a
+                // discontinuity - see the branch below
+                let slantHead = false;
                 if (dupSeam || dupRim) {
                     const dups = (dupSeam ? 1 : 0) + (dupRim ? 1 : 0);
                     const seg = nsub0 - dups;      // sub-intervals with length
@@ -8768,12 +8772,38 @@ function drawRun(runIdx, ctx) {
                         if (k === seamPos) { seamIdx = us.length - 1; us.push(list[k]); }
                     }
                 } else if (arrowHead) {
-                    const halfN = Math.max(2, Math.round(nsub / 2));
-                    for (let k = 0; k <= halfN; k++) us.push(arrowU * k / halfN);
-                    seamIdx = us.length - 1;
-                    for (let k = 0; k <= halfN; k++) {
-                        us.push(arrowU + (1 - arrowU) * k / halfN);
-                    }
+                    // 🔴 AT THE FLOOR THE HEAD TAKES A STATION THAT IS ALREADY
+                    // THERE. This branch is reached only when the interval
+                    // cannot spare the duplicated seam (nsub0 2, three
+                    // stations), and it used to lay out a shaft and a barb of
+                    // their own - five stations where a plain interval has
+                    // three. A station is TOPOLOGY, so a residue joining the
+                    // end of a strand ADDED stations and pieces and the station
+                    // fast path had to rebuild: measured on 1UBQ at Detail 2,
+                    // +12 stations and +2 pieces for one strand appearing, and
+                    // on a replayed fight 60 of 79 animation steps rebuilt at
+                    // Detail 2 against 0 at Detail 3. With arrowheads switched
+                    // off, 0 of 79 - which is what named the head.
+                    //
+                    // So the seam MOVES to the nearest existing station rather
+                    // than being inserted: the count is nsub0 + 1 whatever the
+                    // letter says, and the head still begins at arrowU because
+                    // that station is placed there. What it costs is the square
+                    // back edge - with no duplicate there is one width at the
+                    // seam, so the barbs rise over the sub-interval before it
+                    // instead of standing perpendicular. That is the trade this
+                    // setting is for: Detail 2 is the geometric floor, and a
+                    // slanted back edge on half a residue buys every animation
+                    // step the fast path.
+                    const j = Math.max(1, Math.min(nsub0 - 1,
+                        Math.round(arrowU * nsub0)));
+                    for (let k = 0; k <= nsub0; k++) us.push(k / nsub0);
+                    us[j] = arrowU;          // the seam, on a station that exists
+                    // ...and `afterSeam` is `k > seamIdx`, so the station AT the
+                    // seam has to be the first one past it: it carries the full
+                    // barb width, and the one before it the shaft's.
+                    seamIdx = j - 1;
+                    slantHead = true;        // no piece cut: the step is a ramp
                 } else {
                     for (let k = 0; k <= nsub; k++) us.push(k / nsub);
                 }
@@ -8939,8 +8969,11 @@ function drawRun(runIdx, ctx) {
                         }
                     }
                 }
-                // the barb step is a genuine discontinuity in the surface
-                if (seamIdx > 0) cutSet.push(seamIdx);
+                // the barb step is a genuine discontinuity in the surface -
+                // unless the head is the floor's, where the seam sits on an
+                // existing station and the barbs ramp up to it: no step, and
+                // no cut, so the piece count does not move with the letter
+                if (seamIdx > 0 && !slantHead) cutSet.push(seamIdx);
                 // ...and so is a colour change, which has to land at the
                 // MIDPOINT between the two residues rather than at either
                 // end. Forced even in 'none' mode: without a cut here the

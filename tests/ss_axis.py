@@ -28,17 +28,24 @@ default and `--measure-only` is the way to look without asserting. Left as it
 was, this file printed the right numbers and exited 0 with a second sampling
 rate deliberately put back, which is the whole of what a gate is for.
 
-🔴 IT HOLDS AT THE SHIPPED SUBDIVISION AND NOT AT THE FLOOR, and `--detail=2`
-is how to see that rather than assume it. An interval has nsub + 1 stations to
-spend, and the duplicates that keep the barb step and the blunt end square come
-out of that budget. At Detail 4 (nsub 4, five stations) there is room for both.
-At Detail 2 there are three stations: enough for the blunt end, which needs one
-sub-interval either side of nothing, and NOT enough for the head, which needs a
-shaft and a barb. So at the floor a strand appearing still adds stations -
-measured on 1UBQ as +5 stations, +2 pieces, +12 faces - and this file says so
-when asked at that detail. The alternative is an arrowhead whose back edge
-slants at the one setting where it is most visible, or one a full residue long;
-both were considered and neither is worth the rebuild it saves.
+🔴 IT HOLDS AT THE FLOOR TOO NOW, AND `--detail=2` IS A GATE IN run.sh. An
+interval has nsub + 1 stations to spend, and the duplicates that keep the barb
+step and the blunt end square come out of that budget. At Detail 4 (nsub 4,
+five stations) there is room for both. At Detail 2 there are three: enough for
+the blunt end, which needs one sub-interval either side of nothing, and NOT
+enough for a head that wants a shaft, a duplicated seam and a barb. It used to
+lay out five stations of its own there, so a strand appearing moved the topology
+- measured on 1UBQ as +12 stations and +2 pieces - and every frame of an
+animation that gained or lost a strand end rebuilt: 60 of 79 replayed fight
+steps at Detail 2, against 0 at Detail 3 and 0 with arrowheads off.
+
+The seam MOVES onto a station the interval already has instead (`slantHead` in
+cartoon/geom.js), so the count is nsub + 1 whatever the letter says and the
+replay rebuilds 0 of 79. What it costs is the square back edge at the floor
+alone: with one width at the seam the barbs ramp up to it, so a Detail 2
+arrowhead tapers to a spearpoint. That was looked at side by side and taken
+deliberately - Detail 2 is the geometric floor and the setting an animation
+runs at. Detail 3 and 4 keep their barbs.
 
 🔴 AND THE OVERRIDE HAS TO REACH THE MESH, or silence reads as invariance. It
 cannot be shown by the counts any more - holding them still is the property
