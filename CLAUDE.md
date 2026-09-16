@@ -2562,6 +2562,19 @@ draws a frame **0.083% different from a rebuild** on a folding trajectory, which
 ships today through the auto-enable and which nothing checked, because the one
 probe credited with checking it only ever ran beside the pin.
 
+🔴 **AND `docs/OPEN_WORK.md` IS THE REST OF THAT LIST.** Every entry is
+something a session STOPPED on: what was measured, what was RULED OUT and would
+be wasted effort to measure again, and what the next step would be. It exists
+because the expensive part of picking one of these up is rediscovering the dead
+ends - the loop-shading flicker alone has had the station path, a stale mesh and
+the ribbon frame's sign eliminated, each with numbers. Read it before starting
+on: the flicker, `tests/station_integrated.py` (failing, and in no lane), how
+little of the suite exercises direct presentation, the ui lane starving itself,
+the 2D painter's remaining sign-dependence, colour drawn half a residue late in
+every colour MODE, and the hand-vendored copy of the embed bundle in
+`../protein_fighter`. Add to it when you stop on something rather than leaving
+the next session to find out the same way.
+
   `docs/SELECTION_MARK.md` is the tuning menu: six treatments drawn side by
   side, the two rejected before the shortlist, and the costs - **0.02 ms
   between the cheapest and the dearest**, which is 0.1% of a frame, so this is
