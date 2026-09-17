@@ -3537,6 +3537,22 @@ the next session to find out the same way.
   resize the viewer that way, and so may any host that predates slots.
   **Full screen grows the big slot**, and its button lives on the big slot, not
   the canvas box, which a parked structure took with it.
+  🔴 **AND ON A PHONE THERE IS ONE SLOT, PARKED RATHER THAN HIDDEN.** Two of
+  them side by side are 940px of a 390px screen and stacked they put the map
+  below the fold - and the tabs over the big one reach every view, which is what
+  makes dropping the second one free. Below **980px**, the website's own
+  breakpoint (`matchMedia`, the VIEWPORT: a narrow notebook cell on a desktop is
+  a layout choice, a phone is a screen), the small slot's view goes to the park.
+  A `display: none` would not do: a hidden view is still a DRAWING view, and it
+  would keep a second heatmap panel, its decoded matrix and its colour image and
+  go on painting a scatter plot nobody can see. The reader's own pick is KEPT,
+  not cleared, so turning the phone round brings it back.
+  **Full screen grows the slot on a phone too, and that is a specificity race
+  that ORDER decides**: the 980px block in `src/app/style.css` and the
+  `.py2dmol-fs` block injected by `parts/viewport.js` reach the same body at
+  (0,3,0) each, and the injected one wins because a `<style>` appended to the
+  head comes after a `<link>`. `tests/mobile_layout.py` measures it - the body
+  grows 342 to 418 at 390x844 - and mutating the block away reports 374x374.
   **What it changes:** the panel's own map tab strip is hidden in a slot (the
   slot's tabs name the map), `HeatmapRenderer.setMap` routes through the slot,
   and a page that showed a PAE AND a scatter plot now shows one of them at a

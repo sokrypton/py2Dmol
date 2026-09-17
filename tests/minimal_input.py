@@ -690,7 +690,15 @@ def main():
     httpd.daemon_threads = True
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     p = subprocess.Popen([CHROME, '--headless=new', '--user-data-dir=/tmp/py2dmol-min',
-                          '--no-first-run', '--window-size=900,900',
+                          '--no-first-run', '--window-size=1200,1000',
+                          # 🔴 WIDER THAN 980, WHICH IS WHERE THE SECOND
+                          # SLOT GOES (src/parts/slots.js). This ran at
+                          # 900 and the viewer correctly parked its
+                          # heatmap panel - the probe then read the map
+                          # off a panel that is holding nothing and
+                          # reported the PAE as missing. One slot on a
+                          # narrow screen is measured in
+                          # tests/mobile_layout.py; this is about the wire.
                           'http://127.0.0.1:9715/_minimal.html'],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     end = time.time() + DEADLINE

@@ -1563,7 +1563,12 @@ def run():
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     p = subprocess.Popen(
         [CHROME, "--headless=new", "--user-data-dir=/tmp/py2dmol-embed",
-         "--no-first-run", "--window-size=900,900",
+         "--no-first-run", "--window-size=1200,1000",
+                          # 🔴 WIDER THAN 980, WHICH IS WHERE THE SECOND SLOT
+                          # GOES (src/parts/slots.js). At 900 the viewer parks
+                          # its heatmap panel, and the ink count below then
+                          # reads pixels left on a hidden canvas - a pass that
+                          # means nothing either way.
          f"http://127.0.0.1:{PORT}/_embed_probe.html"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     end = time.time() + DEADLINE

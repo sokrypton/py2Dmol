@@ -178,6 +178,22 @@ function prepare(root, config) {
  * notices a map arriving, a structure landing, scatter data appearing, however
  * each of them arrived: a frame, a live update, a host calling setMaps.
  */
+// 🔴 ONE SLOT ON A PHONE, AND IT IS A PARK RATHER THAN A `display: none`.
+// The two slots side by side are 940px of a 390px screen, and stacked they put
+// the structure above the fold and the map below it - where hiding the second
+// one costs nothing now, because the tabs over the first can reach every view.
+// Done HERE and not in a stylesheet because a hidden view is still a DRAWING
+// view: a `display: none` small slot would keep a second heatmap panel, its
+// decoded matrix and its colour image, and would go on painting a scatter plot
+// nobody can see. Parked, every rule this file already has applies.
+//
+// 980px is the website's own breakpoint (src/app/style.css), which is where its
+// columns stack; the notebook and the embed have no media query of their own
+// and inherit the same answer. THE VIEWPORT, not the container: a narrow cell
+// on a desktop is a layout choice, a phone is a screen, and only the second one
+// means "there is no room for a second picture".
+const NARROW = '(max-width: 980px)';
+
 function bind(renderer, layout) {
     if (!layout) return null;
     const want = { big: null, small: null };
@@ -241,7 +257,7 @@ function bind(renderer, layout) {
         const show = !!v && (avail.length >= 2 || v.startsWith(MAP));
         s.tabs.hidden = !show;
         if (!show) return;
-        const sig = avail.join(' ');
+        const sig = avail.join('\u0000');
         if (s.tabSig !== sig) {
             // REBUILT ONLY WHEN THE SET CHANGES, never per frame - a rebuild
             // destroys the button under the pointer and swallows the click,
@@ -296,16 +312,31 @@ function bind(renderer, layout) {
         if (el && el.parentNode !== body) body.appendChild(el);
     };
 
+    // ...and the media query, which is a layout input like any other: a change
+    // has to re-ask, and it is IN the signature so no answer is cached across it.
+    const mq = (typeof window !== 'undefined' && window.matchMedia)
+        ? window.matchMedia(NARROW) : null;
+    if (mq) {
+        const onNarrow = () => { lastSig = ''; refresh(); };
+        if (mq.addEventListener) mq.addEventListener('change', onNarrow);
+        else if (mq.addListener) mq.addListener(onNarrow);
+    }
+
     function refresh() {
         const avail = available();
-        const sig = avail.join(' ') + '|' + want.big + '|' + want.small;
+        const narrow = !!(mq && mq.matches);
+        const sig = avail.join('\u0000') + '|' + want.big + '|' + want.small
+            + '|' + narrow;
         if (sig === lastSig) return false;
         lastSig = sig;
 
         const big = avail.indexOf(want.big) >= 0 ? want.big
             : (avail.indexOf(MOL) >= 0 ? MOL : (avail[0] || MOL));
         const rest = avail.filter((v) => v !== big);
-        const small = rest.indexOf(want.small) >= 0 ? want.small : smallDefault(rest);
+        // ...and on a narrow screen there is no second slot at all. The reader's
+        // choice is KEPT rather than cleared: turn the phone round and it is back.
+        const small = narrow ? null
+            : (rest.indexOf(want.small) >= 0 ? want.small : smallDefault(rest));
         shown.big = big;
         shown.small = small;
 

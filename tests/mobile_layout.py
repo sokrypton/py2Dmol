@@ -54,6 +54,20 @@ MEASURE = r"""(() => {
   R.rendererSize = [r.displayWidth, r.displayHeight];
   R.shell = Math.round(document.getElementById('viewer-container').getBoundingClientRect().width);
 
+  // 🔴 ONE SLOT ON A PHONE (src/parts/slots.js). Two of them side by side are
+  // 940px of a 390px screen and stacked they push the map below the fold, and
+  // the tabs over the big one can reach every view - so below the breakpoint
+  // the small slot is not merely hidden, it holds nothing: a parked view draws
+  // nothing and keeps no picture, which a `display: none` would not give.
+  const S = r._slots;
+  R.slots = S ? {
+    shown: S.shown(),
+    smallHidden: S.layout.small.slot.hidden,
+    tabs: [...S.layout.big.tabs.children].map((b) => b.dataset.view),
+    tabsHidden: S.layout.big.tabs.hidden,
+    holding: (r._heatmapPool || []).filter((e) => !!e.hm.bytes).length,
+  } : null;
+
   // AN OVERLAP COSTS NO WIDTH. Two rectangles, intersected.
   const h1 = document.querySelector('.page-head h1');
   const pa = document.querySelector('.page-actions');
@@ -191,6 +205,20 @@ try:
         wait_for(ws, """(() => { const v = (window.py2dmol_viewers || {})['standalone-viewer-1'];
                    return !!(v && v.renderer && v.renderer.coords && v.renderer.coords.length); })()""",
                  what="the structure to reach the renderer")
+        # ...AND A MAP ON THE FRAME, or there is only one view and the slots
+        # have nothing to choose between: the small slot would be empty at
+        # every width and the narrow rule would be measuring nothing.
+        evaluate(ws, """(() => {
+            const r = window.py2dmol_viewers['standalone-viewer-1'].renderer;
+            const o = r.objectsData[r.currentObjectName];
+            const n = o.frames[0].coords.length;
+            const m = new Uint8Array(n * n);
+            for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+                m[i * n + j] = Math.min(255, Math.abs(i - j) * 2);
+            }
+            o.frames[0].maps = {pae: {data: m, n}};
+            window.Heatmap.updateFrame(r, o, r.currentFrame);
+            return 1; })()""")
         # ...and one settled frame, so the ResizeObserver has driven the canvas
         evaluate(ws, "new Promise(r => requestAnimationFrame("
                      "() => requestAnimationFrame(() => setTimeout(() => r(1), 400))))")
@@ -223,6 +251,35 @@ try:
         evaluate(ws, "new Promise(r => setTimeout(() => r(1), 900))")
         resized.append(evaluate(ws, STRIP, False))
     results["resized"] = resized
+
+    # ===== AND FULL SCREEN, ON THE PHONE =====
+    # The button is on the BIG SLOT now, and the slot is what grows - so the
+    # stylesheet that stacks this page at 980px and the one full screen
+    # installs are both live at once, at the same specificity. Measured rather
+    # than reasoned about: the body has to be taller than the square box it is
+    # in normally, and the page must not overflow sideways.
+    # `userGesture`, because requestFullscreen is refused without one.
+    ws.call("Emulation.setDeviceMetricsOverride", width=390, height=844,
+            deviceScaleFactor=2, mobile=True)
+    evaluate(ws, "new Promise(r => setTimeout(() => r(1), 600))")
+    before = evaluate(ws, "(() => { const b = document.querySelector("
+                          "'.py2dmol-slot--big > .py2dmol-slot-body')"
+                          ".getBoundingClientRect();"
+                          " return [Math.round(b.width), Math.round(b.height)]; })()", False)
+    fs = ws.call("Runtime.evaluate", userGesture=True, awaitPromise=True,
+                 returnByValue=True, expression="""(async () => {
+        const btn = document.querySelector('.py2dmol-fs-btn');
+        if (!btn) return {error: 'no full-screen button'};
+        btn.click();
+        await new Promise((r) => setTimeout(r, 900));
+        const b = document.querySelector('.py2dmol-slot--big > .py2dmol-slot-body')
+            .getBoundingClientRect();
+        return {on: !!document.fullscreenElement,
+                body: [Math.round(b.width), Math.round(b.height)],
+                overflow: document.documentElement.scrollWidth - innerWidth,
+                win: [innerWidth, innerHeight]};
+    })()""")["result"].get("value")
+    results["fullscreen"] = {"before": before, "after": fs}
 finally:
     if proc: proc.kill()
     httpd.shutdown()
@@ -230,6 +287,46 @@ finally:
     shutil.rmtree("/tmp/py2dmol-mobile-prof", ignore_errors=True)
 
 bad = []
+
+# --- ONE SLOT ON A PHONE, TWO ON A DESKTOP ---
+for name in ("320px", "360px", "390px", "desktop"):
+    sl = (results[name] or {}).get("slots")
+    print("%s slots: %s" % (name, sl))
+    if not sl:
+        bad.append("%s: the viewer has no slots at all" % name)
+        continue
+    narrow = name != "desktop"
+    if narrow:
+        if not sl["smallHidden"] or sl["shown"]["small"] is not None:
+            bad.append("%s: the small slot is still up - two pictures do not fit"
+                       " on a phone, and the tabs can reach the map" % name)
+        if sl["holding"] != (1 if str(sl["shown"]["big"]).startswith("map:") else 0):
+            bad.append("%s: %d heatmap panels hold a decoded matrix while the"
+                       " small slot is off - hiding a view is not parking it"
+                       % (name, sl["holding"]))
+        if sl["tabsHidden"] or "map:pae" not in (sl["tabs"] or []):
+            bad.append("%s: the big slot's tabs are %s (hidden: %s) - with the"
+                       " small slot gone they are the only way to the map"
+                       % (name, sl["tabs"], sl["tabsHidden"]))
+    elif sl["shown"]["small"] != "map:pae":
+        bad.append("desktop: the map did not come back to the small slot: %s" % sl)
+
+fsr = results.get("fullscreen") or {}
+print("full screen on a phone: %s -> %s" % (fsr.get("before"), fsr.get("after")))
+fa = fsr.get("after") or {}
+if fa.get("error") or not fa.get("on"):
+    bad.append("full screen did not start on the phone: %s" % fa)
+else:
+    was, now = (fsr.get("before") or [0, 0]), fa.get("body") or [0, 0]
+    if not (now[1] > was[1] + 40):
+        bad.append("full screen left the big slot at %s against %s - the slot"
+                   " is what grows, and the 980px block and the full-screen"
+                   " block are the same specificity, so ORDER decides them"
+                   % (now, was))
+    if fa.get("overflow", 0) > 0:
+        bad.append("full screen overflows the phone sideways by %dpx"
+                   % fa.get("overflow"))
+
 for name in ("320px", "360px", "390px", "desktop"):
     R = results[name]
     print("%s: asked %d, innerWidth %d, scrollWidth %d, columns %s, title overlap %s"
