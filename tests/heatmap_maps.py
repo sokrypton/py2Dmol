@@ -69,7 +69,15 @@ window.addEventListener('load', () => {
   // A tab says `aria-selected`, the way a latch says aria-pressed - so the
   // marked tab is read from the attribute a screen reader would read, not
   // from a dataset field kept beside it for the test's benefit.
-  const tabs = () => [...P().tabStrip.children].map(
+  //
+  // 🔴 THE MAP TABS ARE THE SLOT'S NOW (src/parts/slots.js). The panel's own
+  // strip is hidden inside a slot, whose tabs name every view - Structure as
+  // well as each map - so these read the SMALL slot's map tabs, which is where
+  // the panel opens and where its own strip used to be.
+  const mapTabs = () => [...R()._slots.layout.small.tabs.children]
+    .filter((b) => b.dataset.view.startsWith('map:'));
+  const stripShown = () => (R()._slots.layout.small.tabs.hidden ? 'none' : 'flex');
+  const tabs = () => mapTabs().map(
     b => b.textContent + (b.getAttribute('aria-selected') === 'true' ? '*' : ''));
 
   // A REAL DRAG on the plot, in cells. The panel listens for mousedown on the
@@ -124,13 +132,13 @@ window.addEventListener('load', () => {
       out.dragPae = drag(30, 60);
 
       // ---- the tab node must survive a re-show, or a click is swallowed ----
-      const node = p.tabStrip.children[0];
+      const node = mapTabs()[0];
       window.Heatmap.syncToDrawn(r);
       await frame();
-      out.sameTabNode = (node === p.tabStrip.children[0]);
+      out.sameTabNode = (node === mapTabs()[0]);
 
       // ---- the contact tab ----
-      p.tabStrip.children[1].click();
+      mapTabs()[1].click();
       await frame();
       out.afterClick = p.mapKey;
       out.tabsContact = tabs();
@@ -159,7 +167,7 @@ window.addEventListener('load', () => {
 
       // ...and a box drawn on one map is still drawn on the other, because it
       // was stored in residues. Count the pixels the outline darkened.
-      p.tabStrip.children[0].click();
+      mapTabs()[0].click();
       await frame();
       out.backKey = p.mapKey;
       out.boxesKept = (r.getVisibility().heatmapBoxes || []).length;
@@ -173,7 +181,7 @@ window.addEventListener('load', () => {
       // ---- THE MAP WITH NO REGISTRY ENTRY ----
       // Its codec can only have come from the wire, and its label from its
       // own key. A wrong codec here is one flat colour, not a blank panel.
-      p.tabStrip.children[2].click();
+      mapTabs()[2].click();
       await frame();
       out.customKey = p.mapKey;
       out.limits.disorder = [p.scale.vmin, p.scale.vmax];
@@ -185,7 +193,7 @@ window.addEventListener('load', () => {
       })();
 
       // ---- THE MAP THAT NAMES ITS OWN DOMAIN ----
-      p.tabStrip.children[3].click();
+      mapTabs()[3].click();
       await frame();
       out.rmsdKey = p.mapKey;
       out.limits.rmsd = [p.scale.vmin, p.scale.vmax];
@@ -232,14 +240,14 @@ window.addEventListener('load', () => {
 
       // 🔴 ---- AND A CHOICE OUTLIVES A FRAME THAT CANNOT HONOUR IT ----
       // Step back to frame 0, which has only the PAE, and forward again.
-      p.tabStrip.children[1].click();
+      mapTabs()[1].click();
       await frame();
       r.setFrame(0); await frame();
-      out.atFrame0 = { key: p.mapKey, strip: p.tabStrip.style.display };
+      out.atFrame0 = { key: p.mapKey, strip: stripShown() };
       r.setFrame(1); await frame();
       out.backAtFrame1 = p.mapKey;
 
-      p.tabStrip.children[0].click();
+      mapTabs()[0].click();
       await frame();
 
       // ---- TWO TABS OVER ONE ARRAY, which is the JS host's door ----
@@ -261,8 +269,8 @@ window.addEventListener('load', () => {
       p.setMaps({ pae: { data: p.bytes, n: p.residues } });
       await frame();
       out.oneMap = {
-        strip: p.tabStrip.style.display,
-        tabs: [...p.tabStrip.children].map((b) => b.textContent),
+        strip: stripShown(),
+        tabs: mapTabs().map((b) => b.textContent),
         xlabel: p.xLabelEl.textContent,
         ylabel: p.yLabelEl.textContent,
         // ...and the plot is inset below the strip and beside the y caption,

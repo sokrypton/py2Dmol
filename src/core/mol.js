@@ -2193,6 +2193,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         // [END PATCH]
 
         // --- PAE / Visibility ---
+        /**
+         * WHICH VIEW IS IN WHICH SLOT - `{big, small}`, each `structure`,
+         * `scatter` or a map's key. The slots are parts/slots.js; these two
+         * are on every viewer so the verb exists wherever it is documented,
+         * and a viewer with nothing to swap SAYS so rather than doing nothing.
+         */
+        setSlots(opts) {
+            if (!this._slots) {
+                throw new Error('py2Dmol: this viewer has one view and no slots'
+                    + ' - they come with controls: true and a heatmap or scatter box');
+            }
+            this._slots.setSlots(opts);
+        }
+
+        getSlots() {
+            return this._slots ? this._slots.getSlots() : { big: 'structure', small: null };
+        }
+
         setHeatmapRenderer(heatmapRenderer) {
             this.heatmapRenderer = heatmapRenderer;
         }
@@ -13692,6 +13710,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // moved at 0: preview -> arena"), 1.9 frames a second at CPU x4
             // against 4.3 with no second viewer. The draw is owed, not dropped:
             // held until the canvas is shown, then made, frame change included.
+            // ...and which view is in which slot, before anything is drawn -
+            // a signature compare that returns at once unless a structure, a
+            // map or scatter data came or went (parts/slots.js).
+            if (this._slots) this._slots.refresh();
             if (needsRender || this._renderOwed) {
                 const cv = this.canvas;
                 const unseen = !!cv && (!cv.isConnected || cv.getClientRects().length === 0);

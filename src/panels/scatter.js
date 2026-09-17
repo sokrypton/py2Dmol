@@ -253,6 +253,11 @@ class ScatterPlotViewer {
     }
 
     render(forceRecalculate = false) {
+        // A PLOT NO ONE CAN SEE IS NOT DRAWN. The render loop asks for this on
+        // every frame step, and in a hidden slot (parts/slots.js) that was a
+        // full repaint of an invisible canvas each time. The slot asks again,
+        // forced, when it brings the plot back.
+        if (this.canvas && this.canvas.getClientRects().length === 0) return;
         const ctx = this.ctx;
         const width = this.canvas.width;
         const height = this.canvas.height;

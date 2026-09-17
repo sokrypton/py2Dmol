@@ -135,7 +135,14 @@ function setupViewport(containerElement, config) {
         canvas.height = newHeight * dpr;
         canvas.style.width = newWidth + 'px';
         canvas.style.height = newHeight + 'px';
-        if (viewerWrapper) viewerWrapper.style.width = newWidth + 'px';
+        // ...but NOT the column, when the canvas is in a slot (parts/slots.js).
+        // The column holds the BIG slot and the canvas can be in the small one,
+        // so its width is no longer the column's: a 300px structure in the
+        // small slot narrowed the column under a 500px scatter plot and the
+        // small slot slid over the top of it.
+        if (viewerWrapper && !(canvasContainer && canvasContainer.closest('.py2dmol-slot'))) {
+            viewerWrapper.style.width = newWidth + 'px';
+        }
         const c = canvas.getContext('2d');
         c.setTransform(1, 0, 0, 1, 0, 0);
         c.scale(dpr, dpr);
@@ -219,6 +226,15 @@ function setupViewport(containerElement, config) {
             // that does not feed the canvas its own size back - see hostBox.
             const m = followHost ? measure() : null;
             if (followHost && !m) return;
+            // 🔴 A BOX THAT MEASURES NOTHING IS HIDDEN, NOT SMALL. This clamped
+            // it to a 1x1 canvas, which cost nothing while the only hidden
+            // viewer was one not yet shown - and a view in a slot's park
+            // (parts/slots.js) is hidden and coming back, so every trip there
+            // threw the drawing buffer away and the return rebuilt the mesh at
+            // the size it had left at. `measure` already said this; the
+            // observer did not ask it.
+            if (!m && !(entries[0].contentRect.width >= 1
+                && entries[0].contentRect.height >= 1)) return;
             const newWidth = Math.max(m ? m[0] : entries[0].contentRect.width, 1);
             const newHeight = Math.max(m ? m[1] : entries[0].contentRect.height, 1);
             if (!moved(newWidth, newHeight)) return;
@@ -333,6 +349,28 @@ const FS_CSS = `
     resize: none;
 }
 .${FS_CLASS} #canvasContainer .resize-handle { display: none; }
+/* 🔴 AND THE SLOT, WHEN THERE IS ONE (parts/slots.js). The canvas box sits in
+   the big slot's body now, and the body is what has a size - 600x600 on the
+   website, the size token in the notebook - so growing the box grew nothing:
+   the rule above made it width:auto inside a fixed body, and height:auto made
+   it as tall as its own canvas, which only follows the box. Full screen grows
+   the SLOT, whichever view is in it, and the view fills the body as it always
+   does in a slot. Named by id as well as by class so it outranks both the rule
+   above and the slot's own 100% rule. */
+.${FS_CLASS} *:has(> .py2dmol-slot--big) { flex: 1 1 auto; min-width: 0; min-height: 0; }
+.${FS_CLASS} .py2dmol-slot--big { flex: 1 1 auto; min-width: 0; min-height: 0; align-self: stretch; }
+.${FS_CLASS} .py2dmol-slot--big > .py2dmol-slot-body {
+width: auto !important;
+height: auto !important;
+flex: 1 1 auto;
+min-height: 0;
+resize: none;
+aspect-ratio: auto;
+}
+.${FS_CLASS} .py2dmol-slot-body > #canvasContainer.py2dmol-slot-view {
+    width: 100% !important;
+    height: 100% !important;
+}
 .${FS_CLASS} > .sequence-section-container { flex: 0 0 auto; max-height: 40%; margin: 0; }
 
 /* The button itself, in the corner of the canvas box. */
@@ -395,7 +433,8 @@ function fsTargetOf(viewer) {
 function installFullscreen(containerElement, canvasContainer) {
     if (typeof document === 'undefined' || !canvasContainer) return;
     if (!document.fullscreenEnabled && !document.webkitFullscreenEnabled) return;
-    if (canvasContainer.querySelector('.py2dmol-fs-btn')) return;
+    const bigSlot = canvasContainer.closest('.py2dmol-slot--big');
+    if ((bigSlot || canvasContainer).querySelector('.py2dmol-fs-btn')) return;
     fsStyleOnce();
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -405,7 +444,11 @@ function installFullscreen(containerElement, canvasContainer) {
     // A glyph, not an icon font: index.html loads Font Awesome and the notebook
     // does not, and a button whose label is an empty <i> is an invisible button.
     btn.textContent = '\u26F6';
-    canvasContainer.appendChild(btn);
+    // ...on the BIG SLOT when there is one, not on the canvas box: full screen
+    // is for whatever is big, and a structure moved to the small slot or parked
+    // took the only way in with it.
+    const bigBody = canvasContainer.closest('.py2dmol-slot--big > .py2dmol-slot-body');
+    (bigBody || canvasContainer).appendChild(btn);
 
     const viewer = containerElement
         && (containerElement.closest ? containerElement.closest('.py2dmol-viewer-instance') : null);

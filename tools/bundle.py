@@ -113,6 +113,7 @@ MODULES = [
     # ...turning a structure to face the reader. Needs src/io/math.js, which is
     # why that file is no longer web-only.
     Mod('orient',     'src/parts/orient.js',    ['web']),
+    Mod('slots',      'src/parts/slots.js',     ['web']),
     Mod('ui',         'src/parts/ui.js',        ['web']),
     # ...the other wirer. Not on the website, which has the panel; core/mol.js
     # picks between the two on config.embed.
@@ -164,7 +165,7 @@ BUNDLES = {
     # are paid again for every viewer in the document.
     'notebook': ['math', 'sidechains', 'bonds', 'svg', 'objstate', 'viewport', 'shadow', 'clip', 'focus',
                  'mol-sidechains', 'capture', 'savepanel', 'multi', 'panel', 'selpanel',
-                 'orient', 'ui', 'mol', 'geom', 'paintgl', 'paint2d', 'heatmap', 'scatter'],
+                 'orient', 'slots', 'ui', 'mol', 'geom', 'paintgl', 'paint2d', 'heatmap', 'scatter'],
     # ONE NOTEBOOK BUNDLE, WITH BOTH PAINTERS. There were three - GPU, 2D, and
     # a tube-only one without the cartoon geometry - and they existed for one
     # reason: this file is inlined into the .ipynb, uncompressed, ONCE PER
@@ -187,7 +188,7 @@ BUNDLES = {
     # and one gpu=False used to carry 429 + 384 KB of two different libraries,
     # neither of which could serve the other.
     'web': ['math', 'sidechains', 'bonds', 'parse', 'gif', 'svg', 'objstate', 'viewport', 'shadow', 'clip', 'focus',
-            'mol-sidechains', 'capture', 'savepanel', 'mol-align', 'multi', 'panel', 'selpanel', 'orient', 'ui', 'mol',
+            'mol-sidechains', 'capture', 'savepanel', 'mol-align', 'multi', 'panel', 'selpanel', 'orient', 'slots', 'ui', 'mol',
             'geom', 'paint2d', 'paintgl', 'heatmap', 'scatter', 'seq', 'msa',
             'app', 'app-objects', 'app-fetch', 'app-scatter',
             'app-session'],
@@ -240,7 +241,7 @@ BUNDLES = {
     # does nothing at all until a host page provides #heatmapContainer.
     'embed': ['math', 'sidechains', 'bonds', 'parse', 'objstate', 'viewport', 'shadow', 'clip', 'focus',
               'mol-sidechains', 'capture', 'savepanel', 'multi', 'panel', 'selpanel',
-              'orient', 'ui', 'embed', 'mol', 'geom', 'paintgl', 'heatmap'],
+              'orient', 'slots', 'ui', 'embed', 'mol', 'geom', 'paintgl', 'heatmap'],
     # ...and the same embed drawn on the CPU. THE SECOND ARTEFACT THAT EARNS ITS
     # KEEP, where embed-tube did not: it draws the same picture from the same
     # geometry - one geometry, two painters - so nothing is given up but speed on
@@ -253,7 +254,7 @@ BUNDLES = {
     # which painter is present and refuses a request for the other one.
     'embed.cpu': ['math', 'sidechains', 'bonds', 'parse', 'objstate', 'svg', 'viewport', 'shadow',
                   'clip', 'focus', 'mol-sidechains', 'capture', 'savepanel', 'multi',
-                  'panel', 'selpanel', 'orient', 'ui', 'embed', 'mol', 'geom', 'paint2d',
+                  'panel', 'selpanel', 'orient', 'slots', 'ui', 'embed', 'mol', 'geom', 'paint2d',
                   'heatmap'],
     # THE WEBSITE, PLUS THE EMBED API. Set-for-set this is exactly `web` plus
     # ONE module - parts/embed.js - so a page gets the whole app (the panels,
@@ -296,7 +297,7 @@ BUNDLES = {
     # the one bundle whose page needs two <script> tags, and it is the same two
     # index.html has.
     'full': ['math', 'sidechains', 'bonds', 'parse', 'gif', 'svg', 'objstate', 'viewport', 'shadow', 'clip', 'focus',
-             'mol-sidechains', 'capture', 'savepanel', 'mol-align', 'multi', 'panel', 'selpanel', 'orient', 'ui', 'embed', 'mol',
+             'mol-sidechains', 'capture', 'savepanel', 'mol-align', 'multi', 'panel', 'selpanel', 'orient', 'slots', 'ui', 'embed', 'mol',
              'geom', 'paint2d', 'paintgl', 'heatmap', 'scatter', 'seq', 'msa',
              'app', 'app-objects', 'app-fetch', 'app-scatter',
              'app-session'],

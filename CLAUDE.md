@@ -32,6 +32,7 @@ same list with load order and targets.
 | `parts/panel.js` | the Style panel's rows AND the Selection panel's, as data — `buildStylePanel` / `buildSelectionPanel` build the DOM. **One copy**, mounted by all three shells. The Style panel is skinned per page; the Selection panel carries its own stylesheet (`selectionPanelCSS`), because forty-six rules could not be written out three times. |
 | `parts/selectpanel.js` | what the Selection panel DOES: colour, secondary structure, side chains, elements, bases, contacts, visibility, Find interactions, Align — plus the state readers it syncs from, and `wireSelectionPanel`. Was the web app's own file. Reaches its shell through `py2dmolSelectionHost({renderer, setStatus, afterChange})`. |
 | `parts/viewport.js` | `setupViewport` — find the canvas, size it for the display, keep it sized. The one thing both entry points share. |
+| `parts/slots.js` | the two slots - big where the structure was, small where the heatmap was - and which view is in which: the tabs over both, the swap, and the park a view goes to when neither shows it. `renderer.setSlots`/`getSlots` on `core/mol.js` are its door. |
 | `parts/embed.js` | the selector (`positionsFor`), `window.py2Dmol.show` and `wireEmbedUI` — a viewer on a bare canvas, and the JS API on top of it. `core/mol.js` picks between the two wirers on `config.embed`, which `show` sets from whether `controls`/`play` were asked for: with them it is `wireViewerUI` and the notebook's own panel in a scoped shell, without them a canvas and nothing else. |
 | `parts/sidechains.js` | which residues show theirs — `showSidechains`/`hideSidechains`, the relative pair. Was written out in `parts/embed.js`, so only the embed's JS API could reach it. And what colour they are: `setSidechainColor`. |
 | `parts/shadow.js` | which segments darken which. |
@@ -3506,6 +3507,41 @@ the next session to find out the same way.
   together are what catch it. `examples/two-heatmaps.html` loads the embed
   bundle now rather than `full`, which is 539 KB against 774 and one `<script>`
   instead of two.
+- 🔴 **TWO SLOTS, EVERY VIEW, AND A VIEW IS MOVED - NEVER COPIED.**
+  `parts/slots.js` wraps `#canvasContainer` in a big slot and the heatmap box
+  (or the scatter box) in a small one, and both carry the same tabs: Structure,
+  each map by key, Scatter. A view is in one slot or in a hidden PARK; picking
+  what the other slot shows swaps them. With no coordinates the big slot's
+  DEFAULT is the first map, which is the case it was asked for - a fold whose
+  trunk has a contact map and no structure. A pick is a standing choice (the
+  `_wantKey` rule): a PAE put big comes back big with the next PAE.
+  **The costs, measured in `tests/slots.py`:** a parked structure draws nothing
+  (the loop's existing `getClientRects` gate) and keeps its canvas; `refresh()`
+  runs every frame and is a signature compare, **160 ns**; a panel no slot shows
+  holds no decoded matrix and no colour image (`HeatmapRenderer.park`), and a
+  SECOND heatmap panel exists only while two maps are on screen at once
+  (`Heatmap.slotPanels`), belonging to a MAP rather than a slot so a swap moves
+  its cached image instead of rebuilding two.
+  🔴 **THE SLOT OWNS THE SIZE AND THE VIEW FILLS IT, `!important`,** because
+  four paths write inline sizes and displays onto those boxes. So `prepare`
+  moves the box's inline size (the notebook's token, an embed's config size, a
+  host's markup) onto the slot BEFORE `setupViewport`, and marks the canvas box
+  `data-autosize="css"` in every shell: the structure can be small now, so the
+  notebook's canvas must follow its box. Three things broke on the way and each
+  is fixed at its source: the viewport CLAMPED a hidden box to a 1x1 canvas
+  (a parked structure is hidden, not small); it wrote the canvas width onto
+  `#viewerWrapper`, so a small structure narrowed the column under a big map;
+  and a `max-width: 100%` on the slot resolved against a `fit-content` column,
+  taking a 500px slot to 352. A size WRITTEN on `#canvasContainer` afterwards is
+  handed to its slot by a MutationObserver - `resize_reuse` and `gpu_mesh_reuse`
+  resize the viewer that way, and so may any host that predates slots.
+  **Full screen grows the big slot**, and its button lives on the big slot, not
+  the canvas box, which a parked structure took with it.
+  **What it changes:** the panel's own map tab strip is hidden in a slot (the
+  slot's tabs name the map), `HeatmapRenderer.setMap` routes through the slot,
+  and a page that showed a PAE AND a scatter plot now shows one of them at a
+  time. **Not measured in Colab:** the tabs appear after the script runs, and
+  Colab sizes an output frame from the page before it does.
 - **Subsystems are optional and guarded.** `if (window.Heatmap)`, `if (window.MSA)`,
   `typeof C2S === 'undefined'`. A build without one loses a feature, not a page.
 - **Prove a move changed nothing.** `node tests/paint_trace.js` digests every

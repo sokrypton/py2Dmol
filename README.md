@@ -288,6 +288,17 @@ a standing instruction — an object added later joins the picture — and namin
 set replaces it. Note this is a different question from `overlay=True`, which
 shows every **frame** of one object.
 
+**Two viewers, one set of tabs.** With a heatmap or a scatter plot, the
+structure's box and the panel's box both carry the same tabs — Structure, each
+map, Scatter — and picking in one what the other shows swaps them. With no
+coordinates yet, a map takes the big box. From code:
+
+```python
+viewer.set_slots(big="pae")                     # PAE big, structure small
+viewer.set_slots(big="structure", small="contact")
+viewer.set_slots()                              # back to automatic
+```
+
 The picker is hidden while there is only one object to pick.
 
 ### Grid gallery
@@ -361,8 +372,8 @@ Two bundles, differing only in the painter:
 
 | file | size | |
 | --- | --- | --- |
-| `py2Dmol.embed.min.js` | 568 KB | WebGL2. Fast on large structures. |
-| `py2Dmol.embed.cpu.min.js` | 504 KB | 2D canvas. No WebGL2 needed, and it can export SVG. |
+| `py2Dmol.embed.min.js` | 632 KB | WebGL2. Fast on large structures. |
+| `py2Dmol.embed.cpu.min.js` | 540 KB | 2D canvas. No WebGL2 needed, and it can export SVG. |
 
 Both carry the control panel, the save UI and the heatmap panel — a
 residue×residue plot (a PAE, a contact map, a distogram) that draws nothing

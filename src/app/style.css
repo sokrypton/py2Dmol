@@ -997,6 +997,29 @@
     flex-shrink: 0;
 }
 
+/* THE SLOTS (src/parts/slots.js). The two boxes above used to size
+   themselves; a slot sizes itself now and whatever view it holds fills it, so
+   the numbers moved here - 600 where the structure was, 340 where the map was.
+   The rules above still apply to a box in the PARK, where nothing is drawn. The
+   big one keeps the drag-to-resize the canvas box had: the body carries it, and
+   the canvas box's own handle still marks the corner. */
+.py2dmol-viewer-instance .py2dmol-slot--big > .py2dmol-slot-body {
+    width: 600px;
+    height: 600px;
+    min-width: 200px;
+    min-height: 200px;
+    resize: both;
+    overflow: hidden;
+    border-radius: var(--radius-lg);
+}
+.py2dmol-viewer-instance .py2dmol-slot--big > .py2dmol-slot-body::-webkit-resizer {
+    display: none;
+}
+.py2dmol-viewer-instance .py2dmol-slot--small > .py2dmol-slot-body {
+    width: 340px;
+    height: 340px;
+}
+
 .py2dmol-viewer-instance #heatmapContainer.container-box {
     /* Inherits all container-box styles */
     padding: 0;
@@ -2089,6 +2112,16 @@ table.layout-table td {
        goes because a fluid box cannot also be a dragged one - and its handle is
        revealed on :hover, which a touch screen does not have (below). */
     .py2dmol-viewer-instance #canvasContainer {
+        width: 100%;
+        height: auto;
+        aspect-ratio: 1 / 1;
+        resize: none;
+    }
+    /* ...and the slots that hold it now, the same way. */
+    .py2dmol-viewer-instance .py2dmol-slot {
+        width: 100%;
+    }
+    .py2dmol-viewer-instance .py2dmol-slot > .py2dmol-slot-body {
         width: 100%;
         height: auto;
         aspect-ratio: 1 / 1;

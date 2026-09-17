@@ -129,6 +129,10 @@ window.viewerConfig = config;
 // 2. The canvas, sized for this display - and 3. the renderer that draws on
 // it. The sizing lives in parts/viewport.js because the embed needs exactly
 // that much and none of the panel below.
+// THE SLOTS FIRST - before the canvas is measured, because they move the box
+// it is measured in and tell setupViewport that CSS sizes it now. See
+// parts/slots.js; a shell with nothing to put in a second slot is untouched.
+const slotLayout = window.py2dmolSlots ? window.py2dmolSlots.prepare(containerElement, config) : null;
 const viewport = setupViewport(containerElement, config);
 if (!viewport) return;
 const { canvas, ctx, dpr: currentDPR, width: displayWidth, height: displayHeight } = viewport;
@@ -136,6 +140,10 @@ const { canvas, ctx, dpr: currentDPR, width: displayWidth, height: displayHeight
 const renderer = new Pseudo3DRenderer(canvas, config);
 renderer.viewerId = viewerId;  // Store viewerId for config access
 viewport.attach(renderer);
+// ...bound now, and asked from the render loop from here on: the heatmap and
+// scatter panels are built further down (one of them possibly after its
+// script arrives), and the slots notice each the frame it exists.
+if (slotLayout) window.py2dmolSlots.bind(renderer, slotLayout);
 
 // THE STYLE PANEL IS BUILT, NOT WRITTEN OUT - and built HERE, before anything
 // below reaches for a control inside it. Both pages used to carry the same two
@@ -1898,6 +1906,12 @@ const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject
     }
     if (viewerBlock && 'focus' in viewerBlock) {
         applyFocus(viewerBlock.focus);
+    }
+    // ...and which view is in which slot (parts/slots.js) - a standing choice,
+    // so order does not matter to it: a map named before it exists takes its
+    // slot when it arrives.
+    if (viewerBlock && 'slots' in viewerBlock && renderer._slots) {
+        renderer.setSlots(viewerBlock.slots || { big: null, small: null });
     }
     if (viewerBlock && viewerBlock.orient) {
         applyOrientRequest(viewerBlock.orient);

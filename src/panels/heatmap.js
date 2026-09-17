@@ -384,6 +384,55 @@ class HeatmapRenderer {
         }
     }
 
+    /**
+     * SHOW THIS MAP, whatever the frame's set offers first. A slot names a
+     * map; the panel in it is pinned to that key the way a tab click pins it,
+     * through `_wantKey`, so a frame step keeps it there.
+     */
+    pin(key) {
+        this._wantKey = key;
+        if (this.parked) return;
+        if (this.maps && this.maps[key] && (key !== this.mapKey || !this.bytes)) {
+            this._selectMap(key, this.maps[key]);
+        }
+    }
+
+    /**
+     * 🔴 A PANEL NO SLOT SHOWS HOLDS NO PICTURE. The decoded matrix is n^2
+     * bytes and the colour image 4n^2 - 9 MB for a 1,500-residue PAE - and a
+     * parked panel kept both and went on rebuilding them on every frame that
+     * brought a new map. Parked, it keeps only the REFERENCE to the frame's
+     * maps (which the frame owns anyway) and decodes on the way back out.
+     */
+    park() {
+        if (this.parked) return;
+        this.parked = true;
+        this.bytes = null;
+        this.baseCanvas = null;
+        this._rawSource = null;
+        this._scratch = null;
+    }
+
+    unpark() {
+        if (!this.parked) return;
+        this.parked = false;
+        const key = this.maps && (this.maps[this._wantKey] ? this._wantKey
+            : (this.maps[this.mapKey] ? this.mapKey : Object.keys(this.maps)[0]));
+        if (key) this._selectMap(key, this.maps[key]);
+        else this.scheduleRender();
+    }
+
+    /** A pooled panel going away: its document listeners go with it. */
+    destroy() {
+        this.park();
+        this.maps = null;
+        if (typeof document !== 'undefined') {
+            document.removeEventListener('py2dmol-visibility-change', this.selectionChangeHandler);
+            document.removeEventListener('py2dmol-color-change', this.colorChangeHandler);
+        }
+        if (this._resizeObserver) this._resizeObserver.disconnect();
+    }
+
     // Schedule render using requestAnimationFrame to throttle
     scheduleRender() {
         if (this.renderScheduled) return;
@@ -761,6 +810,11 @@ class HeatmapRenderer {
     /** Show one of the maps already loaded. What a tab click does. */
     setMap(key) {
         if (!this.maps || !this.maps[key]) return;
+        // IN A SLOT, THE SLOT DECIDES WHICH MAP A PANEL SHOWS - so a host's
+        // setMap goes through it, or the tabs would say one map while the
+        // panel under them drew another.
+        const slots = this.slotted && this.mainRenderer && this.mainRenderer._slots;
+        if (slots && slots.showMap(this, key)) return;
         this._wantKey = key;   // the reader's choice, which survives a frame
         if (key === this.mapKey) return;
         this._selectMap(key, this.maps[key]);
@@ -859,6 +913,9 @@ class HeatmapRenderer {
         // unchanged from an earlier frame.
         if (this._rawSource === bytes && bytes !== null && bytes !== undefined
             && this.residues === residues && this.baseCanvas) return;
+        // ...and a parked panel decodes nothing: `unpark` re-selects the map
+        // it is pinned to, which comes back through here.
+        if (this.parked) return;
         this._rawSource = bytes;
         try {
             // A STRING IS BASE64 OF THE SCALED BYTES - the shortest way to put
@@ -1013,7 +1070,9 @@ class HeatmapRenderer {
         // frame, and resizing the canvas throws away the cached base image.
         const wasShown = strip.style.display;
         const keys = this.maps ? Object.keys(this.maps) : [];
-        if (keys.length < 1) {
+        // IN A SLOT THE SLOT'S TABS NAME THE MAP (parts/slots.js), and a
+        // second strip over the same plot would be two answers to one choice.
+        if (keys.length < 1 || this.slotted) {
             strip.style.display = 'none';
             strip.textContent = '';
             this._tabKeys = '';
@@ -1103,6 +1162,14 @@ class HeatmapRenderer {
     }
 
     render() {
+        if (this.parked) return;
+        // THE OTHER PANEL IN THE POOL REDRAWS WITH THIS ONE. core/mol.js asks
+        // `renderer.heatmapRenderer` to render when the selection moves, and
+        // knows nothing about a second panel - so the page's own passes it on.
+        const pool = this.mainRenderer && this.mainRenderer._heatmapPool;
+        if (pool && pool.length > 1 && this === this.mainRenderer.heatmapRenderer) {
+            for (const e of pool) if (e.hm !== this) e.hm.scheduleRender();
+        }
         this.ctx.clearRect(0, 0, this.size, this.size);
         if (!this.bytes || this.n === 0) {
             this.ctx.fillStyle = '#f9f9f9';
@@ -1143,10 +1210,23 @@ class HeatmapRenderer {
 
         if (hasSelection) {
             const cellSize = this.size / n;
-            const maskCanvas = document.createElement('canvas');
-            maskCanvas.width = this.size;
-            maskCanvas.height = this.size;
+            // 🔴 TWO SCRATCH CANVASES, KEPT - not two new ones per redraw. A
+            // drag redraws every frame, and at the size a slot can make this
+            // plot (600 CSS px) that was two 600x600 allocations a frame for
+            // the life of the drag. Resizing a canvas clears it, which is what
+            // each redraw needs anyway.
+            if (!this._scratch || this._scratch.size !== this.size) {
+                const mk = () => {
+                    const c = document.createElement('canvas');
+                    c.width = this.size; c.height = this.size;
+                    return c;
+                };
+                this._scratch = { size: this.size, mask: mk(), overlay: mk() };
+            }
+            const maskCanvas = this._scratch.mask;
             const maskCtx = maskCanvas.getContext('2d');
+            maskCtx.globalCompositeOperation = 'source-over';
+            maskCtx.clearRect(0, 0, this.size, this.size);
             maskCtx.fillStyle = 'white';
             const drawMaskRegion = (i_start, i_end, j_start, j_end) => {
                 const x = Math.floor(j_start * cellSize);
@@ -1187,16 +1267,20 @@ class HeatmapRenderer {
                     }
                 }
             }
-            const overlayCanvas = document.createElement('canvas');
-            overlayCanvas.width = this.size;
-            overlayCanvas.height = this.size;
+            const overlayCanvas = this._scratch.overlay;
             const overlayCtx = overlayCanvas.getContext('2d');
+            overlayCtx.globalCompositeOperation = 'source-over';
+            overlayCtx.clearRect(0, 0, this.size, this.size);
             overlayCtx.fillStyle = 'rgba(255, 255, 255, 0.7)';
             overlayCtx.fillRect(0, 0, this.size, this.size);
             overlayCtx.globalCompositeOperation = 'destination-out';
             overlayCtx.drawImage(maskCanvas, 0, 0);
             this.ctx.drawImage(overlayCanvas, 0, 0);
         }
+
+        // ...and let them go when nothing is selected, so keeping them for a
+        // drag does not keep 8 bytes a pixel for the life of the panel.
+        if (!hasSelection) this._scratch = null;
 
         // 4. Draw selection boxes (outlines)
         this._drawSelectionBoxes(activeCells, previewBox, n, this.size / n);
@@ -1312,6 +1396,224 @@ class HeatmapRenderer {
 // ============================================================================
 // PAE NAMESPACE
 // ============================================================================
+/**
+ * ONE PANEL: a container, the canvas in it, and the chrome laid out around
+ * the plot. `initialize` mounts the page's own; `Heatmap.slotPanels` mounts a
+ * second when two maps are on screen at once (parts/slots.js), which is why
+ * this is not written into `initialize` any more - it was, and there was no
+ * way to have two.
+ *
+ * Returns the renderer, NOT registered on the viewer: the page's own panel is
+ * `renderer.heatmapRenderer`, and a second one is the pool's.
+ */
+function mountPanel(renderer, heatmapPanel, heatmapCanvas) {
+    // updateSize places the canvas with left/top, which mean nothing to a
+    // static box - and a host page styles neither element, so on embed.html
+    // the plot sat in the corner with its captions laid out for the inset.
+    // The shells' stylesheets say this already; saying it inline covers a
+    // page that does not.
+    heatmapCanvas.style.position = 'absolute';
+    if (getComputedStyle(heatmapPanel).position === 'static') {
+        heatmapPanel.style.position = 'relative';
+    }
+    // THE PLOT IS A SQUARE INSET INTO WHATEVER THE CHROME LEAVES.
+    // The shells' stylesheets pin the canvas at top:0/left:0 and
+    // 100% x 100%; every one of those is overridden INLINE here, so
+    // no shell has to learn about the margins. The canvas is still
+    // entirely plot - see _syncAxes for why that matters.
+    const updateSize = () => {
+        // 🔴 THE PADDING BOX, NOT THE BORDER BOX. An absolutely
+        // positioned child is placed against the padding box, so
+        // sizing from getBoundingClientRect - which includes the
+        // border - leaves the centring off by the border width on
+        // one side and not the other. index.html's panel has a 1px
+        // border and that is exactly the residual lean it produced.
+        const boxW = heatmapPanel.clientWidth
+            || heatmapPanel.getBoundingClientRect().width || 340;
+        const boxH = heatmapPanel.clientHeight || boxW;
+        // A hidden panel measures 0 and the fallback above is a
+        // GUESS. Laying out against it writes gaps that are wrong by
+        // whatever the guess missed by, and nothing later corrects
+        // them - so do not lay out at all; updateVisibility calls
+        // back the moment the panel is on screen.
+        if (!heatmapPanel.clientWidth) return;
+        const hm = heatmapRenderer;
+        const shown = (el) => !!(el && el.style.display !== 'none'
+            && el.textContent);
+        // 🔴 THE STRIP HANGS ABOVE THE BOX, SO THE BOX HAS TO LEAVE
+        // ROOM FOR IT. Otherwise the tabs are drawn over whatever the
+        // host page put above the panel - measured on index.html, on
+        // top of the object selector. A margin rather than a gap in
+        // the host's layout, because the strip is the panel's and no
+        // host should have to know its height.
+        heatmapPanel.style.marginTop =
+            (strip && strip.style.display !== 'none') ? HM_TAB_H + 'px' : '';
+        // ...and the plot is inset on all four sides, not two. The
+        // captions need their bands on the left and the bottom; the
+        // top and the right get the same so the square sits in even
+        // margins rather than hard against two edges.
+        const padT = HM_AXIS;
+        const padR = HM_AXIS;
+        // ...from the SET of maps, not the one on screen - see
+        // anyAxisLabel. `shown` is kept for the case with no renderer
+        // yet, where there are no maps to ask about either.
+        const padL = (hm && hm.anyAxisLabel)
+            ? (hm.anyAxisLabel('ylabel') ? HM_AXIS : 0)
+            : (shown(hm && hm.yLabelEl) ? HM_AXIS : 0);
+        const padB = (hm && hm.anyAxisLabel)
+            ? (hm.anyAxisLabel('xlabel') ? HM_AXIS : 0)
+            : (shown(hm && hm.xLabelEl) ? HM_AXIS : 0);
+        const availW = Math.max(40, boxW - padL - padR);
+        const availH = Math.max(40, boxH - padT - padB);
+        // SQUARE, because the matrix is n x n and `size` is used for
+        // both axes.
+        const size = Math.max(40, Math.floor(Math.min(availW, availH)));
+        // 🔴 THE PLOT IS CENTRED, AND THE CAPTION LIVES IN ITS
+        // MARGIN - it does not add to it. Centring the ASSEMBLY
+        // (caption plus plot) is defensible arithmetic and looks
+        // wrong: a 15px column of thin vertical text reads as part
+        // of the white space, so the eye sees the plot sitting 27px
+        // from one edge and 10 from the other. Measured on a 340px
+        // panel, that is a 17px lean. Centre the PLOT and the
+        // caption sits in the margin the centring already left.
+        //
+        // The `max` is what keeps it honest when the plot is nearly
+        // as wide as the panel: the caption still gets its column,
+        // and the lean comes back rather than the text being clipped.
+        const left = Math.max(padL, Math.round((boxW - size) / 2));
+        const top = Math.max(padT,
+            Math.round((boxH - padB - size) / 2));
+
+        heatmapCanvas.width = size;
+        heatmapCanvas.height = size;
+        heatmapCanvas.style.width = size + 'px';
+        heatmapCanvas.style.height = size + 'px';
+        heatmapCanvas.style.left = left + 'px';
+        heatmapCanvas.style.top = top + 'px';
+
+        // 🔴 THE TABS SPAN THE PLOT, NOT THE CONTAINER. Left at
+        // the container's width they floated free of the thing they
+        // belong to - the plot is inset and centred, so a full-width
+        // bar lines up with neither edge. A browser tab sits over
+        // its own content; this is that, hanging off the top of the
+        // card (`bottom: 100%`, and the card's overflow is visible
+        // for it) rather than taking a band inside the picture.
+        if (strip) {
+            strip.style.left = left + 'px';
+            strip.style.width = size + 'px';
+            strip.style.right = 'auto';
+        }
+        // 🔴 BOTH CAPTIONS ARE CENTRED IN A BAND OF THE SAME
+        // THICKNESS, which is the only way they end up the same
+        // distance from their edges. The y one was already centred
+        // in its 15px column - 2.5px of clearance for 10px text -
+        // while the x one was pinned at `bottom: 1px`, so it sat
+        // closer to the edge and the pair looked lopsided. Centring
+        // is stated the same way for both rather than by working
+        // out one offset from the other, which drifts the moment
+        // the font changes.
+        if (xLabel) {
+            xLabel.style.left = left + 'px';
+            xLabel.style.width = size + 'px';
+            xLabel.style.top = (top + size) + 'px';
+            xLabel.style.bottom = 'auto';
+            xLabel.style.height = HM_AXIS + 'px';
+            xLabel.style.alignItems = 'center';
+            xLabel.style.justifyContent = 'center';
+        }
+        if (yLabel) {
+            yLabel.style.left = (left - HM_AXIS) + 'px';
+            yLabel.style.width = HM_AXIS + 'px';
+            yLabel.style.top = top + 'px';
+            yLabel.style.height = size + 'px';
+            yLabel.style.alignItems = 'center';
+            yLabel.style.justifyContent = 'center';
+        }
+
+        if (hm) {
+            hm.size = size;
+            hm.scheduleRender();
+        }
+    };
+
+    // Create renderer
+    const heatmapRenderer = new HeatmapRenderer(heatmapCanvas, renderer);
+
+    // ...and its tab strip, in the band the layout reserves for it
+    // at the top. It used to be an OVERLAY on the plot's corner,
+    // which was right while it appeared only for a second map and
+    // wrong now that a lone PAE gets one too: a permanent chip
+    // sitting on the data is a permanent hole in the data. See
+    // _syncTabs for why it is built rather than marked up.
+    let strip = heatmapPanel.querySelector('.py2dmol-map-tabs');
+    if (!strip) {
+        strip = document.createElement('div');
+        strip.className = 'py2dmol-map-tabs';
+        strip.setAttribute('role', 'tablist');
+        strip.setAttribute('aria-label', 'Which map to show');
+        // ...and the rule the active tab breaks through. It is the
+        // strip's own bottom border, so it spans the plot's full
+        // width rather than stopping at the last tab.
+        // 🔴 ABOVE THE BOX, NOT INSIDE IT. `bottom: 100%` puts the
+        // strip on the container's outer top edge, so the tabs read as
+        // controls OVER the panel the way a folder tab does. Inside, in
+        // a reserved white band, they read as part of the plot - and
+        // they cost the plot that band. The box's own top border is
+        // the baseline the active tab breaks through, so the strip
+        // needs none of its own.
+        strip.style.cssText = 'position: absolute; bottom: 100%;'
+            + ' left: 0; right: 0; height: ' + HM_TAB_H + 'px;'
+            + ' display: none; align-items: flex-end; gap: 3px;'
+            + ' padding: 0 8px; box-sizing: border-box; z-index: 2;'
+            + ' pointer-events: auto;';
+        heatmapPanel.appendChild(strip);
+    }
+    // ...and the axis captions. `writing-mode` turns the y one on
+    // its side and the rotate makes it read bottom-to-top, which is
+    // the way round every plotting library draws a y label.
+    let xLabel = heatmapPanel.querySelector('.py2dmol-map-xlabel');
+    if (!xLabel) {
+        xLabel = document.createElement('div');
+        xLabel.className = 'py2dmol-map-xlabel';
+        xLabel.style.cssText = HM_AXIS_CSS + ' display: none;';
+        heatmapPanel.appendChild(xLabel);
+    }
+    let yLabel = heatmapPanel.querySelector('.py2dmol-map-ylabel');
+    if (!yLabel) {
+        yLabel = document.createElement('div');
+        yLabel.className = 'py2dmol-map-ylabel';
+        yLabel.style.cssText = HM_AXIS_CSS + ' display: none;'
+            + ' writing-mode: vertical-rl; transform: rotate(180deg);'
+            + ' text-align: center;';
+        heatmapPanel.appendChild(yLabel);
+    }
+
+    heatmapRenderer.tabStrip = strip;
+    heatmapRenderer.xLabelEl = xLabel;
+    heatmapRenderer.yLabelEl = yLabel;
+    heatmapRenderer._relayout = updateSize;
+    heatmapRenderer._syncAxes();
+    // Set initial size
+    updateSize();
+    // ...and AGAIN WHENEVER THE BOX CHANGES. The panel was a fixed square, so
+    // it laid out when it was shown and when its chrome changed, and nothing
+    // else could move it. In a slot it is whatever the slot is - the big one,
+    // the small one, a box the reader is dragging - so the box is watched.
+    // updateSize bails while the box measures 0, which is a parked panel.
+    if (typeof ResizeObserver !== 'undefined') {
+        let lastW = -1, lastH = -1;
+        const ro = new ResizeObserver(() => {
+            const w = heatmapPanel.clientWidth, h = heatmapPanel.clientHeight;
+            if (w === lastW && h === lastH) return;
+            lastW = w; lastH = h;
+            updateSize();
+        });
+        ro.observe(heatmapPanel);
+        heatmapRenderer._resizeObserver = ro;
+    }
+    return heatmapRenderer;
+}
+
 const Heatmap = {
     Renderer: HeatmapRenderer,
 
@@ -1555,7 +1857,118 @@ const Heatmap = {
             if (m) maps[key] = m;
         }
         renderer.heatmapRenderer.setMaps(maps);
+        // ...and every other panel in the pool, each pinned to its own key.
+        const pool = renderer._heatmapPool;
+        if (pool) for (const e of pool) if (e.hm !== renderer.heatmapRenderer) e.hm.setMaps(maps);
         this.updateVisibility(renderer);
+    },
+
+    /** What a tab calls a map. */
+    labelFor: function (key) { return labelFor(key); },
+
+    /** The maps loaded right now, in the order the frame gave them. */
+    loadedKeys: function (renderer) {
+        const hm = renderer.heatmapRenderer;
+        return hm && hm.maps ? Object.keys(hm.maps) : [];
+    },
+
+    /**
+     * ONE PANEL PER MAP ON SCREEN, AND NO MORE. parts/slots.js asks for the
+     * maps it is showing - none, one or two - and gets back the container to
+     * put where for each.
+     *
+     * 🔴 A PANEL BELONGS TO A MAP, NOT TO A SLOT. Moving a map from the small
+     * slot to the big one moves its panel, so the colour image it already
+     * built comes with it and a swap costs a layout, not two n^2 rebuilds.
+     *
+     * The page's own panel is always the pool's first entry and is PARKED
+     * when no map is showing - kept, because core/mol.js and every host hold
+     * `renderer.heatmapRenderer`. A second one exists only while two maps
+     * are on screen together and is destroyed the moment that stops, which
+     * is what keeps a layout with at most one map at exactly the memory it
+     * had before there were slots.
+     */
+    slotPanels: function (renderer, keys) {
+        const primary = renderer.heatmapRenderer;
+        if (!primary || !renderer.heatmapContainer) return {};
+        if (!renderer._heatmapPool) {
+            renderer._heatmapPool = [{ hm: primary, panel: renderer.heatmapContainer, key: null }];
+        }
+        const pool = renderer._heatmapPool;
+        for (const e of pool) e.hm.slotted = true;
+        const out = {};
+        const taken = new Set();
+        // ...each map keeps the panel already showing it,
+        for (const key of keys) {
+            const e = pool.find((x) => x.key === key);
+            if (e) { out[key] = e; taken.add(e); }
+        }
+        // ...and the rest take a free one, or a new one.
+        for (const key of keys) {
+            if (out[key]) continue;
+            let e = pool.find((x) => !taken.has(x));
+            if (!e) {
+                e = this._extraPanel(renderer);
+                if (!e) continue;
+                pool.push(e);
+            }
+            e.key = key;
+            out[key] = e;
+            taken.add(e);
+        }
+        for (let i = pool.length - 1; i >= 0; i--) {
+            const e = pool[i];
+            if (taken.has(e)) {
+                // The key first, so whichever of these selects - a new panel
+                // being handed the maps, or a parked one coming back - selects
+                // THIS map, and it is decoded once rather than twice.
+                e.hm._wantKey = e.key;
+                if (e.hm.maps !== primary.maps) e.hm.setMaps(primary.maps);
+                e.hm.unpark();
+                e.hm.pin(e.key);
+                continue;
+            }
+            e.key = null;
+            if (e.hm === primary) {
+                e.hm.park();
+            } else {
+                e.hm.destroy();
+                if (e.panel.parentNode) e.panel.parentNode.removeChild(e.panel);
+                pool.splice(i, 1);
+            }
+        }
+        const panels = {};
+        for (const key of Object.keys(out)) panels[key] = out[key].panel;
+        return panels;
+    },
+
+    /**
+     * A second panel, dressed like the page's own. The shells style the
+     * panel by ID, which a second element cannot share - so what the id
+     * bought (border, corners, ground) is copied off the first as it
+     * computes, and nothing about any shell's stylesheet has to change.
+     */
+    _extraPanel: function (renderer) {
+        const first = renderer.heatmapContainer;
+        if (!first || typeof document === 'undefined') return null;
+        const panel = document.createElement('div');
+        panel.className = first.className;
+        panel.classList.add('py2dmol-heatmap-extra');
+        const cs = getComputedStyle(first);
+        for (const k of ['borderTopWidth', 'borderTopStyle', 'borderTopColor',
+            'borderRightWidth', 'borderRightStyle', 'borderRightColor',
+            'borderBottomWidth', 'borderBottomStyle', 'borderBottomColor',
+            'borderLeftWidth', 'borderLeftStyle', 'borderLeftColor',
+            'borderRadius', 'backgroundColor', 'boxShadow', 'boxSizing']) {
+            panel.style[k] = cs[k];
+        }
+        panel.style.position = 'relative';
+        const canvas = document.createElement('canvas');
+        canvas.style.cssText = 'position: absolute; display: block; cursor: crosshair; touch-action: none;';
+        panel.appendChild(canvas);
+        const hm = mountPanel(renderer, panel, canvas);
+        hm.slotted = true;
+        return { hm, panel, key: null };
     },
 
     // Update PAE container visibility
@@ -1638,187 +2051,8 @@ const Heatmap = {
             renderer.heatmapContainer = heatmapPanel;
             heatmapPanel.style.display = 'none';
 
-            // THE PLOT IS A SQUARE INSET INTO WHATEVER THE CHROME LEAVES.
-            // The shells' stylesheets pin the canvas at top:0/left:0 and
-            // 100% x 100%; every one of those is overridden INLINE here, so
-            // no shell has to learn about the margins. The canvas is still
-            // entirely plot - see _syncAxes for why that matters.
-            const updateSize = () => {
-                // 🔴 THE PADDING BOX, NOT THE BORDER BOX. An absolutely
-                // positioned child is placed against the padding box, so
-                // sizing from getBoundingClientRect - which includes the
-                // border - leaves the centring off by the border width on
-                // one side and not the other. index.html's panel has a 1px
-                // border and that is exactly the residual lean it produced.
-                const boxW = heatmapPanel.clientWidth
-                    || heatmapPanel.getBoundingClientRect().width || 340;
-                const boxH = heatmapPanel.clientHeight || boxW;
-                // A hidden panel measures 0 and the fallback above is a
-                // GUESS. Laying out against it writes gaps that are wrong by
-                // whatever the guess missed by, and nothing later corrects
-                // them - so do not lay out at all; updateVisibility calls
-                // back the moment the panel is on screen.
-                if (!heatmapPanel.clientWidth) return;
-                const hm = renderer.heatmapRenderer;
-                const shown = (el) => !!(el && el.style.display !== 'none'
-                    && el.textContent);
-                // 🔴 THE STRIP HANGS ABOVE THE BOX, SO THE BOX HAS TO LEAVE
-                // ROOM FOR IT. Otherwise the tabs are drawn over whatever the
-                // host page put above the panel - measured on index.html, on
-                // top of the object selector. A margin rather than a gap in
-                // the host's layout, because the strip is the panel's and no
-                // host should have to know its height.
-                heatmapPanel.style.marginTop =
-                    (strip && strip.style.display !== 'none') ? HM_TAB_H + 'px' : '';
-                // ...and the plot is inset on all four sides, not two. The
-                // captions need their bands on the left and the bottom; the
-                // top and the right get the same so the square sits in even
-                // margins rather than hard against two edges.
-                const padT = HM_AXIS;
-                const padR = HM_AXIS;
-                // ...from the SET of maps, not the one on screen - see
-                // anyAxisLabel. `shown` is kept for the case with no renderer
-                // yet, where there are no maps to ask about either.
-                const padL = (hm && hm.anyAxisLabel)
-                    ? (hm.anyAxisLabel('ylabel') ? HM_AXIS : 0)
-                    : (shown(hm && hm.yLabelEl) ? HM_AXIS : 0);
-                const padB = (hm && hm.anyAxisLabel)
-                    ? (hm.anyAxisLabel('xlabel') ? HM_AXIS : 0)
-                    : (shown(hm && hm.xLabelEl) ? HM_AXIS : 0);
-                const availW = Math.max(40, boxW - padL - padR);
-                const availH = Math.max(40, boxH - padT - padB);
-                // SQUARE, because the matrix is n x n and `size` is used for
-                // both axes.
-                const size = Math.max(40, Math.floor(Math.min(availW, availH)));
-                // 🔴 THE PLOT IS CENTRED, AND THE CAPTION LIVES IN ITS
-                // MARGIN - it does not add to it. Centring the ASSEMBLY
-                // (caption plus plot) is defensible arithmetic and looks
-                // wrong: a 15px column of thin vertical text reads as part
-                // of the white space, so the eye sees the plot sitting 27px
-                // from one edge and 10 from the other. Measured on a 340px
-                // panel, that is a 17px lean. Centre the PLOT and the
-                // caption sits in the margin the centring already left.
-                //
-                // The `max` is what keeps it honest when the plot is nearly
-                // as wide as the panel: the caption still gets its column,
-                // and the lean comes back rather than the text being clipped.
-                const left = Math.max(padL, Math.round((boxW - size) / 2));
-                const top = Math.max(padT,
-                    Math.round((boxH - padB - size) / 2));
-
-                heatmapCanvas.width = size;
-                heatmapCanvas.height = size;
-                heatmapCanvas.style.width = size + 'px';
-                heatmapCanvas.style.height = size + 'px';
-                heatmapCanvas.style.left = left + 'px';
-                heatmapCanvas.style.top = top + 'px';
-
-                // 🔴 THE TABS SPAN THE PLOT, NOT THE CONTAINER. Left at
-                // the container's width they floated free of the thing they
-                // belong to - the plot is inset and centred, so a full-width
-                // bar lines up with neither edge. A browser tab sits over
-                // its own content; this is that, hanging off the top of the
-                // card (`bottom: 100%`, and the card's overflow is visible
-                // for it) rather than taking a band inside the picture.
-                if (strip) {
-                    strip.style.left = left + 'px';
-                    strip.style.width = size + 'px';
-                    strip.style.right = 'auto';
-                }
-                // 🔴 BOTH CAPTIONS ARE CENTRED IN A BAND OF THE SAME
-                // THICKNESS, which is the only way they end up the same
-                // distance from their edges. The y one was already centred
-                // in its 15px column - 2.5px of clearance for 10px text -
-                // while the x one was pinned at `bottom: 1px`, so it sat
-                // closer to the edge and the pair looked lopsided. Centring
-                // is stated the same way for both rather than by working
-                // out one offset from the other, which drifts the moment
-                // the font changes.
-                if (xLabel) {
-                    xLabel.style.left = left + 'px';
-                    xLabel.style.width = size + 'px';
-                    xLabel.style.top = (top + size) + 'px';
-                    xLabel.style.bottom = 'auto';
-                    xLabel.style.height = HM_AXIS + 'px';
-                    xLabel.style.alignItems = 'center';
-                    xLabel.style.justifyContent = 'center';
-                }
-                if (yLabel) {
-                    yLabel.style.left = (left - HM_AXIS) + 'px';
-                    yLabel.style.width = HM_AXIS + 'px';
-                    yLabel.style.top = top + 'px';
-                    yLabel.style.height = size + 'px';
-                    yLabel.style.alignItems = 'center';
-                    yLabel.style.justifyContent = 'center';
-                }
-
-                if (hm) {
-                    hm.size = size;
-                    hm.scheduleRender();
-                }
-            };
-
-            // Create renderer
-            const heatmapRenderer = new HeatmapRenderer(heatmapCanvas, renderer);
-
-            // ...and its tab strip, in the band the layout reserves for it
-            // at the top. It used to be an OVERLAY on the plot's corner,
-            // which was right while it appeared only for a second map and
-            // wrong now that a lone PAE gets one too: a permanent chip
-            // sitting on the data is a permanent hole in the data. See
-            // _syncTabs for why it is built rather than marked up.
-            let strip = heatmapPanel.querySelector('.py2dmol-map-tabs');
-            if (!strip) {
-                strip = document.createElement('div');
-                strip.className = 'py2dmol-map-tabs';
-                strip.setAttribute('role', 'tablist');
-                strip.setAttribute('aria-label', 'Which map to show');
-                // ...and the rule the active tab breaks through. It is the
-                // strip's own bottom border, so it spans the plot's full
-                // width rather than stopping at the last tab.
-                // 🔴 ABOVE THE BOX, NOT INSIDE IT. `bottom: 100%` puts the
-                // strip on the container's outer top edge, so the tabs read as
-                // controls OVER the panel the way a folder tab does. Inside, in
-                // a reserved white band, they read as part of the plot - and
-                // they cost the plot that band. The box's own top border is
-                // the baseline the active tab breaks through, so the strip
-                // needs none of its own.
-                strip.style.cssText = 'position: absolute; bottom: 100%;'
-                    + ' left: 0; right: 0; height: ' + HM_TAB_H + 'px;'
-                    + ' display: none; align-items: flex-end; gap: 3px;'
-                    + ' padding: 0 8px; box-sizing: border-box; z-index: 2;'
-                    + ' pointer-events: auto;';
-                heatmapPanel.appendChild(strip);
-            }
-            // ...and the axis captions. `writing-mode` turns the y one on
-            // its side and the rotate makes it read bottom-to-top, which is
-            // the way round every plotting library draws a y label.
-            let xLabel = heatmapPanel.querySelector('.py2dmol-map-xlabel');
-            if (!xLabel) {
-                xLabel = document.createElement('div');
-                xLabel.className = 'py2dmol-map-xlabel';
-                xLabel.style.cssText = HM_AXIS_CSS + ' display: none;';
-                heatmapPanel.appendChild(xLabel);
-            }
-            let yLabel = heatmapPanel.querySelector('.py2dmol-map-ylabel');
-            if (!yLabel) {
-                yLabel = document.createElement('div');
-                yLabel.className = 'py2dmol-map-ylabel';
-                yLabel.style.cssText = HM_AXIS_CSS + ' display: none;'
-                    + ' writing-mode: vertical-rl; transform: rotate(180deg);'
-                    + ' text-align: center;';
-                heatmapPanel.appendChild(yLabel);
-            }
-
-            heatmapRenderer.tabStrip = strip;
-            heatmapRenderer.xLabelEl = xLabel;
-            heatmapRenderer.yLabelEl = yLabel;
-            heatmapRenderer._relayout = updateSize;
-            heatmapRenderer._syncAxes();
+            const heatmapRenderer = mountPanel(renderer, heatmapPanel, heatmapCanvas);
             renderer.setHeatmapRenderer(heatmapRenderer);
-
-            // Set initial size
-            updateSize();
 
             // If static data loaded, set data
             if (renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName]) {

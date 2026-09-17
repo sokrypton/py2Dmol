@@ -195,6 +195,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `short_peptide.js` | node | A PEPTIDE TOO SHORT TO HAVE A SHAPE IS DRAWN AS WHAT IT IS: A LIGAND. |
 | `sidechain_chain.js` | node | Side chains, end to end through the WEB APP's own chain: |
 | `sidechain_toggle.py` | ui | Side chains survive the eyes: toggling one object must not strip another's. |
+| `slots.py` | ui | Two slots, every view, and nothing paid twice. |
 | `smoke.js` | node | Node smoke test for the cartoon renderer: loads cartoon/geom.js with |
 | `splice_window.py` | gpu | HOW BIG A PARTIAL REBUILD'S WINDOW WOULD ACTUALLY BE. |
 | `ss_agree.py` | gpu | THE ASSIGNMENT BEHIND THE COLOURS IS THE ONE BEHIND THE GEOMETRY. |

@@ -1134,6 +1134,11 @@ class view:
         # the slab is: it is the camera and the drawing, not any one object.
         self._focus = None
         self._sent_focus = False
+        # ...AND WHICH VIEW IS IN WHICH SLOT - the structure, a map, the scatter
+        # plot, big or small (src/parts/slots.js). A standing choice, so it is
+        # state and diffed like the slab rather than queued like orient().
+        self._slots = None
+        self._sent_slots = False
         # ...AND WHICH RESIDUES SHOW THEIR SIDE CHAINS, as an ordered list of
         # requests rather than a resolved set. show/hide are RELATIVE verbs -
         # they add to and subtract from what is drawn now - so the state is
@@ -1642,6 +1647,10 @@ class view:
             viewer_block = viewer_block or {}
             viewer_block["sidechains"] = self._sidechains[self._sent_sidechains:]
             self._sent_sidechains = len(self._sidechains)
+        if self._slots != self._sent_slots:
+            viewer_block = viewer_block or {}
+            viewer_block["slots"] = self._slots
+            self._sent_slots = copy.deepcopy(self._slots)
         if self._orient_request is not None:
             viewer_block = viewer_block or {}
             viewer_block["orient"] = self._orient_request
@@ -1815,6 +1824,11 @@ class view:
         else:
             self.config.pop("sidechains", None)
         self._sent_sidechains = len(self._sidechains)
+        if self._slots is not None:
+            self.config["slots"] = dict(self._slots)
+        else:
+            self.config.pop("slots", None)
+        self._sent_slots = copy.deepcopy(self._slots)
         if self._orient_request is not None:
             # ...AND A STATIC VIEWER ALWAYS JUMPS. It has only just appeared,
             # and a cell that opens mid-flight reads as a bug.
@@ -3146,6 +3160,37 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             sel = dict(sel)
             sel["cutoff"] = float(cutoff)
         self._focus = sel
+        if self._is_live:
+            self._send_incremental_update()
+
+    def set_slots(self, big=None, small=None):
+        """
+        Choose what the two viewers show.
+
+            view = py2Dmol.view(pae=True)
+            view.add_pdb("AF-Q5VSL9")
+            view.set_slots(big="pae")                    # PAE big, structure small
+            view.set_slots(big="structure", small="contact")
+            view.set_slots()                             # back to automatic
+
+        The viewer has two slots - the big one where the structure is, and the
+        small one where the heatmap is - and each can show the structure, any
+        map the frames carry (by its key: "pae", "contact", ...) or the scatter
+        plot. The same tabs are over both, so a reader can swap them by hand;
+        this is the same choice made from code.
+
+        Args:
+            big (str, optional): "structure", "scatter", or a map's key.
+            small (str, optional): the same, for the small slot.
+
+        Note:
+            A STANDING CHOICE, not a move. A map named before it exists - a PAE
+            for a prediction still running - takes its slot when it arrives,
+            and until then the slot shows what it would have anyway. With both
+            left None the layout is automatic: the structure big, a map small,
+            and a map big when there is no structure to draw.
+        """
+        self._slots = None if (big is None and small is None) else {"big": big, "small": small}
         if self._is_live:
             self._send_incremental_update()
 
@@ -4885,6 +4930,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # exist, which is what a standing instruction should do.
             self._clip = self.config.get("clip")
             self._shown_objects = self.config.get("shown_objects")
+            self._slots = self.config.get("slots")
             # ...and the side chains, which are written from _sidechains and
             # so would be popped at the next show() exactly like the two above.
             self._sidechains = self.config.get("sidechains") or []

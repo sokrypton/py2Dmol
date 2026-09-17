@@ -381,6 +381,11 @@ distogram &mdash; with a drag on it that selects.</p>
    <code>xlabel</code>/<code>ylabel</code> caption the axes &mdash; all of them
    beating the panel's built-in scale for that key. The tab is named by the key,
    so two maps in one frame are two tabs.</p>
+    <p class="note"><strong>Two slots, the same tabs over both.</strong> The
+   viewer's box and this one each show the structure, a map or the scatter plot;
+   picking in one what the other shows swaps them, and with no coordinates yet
+   the map takes the big one. <code>slots: {big: 'contact'}</code> in the
+   options, or <code>v.setSlots({big: 'pae'})</code> later, chooses from code.</p>
     <p class="note">Dragging a box on the plot selects those residues in the
    structure, and a box is stored in <strong>residues</strong> &mdash; so it
    means the same thing on every map, whatever each one's resolution.</p>
@@ -391,10 +396,10 @@ distogram &mdash; with a drag on it that selects.</p>
 the same on either.</p>
 <table>
 <tr><th>file</th><th>size</th><th></th></tr>
-<tr><td>py2Dmol.embed.min.js</td><td>568 KB</td><td>WebGL2. What this page loads.
+<tr><td>py2Dmol.embed.min.js</td><td>632 KB</td><td>WebGL2. What this page loads.
     Turning and zooming cost one draw call, which is what makes a large
     structure usable.</td></tr>
-<tr><td>py2Dmol.embed.cpu.min.js</td><td>504 KB</td><td>The 2D painter. 45 KB smaller,
+<tr><td>py2Dmol.embed.cpu.min.js</td><td>540 KB</td><td>The 2D painter. 92 KB smaller,
     no WebGL2 needed, and it can export SVG &mdash; but a big structure repaints
     slowly.</td></tr>
 </table>
