@@ -136,12 +136,21 @@ MEASURE = r"""(() => {
     return {over: e.scrollHeight - e.clientHeight, h: Math.round(e.getBoundingClientRect().height)}; };
   R.seqBtn = {selectAll: wrapped('selectAllResidues'), unselect: wrapped('clearAllResidues')};
 
-  // ...and the canvas resize handle, which is revealed on :hover and so can
-  // never be used on a touch screen - a permanent blue triangle over the
-  // corner of the structure that does nothing when tapped. The box is
-  // `resize: none` when fluid, so there is nothing for it to do either.
-  const rh = document.querySelector('#canvasContainer .resize-handle');
+  // ...and the resize knob, which is revealed on :hover and so can never be
+  // used on a touch screen - a permanent blue triangle over the corner of the
+  // structure that does nothing when tapped. The box is `resize: none` when
+  // fluid, so there is nothing for it to do either.
+  // 🔴 THE KNOB IS THE SLOT'S NOW (src/parts/slots.js), not the canvas box's:
+  // the box is 100% x 100% inside a slot and the BODY carries the drag, so a
+  // handle on the box marked a drag that does not exist - and it travelled
+  // with the structure into the small slot, which never resizes.
+  const rh = document.querySelector('.py2dmol-slot--big > .py2dmol-slot-body'
+      + ' > .py2dmol-slot-knob')
+    || document.querySelector('#canvasContainer .resize-handle');
   R.resizeHandle = rh ? getComputedStyle(rh).display : 'absent';
+  const stray = [...document.querySelectorAll('.py2dmol-slot-body .resize-handle')]
+    .filter((h) => getComputedStyle(h).display !== 'none').length;
+  R.strayHandles = stray;
 
   // THE SEQUENCE STRIP IS A BITMAP, and a bitmap is undistorted only when its
   // backing store and its CSS box agree. `width: 100%` against a store sized
@@ -473,8 +482,16 @@ if D["titleOverlap"]:
 if D["strip"] and D["strip"]["share"] > 0.4:
     bad.append("the desktop strip is %d%% of the viewport" % round(D["strip"]["share"] * 100))
 if D["resizeHandle"] == "none":
-    bad.append("the desktop canvas resize handle was hidden too - that rule is meant"
+    bad.append("the desktop resize knob was hidden too - that rule is meant"
                " to be narrow-only")
+if D["resizeHandle"] == "absent":
+    bad.append("the desktop viewer has no resize knob at all - the big slot is"
+               " draggable and nothing says so")
+for name in ("320px", "360px", "390px", "desktop"):
+    if (results[name] or {}).get("strayHandles"):
+        bad.append("%s: a view's own .resize-handle is still showing inside a"
+                   " slot - the knob belongs to the body that carries the drag"
+                   % name)
 
 for m in bad: print("FAIL:", m)
 sys.exit(1 if bad else 0)

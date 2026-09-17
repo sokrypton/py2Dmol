@@ -70,6 +70,24 @@ window.addEventListener('load', () => {
         holding: holding(), onScreen: onScreen(),
         pool: (r._heatmapPool || []).length });
 
+      // ---- THE DRAG AND ITS KNOB BELONG TO THE SLOT ----
+      // The view's own .resize-handle is hidden wherever it lands and the body
+      // carries resize + one knob: big yes, small no. The regression this
+      // catches SHIPPED - a view is 100% !important in a slot, so the notebook
+      // and the embed, whose boxes carried resize: both themselves, could not
+      // be dragged at all while still showing a corner triangle that said they
+      // could.
+      const visible = (root, sel) => [...root.querySelectorAll(sel)]
+        .filter((h) => getComputedStyle(h).display !== 'none').length;
+      const knobs = () => ({
+        big: visible(S.layout.big.body, '.py2dmol-slot-knob'),
+        small: visible(S.layout.small.body, '.py2dmol-slot-knob'),
+        viewHandles: visible(S.layout.big.body, '.resize-handle')
+          + visible(S.layout.small.body, '.resize-handle'),
+        resize: [getComputedStyle(S.layout.big.body).resize,
+                 getComputedStyle(S.layout.small.body).resize],
+      });
+
       // ---- a structure and nothing else: one slot, no tabs ----
       out.alone = Object.assign(snap(), {
         smallHidden: S.layout.small.slot.hidden,
@@ -85,6 +103,15 @@ window.addEventListener('load', () => {
       await settle(3);
       out.maps = Object.assign(snap(), {
         tabs: [...S.layout.small.tabs.children].map((b) => b.dataset.view) });
+      out.knobs = knobs();
+      // ...and a drag on the big body reaches whatever is in it.
+      const wasCanvas = r.canvas.width;
+      S.layout.big.body.style.width = '520px';
+      S.layout.big.body.style.height = '360px';
+      await settle(8);
+      out.dragged = [wasCanvas, r.canvas.width, r.canvas.height];
+      S.layout.big.body.style.width = ''; S.layout.big.body.style.height = '';
+      await settle(4);
 
       // ---- the mirror ----
       S.choose('big', 'map:pae'); await settle(3);
@@ -230,6 +257,18 @@ if pb.get('big') != 'map:pae':
     bad.append(f"the PAE the reader put in the big slot did not come back with"
                f" the PAE: {pb}")
 
+kn = R.get('knobs') or {}
+if kn.get('big') != 1 or kn.get('small') != 0 or kn.get('viewHandles') != 0:
+    bad.append(f"the resize knobs are {kn} - one on the big slot, none on the"
+               " small one, and a view's own handle hidden wherever it lands")
+if (kn.get('resize') or [None, None])[0] != 'both' or kn['resize'][1] != 'none':
+    bad.append(f"the slot bodies resize {kn.get('resize')} - the body carries"
+               " the drag now, and a view in a slot is 100% !important, so a"
+               " box that still states its own resize cannot be dragged")
+dg = R.get('dragged') or [0, 0, 0]
+if not (dg[1] != dg[0] and dg[1] > 400 and dg[2] > 200):
+    bad.append(f"dragging the big slot did not reach the canvas: {dg}")
+
 api = R.get('api') or {}
 if api != {'big': 'structure', 'small': 'contact'}:
     bad.append(f"setSlots({{big: 'structure', small: 'contact'}}) reads back {api}")
@@ -263,8 +302,25 @@ window.addEventListener('load', async () => {
     const r = Object.values(window.py2dmol_viewers)[0].renderer;
     await settle(6);
     out.slots = r.getSlots();
-    const box = r._slots.layout.big.body.getBoundingClientRect();
+    const body = r._slots.layout.big.body;
+    const box = body.getBoundingClientRect();
     out.bigBox = [Math.round(box.width), Math.round(box.height)];
+    // 🔴 AND THE DRAG, HERE RATHER THAN ON THE WEBSITE. src/app/style.css
+    // states resize on the big body itself, so the website keeps its drag
+    // whatever the shared stylesheet does; this shell has only the shared one.
+    // The regression that reached a release was exactly this: #canvasContainer
+    // carried resize: both, a view in a slot is 100% !important, and the
+    // notebook's viewer quietly stopped being draggable while still showing a
+    // corner triangle that said it was.
+    out.resize = getComputedStyle(body).resize;
+    out.knob = [...body.querySelectorAll('.py2dmol-slot-knob')]
+      .filter((h) => getComputedStyle(h).display !== 'none').length;
+    out.viewHandles = [...body.querySelectorAll('.resize-handle')]
+      .filter((h) => getComputedStyle(h).display !== 'none').length;
+    const was = r.heatmapRenderer && r.heatmapRenderer.canvas.width;
+    body.style.width = '520px'; body.style.height = '300px';
+    await settle(8);
+    out.dragged = [was, r.heatmapRenderer && r.heatmapRenderer.canvas.width];
   } catch (e) { out.errors.push(String(e && e.stack || e)); }
   await fetch('/_result', {method: 'POST', body: JSON.stringify(out)});
 });
@@ -286,6 +342,13 @@ bad += [f"notebook: {e}" for e in NB.get('errors') or []]
 if (NB.get('slots') or {}).get('big') != 'contact':
     bad.append(f"view.set_slots(big='contact') before show() came up as"
                f" {NB.get('slots')} - the config key did not reach the slots")
+if NB.get('resize') != 'both' or NB.get('knob') != 1 or NB.get('viewHandles') != 0:
+    bad.append(f"the notebook's big slot resizes {NB.get('resize')!r} with"
+               f" {NB.get('knob')} knob and {NB.get('viewHandles')} view handles"
+               " - the body carries the drag and its cue in every shell")
+nd = NB.get('dragged') or [0, 0]
+if not (nd[1] and nd[1] != nd[0]):
+    bad.append(f"dragging the notebook's big slot did not reach the plot: {nd}")
 if NB.get('bigBox') != [420, 420]:
     bad.append(f"the notebook's big slot is {NB.get('bigBox')}, not the 420x420"
                " the view asked for - the size token has to move to the slot")

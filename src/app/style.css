@@ -2127,6 +2127,9 @@ table.layout-table td {
         aspect-ratio: 1 / 1;
         resize: none;
     }
+    /* ...and no knob where there is no drag, which is the same rule the
+       canvas box's own handle already follows here. */
+    .py2dmol-viewer-instance .py2dmol-slot-knob { display: none; }
 
     /* the strip is the panel that earns its width most on a narrow screen, and
        .sequence-section-container pinned it to 600. */

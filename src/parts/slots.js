@@ -72,6 +72,27 @@ margin: 0 !important; }
 display: block !important; }
 .py2dmol-slot-body > .py2dmol-slot-flex { display: flex !important; }
 .py2dmol-slot-park { display: none !important; }
+/* 🔴 THE DRAG AND ITS KNOB BELONG TO THE SLOT, NOT TO THE VIEW.
+#canvasContainer and #scatterContainer each carry resize: both and a
+.resize-handle of their own - a blue corner triangle, pointer-events: none -
+and in a slot the view is 100% x 100% !important, so BOTH were wrong: the box
+could no longer be dragged at all (the notebook and the embed lost it outright)
+while its knob still showed, in whichever slot it happened to sit. So the body
+resizes and the body carries the knob: the big slot has one, the small slot has
+neither, and a view's own handle is hidden wherever it lands.
+A shell that wants no drag (the website below 980px) says resize: none on the
+body and hides .py2dmol-slot-knob - see src/app/style.css. */
+.py2dmol-slot--big > .py2dmol-slot-body { resize: both; overflow: hidden; }
+.py2dmol-slot--big > .py2dmol-slot-body::-webkit-resizer { display: none; }
+.py2dmol-slot-body .resize-handle { display: none !important; }
+.py2dmol-slot-knob { position: absolute; bottom: 2px; right: 2px; width: 16px;
+height: 16px; opacity: 0.4; transition: opacity 0.2s; z-index: 4;
+pointer-events: none; }
+.py2dmol-slot-body:hover > .py2dmol-slot-knob { opacity: 0.8; }
+.py2dmol-slot-knob::before { content: ''; position: absolute; bottom: 0;
+right: 0; width: 0; height: 0; border-style: solid;
+border-width: 0 0 16px 16px; border-color: transparent transparent #3b82f6; }
+.py2dmol-slot--small > .py2dmol-slot-body > .py2dmol-slot-knob { display: none; }
 `;
 
 function installCSS() {
@@ -108,6 +129,12 @@ function makeSlot(box, kind) {
     slot.appendChild(tabs);
     slot.appendChild(body);
     body.appendChild(box);
+    // ...and the knob that says the body can be dragged. One per slot, built
+    // here so every shell has the same cue: the shells drew their own inside
+    // the canvas box, which is the wrong element to hang it on now.
+    const knob = document.createElement('div');
+    knob.className = 'py2dmol-slot-knob';
+    body.appendChild(knob);
     for (const k of ['width', 'height']) {
         if (box.style[k]) { body.style[k] = box.style[k]; }
     }
