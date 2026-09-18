@@ -7544,7 +7544,15 @@ function drawRun(runIdx, ctx) {
             // evenly along the run. The result is continuous with the
             // element at both ends and turns at a constant, minimal rate in
             // between.
-            if (isProt && renderer._loopFrame !== 'curvature') {
+            // 🔴 THE BLOCK IS NOT ALL ONE THING, AND THE FLAG USED TO TAKE ALL
+            // OF IT. `_loopFrame = 'curvature'` skipped this entire block - and
+            // the element-internal SIGN pass lives in here too, which has
+            // nothing to do with a loop's frame: without it a helix's
+            // consecutive side vectors can come out antiparallel and the strip
+            // between two stations pinches through zero and crosses. Measured
+            // as the H fixture going 2,234 ops to 3,000. So the element passes
+            // always run, and only the per-loop transport asks the flag.
+            if (isProt) {
                 const tanOf = (j) => {
                     const p0 = at(wrapIdx(j - 1));
                     const p1 = at(wrapIdx(j + 1));
@@ -7662,7 +7670,38 @@ function drawRun(runIdx, ctx) {
                     order.push(longest);
                 }
                 const locked = new Uint8Array(elems.length);
-                for (const li of order) {
+                // 🔴 THE LOOP FRAME, AND THE ONLY PART OF THIS BLOCK THE FLAG
+                // DECIDES. Transport carries the neighbouring element's face
+                // along the run with minimal rotation, which is smoother on a
+                // still structure - and ties the whole run's face to one seed,
+                // so on a moving one a band of ribbon turns over all at once.
+                // `curvature` leaves each loop residue the face its own local
+                // curvature gives it: noisier per residue, and a flip is then
+                // one residue rather than a run.
+                // 🔴 CURVATURE IS THE DEFAULT, AND IT IS A TRADE MEASURED ON A
+                // MOVING STRUCTURE. Transport is smoother on a still one -
+                // that is what it was written for, and on 3CHY the two are
+                // nearly indistinguishable side by side - but it ties the
+                // whole run's face to ONE seed, so on a sampler trajectory a
+                // band of ribbon turns over between frames all at once.
+                // Measured on a 41-model diffusion run: the pale inner face
+                // swings 0.0106 of the drawing per frame transported against
+                // 0.0082 by curvature, 23% steadier, with the same 2,072
+                // stations and 0 rebuilds either way - a loop's frame is
+                // per-station DATA, not topology, so the fast path never cared
+                // which rule wrote it. Reported as loops changing direction and
+                // shade during a diffusion run.
+                //
+                // Two attempts to keep transport AND the steadiness are
+                // recorded as failures rather than removed in silence: seeding
+                // the run from the mean of its own sides (aligned to the first
+                // residue, which puts that residue back in charge - 0.0119, no
+                // change) and from a sign-free tensor aggregate with a majority
+                // sign (0.0112, and MORE flips). The seed is not the mechanism.
+                //
+                // `renderer._loopFrame = 'transport'` selects the other one.
+                const loopTransport = renderer._loopFrame === 'transport';
+                for (const li of (loopTransport ? order : [])) {
                     const L = loops[li];
                     const first = L[0];
                     const last = L[L.length - 1];
