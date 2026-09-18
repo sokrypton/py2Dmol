@@ -4193,7 +4193,16 @@ function mergeBondRuns(S) {
                 // geometry's
                 two: stickIsFlat,
                 face: Math.abs(nz),
-                pts: frameProbe ? pts.map((p) => [p[0], p[1], p[2]]) : undefined,
+                // 🔴 AND A JUNCTION IS STATIONED ONLY WITH THE STICKS IT
+                // WELDS TO - the side chains'. `pts` is what makes the WebGL
+                // port station this plate, and a ligand's junction carries
+                // its faces into the `other` part, which the station table
+                // cannot cover: the table then described more faces than the
+                // prefix held and was refused, taking the trajectory fast
+                // path away from every structure with a ligand in it. Same
+                // rule as the stick faces above, asked of the same flag.
+                pts: (frameProbe && isSidechainAtom(renderer.sidechainMap, atom))
+                    ? pts.map((p) => [p[0], p[1], p[2]]) : undefined,
             });
             // set renderer._jointProbe = [] to collect the junction
             // fills: which way each one ended up facing is not visible
@@ -10260,7 +10269,27 @@ function drawSticks(ctx) {
         const SF = bFlat ? STICK_FACES_FLAT : RT.faces;
         const emitSeg = (secA, secB, firstSeg, lastSeg, segC) => {
         let stA; let stB; let segId;
-        if (frameProbe && bSides === 4 && secA.length === 4 && secB.length === 4) {
+        // ASKED OF THE BOND, ONCE, and asked HERE because the stations below
+        // need it too - it used to be computed further down, for the face loop
+        // alone.
+        const bondSc = bondTouchesSidechain(scMap, bd.a, bd.b);
+        // 🔴 ONLY A SIDE CHAIN'S STICKS CARRY STATIONS, BECAUSE ONLY THEY ARE
+        // IN A PART THE TABLE CAN COVER. The mesh is ribbon, then side chains,
+        // then `other` - ligands, base plates, contacts - and the station
+        // table describes a PREFIX of it. A ligand's sticks are four-sided
+        // like a side chain's, so they were stationed and counted by the
+        // table, which then described more faces than the prefix holds and
+        // was REFUSED outright: `the station table describes 4298 faces and
+        // the mesh holds 4150`.
+        //
+        // What that cost is the whole trajectory fast path for any structure
+        // with a ligand in it - measured as every frame rebuilding on 3PTB,
+        // 4HHB and a 41-model diffusion trajectory with a bound peptide. The
+        // limitation was known and written down here; this is the fix.
+        //
+        // The ligand's sticks are rebuilt by refreshSticksFrom like the rest
+        // of `other`, which is where they were being drawn from anyway.
+        if (frameProbe && bondSc && bSides === 4 && secA.length === 4 && secB.length === 4) {
             segId = ++stickSegCount;
             const stationOfSec = (sec) => {
                 const mid = [(sec[0][0] + sec[2][0]) * 0.5, (sec[0][1] + sec[2][1]) * 0.5, (sec[0][2] + sec[2][2]) * 0.5];
@@ -10455,10 +10484,6 @@ function drawSticks(ctx) {
         // not painted, but they belong in the occluder sets: the cap faces
         // at a shared atom are what hides the neighbouring box's buried
         // edges.
-        // ASKED OF THE BOND, ONCE. It reads bd.a and bd.b, which do not
-        // change between the faces of one segment, and it was called for
-        // every one of them.
-        const bondSc = bondTouchesSidechain(scMap, bd.a, bd.b);
         for (let fi = 0; fi < SF.length; fi++) {
             const f = SF[fi];
             // A CAP IS INTERIOR EXACTLY WHEN ITS END WAS CUT. An interior

@@ -212,6 +212,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `station_foldcuts.py` | gpu | What dropping the orientation-fold cuts costs, and what it buys. |
 | `station_frames.py` | gpu | What a trajectory step costs when only the stations are uploaded. |
 | `station_integrated.py` | tool | THE STATION PATH END TO END - AN INSTRUMENT NOW, NOT A GATE. |
+| `station_ligand.py` | gpu | A ligand does not cost the trajectory fast path. |
 | `station_overlay.py` | gpu | What is drawn ON TOP of the canvas follows the station fast path. |
 | `station_pixels.py` | gpu | The station path draws the same picture. |
 | `station_restore.py` | ui | A MESH TAKEN BACK OUT OF THE CACHE, AND THE STATION TABLE IT IS DRAWN FROM. |

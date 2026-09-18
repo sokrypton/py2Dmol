@@ -149,6 +149,9 @@ function setupViewport(containerElement, config) {
     };
     let lastWidth = width;
     let lastHeight = height;
+    // ...whether the box has been hidden since the last size was applied; see
+    // the observer below.
+    let wasHidden = false;
     // 🔴 A HOST'S BOX CONTAINS THE CANVAS, SO FOLLOWING IT WHOLE FEEDS BACK.
     // #canvasContainer is a box of its own whose size the page sets, and the
     // canvas fills it - no loop. A bare host is not: its height is whatever its
@@ -233,11 +236,21 @@ function setupViewport(containerElement, config) {
             // threw the drawing buffer away and the return rebuilt the mesh at
             // the size it had left at. `measure` already said this; the
             // observer did not ask it.
+            //
+            // 🔴 AND COMING BACK IS NOT ALWAYS A CHANGE OF SIZE. Skipping the
+            // hidden entry leaves `lastWidth` at whatever it was, so a box that
+            // is hidden and shown again at the SAME width reports "not moved"
+            // and nothing re-applies - which is right when the canvas kept its
+            // size, and wrong when anything resized it meanwhile. Measured: a
+            // clear and a fresh load left a 100x100 canvas in a 600px box, for
+            // good. So being hidden is remembered, and the first real
+            // measurement after it is applied whether or not the number moved.
             if (!m && !(entries[0].contentRect.width >= 1
-                && entries[0].contentRect.height >= 1)) return;
+                && entries[0].contentRect.height >= 1)) { wasHidden = true; return; }
             const newWidth = Math.max(m ? m[0] : entries[0].contentRect.width, 1);
             const newHeight = Math.max(m ? m[1] : entries[0].contentRect.height, 1);
-            if (!moved(newWidth, newHeight)) return;
+            if (!moved(newWidth, newHeight) && !wasHidden) return;
+            wasHidden = false;
             lastWidth = newWidth;
             lastHeight = newHeight;
             applySize(newWidth, newHeight);
