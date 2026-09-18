@@ -617,7 +617,7 @@ function paintPrims(S) {
             // it to loops left helix and sheet edges shaded by a constant,
             // which is the discontinuity it exists to remove.
 
-            const paintSide = (A, B, outward) => {
+            const paintSide = (A, B, outward, cullWind = false) => {
                 // SHEET EDGES ARE WHITE in the Richardson convention: the
                 // arrow reads as a plate of white card with a coloured
                 // face, and the pale rim is what separates strands where
@@ -691,7 +691,9 @@ function paintPrims(S) {
                     const x1 = (A[ns - 1][0] + B[ns - 1][0]) / 2;
                     const y1 = (A[ns - 1][1] + B[ns - 1][1]) / 2;
                     const axL2 = (x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0);
-                    if (axL2 > 1) {
+                    // ...and it paints the strip WHOLE, so it cannot serve a
+                    // strip whose quads are culled one at a time.
+                    if (axL2 > 1 && !cullWind) {
                         const stops = [];
                         let prevOff = 0;
                         for (let s = 0; s < ns; s++) {
@@ -724,6 +726,41 @@ function paintPrims(S) {
                 }
                 const canGrad2 = !!ctx.createLinearGradient;
                 for (let s = 0; s + 1 < ns; s++) {
+                    // 🔴 AN ARROWHEAD'S SIDE STRIPS ARE CULLED QUAD BY QUAD.
+                    // oN describes a strip as a whole, which is right for a
+                    // plain slab whose two sides are parallel to n. A head is
+                    // not one: a barb's outer edge slants, so its outward is
+                    // part n and part tangent, and the BACK EDGE - the quad
+                    // between two stations at the same point with different
+                    // widths - faces along the tangent alone. Culled by oN a
+                    // whole strip went, and with it the white card edge of a
+                    // barb or half of the back edge: reported from three
+                    // angles as faces missing from the arrow, drawn as an
+                    // outline with nothing inside it.
+                    //
+                    // After projection a quad's WINDING is its facing, with no
+                    // normal needed, and it is per sub-quad - so the near edge
+                    // is kept and the far one dropped, which is what the strip
+                    // cull was for. Only arrow pieces pay for it.
+                    if (cullWind) {
+                        const ax = A[s][0]; const ay = A[s][1];
+                        const bx2 = A[s + 1][0]; const by2 = A[s + 1][1];
+                        const cx2 = B[s + 1][0]; const cy2 = B[s + 1][1];
+                        const dx2 = B[s][0]; const dy2 = B[s][1];
+                        // 🔴 TWO TRIANGLES, NOT ONE QUAD. A side strip of a
+                        // tapering head is a SADDLE - the ribbon twists along
+                        // it - so the four corners are not coplanar and one
+                        // winding over all four is not a facing at all:
+                        // measured on 6MRR 34-37, a 176x10 px quad reported an
+                        // |area| of 2,511 against the 1,760 it could have at
+                        // most, the two halves having cancelled the wrong way.
+                        // A quad is kept when EITHER half faces the reader,
+                        // which is what a twisted band needs and what the sum
+                        // cannot say.
+                        const t1 = (bx2 - ax) * (cy2 - ay) - (cx2 - ax) * (by2 - ay);
+                        const t2 = (cx2 - ax) * (dy2 - ay) - (dx2 - ax) * (cy2 - ay);
+                        if (t1 * outward >= 0 && t2 * outward >= 0) continue;
+                    }
                     let l0v = sideLumAt(s);
                     let l1v = sideLumAt(s + 1);
                     if (outward) {
@@ -877,22 +914,22 @@ function paintPrims(S) {
                 showTop = bSum >= 0;
                 showBot = !showTop;
             }
-            // ARROWHEAD BARB FACES. Backface culling assumes a surface's
-            // outward direction is +-n or +-b, which holds for a plain slab.
-            // A head breaks that: the barb step is a quad whose two stations
-            // sit at the SAME point with different widths, so it lies in the
-            // cross-section plane and its normal is the TANGENT - yet it
-            // rides in the TOP/BOTTOM strips and is culled by oB, which says
-            // nothing about whether it faces the viewer. Hence barb faces
-            // vanishing at some orientations.
-            //
-            // Only the two strips that carry it are forced. Forcing all four
-            // was tried and is worse: it keeps the FAR thickness band alive,
-            // and since those bands are white in this style, a twisted piece
-            // whose averaged sort key puts the band last paints a white
-            // stripe straight across the arrow's face. Side culling is what
-            // suppresses that, so it has to stay.
-            if (g.arrow) { showTop = true; showBot = true; }
+            // 🔴 ARROWHEAD FACES ARE CULLED LIKE ANY OTHER FACE NOW, and the
+            // special case that used to force them is gone. It read `if
+            // (g.arrow) { showTop = true; showBot = true; }`, on the reasoning
+            // that the barb step rode in the TOP/BOTTOM strips and was culled
+            // by oB, which says nothing about a face whose normal is the
+            // tangent. The reasoning was half right: the step's normal IS the
+            // tangent - but it rides in the SIDE strips, and those top/bottom
+            // quads are collinear, with no area to force. What the override did
+            // do was draw the arrow's BACK-facing broad face as well, and at
+            // orientations where the piece paints after the step, that face
+            // covered the step's wall: measured on 6MRR 34-37 seen from behind
+            // and below, the white back edge of the head came out as a teal
+            // sliver, 1,320 px off the GPU's picture against 281 without the
+            // override. The step is reached through the side strips now, by
+            // the winding cull in paintSide, so nothing is left for the
+            // override to rescue.
             // Terminal cross-section rim: the ORIGINAL piece-attached
             // understroke, drawn just before this piece's fills. Under
             // the fills it yields to everything painted later (loops at
@@ -1290,8 +1327,26 @@ function paintPrims(S) {
             const surfaces = [];
             if (showTop) surfaces.push([bAvg, () => paintFace(true)]);
             if (showBot) surfaces.push([-bAvg, () => paintFace(false)]);
-            if (showL) surfaces.push([nAvg, () => paintSide(Lp, Lm, 1)]);
-            if (showR) surfaces.push([-nAvg, () => paintSide(Rp, Rm, -1)]);
+            // An arrow's two strips are both offered, and each keeps only the
+            // quads that face the reader (paintSide, `cullWind`).
+            //
+            // 🔴 WHAT WAS TRIED AND TAKEN BACK OUT, measured against four
+            // views saved from 6MRR (tests/arrow_faces_2d.py): drawing the
+            // back edge as a separate surface, found by its two coincident
+            // stations and culled by the tangent. It fixed the views it was
+            // written for and, once the winding cull and the removal of the
+            // forced top/bottom faces were in, it changed nothing on any of
+            // them - switched off entirely they measured 68 / 183 / 166 / 199
+            // px against the GPU, with it 68 / 210 / 166 / 199. The winding
+            // already finds that quad; a second route to it was a second
+            // answer to one question.
+            const windSides = !!g.arrow && !flatSlab;
+            if (showL || windSides) {
+                surfaces.push([nAvg, () => paintSide(Lp, Lm, 1, windSides)]);
+            }
+            if (showR || windSides) {
+                surfaces.push([-nAvg, () => paintSide(Rp, Rm, -1, windSides)]);
+            }
             if (showCapStart) surfaces.push([-g.oT[0], () => {
                 ctx.fillStyle = capCol;
                 quad(Lp[0], Lm[0], Rm[0], Rp[0]);

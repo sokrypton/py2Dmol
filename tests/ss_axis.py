@@ -39,13 +39,18 @@ lay out five stations of its own there, so a strand appearing moved the topology
 animation that gained or lost a strand end rebuilt: 60 of 79 replayed fight
 steps at Detail 2, against 0 at Detail 3 and 0 with arrowheads off.
 
-The seam MOVES onto a station the interval already has instead (`slantHead` in
-cartoon/geom.js), so the count is nsub + 1 whatever the letter says and the
-replay rebuilds 0 of 79. What it costs is the square back edge at the floor
-alone: with one width at the seam the barbs ramp up to it, so a Detail 2
-arrowhead tapers to a spearpoint. That was looked at side by side and taken
-deliberately - Detail 2 is the geometric floor and the setting an animation
-runs at. Detail 3 and 4 keep their barbs.
+The head fills the interval instead and DUPLICATES the station at u = 0, one
+copy at the shaft's width and one at the barbs', so the count is nsub + 1
+whatever the letter says and the replay rebuilds 0 of 79. It costs nothing:
+the zero-length band between the two copies IS the square back edge.
+
+🔴 IT COST THE BARBS FOR A WHILE, AND THAT IS NO LONGER TRUE. The seam MOVED
+onto a station the interval already had at first - which keeps the count right
+and leaves no duplicate to stand the barbs up, so the width ramped and a
+Detail 2 arrowhead tapered to a spearpoint. It was taken deliberately and
+reported as a short sheet's arrow missing its sides; the duplicate is where the
+third station came from. What this file measures either way is the COUNT, so it
+passed against both - `tests/ss_arrow_shape.py` is the gate on the shape.
 
 🔴 AND THE OVERRIDE HAS TO REACH THE MESH, or silence reads as invariance. It
 cannot be shown by the counts any more - holding them still is the property

@@ -2310,29 +2310,51 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
         if (!isProtein(i)) continue;
         sec[i] = strand[i] ? 'E' : (helix[i] ? 'H' : 'C');
     }
-    // AN ISOLATED BRIDGE IS NOT A STRAND. A single residue can satisfy the
-    // bridge test on its own, and that came straight through as a
-    // one-residue 'E' - which draws as a lone arrowhead stub sitting in the
-    // middle of a loop (1TIM had three such runs). DSSP calls this a bridge
-    // rather than a strand and cartoons render it as loop; the superseded
-    // C-alpha pipeline dropped them too, via this same SS.minStrand, but
-    // that guard was never carried over here.
-    // Helices need no equivalent: the helix test already requires several
-    // consecutive residues, and 1TIM's shortest H run is 3.
-    // Runs are taken over consecutive indices. A run that spanned a chain
-    // break would only measure LONGER and so fail to be dropped - it cannot
-    // wrongly delete a real strand.
-    for (let i = 0; i < n; i++) {
+    dropShortStrands(sec);
+    return { sec, ladders };
+}
+
+/**
+ * AN ISOLATED BRIDGE IS NOT A STRAND. A single residue can satisfy the bridge
+ * test on its own, and that came straight through as a one-residue 'E' - which
+ * draws as a lone arrowhead stub sitting in the middle of a loop (1TIM had
+ * three such runs). DSSP calls this a bridge rather than a strand and cartoons
+ * render it as loop; the superseded C-alpha pipeline dropped them too, via this
+ * same SS.minStrand, but that guard was never carried over here.
+ *
+ * Helices need no equivalent: the helix test already requires several
+ * consecutive residues, and 1TIM's shortest H run is 3.
+ *
+ * Runs are taken over consecutive indices. A run that spanned a chain break
+ * would only measure LONGER and so fail to be dropped - it cannot wrongly
+ * delete a real strand.
+ *
+ * 🔴 AND IT IS ASKED OF EVERY ANSWER, NOT ONLY OF OUR OWN. `assignSecondary`
+ * applied this to what it had just computed, and a letter that arrives
+ * AFTERWARDS - set_sse, a session, a file's own SHEET records - reached the
+ * cartoon without it. A strand is drawn over the INTERVALS between consecutive
+ * 'E' residues, so a lone one has no interval to be drawn in; what it got was
+ * the strand's WIDTH, which is keyed per residue, and the ribbon bulged to full
+ * sheet width around a single point with the head sitting nowhere. `applySse`
+ * is the funnel every one of those passes through, and it is the same funnel
+ * the COLOURS read, so the two cannot disagree about it.
+ *
+ * ONE COPY, because SS.minStrand is a setting: written out twice, raising it
+ * to 3 would drop two-residue strands from our own assignment and keep them
+ * from an override.
+ */
+const dropShortStrands = (sec) => {
+    for (let i = 0; i < sec.length; i++) {
         if (sec[i] !== 'E') continue;
         let hi = i;
-        while (hi + 1 < n && sec[hi + 1] === 'E') hi++;
+        while (hi + 1 < sec.length && sec[hi + 1] === 'E') hi++;
         if (hi - i + 1 < SS.minStrand) {
             for (let k = i; k <= hi; k++) sec[k] = 'C';
         }
         i = hi;
     }
-    return { sec, ladders };
-}
+    return sec;
+};
 
 /**
  * Side vectors for every strand residue, as coefficients in that residue's
@@ -8073,10 +8095,67 @@ function drawRun(runIdx, ctx) {
                 // ...and what the rim's own station holds: the residue BEFORE
                 // the strand, so the two copies differ by exactly the step the
                 // rim is.
-                const hwRim = startStep ? halfW(iPrev) : 0;
-                const htRim = startStep ? halfT(iPrev) : null;
+                //
+                // 🔴 AND THE SAME AT THE OTHER END OF THE ARROW. The interval
+                // after a head starts at the loop's full width while the head
+                // it follows ends at its point, RICH_ARROW_TIP - a step from
+                // 0.06 A to 0.35 that fell BETWEEN two intervals, where nothing
+                // emits a face. So the loop after every arrowhead was an open
+                // tube at its start: reported on 6MRR 34-37 in the 2D painter,
+                // and there on the GPU too, where it only reads as closed
+                // because a double-sided mesh shows the inside of the far
+                // walls through the hole. It takes the rim's own treatment -
+                // the station at u = 0 duplicated, the first copy holding the
+                // POINT's profile (the head keeps the strand's thickness right
+                // to its tip), the band between the copies being the wall -
+                // paid for out of the interval's own sampling like the rim, so
+                // the count does not move with the letter.
+                //
+                // 🔴 BUT NOT AT THE FLOOR, where there is no step to close: the
+                // head ends SQUARE there, at the width of what follows it (see
+                // `tipHW` below), so the loop carries straight on from its flat
+                // end. A duplicate would cost the loop one of its only two
+                // sub-intervals - measured on 6MRR's C-terminus, one straight
+                // band left to carry a 60 degree turn, reported as the loop
+                // squished at its end - and a chamfer instead made both ends
+                // converge on the point, so the two touched only at a pinch.
+                const headAtFloor = subFloor(HELIX_SUB) < 3;
+                // ...and only where the ribbon has a THICKNESS to close. A flat
+                // ribbon has no inside to see into, and the wall's first copy
+                // there is a POINT - no width, no thickness - which carries no
+                // frame at all: tests/cartoon_station.js fails on 1UBQ at
+                // thickness 0, a station that is not a frame and two scalars.
+                const tipStep = profiled && afterArrow && !startStep && !headAtFloor
+                    && halfT(i) > 1e-6;
+                // ...and its first copy holds the POINT's own width, exactly
+                // what the head ends at, as the rim's holds the width the loop
+                // before a strand ends at. That is what lets the two cross
+                // edges WELD across the piece boundary. From zero width they
+                // did not - 0 against 0.06 - so each was a lone boundary edge,
+                // drawn unconditionally, and when a trajectory closed the gap
+                // and the arrow stopped being one, the fast path went on
+                // drawing them: tests/sheet_merge.py, 3 rows across a sheet
+                // that a fresh build draws continuous. Starting at zero had
+                // been chosen to close a 0.12 A slit (the point's own
+                // cross-section) seen at Detail 2 - which ends the head square
+                // now and has no wall at all.
+                const hwRim = startStep ? halfW(iPrev)
+                    : (tipStep ? RICH_ARROW_TIP * widthScale : 0);
+                const htRim = startStep ? halfT(iPrev)
+                    : (tipStep ? halfT(i) : null);
                 const arrowHead = isArrowInterval(i);
                 const arrowBase = (WIDTHS.E || SS_HALF_A.E) * widthScale;
+                // 🔴 WHAT THE HEAD TAPERS TO. Above the floor, a point - and the
+                // loop after it opens with a wall (`tipStep`). AT the floor, the
+                // width of the residue that follows, so the head ends square and
+                // the loop continues from its flat end with no step at all. That
+                // is the natural join: the arrowhead is a taper from the barbs
+                // down into the loop, not a point the loop must grow back out
+                // of. Where nothing follows - a strand ending the chain - it
+                // stays a point, and the chain's end cap closes it.
+                const iAfter = cyclic ? wrapIdx(iN + 1) : iN + 1;
+                const tipHW = (arrowHead && headAtFloor && (cyclic || iAfter <= hi))
+                    ? halfW(iAfter) : RICH_ARROW_TIP * widthScale;
                 const s1 = sides[i - lo];
                 let s2 = sides[iN - lo];
                 // BOWTIE GUARD. A strip whose two end sides point opposite
@@ -8161,8 +8240,29 @@ function drawRun(runIdx, ctx) {
                 // is stations, not a guess: seg = nsub - dups, and the rim
                 // wants seg >= 1 where the seam wants seg >= 2.
                 const nsub0 = nsub;
-                const dupSeam = arrowHead && nsub0 >= 3;
-                const dupRim = startStep && nsub0 >= (dupSeam ? 4 : 2);
+                let dupSeam = arrowHead && nsub0 >= 3;
+                let dupRim = (startStep && nsub0 >= (dupSeam ? 4 : 2)) || tipStep;
+                // 🔴 AND WHERE IT CANNOT HAVE BOTH, THE BLUNT START WINS. A
+                // two-residue strand is one interval that is its own start and
+                // its own arrow, so it buys the rim's duplicate and the seam's
+                // out of one budget. At Detail 4 it can afford both: a rim, a
+                // shaft, a seam, a barb. At Detail 3 it could afford the SEAM
+                // and not the rim, so the start fell back to the chamfer ramp -
+                // and a chamfer running straight into the barbs with 1.3 A of
+                // shaft between them does not read as an arrow, it reads as a
+                // stubby pentagon. Taking the rim instead gives exactly what
+                // the floor draws, which is a clean triangle: the rim's own
+                // duplicate becomes the head's seam (see the station layout
+                // below), the head fills the interval, and the extra
+                // sub-interval Detail 3 has over Detail 2 just samples the
+                // curve more finely.
+                if (arrowHead && startStep && !(dupSeam && dupRim)) {
+                    dupSeam = false;
+                    dupRim = true;      // nsub0 is at least MIN_SUB (2)
+                }
+                // ...so a head has a shaft in front of it exactly when it has a
+                // seam of its own to start at.
+                const headFillsInterval = !dupSeam;
                 // The helix-exact two-term stencil, for everything. It is a
                 // smoothing filter fitted to a helix's 100 degrees a residue;
                 // on a straight run it is very nearly linear, which is why the
@@ -8215,6 +8315,10 @@ function drawRun(runIdx, ctx) {
                 // remains. Chord-sampled; the interval is short and nearly
                 // straight, so 16 samples are well past converged.
                 let arrowU = 0.5;
+                // ...and how much of it the head took, which is what
+                // _arrowProbe reports. It re-derived the ordinary rule instead,
+                // so it named a length the floor's head never drew.
+                let headLen = 0;
                 if (arrowHead) {
                     const SN = 16;
                     const cum = new Float64Array(SN + 1);
@@ -8230,16 +8334,42 @@ function drawRun(runIdx, ctx) {
                     }
                     const total = cum[SN];
                     if (total > 1e-6) {
+                        // 🔴 AN INTERVAL WITH NO SEAM OF ITS OWN IS ALL HEAD,
+                        // AND THAT IS THE FLOOR'S CASE ONLY. Without the
+                        // duplicated seam there is one width where the shaft
+                        // meets the barbs, so a head held to its usual length
+                        // would begin its taper in FRONT of the only seam the
+                        // interval has - where the parameter is negative and
+                        // the width comes out beyond the barb (2.505 A against
+                        // a 1.65 barb: the arrow with sides missing).
+                        //
+                        // Above the floor it is `dupSeam` that decides, not
+                        // `startStep`. A two-residue strand at Detail 3 or 4 has
+                        // the stations for a real seam, so it gets the ordinary
+                        // head - ARROW_LEN_A of arrow with the rest drawn as
+                        // shaft - and reads as a short strand rather than as a
+                        // triangle the length of the whole interval. At the
+                        // floor there is nothing to split and the head is all
+                        // of it.
                         // never let the head eat the whole interval
-                        const want = Math.min(total * 0.85, ARROW_LEN_A);
-                        const target = total - want;
-                        let k = SN;
-                        while (k > 0 && cum[k - 1] > target) k--;
-                        const c0 = cum[Math.max(0, k - 1)];
-                        const c1 = cum[k];
-                        const f = c1 > c0 ? (target - c0) / (c1 - c0) : 0;
-                        arrowU = Math.min(0.98, Math.max(0.02,
-                            (k - 1 + f) / SN));
+                        headLen = headFillsInterval ? total
+                            : Math.min(total * 0.85, ARROW_LEN_A);
+                        if (headFillsInterval) {
+                            // and the zero is STATED rather than solved for:
+                            // the solve below clamps to 0.02, so asking it for
+                            // the whole interval would still leave a sliver of
+                            // shaft in front of a seam that is already at u = 0.
+                            arrowU = 0;
+                        } else {
+                            const target = total - headLen;
+                            let k = SN;
+                            while (k > 0 && cum[k - 1] > target) k--;
+                            const c0 = cum[Math.max(0, k - 1)];
+                            const c1 = cum[k];
+                            const f = c1 > c0 ? (target - c0) / (c1 - c0) : 0;
+                            arrowU = Math.min(0.98, Math.max(0.02,
+                                (k - 1 + f) / SN));
+                        }
                     }
                     // set renderer._arrowProbe = [] before a render to
                     // collect the realised head geometry; the point of the
@@ -8249,9 +8379,7 @@ function drawRun(runIdx, ctx) {
                     if (renderer._arrowProbe) {
                         renderer._arrowProbe.push({
                             i,
-                            len: +(total - cum[0] > 0
-                                ? (total - (total - Math.min(total * 0.85,
-                                    ARROW_LEN_A))) : 0).toFixed(4),
+                            len: +headLen.toFixed(4),
                             w: +(arrowBase * RICH_ARROW_W).toFixed(4),
                             u: +arrowU.toFixed(4),
                             interval: +total.toFixed(4),
@@ -8475,6 +8603,48 @@ function drawRun(runIdx, ctx) {
                         hwU = hwA + (hwB - hwA) * uu;
                         htU = htA + (htB - htA) * uu;
                     }
+                    // 🔴 THE HEAD IS ABOUT WHERE THE STRAND ENDS, AND IT USED
+                    // TO RUN AFTER THE RULE ABOUT WHERE IT STARTS. A TWO-RESIDUE
+                    // strand is one interval that is its own blunt start AND its
+                    // own arrow, so it is the only place the two ever meet - and
+                    // the head ran second and unconditionally, overwriting the
+                    // start with `arrowBase` whichever way the start was drawn:
+                    // the rim's duplicate where there is a station to spare for
+                    // one, the chamfer ramp where there is not. Either way the
+                    // width then JUMPED from the loop's to the shaft's BETWEEN
+                    // two intervals - and nothing emits a face between intervals,
+                    // so the blunt end had a hole in it 0.75 A a side, with the
+                    // head's own back edge beside it as two small faces.
+                    // Reported exactly that way.
+                    //
+                    // The ORDER is the whole fix: the head says what the strand
+                    // draws along this interval, and the blunt start below then
+                    // steps or blends into that from the residue before. Every
+                    // longer strand has its start and its head on different
+                    // intervals, which is why only this one ever showed.
+                    if (arrowHead) {
+                        // Shaft width up to the seam, then a straight
+                        // LINEAR taper from the barb tips to the point.
+                        // Linear, not smoothstep: an arrow's edges are
+                        // straight, and easing them turns it into a leaf.
+                        const v = afterSeam
+                            ? (u - arrowU) / (1 - arrowU) : 0;
+                        hwU = afterSeam
+                            ? arrowBase * RICH_ARROW_W
+                                + (tipHW
+                                    - arrowBase * RICH_ARROW_W) * v
+                            : arrowBase;
+                        // THICKNESS IS CONSTANT through the head. The
+                        // arrowhead is a flat plate: it tapers to a point in
+                        // the PLANE of the sheet, and its tip is a short
+                        // vertical edge, not a point in 3D. Tapering the
+                        // thickness too was tried and makes the head a
+                        // spike. It looked like a fix for faces going
+                        // missing at the tip when viewed from above, but the
+                        // top face narrowing to a sliver there is simply
+                        // what a tapering flat plate looks like from that
+                        // angle - the real artifact was never reproduced.
+                    }
                     // ...and the rim's own copy of station 0, which holds the
                     // profile of the residue BEFORE the strand. Everything
                     // after it is the strand, so the step between the two
@@ -8489,29 +8659,6 @@ function drawRun(runIdx, ctx) {
                         const uu = uv * uv * (3 - 2 * uv);
                         hwU = hwRim + (hwU - hwRim) * uu;
                         htU = htRim + (htU - htRim) * uu;
-                    }
-                    if (arrowHead) {
-                        // Shaft width up to the seam, then a straight
-                        // LINEAR taper from the barb tips to the point.
-                        // Linear, not smoothstep: an arrow's edges are
-                        // straight, and easing them turns it into a leaf.
-                        const v = afterSeam
-                            ? (u - arrowU) / (1 - arrowU) : 0;
-                        hwU = afterSeam
-                            ? arrowBase * RICH_ARROW_W
-                                + (RICH_ARROW_TIP * widthScale
-                                    - arrowBase * RICH_ARROW_W) * v
-                            : arrowBase;
-                        // THICKNESS IS CONSTANT through the head. The
-                        // arrowhead is a flat plate: it tapers to a point in
-                        // the PLANE of the sheet, and its tip is a short
-                        // vertical edge, not a point in 3D. Tapering the
-                        // thickness too was tried and makes the head a
-                        // spike. It looked like a fix for faces going
-                        // missing at the tip when viewed from above, but the
-                        // top face narrowing to a sliver there is simply
-                        // what a tapering flat plate looks like from that
-                        // angle - the real artifact was never reproduced.
                     }
                     bx = ubx * htU;
                     by = uby * htU;
@@ -8658,10 +8805,6 @@ function drawRun(runIdx, ctx) {
                 const us = [];
                 let seamIdx = -1;
                 let rimIdx = -1;
-                // the floor's head: the seam sits ON a station rather than
-                // being duplicated, so the barb step is a ramp and not a
-                // discontinuity - see the branch below
-                let slantHead = false;
                 if (dupSeam || dupRim) {
                     const dups = (dupSeam ? 1 : 0) + (dupRim ? 1 : 0);
                     const seg = nsub0 - dups;      // sub-intervals with length
@@ -8685,39 +8828,61 @@ function drawRun(runIdx, ctx) {
                         us.push(list[k]);
                         if (k === seamPos) { seamIdx = us.length - 1; us.push(list[k]); }
                     }
-                } else if (arrowHead) {
-                    // 🔴 AT THE FLOOR THE HEAD TAKES A STATION THAT IS ALREADY
-                    // THERE. This branch is reached only when the interval
-                    // cannot spare the duplicated seam (nsub0 2, three
-                    // stations), and it used to lay out a shaft and a barb of
-                    // their own - five stations where a plain interval has
-                    // three. A station is TOPOLOGY, so a residue joining the
-                    // end of a strand ADDED stations and pieces and the station
-                    // fast path had to rebuild: measured on 1UBQ at Detail 2,
-                    // +12 stations and +2 pieces for one strand appearing, and
-                    // on a replayed fight 60 of 79 animation steps rebuilt at
-                    // Detail 2 against 0 at Detail 3. With arrowheads switched
-                    // off, 0 of 79 - which is what named the head.
+                    // 🔴 AN INTERVAL THAT IS ITS OWN RIM AND ITS OWN HEAD STILL
+                    // NEEDS A SEAM. A two-residue strand at Detail 2 is one
+                    // interval that is its own first and its own last, and it
+                    // comes here for the RIM - which leaves seamIdx at -1 while
+                    // arrowHead is true. `afterSeam` is `k > seamIdx`, so every
+                    // station counted as past the seam: the whole interval was
+                    // drawn as head, the taper ran from u = 0 with no shaft in
+                    // front of it, and at u = 0 the parameter is NEGATIVE, so
+                    // the width came out beyond the barb - 2.505 A where the
+                    // barb is 1.65. That is the arrow with sides missing.
                     //
-                    // So the seam MOVES to the nearest existing station rather
-                    // than being inserted: the count is nsub0 + 1 whatever the
-                    // letter says, and the head still begins at arrowU because
-                    // that station is placed there. What it costs is the square
-                    // back edge - with no duplicate there is one width at the
-                    // seam, so the barbs rise over the sub-interval before it
-                    // instead of standing perpendicular. That is the trade this
-                    // setting is for: Detail 2 is the geometric floor, and a
-                    // slanted back edge on half a residue buys every animation
-                    // step the fast path.
-                    const j = Math.max(1, Math.min(nsub0 - 1,
-                        Math.round(arrowU * nsub0)));
-                    for (let k = 0; k <= nsub0; k++) us.push(k / nsub0);
-                    us[j] = arrowU;          // the seam, on a station that exists
-                    // ...and `afterSeam` is `k > seamIdx`, so the station AT the
-                    // seam has to be the first one past it: it carries the full
-                    // barb width, and the one before it the shaft's.
-                    seamIdx = j - 1;
-                    slantHead = true;        // no piece cut: the step is a ramp
+                    // The rim's own duplicate is the seam: it already stands at
+                    // u = 0, one copy carrying the loop's profile and one the
+                    // strand's, so the station after it is where the head
+                    // begins. No station is added - the count is nsub0 + 1
+                    // either way, which is what keeps a letter changing off the
+                    // trajectory fast path.
+                    if (arrowHead && seamIdx < 0 && rimIdx >= 0) {
+                        seamIdx = rimIdx;
+                    }
+                } else if (arrowHead) {
+                    // 🔴 AT THE FLOOR THE HEAD SPENDS A STATION IT ALREADY HAS.
+                    // This branch is reached only when the interval cannot
+                    // spare a seam of its own (nsub0 2, three stations), and it
+                    // used to lay out a shaft and a barb of their own - five
+                    // stations where a plain interval has three. A station is
+                    // TOPOLOGY, so a residue joining the end of a strand ADDED
+                    // stations and pieces and the station fast path had to
+                    // rebuild: measured on 1UBQ at Detail 2, +12 stations and
+                    // +2 pieces for one strand appearing, and on a replayed
+                    // fight 60 of 79 animation steps rebuilt at Detail 2
+                    // against 0 at Detail 3. With arrowheads switched off,
+                    // 0 of 79 - which is what named the head.
+                    //
+                    // So the head fills the interval and the station at u = 0
+                    // is DUPLICATED, one copy carrying the shaft's width and
+                    // one the barbs', with the zero-length band between them as
+                    // the square back edge - the rim's own trick (above),
+                    // spent on the seam. The count is nsub0 + 1 either way, so
+                    // the fast path is kept and nothing is traded for it.
+                    //
+                    // It was a MOVE first: the seam slid onto the nearest
+                    // station the interval already had, which keeps the count
+                    // right and leaves no duplicate to stand the barbs up, so
+                    // the width ramped from shaft to barb over the sub-interval
+                    // before it and the head drew as a SPEAR. Reported as a
+                    // short sheet's arrow missing its sides, with the
+                    // two-residue strand beside it - whose rim doubles as its
+                    // seam - drawing the arrow correctly.
+                    us.push(0);
+                    seamIdx = us.length - 1;
+                    // nsub0 is at least MIN_SUB (2), so nsub0 - 1 is at least
+                    // 1 - this branch IS the floor, and a guard here would be a
+                    // silent fallback to geometry nobody asked for.
+                    for (let k = 0; k < nsub0; k++) us.push(k / (nsub0 - 1));
                 } else {
                     for (let k = 0; k <= nsub; k++) us.push(k / nsub);
                 }
@@ -8883,11 +9048,21 @@ function drawRun(runIdx, ctx) {
                         }
                     }
                 }
-                // the barb step is a genuine discontinuity in the surface -
-                // unless the head is the floor's, where the seam sits on an
-                // existing station and the barbs ramp up to it: no step, and
-                // no cut, so the piece count does not move with the letter
-                if (seamIdx > 0 && !slantHead) cutSet.push(seamIdx);
+                // the barb step is a genuine discontinuity in the surface, so
+                // the piece is cut there - unless the seam is station 0, which
+                // is where the two heads that have no seam of their own put it
+                // (the rim's duplicate, and the floor's). There the interval
+                // does not begin at the seam so much as start past it, and
+                // there is no piece in front to cut off.
+                //
+                // 🔴 A `slantHead` FLAG USED TO SAY THAT SECOND PART. It was
+                // set wherever the barb step was a RAMP rather than a step, and
+                // both of those paths duplicate a station at u = 0 now - which
+                // puts the seam at index 0, where this test cannot fire anyway:
+                // measured 0 hits over four structures x four Detail settings x
+                // three presets. A second answer to a question `seamIdx > 0`
+                // was already answering.
+                if (seamIdx > 0) cutSet.push(seamIdx);
                 // ...and so is a colour change, which has to land at the
                 // MIDPOINT between the two residues rather than at either
                 // end. Forced even in 'none' mode: without a cut here the
@@ -11243,12 +11418,16 @@ const secCacheKey = (renderer, n) => (
 
 const applySse = (sec, renderer) => {
     const ov = sseOf(renderer);
-    if (!ov || !sec) return sec;
-    for (const k in ov) {
-        const i = +k;
-        if (i >= 0 && i < sec.length && SS_LETTERS[ov[k]]) sec[i] = ov[k];
+    if (!sec) return sec;
+    if (ov) {
+        for (const k in ov) {
+            const i = +k;
+            if (i >= 0 && i < sec.length && SS_LETTERS[ov[k]]) sec[i] = ov[k];
+        }
     }
-    return sec;
+    // ...and an override is held to the same rule our own answer is - see
+    // dropShortStrands, which is where that rule and its reasons live.
+    return dropShortStrands(sec);
 };
 
 const secForColor = (renderer) => {

@@ -953,16 +953,119 @@ public downloads is exercised on every run.
   stations and +2 pieces on 1UBQ** - and the station fast path rebuilt: replaying
   79 frames of a protein_fighter fight at Detail 2, **60 of 79 steps rebuilt**,
   against 0 at Detail 3 and 0 with arrowheads switched off, which is what named
-  the head. The seam now MOVES onto a station the interval already has, so the
+  the head. The head fills the interval and the station at u = 0 is
+  DUPLICATED, one copy at the shaft's width and one at the barbs', so the
   count is `nsub + 1` whatever the letter says: **0 of 79**.
-  **WHAT IT COSTS IS THE BARBS, AT THE FLOOR ONLY.** A square back edge needs two
-  stations at one point and there is no third to spare, so a Detail 2 arrowhead
-  tapers to a spearpoint instead of overhanging - looked at side by side and
-  chosen deliberately, because Detail 2 is the geometric floor and the setting
-  people animate at. Detail 3 and 4 are untouched, barbs and all: `paint_trace`
-  reports 11 fixtures unchanged. `tests/ss_axis.py --detail=2` is the gate and
-  is in `tests/run.sh` beside the default-Detail run, which is the one that
-  missed this.
+  `tests/ss_axis.py --detail=2` is the gate and is in `tests/run.sh` beside the
+  default-Detail run, which is the one that missed this.
+  🔴 **AND IT COST THE BARBS FOR SIX WEEKS, ON A THIRD STATION THAT WAS THERE
+  ALL ALONG.** The seam MOVED onto a station the interval already had at
+  first - the count is right either way, and with no duplicate there is one
+  width where the shaft meets the barbs, so they ramped up to it over the
+  sub-interval before and a Detail 2 arrowhead tapered to a SPEARPOINT. Taken
+  deliberately, written down here as the price of the fast path, and wrong:
+  the rim eight lines above was already buying a square end out of the same
+  budget by duplicating u = 0, and the head can do exactly that. Reported as a
+  short sheet drawing an arrow with sides missing.
+  **THE COUNT PASSED AGAINST BOTH**, which is why it lived so long -
+  `ss_axis` and `arrow_rebuilds` both measure what a letter COSTS, and the
+  spear and the arrow cost the same. `tests/ss_arrow_shape.py` is the gate on
+  the SHAPE, and it reads the profile off the drawing rather than writing 1.1
+  and 1.65 down: the barb is the widest half-width, the shaft the widest below
+  it, the loop what a chain with no strand draws. Three mutations, each
+  caught - and the first attempt at the spear mutation was a NO-OP, because
+  reverting the seam alone leaves `arrowU` at 0 and the moved seam lands on
+  the same station. The spear needed both halves, which is the tell that they
+  are one decision.
+  🔴 **AND A TWO-RESIDUE STRAND ABOVE THE FLOOR WAS ALL HEAD.** Where an
+  interval is its own blunt start AND its own arrow the head has to fill it -
+  at the floor, where there is no seam to split at. That condition was written
+  as `startStep`, which asks "is this the strand's first interval", when what
+  forces it is `!dupSeam`, "does this interval have a seam of its own". So at
+  Detail 3 and 4 a two-residue strand drew as a triangle the length of the
+  whole strand rather than as a short strand with an arrow on it. The head is
+  a constant **2.47 A** above the floor whatever the strand's length, which is
+  what the arc-length solve is for, and the whole interval at the floor.
+  🔴 **AND A ONE-RESIDUE SHEET HAD NOTHING TO BE DRAWN IN.** A strand is drawn
+  over the INTERVALS between consecutive `E` residues, so a lone one has no
+  interval at all - while the WIDTH is keyed per residue, so the ribbon bulged
+  to full sheet width around a single point with the head sitting nowhere.
+  `assignSecondary` has always dropped these (`SS.minStrand`, DSSP calls it a
+  bridge and cartoons draw it as loop); what it could not see is a letter that
+  arrives AFTERWARDS - `set_sse`, a session, a file's own SHEET records.
+  `applySse` is the funnel all of those pass through and it asks the same
+  question now, through the SAME function - `dropShortStrands`, called by both,
+  because written out twice raising `SS.minStrand` to 3 would drop two-residue
+  strands from our own answer and keep them from an override. It is also the
+  funnel the COLOURS read, so the geometry and the colour cannot disagree
+  about what a sheet is.
+  **What it takes away**: `view.set_sse({10: 'E'})` on a single residue now
+  draws coil. That is a capability removed rather than a bug fixed, and it is
+  the answer to "should one residue be a sheet" being no.
+  🔴 **AND `slantHead` WENT WITH IT.** It said "the barb step is a ramp, so do
+  not cut the piece here", and both paths that set it duplicate a station at
+  u = 0 now - which puts the seam at index 0, where its only reader
+  (`seamIdx > 0 && !slantHead`) cannot fire: measured **0 hits over four
+  structures x four Detail settings x three presets** before removing it. A
+  second answer to a question `seamIdx > 0` was already answering.
+  🔴 **AND THE 2D PAINTER CULLED AN ARROWHEAD AS IF IT WERE A PLAIN SLAB.**
+  Backface culling in `cartoon/paint2d.js` asks `oN` about the thickness
+  strips and `oB` about the broad faces - right for a slab whose sides are
+  parallel to `n`, and a head is not one: a barb's outer edge slants, and the
+  BACK EDGE is a quad between two stations at one point, facing along the
+  tangent alone. Reported from four saved views of 6MRR as faces missing in
+  CPU mode that the GPU drew - an outline with nothing inside it, the front of
+  the sheet showing where its card edge belongs. Three things, each caught by
+  one of those views (`tests/arrow_faces_2d.py`, which holds all four inline):
+  - **An arrow's side strips are culled QUAD BY QUAD, by projected winding.**
+    Per TRIANGLE, not per quad: a tapering side strip is a saddle, and one
+    176x10 px quad reported an |area| of 2,511 against the 1,760 it can have.
+  - **`if (g.arrow) { showTop = true; showBot = true; }` is gone.** It existed
+    because the back edge was believed to ride in the top/bottom strips; it
+    rides in the SIDE strips, and those top/bottom quads are collinear. What
+    the override actually did was draw the head's BACK-facing broad face,
+    which painted over the back edge from behind and below: 1,238 px off the
+    GPU with it, 199 without.
+  - **The loop after an arrow is joined to it** (`geom.js`). It began at its
+    own width where the head ends at a point - a step BETWEEN two intervals,
+    where nothing emits a face - so every arrowhead was followed by an open
+    tube. On the GPU too: a double-sided mesh shows the inside of the far walls
+    through the hole, which reads as closed. Two answers, split at the floor:
+    above it the point stays and the loop opens with a WALL (`tipStep`, the
+    rim's trick); AT the floor the head ends SQUARE at the width of what
+    follows (`tipHW`) and the loop carries straight on from its flat end.
+    🔴 **THE WALL STARTS AT THE POINT'S OWN WIDTH, NOT ZERO**, because that is
+    what lets its cross edges WELD to the head's across the piece boundary. From
+    zero they did not, each was a lone boundary edge drawn unconditionally, and
+    when a trajectory closed the gap the fast path kept drawing them:
+    `tests/sheet_merge.py`, 3 rows across a continuous sheet. The rim has always
+    worked this way - its first copy is what the previous interval ends at. And
+    no wall at all where the ribbon is FLAT: its first copy is then a point with
+    no frame, which `tests/cartoon_station.js` rejects on 1UBQ at thickness 0.
+    🔴 **THE FLOOR CANNOT AFFORD THE WALL, and two attempts proved it.** A
+    duplicate costs a sub-interval, free on a straight strand and not on a
+    loop: at Detail 2 it left the loop after 6MRR's last arrow ONE straight band
+    to carry a 60 degree turn, reported as the loop squished at its end. The
+    rim's fallback, a chamfer ramping from the point, kept the curve and made
+    both ends converge on the point instead - the head and the loop touching
+    only at a pinch. The square end was the reader's suggestion and needs
+    neither: nothing to close, both sub-intervals left to bend.
+    `tests/ss_arrow_shape.py` asserts both halves - at Detail 2 nothing
+    narrower than the loop, above it a step from zero up to the loop's width.
+  🔴 **AND A SEPARATE SURFACE FOR THE BACK EDGE WAS BUILT, MEASURED AND TAKEN
+  OUT.** Found by its two coincident stations and culled by the tangent, it
+  fixed the views it was written for; once the other two were in, switching it
+  off entirely measured 68 / 183 / 166 / 199 px against the GPU, the same as
+  with it. **Mutating it away made things WORSE only because the strips were
+  still told to skip that quad** - a mutation that removes half a mechanism
+  measures the half left behind.
+  *How it was found*: three rounds of culling rules that each fixed one view
+  and broke another, until the picture was read correctly - the band missing
+  at the fourth view was the head's BACK edge, not a long side, which the
+  instrumentation had been saying all along (the "kept" quads were 55 px, the
+  back edge's width). **Turn the pencil off before comparing painters** - its
+  grain is noise laid over exactly the thing being compared - and compare
+  within ONE page load, since the GPU painter is not pixel-stable across loads.
 - **KABSCH IS A FUNCTION NOW, NOT ONLY A SIDE EFFECT OF `addFrame`.** The fit
   has been in every bundle since the browser took the viewing geometry over
   from numpy, and the only way to reach it was to ask a FRAME to align itself

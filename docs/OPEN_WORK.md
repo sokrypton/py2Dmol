@@ -147,17 +147,18 @@ respect.
 
 ---
 
-## 8. Detail 2 arrowheads: shipped, and what it cost
+## 8. Detail 2 arrowheads: shipped, and it no longer costs the barbs
 
 Not open - recorded so the trade is not re-litigated. At the geometric floor an
 interval has three stations and an arrowhead wanted five of its own, so a
 residue joining the end of a strand moved the topology and every such animation
 frame rebuilt (**60 of 79** replayed fight steps at Detail 2, against 0 at
-Detail 3). The seam now takes a station the interval already has: **0 of 79**.
-What it costs is the barbs at Detail 2 ALONE - the head tapers to a point, since
-a square back edge needs two stations at one place and there is no third to
-spare. Looked at side by side and chosen deliberately. `tests/ss_axis.py
---detail=2` is the gate and runs in `tests/run.sh`.
+Detail 3). The head now spends a station the interval already has: **0 of 79**.
+It first did that by MOVING the seam onto a station, which left no duplicate
+to stand the barbs up and drew a spearpoint; it now DUPLICATES the station at
+u = 0, the rim's own trick, and keeps its square back edge at the same count.
+`tests/ss_axis.py --detail=2` is the topology gate and `tests/ss_arrow_shape.py`
+the shape gate; both run in `tests/run.sh`.
 
 ---
 
@@ -170,3 +171,16 @@ py2Dmol deploy does not touch it, and the game can sit on a bundle that is
 older - or newer - than what the site serves. It was last refreshed at
 `3e670c2` and this repo has moved on since, so check before assuming the two
 agree.
+
+---
+
+## 10. A session loaded over another one keeps some of the first one's camera
+
+Found while writing `tests/arrow_faces_2d.py`, and not chased. Four saved views
+loaded one after another into ONE page, through `loadViewerState`, drew the
+third one with **12,477** inked pixels; the same state loaded into a fresh page
+drew **32,242**. The loader clears first, so something camera-shaped - the zoom,
+the extent, or the framed-objects set - survives that clear. The test sidesteps
+it with one page load per view, which is also what a reader opening a file sees;
+anything that restores several sessions into one live viewer (LocalFold's run
+history is the obvious candidate) should check it before trusting a restore.

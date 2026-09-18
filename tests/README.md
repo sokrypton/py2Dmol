@@ -86,6 +86,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `align.js` | node | TM-align, and the four decisions the viewer makes around it. |
 | `align_objects.py` | ui | Superposing one object onto another, in the browser. |
 | `anim_profile.py` | tool | A CPU profile of a trajectory being stepped, aggregated by function. |
+| `arrow_faces_2d.py` | gpu | THE 2D PAINTER DRAWS AN ARROWHEAD'S FACES WHERE THE GPU DOES. |
 | `arrow_rebuilds.py` | gpu | ARROWS NO LONGER MAKE A TRAJECTORY REBUILD, and this is the gate on that. |
 | `bench.js` | tool | Render-time benchmark. Requires tests/out/bench.html (python tests/make_bench.py). |
 | `bleed.py` | tool | Does one amino acid bleed through one helical turn? Worked out, not drawn. |
@@ -199,6 +200,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `smoke.js` | node | Node smoke test for the cartoon renderer: loads cartoon/geom.js with |
 | `splice_window.py` | gpu | HOW BIG A PARTIAL REBUILD'S WINDOW WOULD ACTUALLY BE. |
 | `ss_agree.py` | gpu | THE ASSIGNMENT BEHIND THE COLOURS IS THE ONE BEHIND THE GEOMETRY. |
+| `ss_arrow_shape.py` | gpu | WHAT A SHORT STRAND IS SHAPED LIKE, at every Detail. |
 | `ss_axis.py` | gpu | DOES A SECONDARY-STRUCTURE CHANGE MOVE THE TOPOLOGY? |
 | `ss_bench.js` | tool | Score the renderer's CA-only secondary structure against pydssp. |
 | `ss_bench.py` | tool | Score the renderer's secondary-structure assignment against pydssp. |
