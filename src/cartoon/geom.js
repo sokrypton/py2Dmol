@@ -7523,59 +7523,42 @@ function drawRun(runIdx, ctx) {
                 }
             }
 
-            // LOOPS GET A MINIMAL-TWIST FRAME.
-            // Side vectors come from the local CURVATURE, which is the
-            // right source for an element - a helix's curvature points at
-            // its axis, a strand's at its pleat - but a loop has no
-            // intrinsic face, and its curvature direction swings through
-            // every inflection. The strip then rolls about its own centre
-            // line for no reason, which is the extra twist visible in
-            // loops.
+            // 🔴 A LOOP'S FACE IS ITS OWN LOCAL CURVATURE, and it was not for
+            // six days. When every letter moved to one ribbon path (f385111,
+            // squashed into 57fcf97) a loop's frame became parallel TRANSPORT:
+            // seeded from the neighbouring element's face and reconciled
+            // against the one at the far end. That is smoother on a still
+            // structure - which is what it was written for, and side by side on
+            // 1UBQ and 3CHY the two are near indistinguishable - and it ties
+            // the WHOLE run's face to ONE seed, so on a moving structure a band
+            // of ribbon turns over between frames all at once. Reported as
+            // loops changing direction and shade through a diffusion run.
             //
-            // A loop's frame should instead carry the neighbouring
-            // element's orientation along with as little rotation as the
-            // path allows: parallel transport. Each side is the previous
-            // one projected perpendicular to the new tangent, which is the
-            // rotation-minimising frame.
+            // Measured on a 41-model sampler trajectory, counterbalanced: the
+            // pale inner face swings 0.0106 of the drawing per frame
+            // transported against 0.0082 by curvature - 23% steadier - with the
+            // same 2,072 stations and 0 rebuilds either way. A loop's frame is
+            // per-station DATA and not topology, so the station fast path never
+            // cared which rule wrote it: the steadiness and the no-rebuild work
+            // were never in tension.
             //
-            // Transport alone would leave the far end mismatched against
-            // the NEXT element, trading a wandering twist for a sudden one,
-            // so the residual angle at the far end is measured and spread
-            // evenly along the run. The result is continuous with the
-            // element at both ends and turns at a constant, minimal rate in
-            // between.
-            // 🔴 THE BLOCK IS NOT ALL ONE THING, AND THE FLAG USED TO TAKE ALL
-            // OF IT. `_loopFrame = 'curvature'` skipped this entire block - and
-            // the element-internal SIGN pass lives in here too, which has
-            // nothing to do with a loop's frame: without it a helix's
-            // consecutive side vectors can come out antiparallel and the strip
-            // between two stations pinches through zero and crosses. Measured
-            // as the H fixture going 2,234 ops to 3,000. So the element passes
-            // always run, and only the per-loop transport asks the flag.
+            // Three things were tried to keep transport AND the steadiness, and
+            // none of them is here: seeding a run from the mean of its own
+            // sides (aligned to the first residue, which puts that residue back
+            // in charge - 0.0119, no change); from a sign-free tensor aggregate
+            // with a majority sign (0.0112, and MORE flips); and dropping the
+            // residual reconciliation alone (0.0109). The seed is not the
+            // mechanism - the COHERENCE is, and that is the whole of what
+            // transport bought.
+            //
+            // What stays is the element passes below, which are not a loop's
+            // frame at all and merely lived in the same block: an element's own
+            // runs, and the sign that keeps consecutive side vectors within one
+            // element from coming out antiparallel. Skipping those along with
+            // the rest is what took the H fixture from 2,234 ops to 3,000 - a
+            // helix's strip pinching through zero - which is how the two were
+            // found to be separate things.
             if (isProt) {
-                const tanOf = (j) => {
-                    const p0 = at(wrapIdx(j - 1));
-                    const p1 = at(wrapIdx(j + 1));
-                    const v = [p1.x - p0.x, p1.y - p0.y, p1.z - p0.z];
-                    const m2 = len3(v[0], v[1], v[2]) || 1;
-                    return [v[0] / m2, v[1] / m2, v[2] / m2];
-                };
-                const proj = (v, t) => {
-                    const d = v[0] * t[0] + v[1] * t[1] + v[2] * t[2];
-                    const o = [v[0] - d * t[0], v[1] - d * t[1], v[2] - d * t[2]];
-                    const m2 = len3(o[0], o[1], o[2]);
-                    return m2 > 1e-9 ? [o[0] / m2, o[1] / m2, o[2] / m2] : null;
-                };
-                // rotate v about unit axis k by angle a (Rodrigues)
-                const rot = (v, k, a) => {
-                    const c = Math.cos(a); const si = Math.sin(a);
-                    const d = k[0] * v[0] + k[1] * v[1] + k[2] * v[2];
-                    return [
-                        v[0] * c + (k[1] * v[2] - k[2] * v[1]) * si + k[0] * d * (1 - c),
-                        v[1] * c + (k[2] * v[0] - k[0] * v[2]) * si + k[1] * d * (1 - c),
-                        v[2] * c + (k[0] * v[1] - k[1] * v[0]) * si + k[2] * d * (1 - c),
-                    ];
-                };
                 // WHAT COUNTS AS AN ELEMENT, for framing. Not the SS
                 // letter - whether the residue has a face worth keeping. A
                 // helix does: its curvature points at its own axis. A strand
@@ -7585,16 +7568,12 @@ function drawRun(runIdx, ctx) {
                 // information about the sheet's plane.
                 //
                 // Pinning the ribbon to that is worse than not pinning it at
-                // all. 1YP8 model 14 reads E C E C H H H at its start: the
-                // lone 'E' at residue 2 has a single-residue loop on either
-                // side, so the frame had to swing out to the pleat normal
-                // and back within one step each way - the twist at residue
-                // 3. Treated as loop, the transport simply carries the face
-                // through it, and the mismatch that was jammed into one
-                // residue is spread over three.
+                // all: 1YP8 model 14 reads E C E C H H H at its start, and the
+                // lone 'E' at residue 2 would have to swing out to the pleat
+                // normal and back within one step each way. Treated as a loop
+                // it simply keeps its own curvature face like its neighbours.
                 const isElAt = (j) => (sec[j] === 'H'
                     || (sec[j] === 'E' && !!(sheetSides && sheetSides[j])));
-                const isLoopAt = (j) => !isElAt(j);
                 // Maximal runs of one kind, wrapping on a ring so a loop
                 // that crosses the closure is ONE run rather than two
                 // half-loops that each seed themselves from nothing.
@@ -7624,9 +7603,6 @@ function drawRun(runIdx, ctx) {
                     return out;
                 };
                 const elems = runsOf(isElAt);
-                const loops = runsOf(isLoopAt);
-                const elemOf = new Int32Array(span).fill(-1);
-                elems.forEach((el, ei) => el.forEach((j) => { elemOf[j - lo] = ei; }));
 
                 // ELEMENT-INTERNAL SIGN, in the element's OWN order, which
                 // wraps. The continuity pass far above walks lo..hi, so an
@@ -7647,116 +7623,6 @@ function drawRun(runIdx, ctx) {
                             sides[el[k] - lo] = [-b[0], -b[1], -b[2]];
                         }
                     }
-                }
-
-                // ORDER. Each loop reconciles the two elements it joins, so
-                // nothing accumulates around the ring - the twist a loop
-                // absorbs is its own neighbours' mismatch, measured at 11-86
-                // degrees on 1YP8 rather than the ring's total. The element
-                // signs are shared between adjacent loops though, so on a
-                // ring the cycle may not close: exactly one loop can be left
-                // with the complement of its residual. Process the LONGEST
-                // loop last so that leftover lands where it is spread over
-                // the most residues - and in the Richardson preset a loop's
-                // thickness equals its width, so its face has no observable
-                // orientation and the leftover is free.
-                const order = loops.map((_, k) => k);
-                if (cyclic && loops.length > 1) {
-                    let longest = 0;
-                    for (let k = 1; k < loops.length; k++) {
-                        if (loops[k].length > loops[longest].length) longest = k;
-                    }
-                    order.splice(order.indexOf(longest), 1);
-                    order.push(longest);
-                }
-                const locked = new Uint8Array(elems.length);
-                // 🔴 THE LOOP FRAME, AND THE ONLY PART OF THIS BLOCK THE FLAG
-                // DECIDES. Transport carries the neighbouring element's face
-                // along the run with minimal rotation, which is smoother on a
-                // still structure - and ties the whole run's face to one seed,
-                // so on a moving one a band of ribbon turns over all at once.
-                // `curvature` leaves each loop residue the face its own local
-                // curvature gives it: noisier per residue, and a flip is then
-                // one residue rather than a run.
-                // 🔴 CURVATURE IS THE DEFAULT, AND IT IS A TRADE MEASURED ON A
-                // MOVING STRUCTURE. Transport is smoother on a still one -
-                // that is what it was written for, and on 3CHY the two are
-                // nearly indistinguishable side by side - but it ties the
-                // whole run's face to ONE seed, so on a sampler trajectory a
-                // band of ribbon turns over between frames all at once.
-                // Measured on a 41-model diffusion run: the pale inner face
-                // swings 0.0106 of the drawing per frame transported against
-                // 0.0082 by curvature, 23% steadier, with the same 2,072
-                // stations and 0 rebuilds either way - a loop's frame is
-                // per-station DATA, not topology, so the fast path never cared
-                // which rule wrote it. Reported as loops changing direction and
-                // shade during a diffusion run.
-                //
-                // Two attempts to keep transport AND the steadiness are
-                // recorded as failures rather than removed in silence: seeding
-                // the run from the mean of its own sides (aligned to the first
-                // residue, which puts that residue back in charge - 0.0119, no
-                // change) and from a sign-free tensor aggregate with a majority
-                // sign (0.0112, and MORE flips). The seed is not the mechanism.
-                //
-                // `renderer._loopFrame = 'transport'` selects the other one.
-                const loopTransport = renderer._loopFrame === 'transport';
-                for (const li of (loopTransport ? order : [])) {
-                    const L = loops[li];
-                    const first = L[0];
-                    const last = L[L.length - 1];
-                    const prevI = cyclic ? wrapIdx(first - 1) : first - 1;
-                    const nextI = cyclic ? wrapIdx(last + 1) : last + 1;
-                    const hasPrev = prevI >= lo && prevI <= hi && isElAt(prevI);
-                    const hasNext = nextI >= lo && nextI <= hi && isElAt(nextI);
-                    if (hasPrev && elemOf[prevI - lo] >= 0) locked[elemOf[prevI - lo]] = 1;
-                    // seed from the element before the run, else its own side
-                    let cur = sides[(hasPrev ? prevI : first) - lo];
-                    const out = [];
-                    for (const j of L) {
-                        const t = tanOf(j);
-                        const pj = proj(cur, t);
-                        if (pj) cur = pj;
-                        out.push(cur);
-                    }
-                    // residual against the element after the run
-                    if (hasNext && out.length) {
-                        const tEnd = tanOf(last);
-                        let want = proj(sides[nextI - lo], tEnd);
-                        const have = out[out.length - 1];
-                        if (want) {
-                            let dp = have[0] * want[0] + have[1] * want[1] + have[2] * want[2];
-                            dp = Math.max(-1, Math.min(1, dp));
-                            // AN ELEMENT'S FACE IS A DIRECTION, NOT AN
-                            // ORIENTATION: negating it draws the same ribbon.
-                            // So flip the element rather than make the loop
-                            // twist more than 90 degrees to reach it. Only
-                            // while it is still free - once a loop has been
-                            // solved against an element, that element is
-                            // fixed, or this would undo the earlier one.
-                            const eid = elemOf[nextI - lo];
-                            if (dp < 0 && eid >= 0 && !locked[eid]) {
-                                for (const j of elems[eid]) {
-                                    const sv = sides[j - lo];
-                                    sides[j - lo] = [-sv[0], -sv[1], -sv[2]];
-                                }
-                                want = [-want[0], -want[1], -want[2]];
-                                dp = -dp;
-                            }
-                            if (eid >= 0) locked[eid] = 1;
-                            let ang = Math.acos(dp);
-                            const cx = have[1] * want[2] - have[2] * want[1];
-                            const cy = have[2] * want[0] - have[0] * want[2];
-                            const cz = have[0] * want[1] - have[1] * want[0];
-                            if (cx * tEnd[0] + cy * tEnd[1] + cz * tEnd[2] < 0) ang = -ang;
-                            const nSteps = out.length;
-                            for (let k = 0; k < nSteps; k++) {
-                                const f = (k + 1) / nSteps;
-                                out[k] = rot(out[k], tanOf(L[k]), ang * f);
-                            }
-                        }
-                    }
-                    for (let k = 0; k < L.length; k++) sides[L[k] - lo] = out[k];
                 }
             }
         }
