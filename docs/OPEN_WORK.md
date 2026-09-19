@@ -272,3 +272,158 @@ What was RULED OUT on the way, so nobody pays for it twice:
     marginal helix end arrives in the loop's green and reads as a loop, which
     is louder than the width it is drawn at. `SS_COL_BLEND = 0.35`, chosen by
     looking at five settings in one page load.
+
+---
+
+## 13. A zoom on a huge structure is half rate, and it is the PRODUCT of the
+two sizes — not a regression
+
+**Reported as** "somehow predeploy felt faster, especially on 3J3Y, like the
+zoom in and out now feels a little laggy", after `e915167` went out.
+
+**It is not a regression.** Measured with `scratchpad/zoomcast.py` (below),
+three counterbalanced pairs of the shipped tree against `f480c1b` — the
+commit before the deploy — on 3J3Y (271,425 positions) in a 1996x1996 canvas:
+the page misses 18 vsyncs out of ~119 on BOTH trees, the presented-frame
+median is 18.7-19.0 ms against 18.4-19.3, and **0 mesh builds** happen during
+the gesture on either. Nothing measurable moved.
+
+### Where the frame actually goes, and the levers, all measured
+
+The main thread is **idle**: `render()` costs 0.1-0.6 ms a frame on 3J3Y at
+1996x1996, `__faceBuilds` and `__tubeBuilds` both move ZERO over a two-second
+zoom, and the drawn style there is the tube, whose instance buffer carries no
+view-dependent number. So every millisecond of the 25 is the card's, and the
+only question is what to stop asking it for. Each arm below is one page load
+with one thing changed, against a baseline taken the same way
+(`scratchpad/zoomlevers.py`, which installs its switch in `<head>` because the
+GL context is made once and cannot be re-made):
+
+| 3J3Y, 271,425 positions, 998px box | presented frame, median |
+|---|---|
+| baseline (dpr 2, MSAA on, outline 3) | 25.6 ms |
+| outline off | 21.8 ms (-16%) |
+| the GL context without `antialias: true` | 22.5 ms (-12%) |
+| **the backing store at dpr 1 instead of 2** | **16.7 ms, 0 frames over 20** |
+
+So it is fill, and the lever that reaches it is **resolution**: a quarter of
+the pixels is a flat 60 fps with room to spare. The shape of the fix is the
+standard one - render at a reduced scale WHILE a gesture is in flight and
+restore it on settle - and two things are already in place for it:
+`window.canvasDPR` is read by `parts/viewport.js`, and a size change is a
+redraw rather than a rebuild on both GPU paths (`tests/resize_reuse.py`, and
+measured again here for the tube: 0 instance builds across a resize).
+
+**What it would cost is ~40 ms per switch**, twice a gesture, and that is NOT
+a mesh rebuild: measured on 3J3Y, halving and restoring the canvas costs
+36-45 ms with `__tubeBuilds` at 0 either way. It is the GL drawing buffer and
+the occlusion framebuffers being reallocated at four million pixels. A
+reduced-scale buffer kept alive beside the full one would avoid it; nothing
+here tried that.
+
+### The gesture scale: built, measured, looked at, and switched off again
+
+It works, and it is **not in the tree** - reverted at the reader's word ("lets
+disable it for now"), with everything needed to put it back written here.
+
+What it was: while a drag or a zoom is in flight AND the card is over budget,
+the GPU layer is drawn at half resolution and the compositor stretches it over
+its box (`gestureScaleOf` in both `renderApp` and `renderTubeApp`, scaling the
+`w, h` the GL canvas is sized to; `blitApp` stretching to the canvas rather
+than drawing 1:1; `_gestureScale()` in `core/mol.js` beside `_frameOverBudget`,
+released in `render()` and restored through the existing `_scheduleSettle`).
+The viewer's own canvas is never scaled, so the overlays stay sharp over a
+softer structure.
+
+| 3J3Y, 271,425 positions at 1996x1996 | before | with it |
+|---|---|---|
+| page frames over 33 ms, over a 2 s zoom | 18 of 119 | **0 of 134** |
+| presented frame, median / p90 | 18.7 / 31.0 ms | **16.7 / 18.1** |
+| the card's own time per frame | 18.4 ms | 11.9 |
+
+**The restored frame is byte-identical to the full-resolution one** in the same
+page load (0.00 mean, which is the control that makes the rest mean anything).
+
+🔴 **AND THE INTERVAL BETWEEN `render()` CALLS CANNOT SEE THE PROBLEM.** The
+first version compared it and could never fire: requestAnimationFrame goes on
+running at 60 Hz while the compositor presents at 30, so the page's own clock
+reads a steady 16.7 ms through a gesture that is visibly half rate. What
+reports the truth is `EXT_disjoint_timer_query_webgl2` - available in Chrome
+here, asynchronous, so the number belongs to a frame or two back, which is
+right for a steady gesture. The cheapest of the last five, the rule
+`_frameOverBudget` already uses; null where the extension is absent, and an
+unknown cost is not evidence of a slow one.
+
+🔴 **AND IT HAS TO BE A LATCH.** Dropping the scale makes the frames fast,
+which is exactly the evidence for putting it back, so a rule asked fresh every
+frame oscillates - and every crossing reallocates the drawing buffer and the
+occlusion framebuffers.
+
+**What it costs, which is why it is worth a second look before shipping:**
+
+  * **A cartoon's outline goes thin and soft** at half scale - a change of
+    LOOK, not just blur (`scratchpad/scale/gesture_scale.png`, which is the
+    same camera at both scales in one page load). A 748-residue cartoon never
+    trips the budget, so it would not see this; a large one would.
+  * **A hitch at each end of the gesture**: 57 ms at the start and 188 ms at
+    the settle, measured in the screencast - the buffers being reallocated at
+    four million pixels, not a rebuild. Keeping both sizes' buffers alive
+    would remove it; not tried.
+  * The cost ring has to be cleared when the buffer size changes, or a cost
+    measured at one size decides the other.
+
+🔴 **AND A CHANGE TO THE TUBE'S RESIZE PATH WAS WRITTEN, MEASURED AS A NO-OP
+AND REMOVED.** `renderTubeApp` nulls `tubeSig` when the canvas size moves,
+which reads exactly like the fault the cartoon path above it already fixed
+("A RESIZE NO LONGER THROWS THE MESH AWAY") - and it is not one: the very
+next block restores the buffer by value when `tubeLive.sig === key`, so the
+null costs a lookup and no build. Measured both ways on 3J3Y: **0 instance
+builds and 36-45 ms either way.** A gate written for it passed against its own
+mutation, which is what said so.
+*Two probe faults cost a round each on the way, both the same shape - the
+window being measured contained the control. The build counter was read AFTER
+the forced-rebuild arm, and the counter was started AFTER waiting for the new
+canvas size, by which time the viewport's own observer had already served the
+resize on its own frame.*
+
+**What IS true is that the gesture runs at half rate, and neither size causes
+it alone:**
+
+| | canvas 1196x1196 | canvas 1996x1996 |
+|---|---|---|
+| 1AOI, 1,103 positions | 60 fps | **60 fps** |
+| 3J3Y, 271,425 positions | **60 fps** | 30 fps, 50-58 ms hitches |
+
+So it is not pixel-bound and it is not geometry-bound: it is the per-frame
+GPU draw of a quarter-million positions' worth of instances over four million
+pixels. A zoom rebuilds nothing — the mesh is resident, `__faceBuilds` does
+not move — so the lever is the draw, which is the one thing the station fast
+path does not touch. Untried: culling, or a detail drop while a gesture is in
+flight (which the Detail slider already does by hand, and which the file
+refuses to make automatic elsewhere, because a drawing that depends on
+something invisible in the controls is a design decision).
+
+**The instrument.** `scratchpad/zoomcast.py` films a real zoom:
+
+    python3 scratchpad/zoomcast.py 3J3Y.cif --hz=120 --n=240 --size=1000
+
+A **headed** Chrome under `Page.startScreencast`, the same catch that found
+the heatmap's black frame and for the same reason — headless composites
+through SwiftShader, so what it says about smoothness is about SwiftShader.
+Real `Input.dispatchMouseEvent` wheels, because a scripted wheel is not
+trusted and this measures the whole path. Two clocks, and both are needed:
+the page's own rAF timestamps say what the MAIN THREAD managed, the
+screencast deltas say what was PRESENTED, and a gap in one without the other
+says which half to look at. Three things it cost:
+
+  * 🔴 **`ws.call()` drops events** — it reads until it sees its own id and
+    bins the rest — so nothing may call it while the screencast runs. The
+    capture pumps `recv()` itself and matches replies by id.
+  * 🔴 **The wheel rate is the frame rate when it is below 60 Hz.** At the
+    obvious 30 Hz every presented interval is 33 ms and the page looks
+    exactly half rate on a structure that is perfectly smooth. Drive the
+    wheels FASTER than the display.
+  * 🔴 **The full-screen button needs a trusted click**, so `--size` writes
+    `#canvasContainer`'s box instead and lets `setupViewport`'s
+    ResizeObserver do the rest. Measured at the default 598px box, every
+    structure tried is a flat 60 fps and the report is invisible.
