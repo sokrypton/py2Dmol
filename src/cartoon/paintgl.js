@@ -2810,6 +2810,7 @@ let stationEverFast = false;    // ...and whether one step has ever been taken
 let stationGaveUpFor = null;    // the object it gave up on
 const STATION_TRY_LIMIT = 12;
 let residentPartSpans = null;   // where each part sits in the buffers
+let residentStationedSide = false;  // ...and in which of the two orders
 let lastStickRefresh = null;    // why refreshSticksFrom last said no
 let lastStationUpdate = null;   // why updateStations last said no
 const STATION_ROW = 18;         // aStation, aSurf, aPiece, aBase, three flag vec4s
@@ -4011,6 +4012,9 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused, smOffset) {
     // to it would be blind to the thing it exists to check. Read once per
     // build, never per call: this is the innermost read of the edge pass.
     const hashQ = window.__edgeQuantum || 1000;
+    // A CORNER ID, IN THE SAME SPACE AS A POSITION HASH. Knuth's multiplier
+    // spreads the small integers geom.js hands out across the word, so they
+    // land in the edge map's groups the way hashed positions do.
     const hashAt = (o) => {
         const h = Math.round(M[o] * hashQ) * 73856093
             ^ Math.round(M[o + 1] * hashQ) * 19349663
@@ -5964,6 +5968,13 @@ function makeResident(faces, scale, prm, lines) {
     RB.nSide = groups[2].length;
     RB.stickMs = +(performance.now() - t0).toFixed(1);
     const orderedParts = stationedSide ? [parts[0], parts[2], parts[1]] : parts;
+    // 🔴 WHICH SPAN IS WHICH DEPENDS ON THIS, AND ONE READER DID NOT KNOW.
+    // The mesh is ribbon, SIDE CHAINS, other when the table covers the side
+    // chains too, and ribbon, other, side chains when it does not - so a span
+    // index means two different parts. refreshSticksFrom read span 0 as "what
+    // the stations cover" and spans 1 and 2 as "the sticks to rebuild", which
+    // is only the second layout. See the note there.
+    residentStationedSide = stationedSide;
     return installParts(orderedParts, scale);
 }
 
@@ -6583,6 +6594,11 @@ function stationMeshFrom(renderer, cap, optCentre) {
     // array, so the sticks are still in it and refreshSticksFrom rebuilds them
     // from here rather than running a second capture.
     if (mesh) mesh.prims = cap.prims;
+    // ...and THE SCALE THEY WERE PROJECTED AT, which is this frame's and not
+    // the mesh's. Everything refreshSticksFrom does with a scale is unproject
+    // these prims back to model Angstrom, so it has to be the one the capture
+    // used - see the call.
+    if (mesh) mesh.capScale = cap.scale;
     // 🔴 WHY, WHEN IT IS NOTHING. Returning null and leaving the reason unset
     // meant a silent fall-back: the path simply never engaged and the only
     // symptom was that it was not faster. The three ways to get nothing are all
@@ -6692,6 +6708,118 @@ function pieceIsStrand(mesh, face) {
     return at < mesh.pieces.length && (Math.round(mesh.pieces[at]) & 4) !== 0;
 }
 
+/**
+ * ONE CORNER OF ONE FACE, FROM THIS FRAME'S STATIONS. The four corner curves,
+ * as signs on the width and thickness axes, in the order facesOf pushes them:
+ * q = [A[k], B[k], B[k+1], A[k+1]]. Shared by the edge refresh, which moves the
+ * outline with the surfaces, and by stationsMatch, which asks whether a weld the
+ * build made still holds - one rule, so the two cannot disagree about where a
+ * corner is.
+ */
+function stationCornerInto(mesh, face, idx, out) {
+    const st = mesh.stations;
+    const surf = mesh.faceSurf[face];
+    if (surf === 6) {
+        const o = mesh.faceStation[face] * 16 + idx * 4;
+        out[0] = st[o];
+        out[1] = st[o + 1];
+        out[2] = st[o + 2];
+        return;
+    }
+    // ...the signs and which station, straight out of CORNER_SW/SG/DK
+    const t = surf * 4 + idx;
+    const sw = CORNER_SW[t]; const sg = CORNER_SG[t];
+    const o = (mesh.faceStation[face] + CORNER_DK[t]) * 16;
+    const hw = st[o + 3]; const ht = st[o + 7];
+    out[0] = st[o] + st[o + 8] * hw * sw + st[o + 4] * ht * sg;
+    out[1] = st[o + 1] + st[o + 9] * hw * sw + st[o + 5] * ht * sg;
+    out[2] = st[o + 2] + st[o + 10] * hw * sw + st[o + 6] * ht * sg;
+}
+
+/**
+ * 🔴 A WELD BETWEEN OPPOSITE SIDES OF THE RIBBON IS ONLY A WELD WHILE THE RIBBON
+ * IS COLLAPSED THERE. The edge table is keyed by corner POSITION, so where a
+ * station has no thickness - a flat point, the first copy of a duplicated
+ * station - the top face's corner and the bottom face's land on each other and
+ * the build files them as ONE edge with two faces. The station path keeps the
+ * edge table for good, so when a later frame gives that station its thickness
+ * back the row still names both faces: its endpoints come from one of them,
+ * its normals are roughly perpendicular, and the silhouette test draws it - a
+ * stroke across the strand, at the place the sheet was broken when the mesh
+ * was built. Reported as a line at the E|EE interface during an animation that
+ * a rebuild, or a reloaded session, does not show.
+ *
+ * 🔴 SO THE ROW IS SWITCHED OFF FOR THE FRAME, NOT THE MESH REBUILT. Two faces
+ * that no longer meet have no edge between them, and a row that draws nothing
+ * is what the fresh build of this frame has there. Declining the step was
+ * written first and measured (3 rebuilds over 24 steps of the fold that
+ * showed it); the fast path exists so that a letter moving costs no build,
+ * and this one would have. The row is asked again every frame - the refresh
+ * rewrites every two-face row's verdict first - so it comes back by itself
+ * the frame the station collapses again.
+ *
+ * Only the rows that weld OPPOSITE surfaces are asked (top/bottom, the two
+ * sides, and the stick equivalents), collected once per edge table: a handful
+ * of rows where there are thousands.
+ */
+let oppWeldFor = null;
+let oppWeldRows = null;
+const _weldA = [0, 0, 0];
+const _weldB = [0, 0, 0];
+const _weldC = [0, 0, 0];
+const OPPOSITE_SURF = (a, b) => (a === 0 && b === 1) || (a === 1 && b === 0)
+    || (a === 2 && b === 3) || (a === 3 && b === 2)
+    || (a === 7 && b === 9) || (a === 9 && b === 7)
+    || (a === 8 && b === 10) || (a === 10 && b === 8);
+/** Clip every opposite-surface row whose weld this frame opens; how many. */
+function clipOpenWelds(mesh, ed) {
+    if (!residentEdges || !residentEdges.edSrc) return 0;
+    const { edSrc } = residentEdges;
+    const faceCount = Math.min(mesh.faceSurf.length, mesh.faceStation.length);
+    if (oppWeldFor !== residentEdges) {
+        const rows = [];
+        const n = (edSrc.length / ED_SRC) | 0;
+        for (let r = 0; r < n; r += 1) {
+            const oa = edSrc[r * ED_SRC];
+            if (oa < 0) continue;
+            const fa = edSrc[r * ED_SRC + 2];
+            const fb = edSrc[r * ED_SRC + 3];
+            if (edSrc[r * ED_SRC + 4] < 2 || fa < 0 || fb < 0) continue;
+            if (fa >= faceCount || fb >= faceCount) continue;
+            if (OPPOSITE_SURF(mesh.faceSurf[fa], mesh.faceSurf[fb])) rows.push(r);
+        }
+        oppWeldRows = Int32Array.from(rows);
+        oppWeldFor = residentEdges;
+    }
+    const TOL = 0.02;
+    const near = (p, face) => {
+        for (let k = 0; k < 4; k += 1) {
+            stationCornerInto(mesh, face, k, _weldC);
+            if (Math.abs(_weldC[0] - p[0]) < TOL && Math.abs(_weldC[1] - p[1]) < TOL
+                && Math.abs(_weldC[2] - p[2]) < TOL) return true;
+        }
+        return false;
+    };
+    let clipped = 0;
+    for (let x = 0; x < oppWeldRows.length; x += 1) {
+        const r = oppWeldRows[x];
+        const oa = edSrc[r * ED_SRC];
+        const ob = edSrc[r * ED_SRC + 1];
+        const faceA = (oa / 12) | 0;
+        const faceB = (ob / 12) | 0;
+        const fb = edSrc[r * ED_SRC + 3];
+        const other = fb === faceA ? edSrc[r * ED_SRC + 2] : fb;
+        if (faceA >= faceCount || faceB >= faceCount || other >= faceCount) continue;
+        stationCornerInto(mesh, faceA, ((oa % 12) / 3) | 0, _weldA);
+        stationCornerInto(mesh, faceB, ((ob % 12) / 3) | 0, _weldB);
+        if (!near(_weldA, other) || !near(_weldB, other)) {
+            ed[r * ED_FLOATS + 12] = -1;
+            clipped += 1;
+        }
+    }
+    return clipped;
+}
+
 function refreshEdgesFromStations(mesh) {
     // ...and what it cost, because this pass is a per-frame walk of every edge
     // row and a profile of a step puts a fifth of itself in here. Two clock
@@ -6714,24 +6842,7 @@ function refreshEdgesFromStations(mesh) {
     }
     // The four corner curves, as signs on the width and thickness axes, in the
     // order facesOf pushes them: q = [A[k], B[k], B[k+1], A[k+1]].
-    const cornerOf = (face, idx, out) => {
-        const surf = mesh.faceSurf[face];
-        if (surf === 6) {
-            const o = mesh.faceStation[face] * 16 + idx * 4;
-            out[0] = st[o];
-            out[1] = st[o + 1];
-            out[2] = st[o + 2];
-            return;
-        }
-        // ...the signs and which station, straight out of CORNER_SW/SG/DK
-        const t = surf * 4 + idx;
-        const sw = CORNER_SW[t]; const sg = CORNER_SG[t];
-        const o = (mesh.faceStation[face] + CORNER_DK[t]) * 16;
-        const hw = st[o + 3]; const ht = st[o + 7];
-        out[0] = st[o] + st[o + 8] * hw * sw + st[o + 4] * ht * sg;
-        out[1] = st[o + 1] + st[o + 9] * hw * sw + st[o + 5] * ht * sg;
-        out[2] = st[o + 2] + st[o + 10] * hw * sw + st[o + 6] * ht * sg;
-    };
+    const cornerOf = (face, idx, out) => stationCornerInto(mesh, face, idx, out);
     // ...and every face's OUTWARD normal, in one pass, before the rows that
     // read them.
     //
@@ -7022,6 +7133,9 @@ function refreshEdgesFromStations(mesh) {
             }
         }
     }
+    // ...and a weld the build made across a collapsed station, which this
+    // frame may have opened. See clipOpenWelds.
+    lastEdgeRefresh.openWelds = clipOpenWelds(mesh, ed);
     lastEdgeRefresh.oneSided = oneSidedN;
     lastEdgeRefresh.touched = touched;
     // 🔴 AND HOW FAR IT MOVED WHAT WAS THERE. Refreshed against the very mesh
@@ -7533,10 +7647,21 @@ function refreshSticksFrom(prims, scale, prm) {
         lastStickRefresh.why = 'no part spans';
         return false;
     }
-    if (!residentStations || residentStations.count !== residentPartSpans[0].count) {
+    // 🔴 THE TABLE COVERS THE RIBBON, AND THE SIDE CHAINS WITH IT WHENEVER
+    // THEY ARE STATIONED - so what it must equal is the whole station-covered
+    // PREFIX, which is one part or two depending on the layout above. Written
+    // as part 0 alone, a structure showing side chains AND carrying a ligand
+    // refused here on every frame: measured on an AlphaFold 3 fold, the table
+    // covering 2,702 faces against a 930-face ribbon, 25 of 25 steps rebuilt -
+    // and after twelve of them `stationTries` gave the object up altogether,
+    // so the path switched itself off and the whole trajectory ran on rebuilds.
+    const covered = residentStationedSide
+        ? residentPartSpans[0].count + residentPartSpans[1].count
+        : residentPartSpans[0].count;
+    if (!residentStations || residentStations.count !== covered) {
         lastStickRefresh.why = `stations cover ${residentStations
-            ? residentStations.count : 0} faces and the ribbon part holds`
-            + ` ${residentPartSpans[0].count} - the tail is not just sticks`;
+            ? residentStations.count : 0} faces and the stationed parts hold`
+            + ` ${covered} - the tail is not just sticks`;
         return false;
     }
     const P0 = prm || defaultParams();
@@ -7558,14 +7683,26 @@ function refreshSticksFrom(prims, scale, prm) {
             + ' prims the station table does not cover';
         return false;
     }
+    // ...and the side chains are the station table's when they are stationed:
+    // their prims carry stations, so the filter above already dropped them and
+    // `groups[2]` is empty. Rebuilding that part would write zero rows over a
+    // span that holds none and refuse on the length. What is left to rebuild
+    // is the `other` group, and the span it landed in is the LAST one in that
+    // layout rather than the middle one.
+    if (residentStationedSide && groups[2].length) {
+        lastStickRefresh.why = `${groups[2].length} side-chain faces came from`
+            + ' prims the station table was supposed to cover';
+        return false;
+    }
     const made = [];
-    for (let g = 1; g <= 2; g += 1) {
-        const span = residentPartSpans[g];
+    const rebuild = residentStationedSide ? [[1, 2]] : [[1, 1], [2, 2]];
+    for (const [g, si] of rebuild) {
+        const span = residentPartSpans[si];
         const part = buildMeshPart(groups[g], scale, P0, g === 1 ? built.lines : null);
         const eLen = part.edges ? part.edges.length : 0;
         if (part.fill.length !== span.fillLen || eLen !== span.edgeLen
             || part.centroids.length !== span.cenLen) {
-            lastStickRefresh.why = `part ${g} rebuilt to ${part.fill.length / 48}`
+            lastStickRefresh.why = `part ${si} rebuilt to ${part.fill.length / 48}`
                 + ` rows and ${eLen / ED_FLOATS} edges, against`
                 + ` ${span.fillLen / 48} and ${span.edgeLen / ED_FLOATS}`;
             return false;
@@ -8781,6 +8918,14 @@ function captureMesh(sig) {
         edSrc: residentEdges ? residentEdges.edSrc : null,
         edgeRich: edgeRichPreset,
         spans: residentPartSpans,
+        // ...and WHICH ORDER those spans are in, which is as much part of a
+        // mesh as the spans themselves: ribbon, side chains, other when the
+        // table covers the side chains, and ribbon, other, side chains when it
+        // does not. Left behind, a restored mesh is read with the LAST built
+        // mesh's layout - the same shape of fault as the `edSrc` note above -
+        // and refreshSticksFrom then measures the station coverage against the
+        // wrong parts and refuses, which is a rebuild on every step.
+        stationedSide: residentStationedSide,
         // a SNAPSHOT: the arrays without the GL handles - see stationsSnapshot
         residentStations: stationsSnapshot(residentStations),
         hasContacts: residentHasContacts,
@@ -8802,6 +8947,7 @@ function activateMesh(m) {
     residentEdges = (m.edges && m.edSrc) ? { ed: m.edges, edSrc: m.edSrc } : null;
     edgeRichPreset = !!m.edgeRich;
     residentPartSpans = m.spans || [];
+    residentStationedSide = !!m.stationedSide;
     // 🔴 ALWAYS, AND FROM DATA. This assigned the cached table only when there
     // was one - so a mesh cached without a table left the OUTGOING table in
     // place beside it - and assigned it by reference, handles and all.
@@ -9461,8 +9607,22 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
                 stationDecline = 'the station mapping moved: '
                     + (lastStationUpdate || 'no reason recorded');
             }
+            // 🔴 AT THE SCALE THE CAPTURE WAS TAKEN AT, NOT THE MESH'S. The
+            // tail - ligands, base plates, contacts - is rebuilt by
+            // unprojecting THIS frame's prims, and `unproject` divides by the
+            // scale that projected them. Handed `resident.scale` it divided
+            // by the scale of the BUILD, so every tail coordinate came out
+            // multiplied by live/built: at zoom 1 the two are equal and
+            // nothing shows, and at any other zoom the ligand is thrown that
+            // many times further from the centre. Reported as distortion
+            // after zooming in, playing, and zooming out - which is exactly
+            // the sequence that plays frames at a zoom the mesh was not built
+            // at. Measured on an AlphaFold 3 fold: 11,218 of 498,436 pixels
+            // against a rebuild of the same frame at zoom 3, 14,111 at 3.5,
+            // 51 at zoom 1. The model space the rows land in is the same
+            // either way; only the number that gets them there was wrong.
             const tailOk = !matched || tail <= 0
-                || refreshSticksFrom(mesh.prims, resident.scale, prm);
+                || refreshSticksFrom(mesh.prims, mesh.capScale || resident.scale, prm);
             if (!tailOk) {
                 stationRefusal = `${tail} of ${resident.count} rows are not`
                     + ' described by stations, and rebuilding them failed: '
@@ -9499,6 +9659,7 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
                 const stationKey = colourKeyOf(colors);
                 if (stationKey !== appColourKey) {
                     appColourKey = stationKey;
+                    appColors = colors;
                     if (appPalComplete) {
                         recolour();
                     } else {
@@ -9544,6 +9705,17 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
         // starts the count over - the structure it is being asked about is a
         // different one - and a key mismatch costs only the signature, since
         // the capture is behind the match above.
+        //
+        // 🔴 AND A MAPPING THAT MOVED WAS BRIEFLY RESET HERE TOO, WHICH IS THE
+        // OPPOSITE OF WHAT THE PARAGRAPH ABOVE SAYS. It was written while a
+        // ligand with side chains was refusing every frame and giving the
+        // object up twelve frames later - a symptom of the part-order fault in
+        // refreshSticksFrom, not of the counter. With that fixed the same fold
+        // declines TWICE in twenty-four steps, and removing the reset changes
+        // nothing there (2 of 24 either way, measured). A decline with the key
+        // MATCHED is the one piece of evidence this counter has; resetting on
+        // it would leave the path being offered forever to a structure it
+        // cannot follow.
         if (stationAuto && stationDraw && !stationFast && !stationEverFast
             && sig !== appSig) {
             if (topoSig !== appTopoSig) stationTries = 0;
@@ -11126,7 +11298,7 @@ window.py2dmolCartoonGPU = {
     // this is the texture itself, through a framebuffer. Only a probe calls it
     // - a readPixels is a full pipeline stall.
     stationTexels: () => {
-        if (!gl || !residentStations) return null;
+        if (!gl || (!residentStations && !resident)) return null;
         const read = (tex, w, texels) => {
             const h = Math.ceil(texels / w);
             const fb = gl.createFramebuffer();
@@ -11182,12 +11354,12 @@ window.py2dmolCartoonGPU = {
         return {
             palette: readByte(palTex, palW, palH),
             vis: readByte(visTex, visW, visH),
-            stations: read(residentStations.stationTex, residentStations.stationW,
-                residentStations.stationCount * 4),
-            pieces: read(residentStations.pieceTex, residentStations.pieceW,
-                Math.max(1, residentStations.pieceCount * 2)),
-            rowBuf: readBuf(residentStations.buf,
-                residentStations.count * STATION_ROW),
+            stations: residentStations ? read(residentStations.stationTex, residentStations.stationW,
+                residentStations.stationCount * 4) : null,
+            pieces: residentStations ? read(residentStations.pieceTex, residentStations.pieceW,
+                Math.max(1, residentStations.pieceCount * 2)) : null,
+            rowBuf: residentStations ? readBuf(residentStations.buf,
+                residentStations.count * STATION_ROW) : null,
             fillBuf: readBuf(buf3, resident ? resident.count * FILL_STRIDE : 0),
             // 🔴 AND THE OUTLINE BUFFER, which nothing compared for two
             // sessions. The ink pass draws whether or not the outline is

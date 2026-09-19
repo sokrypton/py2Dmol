@@ -1066,6 +1066,225 @@ public downloads is exercised on every run.
   back edge's width). **Turn the pencil off before comparing painters** - its
   grain is noise laid over exactly the thing being compared - and compare
   within ONE page load, since the GPU painter is not pixel-stable across loads.
+- 🔴 **A STICK'S TOPOLOGY IS THE BOND GRAPH'S, AND TWO RULES WERE ASKING THE
+  DRAWN FRAME INSTEAD - SO EVERY TRAJECTORY STEP WITH SIDE CHAINS SHOWN
+  REBUILT.** The station fast path holds while the station, piece and face
+  counts hold, and `cartoon/geom.js` moved them every frame in two places: a
+  stick was cut until no piece twisted more than 18 degrees, and TWIST is
+  measured between the two ends of the bond as drawn; and a junction was mitred
+  only where no leg was cut back more than 0.35 of its length, also measured
+  per frame - a mitred junction emits two shared end polygons and an abandoned
+  one emits none. Measured on a 25-frame AlphaFold 3 fold with every side chain
+  shown: **20 of 24 steps rebuilt** with *"the station mapping moved"*, the
+  stations swinging 942 to 976 while the RIBBON held at 930 faces on every
+  frame, and the stations were exactly 904 plus the number of mitred junctions,
+  which swung 38 to 56.
+  **The twist term is gone and the cut is CLAMPED rather than abandoning the
+  junction.** What is left of K is what does not move: a contact's own pitch
+  over its length, and an even count where a bond is two colours. Clamping
+  draws what the test drew anyway - the cut stops at 0.35 either way - and
+  keeps the junction's polygons. The counts then follow the bond graph, which
+  no frame can move: 976 stations, 2,318 faces, 74 mitred junctions on all 25
+  frames, and **0 rebuilds on every pass**.
+  **WHAT IT COSTS IS THE CASE THE TWIST RULE WAS WRITTEN FOR**, and it was
+  measured before it was accepted: a bond carrying real twist now spans it in
+  one ruled piece, whose two triangles fold. A/B against the rule restored,
+  full rotations at three frames - most angles are pixel-IDENTICAL, the worst
+  single angle 132 px of 357,604 - and the same answer from the other side, 4
+  degrees per segment against the shipped 18, 16 of 18 angles identical. The
+  rule's own note says it fired on 15 bonds of 791.
+  🔴 **AND A MEMO IS NOT A FIX HERE, TWICE OVER.** Pinning K per bond at what
+  the first frame asked for, and making the run-merge decision sticky, were
+  both written and measured: **17-18 rebuilds a pass, three passes, never
+  settling** - because a quantity that CONVERGES is still moving, and every
+  move is a rebuild. Do not retry them; make the rule frame-independent.
+  `tests/stick_topology.py` is the gate: the counts hold over a trajectory,
+  two passes rebuild nothing, the last step matches a rebuild of itself, and
+  the number of mitred junctions holds. 🔴 **Only the twist half is observable
+  on a tracked fixture** - no junction in any of them crosses 0.35 - so the
+  clamp rests on the session measurement above, which is not in the repo.
+  🔴 **AND WHEN A RULE CANNOT BE SEEN, BUILD THE MOLECULE THAT SEES IT.**
+  `_traj_patho_3chy.pdb` (`emit_pathological`) is a breathing protein with a
+  seven-atom ligand welded on **whose bond graph is pinned by `CONECT`** - the
+  distance pass is skipped for a ligand every atom of which a file bond
+  touches (`fileKnowsIt`), so the geometry can be as unphysical as the
+  question needs without a bond appearing or going. A V whose apex sweeps 40
+  to 90 degrees crosses the angle at which a run station's shared section used
+  to be skipped: **1 then 2 of 11 steps rebuild with the skip restored, 0
+  without it.** That is the section rule gated, in the gpu lane, on every run.
+  🔴 **AND THE SAME FIXTURE COULD NOT CATCH THE MITRE'S PAIRING, IN THREE
+  GEOMETRIES.** Evenly spaced in a plane, uneven azimuths off the plane, and
+  three different leg lengths so the 0.35 clamp bites differently on each: in
+  every one the nearest-of-four search picks exactly the pair the handedness
+  rule does, on every frame (`1:0` and `2:3` throughout). A stick's section is
+  SQUARE - `STICK_HW` 0.25 against a half thickness of 0.25 - so with equal
+  legs the nearer corner is whichever side the neighbour is on, and there is
+  no tie to lose. The flips measured on the fold, eight of 140 pairings a
+  step, come from junctions `mergeBondRuns` builds along real RUNS, carrying
+  mitre planes and rolls from bond to bond; nothing assembled atom by atom
+  reproduces that. Written down so a fourth attempt is a decision rather than
+  a discovery.
+- 🔴 **AND A LIGAND WAS TWO MORE OF EXACTLY THAT, BOTH DECIDED BY AN ANGLE.**
+  Reported as full rebuilds frame to frame with a ligand on screen, on an
+  AlphaFold 3 fold whose 43-atom ligand is still diffusing. The bond graph was
+  IDENTICAL on every frame - so the first suspicion, that the host was not
+  supplying connectivity, was wrong - and the ligand's faces held at 444; what
+  moved was its OUTLINE, 443 to 692 edges, so `refreshSticksFrom` refused the
+  part and the whole mesh, protein included, rebuilt on all nine steps.
+  - **WHICH CORNER OF A MITRED LEG WELDS TO ITS NEIGHBOUR'S was a
+    nearest-of-four search between points about 0.03 A apart** - a coin toss
+    the molecule tosses again every frame, and not a harmless one: both
+    neighbours of one leg can land on the SAME corner, which welds three cuts
+    into one point instead of two pairs. Measured: 70 junctions and 140
+    pairings on every frame, the same legs in the same order, with about eight
+    pairings flipping per step. There is nothing to search for. `u` is the
+    AX-WARD vector of the leg's plane, so `v = d x u` is proportional to
+    `d x ax` for every leg alike, which is minus the tangential direction of
+    increasing angle about `ax` - the coordinate the legs are already sorted
+    on. So a leg's `v`-negative corner faces the NEXT leg and its `v`-positive
+    corner the PREVIOUS one, always, and each leg gives exactly two away.
+  - **AND A STATION'S SHARED SECTION WAS SKIPPED ON THREE GEOMETRIC EXITS** -
+    no usable bisector, a cut too oblique (`reach > 0.30 * min(lenL, lenR)`),
+    a carried frame lying in the cut plane. A station exists because the bond
+    graph says two bonds meet there, and skipping the section gives each box
+    its own square end, which is a different mesh: of the ten stations that
+    reach that test, between 0 and 10 fired per frame, the ratio swinging 0.75
+    to 34. The topology is fixed now and the GEOMETRY degrades instead - no
+    bisector takes a plane square across the outgoing bond, too oblique
+    NARROWS the section until its reach fits (the mitre's clamp by the other
+    handle: there the cut stops short, here the polygon it cuts with does),
+    and a parallel frame takes any perpendicular.
+    🔴 **AND THE REACH IS THE PLANE'S, NOT THE BEND'S, or the fallback eats
+    itself.** It was `r * tan(theta / 2)`, which is right only while the plane
+    IS the bisector - and at the station where there is no bisector, the same
+    expression reports `tan(90 degrees)`, so the narrowing took the section to
+    a POINT at exactly the case the fallback exists for. A plane whose normal
+    makes an angle phi with a bond carries its corners `r * tan(phi)` along
+    it, which for a bisector is the same number and for a square cut is zero.
+    Proved a no-op on ordinary geometry: **12 mesh digests, four structures x
+    three cameras with every side chain out, identical**. The narrowing itself
+    fires on **12 stations of 4,234 on 4HHB and 12 of 4,670 on 1EHZ** - the
+    ones that used to have no shared section at all - and the floor under it
+    (a twentieth of the width, so four corners never land on one point) fires
+    on none of them. **Nor does the missing-bisector branch itself**: 3,343
+    stations on `_traj_3ptb`, 3,512 on `_traj_1ehz`, 261 over every frame of
+    the ligand this was written for, and not one `tIn + tOut` rounding to
+    zero. Both are there so the rule has no exception - the alternative at
+    such a station is the `continue` they replaced, whose topology depends on
+    the frame - and neither is claimed to have been seen.
+  **0 of 9 steps rebuild now**, and on ordinary structures it is nearly inert:
+  1TIM, 1EHZ and 3PTB with every side chain out show ZERO pairings differing
+  and zero stations clamped; 4HHB shows 52 of 2,780 and 12 of 1,118, which is
+  1,252 pixels of 498,436 on the 2D painter and indistinguishable at 4x.
+  🔴 **AND A CORNER-IDENTITY WELD WAS WRITTEN, MEASURED AND REMOVED.** The
+  first reading was that the mesh builder's key - a corner position rounded at
+  0.001 A - was what moved, so `cartoon/geom.js` gave every corner array an id
+  and `paintgl.js` welded by it. It did not fix the count (610 to 692 edges,
+  still moving), because the sharing pattern itself was what moved; with the
+  two rules above fixed, plain position hashing is stable too (408 edges on
+  every frame) and welds 140 rows MORE - which is the doubled lines the weld
+  exists to remove. Coarsening the quantum 1000 to 100 was measured first and
+  moved one edge of 634: the hash was never the problem.
+- 🔴 **AND THE TAIL IS UNPROJECTED AT THE SCALE THE CAPTURE WAS TAKEN AT, NOT
+  THE MESH'S - WHICH IS EVERY ZOOM BUT THE ONE IT WAS BUILT AT.** The station
+  path rewrites the ribbon from the table and rebuilds the TAIL - ligands, base
+  plates, contacts - from this frame's prims, and `unproject` divides by the
+  scale that projected them. It was handed `resident.scale`, the scale of the
+  BUILD, so every tail coordinate came out multiplied by live/built: at zoom 1
+  the two are equal and nothing shows, and at any other zoom the ligand is
+  thrown that many times further from the centre. **Reported as distortion
+  after zooming in, playing, and zooming out** - which is exactly the sequence
+  that steps frames at a zoom the mesh was not built at. Measured on the fold
+  it was reported from, driving `replaceFrame`: **11,218 of 498,436 pixels
+  against a rebuild of the same frame at zoom 3, 14,111 at 3.5, and 51 at zoom
+  1.** The mesh's own comment already said the tail "is rebuilt by unprojecting
+  this frame's capture at the MESH's scale and cannot follow" - written as a
+  reason to decline a CANVAS RESIZE, with the same fault under every zoom
+  sitting beside it unguarded. `mesh.capScale` is `cap.scale`, which
+  `captureFrom` has always returned.
+- 🔴 **AND WITH SIDE CHAINS AND A LIGAND BOTH ON SCREEN THE MESH IS IN THE
+  OTHER ORDER, WHICH ONE READER DID NOT KNOW.** The parts are ribbon, SIDE
+  CHAINS, other when the side chains are stationed and ribbon, other, side
+  chains when they are not (`orderedParts`), so a span INDEX means two
+  different parts. `refreshSticksFrom` read span 0 as the whole
+  station-covered prefix and spans 1 and 2 as the sticks to rebuild - true
+  only in the second order. With both on screen it refused every frame
+  (*"stations cover 2702 faces and the ribbon part holds 930"*), and after
+  twelve refusals `stationTries` gave the object up: `setStationDraw(false)`,
+  and the rest of the trajectory ran on full rebuilds with the decline now
+  reading *"the station path is off"*. **25 of 25 steps, measured; 2 of 25
+  after** - the two left are the junction gates in `docs/OPEN_WORK.md`.
+  `residentStationedSide` is recorded where the order is chosen, the prefix is
+  both parts, and the only part rebuilt is the tail.
+  🔴 **AND IT TRAVELS WITH A CACHED MESH, WHICH THE FIRST FIX FORGOT.** A mesh
+  is kept and restored WHOLE (`restoreMesh`, by signature) and the layout was
+  a module flag, so a restore left whichever order the last BUILD had - the
+  same shape as the `edSrc` note in `captureMesh`, one field along. Show the
+  side chains, hide them, show them again: the third step restores the first
+  mesh while the flag says what the second build set, the spans are read as
+  the other order, and the step refuses. **Exactly one rebuild**, because the
+  refusal rebuilds and that build sets the flag right - so the gate asks for
+  ZERO, and a tolerance of one would have been a tolerance of the whole
+  fault.
+  🔴 **AND NO TRACKED TRAJECTORY HAD A LIGAND IN IT AT ALL.** `make_traj.py`
+  wrote `ATOM` for every row of its source, so 3PTB's benzamidine came back as
+  nine protein residues and the mesh's third part - the TAIL, the whole subject
+  of both faults above - was EMPTY in every fixture: `[3554, 0, 0]` on 3PTB.
+  Both mutations passed the suite. One column (`rec()`, the source's own
+  `group_PDB`) gives 3PTB 10 ligand positions and 1HVR 46, waters excluded by name
+  as they always were, and `tests/station_ligand.py` grew the two legs that
+  needed it - a step at a zoom the mesh was not built at (3,563 px mutated
+  back, 0 with the fix) and a pass with side chains AND the ligand up (12 of 12
+  steps rebuilt mutated back, 0 with it).
+- 🔴 **AND WHICH BASE PAIRS WITH WHICH IS THE MOLECULE'S ANSWER, NOT THE
+  FRAME'S - IT WAS CACHED ON `secKey`, WHICH HOLDS THE COORDINATES.** A base
+  plate is emitted per PAIR, so a trajectory re-predicting its pairing as it
+  moved moved the prim list and the station mapping with it. Measured on
+  `_traj_1ehz.pdb` with the positions and bonds IDENTICAL on every frame (76
+  and 75): **42, 42, 42, 36, 40, 40 pairs**, the stations tracking them exactly
+  (768, 768, 768, 744, 760, 760) and 3 of 9 steps rebuilding. Frames 4 and 5
+  agree on the COUNT and disagree on WHICH pairs, so a count check would not
+  have caught it. The cache is keyed on the object, its position count and any
+  forced pairing now - never the coordinates. **The key is `_topologyKey()`**,
+  the one `signatureOf` already uses for the mesh: what is drawn, merged how,
+  with how many side-chain atoms materialised, over an array this long. A
+  per-object graph asks that question rather than spelling a second version of
+  it, and a stub renderer (the node harnesses) falls back to the object name
+  and the position count.
+  🔴 **AND THE BLANKET CACHE CLEAR IN `core/mol.js` HAD TO STOP TAKING IT,
+  WHICH IS THE SECOND HALF AND USELESS WITHOUT THE FIRST.**
+  `_materialiseSidechains` calls that clear EVERY FRAME - side-chain indices
+  are reissued each time - so with side chains showing the pairing was
+  re-predicted per frame however strong its key was. The note beside that clear
+  already recorded this exact trap for the removed Keep-SSE mode, about the
+  secondary structure; the pairing was the other victim, still there.
+  **What it costs**: an RNA that FOLDS keeps the pairing it was given until the
+  object or the position count changes; `renderer._cartoonPairKey = null` asks
+  again. The SS assignment is deliberately NOT treated this way - it stays
+  per-frame, because the stations no longer follow the letters.
+  🔴 **AND FIXING IT EXPOSED A FAULT THE REBUILDS WERE HIDING**: with side
+  chains shown, a fast step now draws 6,612 of 357,604 pixels differently from
+  a rebuild of the same frame on that trajectory - and ZERO with them hidden,
+  so it is the sticks alone, with `refreshSticksFrom` reporting no refusal.
+  Open; see `docs/FASTPATH_ARTIFACTS.md`.
+- 🔴 **AND A WELD BETWEEN OPPOSITE SIDES OF THE RIBBON IS ONLY A WELD WHILE THE
+  RIBBON IS COLLAPSED THERE.** The edge table is keyed by corner POSITION, so
+  at a station with no thickness the top face's corner and the bottom face's
+  coincide and the build files them as ONE edge with two faces. The station
+  path keeps that table for good, so a later frame that gives the station its
+  thickness back still draws the row - endpoints from one face, normals roughly
+  perpendicular, and the silhouette test inks it: **a stroke across the strand,
+  at the place the sheet was broken when the mesh was built.** Reported from a
+  LocalFold fold as a line at the `E|EE` interface while playing, absent after
+  a rebuild or a reloaded session. `clipOpenWelds` switches the row off for any
+  frame in which the two faces no longer meet, and the refresh rewrites every
+  two-face row's verdict first, so it comes back when the station collapses
+  again. **Not a declined step**: that was written first and measured at 3
+  rebuilds over 24 steps, and the path exists so a letter moving costs no
+  build. `tests/weld_open.py` is the gate - 27 darker pixels against 153 with
+  the call removed - and it is where `sheet_merge.py` could not reach: that
+  probe forces a gap in the MIDDLE of a straight run, which collapses no
+  station, and compares only rows flagged always-draw.
 - **KABSCH IS A FUNCTION NOW, NOT ONLY A SIDE EFFECT OF `addFrame`.** The fit
   has been in every bundle since the browser took the viewing geometry over
   from numpy, and the only way to reach it was to ask a FRAME to align itself
@@ -2676,8 +2895,16 @@ on: the flicker, `tests/station_integrated.py` (failing, and in no lane), how
 little of the suite exercises direct presentation, the ui lane starving itself,
 the 2D painter's remaining sign-dependence, colour drawn half a residue late in
 every colour MODE, and the hand-vendored copy of the embed bundle in
-`../protein_fighter`. Add to it when you stop on something rather than leaving
-the next session to find out the same way.
+`../protein_fighter`, and the two junction gates that still cost a diffusing
+ligand two rebuilds in twenty-four. Add to it when you stop on something rather
+than leaving the next session to find out the same way.
+
+  **`docs/FASTPATH_ARTIFACTS.md` is the station path's own list** - the frames
+  it draws differently from a rebuild of themselves, with the measurement and
+  the instrument for each, and the dead ends under them (a corner-identity
+  weld, a shader normal from the quad's diagonals). `docs/DRAW_GRAPH.md`, which
+  it points at, is the rule those faults all break: what is drawn is decided by
+  the bond graph and the letters, where it is drawn by the frame.
 
   `docs/SELECTION_MARK.md` is the tuning menu: six treatments drawn side by
   side, the two rejected before the shortlist, and the costs - **0.02 ms
@@ -3295,6 +3522,16 @@ the next session to find out the same way.
   code: the failures are spread across probes that have nothing to do with
   what changed, and they pass one at a time. It is NOT the suite leaking
   browsers - measured, a clean run leaves none of its own.
+  🔴 **AND THE OTHER MACHINE ON THE MACHINE IS THE READER'S OWN BROWSER.**
+  `tests/run.sh`'s own header measured JOBS 1 against 6 and found the same
+  failure rate either way, and concludes - rightly - not to blame load without
+  measuring it. So measure it: `uptime`. Four ui-lane runs this session read
+  **load 89, 133, 50 and 3**, and the three loaded ones failed five to seven
+  probes each, always "no result posted", always a different set, every one
+  passing alone at load 3. 48 Chrome processes were the reader's interactive
+  browser, one of them at 75% of a core. That is not the six-browser question
+  the header settled; it is the machine being somebody else's. Read the load
+  before believing a red ui lane, and say which it was.
 - **AND THE SUITE'S FLAKES WERE ALL ONE THING: A CAP THAT FIRES DURING SETUP.**
   Three probes crossed a threshold on load rather than on a fault, and each
   reported the half-built page as a broken one. `tests/mobile_layout.py` loads
@@ -3303,7 +3540,9 @@ the next session to find out the same way.
   was "924 logical px in a 0px box", which is a measurement taken before the
   layout settled. It has its own `probe_cap` entry now, the third after
   `embed`, `colab` and `focus_mode`, and the note there says what the three
-  share. `tests/multi_object.py` compared the GPU ink count against the CPU
+  share. **`tests/selection_shells.py` is the fourth**, found the same way:
+  two shells, a page load each, **7.5 s alone twice measured** and killed at
+  30 in a lane running six browsers. `tests/multi_object.py` compared the GPU ink count against the CPU
   one at **5%** when the two painters legitimately differ by 4.8%: three runs
   of the UNCHANGED tree gave 4.89 / 4.99 / **5.01%**, so it failed about one
   run in three on nothing at all. 10% now, and the sibling tube check has
@@ -3661,6 +3900,38 @@ the next session to find out the same way.
   and a page that showed a PAE AND a scatter plot now shows one of them at a
   time. **Not measured in Colab:** the tabs appear after the script runs, and
   Colab sizes an output frame from the page before it does.
+- 🔴 **A RESIZE CLEARS A CANVAS, AND AN OPAQUE ONE CLEARS TO BLACK - SO THE
+  RESIZE AND THE PAINT ARE ONE ACT.** `panels/heatmap.js` takes its context
+  with `{ alpha: false }`, which is honest for a canvas that paints every
+  pixel, and `updateSize` resizes by assigning `canvas.width` - which RESETS
+  the backing store to opaque BLACK rather than to nothing. The repaint was
+  `scheduleRender()`, one requestAnimationFrame later, and between the two the
+  panel composited as a black rectangle. **Reported as the big viewer going
+  black for a brief second when the layout switches from one slot to two**, and
+  every one of those resizes this canvas: the reveal at the start of a fold, a
+  slot switch, a drag of the divider, a window resize.
+  🔴 **AND THE GAP IS ONE FRAME ONLY ON AN IDLE PAGE.** During a fold the main
+  thread is running inference, so the frame the repaint waits for can be
+  hundreds of milliseconds away - which is why it reads as a second rather than
+  a flicker, and why it shows in LocalFold and not in a quiet viewer. A bug
+  whose DURATION depends on how busy the page is will not reproduce on a test
+  page that is doing nothing.
+  **Neither a paper-coloured background under the canvas nor dropping
+  `alpha: false` is the fix**: both leave the canvas unpainted and change only
+  what shows through it. `hm.render()` is called where `hm.scheduleRender()`
+  was, and `render()` already handles both cases - the map where there is one,
+  `#f9f9f9` where there is not.
+  🔴 **AND IT TOOK A SCREENCAST OF A REAL HEADED CHROME TO SEE IT AT ALL.**
+  Four reproductions found nothing: a map arriving, the slot swap, a live fold,
+  and the 980px breakpoint - all in headless, which composites through
+  SwiftShader, and three of them sampling at 10-14 screenshots a second. What
+  caught it was `Page.startScreencast` at 30 fps against a headed browser
+  during a live fold: **one frame of 592, the big slot 100% black**, and 0 of
+  600 after the fix. `tests/heatmap_resize_paint.py` is the gate and needs
+  neither: it registers a frame callback BEFORE the resize, so the scheduled
+  repaint has not run when it reads the pixels - 100% black mutated back, 0%
+  with the fix. It reads the CANVAS rather than the source, because the fault
+  belonged to the resize itself and not to any of the three call sites.
 - **Subsystems are optional and guarded.** `if (window.Heatmap)`, `if (window.MSA)`,
   `typeof C2S === 'undefined'`. A build without one loses a feature, not a page.
 - **Prove a move changed nothing.** `node tests/paint_trace.js` digests every
@@ -4130,6 +4401,38 @@ the next session to find out the same way.
   named no atoms but declared elements would have lost both - and a naive
   removal of the names takes the elements with it. Each now asks about the
   array it is gating.
+- 🔴 **A SAVED SIDE-CHAIN TABLE DROPPED `elements`, AND TWO THINGS COLOUR FROM
+  IT.** `trimSidechainTable` trims the columns a session does not need, and it
+  took `elements` beside `names` under a comment saying "nothing reads them to
+  draw". `_materialiseSidechains` fills the positions' element column from that
+  array AND `sidechainMap.el` one line below - the first colours an ATOM, the
+  second the far half of a MIXED BOND - so a reloaded session drew every side
+  chain flat: oxygen without its red, nitrogen without its blue, sulfur without
+  its gold. **Reported as side chains losing their element colours on
+  reopening a session.** Measured on 3PTB: 744 side-chain atoms carry an
+  element (566 C, 100 O, 64 N, 14 S) and a reload had **0**, with the bonds
+  drawn in two colours going **202 to 2**.
+  🔴 **AND `core/mol.js` CARRIED THE MATCHING WRONG CLAIM**, that a reload
+  "colours from `sidechainMap.el` instead, which is where it always came from"
+  - true, and that field is filled from the array that had just been dropped,
+  so the two comments between them described a working feature that could not
+  work. Both are corrected; the rule is the one the frame builders in this
+  project keep breaking one field at a time: **a saved table carries what the
+  drawing reads.**
+  **It travels as one comma-joined string**: an element is one or two
+  characters and a JSON array spends four bytes a slot on quotes and commas -
+  3.0 KB against 1.5 KB on 3PTB's 744 atoms, beside 15 KB of coefficients for
+  the same atoms. The reader accepts an array too, because another version may
+  write one; an OLD session has neither and reloads exactly as it did, because
+  the bytes are not there to give back.
+  🔴 **AND `getAtomColor` IS THE WRONG INSTRUMENT FOR IT**, which cost this
+  test its first draft: it answers the RESIDUE's colour for an oxygen BY
+  CONTRACT - that is the base the halves compose with, the entry below says so
+  - so the oxygen and the carbon read the same before the save and after it,
+  and the control correctly refused to measure anything. The element lands in
+  `colors.halves[i]`, which rides ON the colours array rather than in it.
+  `tests/session_elements.py` counts those and asserts the census of elements,
+  the field in the saved JSON, and a sampled pair whose halves differ.
 - **The atom name and the element are two things, and 3PTB proves it.**
   `ATOM 2 C CA . ILE` is the alpha carbon — element `C`, atom name `CA`.
   `HETATM 1630 CA CA . CA` is the calcium ion — element `CA`, atom name `CA`.

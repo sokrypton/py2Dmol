@@ -1,6 +1,10 @@
 """A GAP IN A SHEET CLOSING MUST NOT LEAVE A LINE ACROSS IT.
 
-    python3 tests/sheet_merge.py [_traj_3ptb.pdb]
+    python3 tests/sheet_merge.py [_traj_3ptb.pdb] [--detail=N]
+
+`--detail` is for asking the same question at the geometric floor, where an
+interval has three stations and there is nothing spare to reallocate; the lane
+runs it at the shipped Detail, which is where the fault was reported.
 
 Two strands with a loop between them, and a later frame where the loop becomes
 a strand: the sheet is continuous and nothing should be drawn across it. On the
@@ -78,7 +82,9 @@ from probe_js import HELPERS  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROBE = os.path.join(ROOT, "_sheetmerge.html")
 PORT, DEBUG_PORT = 9947, 9948
-FILE = sys.argv[1] if len(sys.argv) > 1 else "_traj_3ptb.pdb"
+_pos = [a for a in sys.argv[1:] if not a.startswith("--")]
+FILE = _pos[0] if _pos else "_traj_3ptb.pdb"
+DETAIL = int(next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--detail=")), "0"))
 
 SETUP = """
 window.__ready = false;
@@ -98,6 +104,7 @@ window.addEventListener('load', () => {
     await settle(8);
     await until(() => !r._quietStyle && !r._switchQuiet, 60000);
     r.autoRotate = false;
+    if (%DETAIL% > 0) r.cartoonDetail = %DETAIL%;
     if (G.setStationDraw) G.setStationDraw(true);
     r.setFrame(0); r.render('warm'); await settle(6);
     const sc = C.secForColor(r);
@@ -141,7 +148,7 @@ window.addEventListener('load', () => {
   window.__ready = true;
 });
 """
-SETUP = SETUP.replace("//HELPERS", HELPERS)
+SETUP = SETUP.replace("//HELPERS", HELPERS).replace("%DETAIL%", str(DETAIL))
 open(PROBE, "w").write(
     open(os.path.join(ROOT, "dev.html")).read()
     .replace("</body>", "<script>" + SETUP + "</script></body>"))

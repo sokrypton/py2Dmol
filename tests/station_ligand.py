@@ -29,6 +29,26 @@ WHAT THIS ASKS:
   3. 🔴 AND THE PICTURE IS THE SAME AS A REBUILD'S. The path now runs where it
      never ran before, so "it is faster" is worth nothing on its own: one frame
      is drawn both ways and compared pixel for pixel.
+  4. AND AT A ZOOM THE MESH WAS NOT BUILT AT, because the tail is rebuilt by
+     UNPROJECTING this frame's capture and the scale that projected it is the
+     one to divide by. Given the BUILD's instead, every tail coordinate came
+     out multiplied by live/built - invisible at zoom 1, where the two are
+     equal, and 3,563 px of this fixture at zoom 3.
+  5. AND WITH SIDE CHAINS AND THE LIGAND BOTH UP, which is the other part
+     ORDER: ribbon, side chains, other. Read as the first order the station
+     coverage is measured against the wrong parts and every step refuses -
+     12 of 12 here, and on the fold it was reported from the auto-enable then
+     gave the object up and the whole trajectory ran on rebuilds.
+  6. AND AFTER A HIDE AND A SHOW, which RESTORES a cached mesh rather than
+     building one: the order travels with the mesh or the restore is read with
+     the last build's. Exactly one rebuild when it does not, so this leg asks
+     for zero.
+
+🔴 THE FIXTURE ONLY HAS A LIGAND BECAUSE `tests/make_traj.py` LEARNED TO WRITE
+`HETATM`. It wrote `ATOM` for every row, so 3PTB's benzamidine came back as
+nine protein residues and the mesh's third part - the tail this whole file is
+about - was EMPTY: parts `[3554, 0, 0]`. Legs 4, 5 and 6 all measure nothing
+without it, which is why each of them asserts its own part spans first.
 """
 import json, os, shutil, subprocess, sys, http.server, socketserver, threading
 
@@ -125,6 +145,85 @@ JS = """
   // to be asserted rather than assumed.
   out.pixels = { diff, total: fast.length / 4, worst,
                  canvas: [R().canvas.width, R().canvas.height] };
+
+  // ---- 4. ...AND AT A ZOOM THE MESH WAS NOT BUILT AT ----
+  // 🔴 THE TAIL IS REBUILT BY UNPROJECTING THIS FRAME'S CAPTURE, and unproject
+  // divides by the scale that projected it. Handed the scale of the BUILD
+  // instead of the capture's own, every tail coordinate came out multiplied by
+  // live/built - so the ligand was thrown that many times further from the
+  // centre the moment a frame was stepped at any zoom but the one the mesh was
+  // built at. Reported as distortion after zooming in, playing, and zooming
+  // out. Invisible at zoom 1, where the two scales are equal, which is why
+  // every check above passed against it: 11,218 of 498,436 pixels at zoom 3 on
+  // the fold it was reported from.
+  await rebuildTable();
+  r.setFrame(2); r.render('at build zoom'); await settle(3);
+  const zBase = window.__faceBuilds || 0;
+  r.viewerState.zoom = 3.0;
+  r.setFrame(5); r.render('stepped while zoomed'); await settle(3);
+  const zFast = ink();
+  // ...and whether that step was a BUILD, which would compare a rebuild with
+  // a rebuild and could not fail. The zoom is not in the mesh's signature, so
+  // it should be 0; the stick LOD's own term can legitimately make it 1.
+  const zBuilt = (window.__faceBuilds || 0) - zBase;
+  if (r.invalidate) r.invalidate();
+  G.clearResident(); G.clearResidentStations();
+  r.render('forced rebuild'); await settle(4);
+  const zSlow = ink();
+  let zDiff = 0, zWorst = 0;
+  for (let i = 0; i < zFast.length; i += 4) {
+    for (let k = 0; k < 3; k++) {
+      const d = Math.abs(zFast[i + k] - zSlow[i + k]);
+      if (d > zWorst) zWorst = d;
+      if (d > 8) { zDiff++; break; }
+    }
+  }
+  // ...and that the zoomed frame was taken on the FAST path, or this compares
+  // a rebuild with a rebuild and cannot fail.
+  out.zoomed = { diff: zDiff, total: zFast.length / 4, worst: zWorst,
+                 builtWhileZoomed: zBuilt,
+                 zoom: r.viewerState.zoom, table: tableState() };
+
+  // ---- 5. A LIGAND *AND* SIDE CHAINS, which is a different mesh ORDER ----
+  // 🔴 The parts are ribbon, SIDE CHAINS, other when the side chains are
+  // stationed, and ribbon, other, side chains when they are not - so a span
+  // index means two different parts. refreshSticksFrom read span 0 as the
+  // whole station-covered prefix and spans 1 and 2 as the sticks to rebuild,
+  // which is only the second order: with both a ligand and side chains it
+  // refused every frame ("stations cover 2702 faces and the ribbon part holds
+  // 930"), and after twelve of those the auto-enable gave the object up and
+  // the trajectory ran on rebuilds for good. 25 of 25 steps, measured on the
+  // fold it was reported from.
+  r.viewerState.zoom = 1;
+  try { r.showSidechains(); } catch (e) { /* a trace carries none */ }
+  await settle(10);
+  await rebuildTable();
+  const scBefore = window.__faceBuilds || 0;
+  for (let k = 0; k < nF; k++) { r.setFrame(k); r.render('sc step'); await settle(2); }
+  out.sidechains = { frames: nF, builds: (window.__faceBuilds || 0) - scBefore,
+                     positions: r.coords.length, table: tableState(),
+                     spans: G.partSpans ? G.partSpans() : null };
+
+  // ---- 6. AND THE ORDER TRAVELS WITH A CACHED MESH ----
+  // 🔴 A MESH IS CACHED AND RESTORED WHOLE (restoreMesh, by signature) and the
+  // layout is a MODULE flag, so a restore leaves whichever order the last
+  // BUILD had. Show the side chains, hide them, show them again: the third
+  // step restores the first mesh - stationed side chains, ligand in the tail -
+  // while the flag still says what the second build set. The spans are then
+  // read as the other order and every step refuses. Same shape as the `edSrc`
+  // note in captureMesh: a restored mesh must not be read with the previous
+  // mesh's provenance.
+  try { r.hideSidechains(); } catch (e) {}
+  await settle(8);
+  r.setFrame(1); r.render('no side chains'); await settle(4);
+  try { r.showSidechains(); } catch (e) {}
+  await settle(8);
+  r.setFrame(2); r.render('side chains again'); await settle(4);
+  const reBefore = window.__faceBuilds || 0;
+  for (let k = 3; k < nF; k++) { r.setFrame(k); r.render('after restore'); await settle(2); }
+  out.restored = { frames: nF - 3, builds: (window.__faceBuilds || 0) - reBefore,
+                   spans: G.partSpans ? G.partSpans() : null,
+                   table: tableState() };
 """
 JS = JS.replace('//HELPERS', HELPERS).replace('%TRAJ%', TRAJ)
 
@@ -179,6 +278,21 @@ elif (tr.get('builds') or 0) > 1:
 px = R.get('pixels') or {}
 print(f"  fast path against a forced rebuild: {px.get('diff')} of"
       f" {px.get('total')} pixels differ, worst channel {px.get('worst')}")
+zm = R.get('zoomed') or {}
+print(f"  stepped at zoom {zm.get('zoom')}: {zm.get('diff')} of"
+      f" {zm.get('total')} pixels differ, worst channel {zm.get('worst')},"
+      f" builds {zm.get('builtWhileZoomed')}")
+if (zm.get('builtWhileZoomed') or 0) > 1:
+    bad.append(f"the zoomed step rebuilt {zm.get('builtWhileZoomed')} times, so"
+               " it compared a rebuild with a rebuild and could not fail")
+if not (zm.get('table') or {}).get('stations'):
+    bad.append("the zoomed leg had no station table, so it compared a rebuild"
+               f" with a rebuild: {(zm.get('table') or {}).get('refusal')}")
+if (zm.get('diff') or 0) > 400:
+    bad.append(f"a frame stepped at zoom {zm.get('zoom')} differs from a"
+               f" rebuild of itself by {zm.get('diff')} pixels - the tail is"
+               " unprojected at the scale of the BUILD rather than at the"
+               " capture's own")
 print(f"  canvas {px.get('canvas')}")
 if not px.get('total'):
     bad.append("the picture was never compared")
@@ -189,6 +303,36 @@ elif (px.get('diff') or 0) > px.get('total', 1) * 0.01:
     bad.append(f"the station path draws {px['diff']} of {px['total']} pixels"
                " differently from a rebuild of the same frame - the steps are"
                " cheap and the picture is wrong, which is worse than rebuilding")
+
+
+rs = R.get('restored') or {}
+print(f"  after hide/show (a cached mesh): {rs.get('builds')} rebuilds over"
+      f" {rs.get('frames')} steps, parts {rs.get('spans')}")
+spans_r = rs.get('spans') or []
+if len(spans_r) < 3 or not spans_r[1] or not spans_r[2]:
+    bad.append(f"the restore leg measured nothing: parts {spans_r}")
+elif (rs.get('builds') or 0) > 0:
+    # 🔴 ZERO, NOT "AT MOST ONE". The stale flag costs exactly ONE rebuild -
+    # the refusal rebuilds, and that build sets the flag correctly - so a
+    # tolerance of one is a tolerance of the whole fault.
+
+    bad.append(f"{rs.get('builds')} of {rs.get('frames')} steps rebuilt after"
+               " the side chains came back - a restored mesh is being read"
+               " with the last BUILD's part order")
+
+sc = R.get('sidechains') or {}
+print(f"  with side chains out: {sc.get('builds')} rebuilds over"
+      f" {sc.get('frames')} steps, {sc.get('positions')} positions,"
+      f" parts {sc.get('spans')}")
+spans = sc.get('spans') or []
+if len(spans) < 3 or not spans[1] or not spans[2]:
+    bad.append(f"the side-chain leg measured nothing: parts {spans} - it needs"
+               " a stationed side-chain part AND a ligand tail to be the case"
+               " it exists for")
+elif (sc.get('builds') or 0) > 1:
+    bad.append(f"{sc.get('builds')} of {sc.get('frames')} steps rebuilt with a"
+               " ligand and side chains both on screen - the station-covered"
+               " prefix is two parts in that order, not one")
 
 if bad:
     for b in bad: print('FAIL:', b)

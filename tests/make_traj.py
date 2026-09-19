@@ -2,6 +2,7 @@
 
     python3 tests/make_traj.py           # writes _traj_{3chy,1tim,1aoi}.pdb
     python3 tests/make_traj.py 1UBQ.cif  # one structure
+    python3 tests/make_traj.py --pathological 3CHY.cif   # + a CONECT ligand
 
 Input for tests/anim_profile.py and the station probes. Every model is the
 same molecule under a smooth, low-spatial-frequency breathing displacement: the
@@ -104,6 +105,26 @@ def ssbond_lines(src):
     return out
 
 
+def rec(row, idx):
+    """ATOM or HETATM, as the source said.
+
+    🔴 EVERY FIXTURE HERE WROTE `ATOM` FOR EVERY ROW, so a trajectory of a
+    structure WITH A LIGAND had no ligand in it: 3PTB's benzamidine came back
+    as nine protein residues, and the mesh's third part - ligands, base plates,
+    contacts, the TAIL the station table does not describe - was empty in every
+    tracked trajectory. Two faults in `refreshSticksFrom` lived in exactly that
+    gap and were found on a session instead. A record name is one column and it
+    is what makes a HETATM a ligand.
+
+    Every writer here that reads a real structure uses it - the breathing one,
+    the collapsed sampler track, the diffusion schedule and the unfolding
+    blend. The two that do not are the synthetic chains, which have no source
+    to ask and are poly-alanine by construction.
+    """
+    g = idx.get("group_PDB")
+    return "HETATM" if (g is not None and row[g].startswith("HETATM")) else "ATOM  "
+
+
 def emit(src, dst, models=30, amp=0.45, ca_only=False):
     header, rows = read_cif(src)
     idx = {name: i for i, name in enumerate(header)}
@@ -130,14 +151,136 @@ def emit(src, dst, models=30, amp=0.45, ca_only=False):
             name = r[idx["label_atom_id"]].strip('"')
             name = f" {name:<3}" if len(name) < 4 else name
             out.append(
-                f"ATOM  {serial % 100000:>5} {name:<4} {r[idx['label_comp_id']]:>3}"
+                f"{rec(r, idx)}{serial % 100000:>5} {name:<4} {r[idx['label_comp_id']]:>3}"
                 f" {r[idx['auth_asym_id']][:1]:1}{r[idx['auth_seq_id']]:>4}    "
                 f"{x:>8.3f}{y:>8.3f}{z:>8.3f}{1.0:>6.2f}{0.0:>6.2f}"
                 f"{'':10}{r[idx['type_symbol']]:>2}")
         out.append("ENDMDL")
     out.append("END")
     open(dst, "w").write("\n".join(out) + "\n")
-    print(f"{dst}  models={models}  atoms/model={len(rows)}")
+    het = sum(1 for r in rows if rec(r, idx) == "HETATM")
+    print(f"{dst}  models={models}  atoms/model={len(rows)}"
+          + (f"  ({het} HETATM)" if het else ""))
+
+
+def emit_pathological(src, dst, models=24, amp=0.45, seed=3):
+    """A protein that breathes, and a LIGAND built to break the two rules that
+    decide a stick's topology from the drawn frame.
+
+    🔴 THE BOND GRAPH IS PINNED BY `CONECT`, WHICH IS WHAT MAKES THE GEOMETRY
+    FREE. `core/mol.js` skips the distance pass for a ligand group every one of
+    whose atoms is touched by a bond the file declared (`fileKnowsIt`), so this
+    ligand can fold to angles no real molecule holds without a single bond
+    appearing or vanishing - and a bond graph that cannot move is what leaves
+    the two rules as the only thing a frame could change.
+
+    WHAT IS IN IT, and which rule each half is for:
+
+      * **a V** - three atoms, 1.5 A apart, whose apex angle sweeps 40 to 90
+        degrees. A run station shares ONE section between its two boxes unless
+        the cut would reach further than 0.30 of the shorter bond, which at
+        `rMax` 0.25 A and 1.5 A bonds is an apex under **58 degrees** - so the
+        sweep crosses it four times a cycle. Skipped, that station's two boxes
+        get a square end each instead of one shared polygon: a different mesh,
+        and on the frame either side of the crossing, a rebuild.
+      * **a three-leg junction** - a tripod of unequal legs (1.05, 1.5 and
+        2.1 A, so the 0.35 cut clamp bites on one and not the others) with the
+        middle one swinging 60 degrees of azimuth. It was built for the
+        mitre's corner pairing and **it does not catch it**: measured in three
+        geometries, the nearest-of-four search this replaced picks the same
+        pair the handedness rule does on every frame. It stays because the
+        NUMBER of mitred junctions is asserted (83, every frame) and because
+        the four-leg planarity gate in docs/OPEN_WORK.md 11 would show here if
+        it is ever picked up - extend this ligand rather than start again, the
+        `CONECT` pinning is the hard part. tests/stick_topology.py's header
+        has the measurement.
+
+    Both are drawn 12 A clear of the protein so nothing of theirs is near it.
+    The protein is `emit`'s breathing displacement, so the only thing in the
+    file that can move a count is the ligand.
+    """
+    header, rows = read_cif(src)
+    idx = {name: i for i, name in enumerate(header)}
+    B = 1.5
+    ox, oy, oz = 0.0, 0.0, 0.0
+    for r in rows:                      # 12 A clear of the structure's own box
+        ox = max(ox, float(r[idx["Cartn_x"]]))
+        oy = max(oy, float(r[idx["Cartn_y"]]))
+        oz = max(oz, float(r[idx["Cartn_z"]]))
+    ox += 12.0
+
+    def ligand(t):
+        """The seven atoms at phase t in [0, 1). Names are what a reader sees
+        in the sequence strip, so they say which half they belong to."""
+        th = math.radians(65 + 25 * math.cos(2 * math.pi * t))   # 40..90
+        half = th / 2
+        out = [
+            ("C1", (ox + B * math.sin(half), oy + B * math.cos(half), oz)),
+            ("C2", (ox, oy, oz)),                                # the apex
+            ("C3", (ox - B * math.sin(half), oy + B * math.cos(half), oz)),
+        ]
+        # ...and the junction, six Angstrom along x from the V's apex:
+        # unevenly spaced, off the plane, and with legs of three lengths. All
+        # three of those were tried BECAUSE the plain version catches nothing,
+        # and so does this one - see the docstring. What it does hold is the
+        # junction COUNT, which the gate asserts.
+        jx = ox + 6.0
+        tilt = math.radians(70)                    # a tripod, not a plane
+        sweep = math.radians(60 + 60 * (0.5 - 0.5 * math.cos(2 * math.pi * t)))
+        # ...and legs of three different LENGTHS, because the cut is clamped at
+        # 0.35 of a leg and a short one is clamped where a long one is not, so
+        # the corners sit at different depths along each bond
+        lens = [1.05, 1.5, 2.1]
+        for k, a in enumerate([0.0, sweep, math.radians(180)]):
+            bl = lens[k]
+            out.append(("C%d" % (5 + k), (
+                jx + bl * math.cos(tilt),
+                oy + bl * math.sin(tilt) * math.cos(a),
+                oz + bl * math.sin(tilt) * math.sin(a))))
+        out.insert(3, ("C4", (jx, oy, oz)))                      # the centre
+        return out
+
+    out = list(ssbond_lines(src))
+    nProt = len(rows)
+    for m in range(models):
+        t = m / models
+        ph = 2 * math.pi * t
+        out.append(f"MODEL     {m + 1:>4}")
+        for serial, r in enumerate(rows, 1):
+            x, y, z = (float(r[idx[c]]) for c in CARTN)
+            i = float(r[idx["auth_seq_id"]].replace("?", "0") or 0)
+            x += amp * math.sin(2 * math.pi * i / 180 + ph)
+            y += amp * math.sin(2 * math.pi * i / 220 + ph * 1.3)
+            z += amp * math.sin(2 * math.pi * i / 260 + ph * 0.7)
+            name = r[idx["label_atom_id"]].strip('"')
+            name = f" {name:<3}" if len(name) < 4 else name
+            out.append(
+                f"{rec(r, idx)}{serial % 100000:>5} {name:<4} {r[idx['label_comp_id']]:>3}"
+                f" {r[idx['auth_asym_id']][:1]:1}{r[idx['auth_seq_id']]:>4}    "
+                f"{x:>8.3f}{y:>8.3f}{z:>8.3f}{1.0:>6.2f}{0.0:>6.2f}"
+                f"{'':10}{r[idx['type_symbol']]:>2}")
+        for k, (nm, p) in enumerate(ligand(t), 1):
+            out.append(
+                f"HETATM{nProt + k:>5}  {nm:<3} LIG Z 901    "
+                f"{p[0]:>8.3f}{p[1]:>8.3f}{p[2]:>8.3f}{1.0:>6.2f}{0.0:>6.2f}"
+                f"{'':10}{'C':>2}")
+        out.append("ENDMDL")
+    # 🔴 THE POINT OF THE FIXTURE: five bonds the FILE declares, covering all
+    # seven atoms, so `fileKnowsIt` is true and no distance rule is consulted.
+    # The fields are 12-16, 17-21, 22-26 and 27-31 - see the note in CLAUDE.md
+    # about reading them one column late.
+    link = [(1, 2), (2, 3), (4, 5), (4, 6), (4, 7)]
+    by = {}
+    for a, b in link:
+        by.setdefault(a, []).append(b)
+        by.setdefault(b, []).append(a)
+    for a in sorted(by):
+        parts = "".join("%5d" % (nProt + b) for b in by[a])
+        out.append("CONECT%5d%s" % (nProt + a, parts))
+    out.append("END")
+    open(dst, "w").write("\n".join(out) + "\n")
+    print(f"{dst}  models={models}  atoms/model={nProt + 7}"
+          f"  (a 7-atom ligand with {len(link)} CONECT bonds)")
 
 
 def emit_collapsed(src, dst, models=16, tightness=0.04):
@@ -181,7 +324,7 @@ def emit_collapsed(src, dst, models=16, tightness=0.04):
             name = r[idx["label_atom_id"]].strip('"')
             name = f" {name:<3}" if len(name) < 4 else name
             out.append(
-                f"ATOM  {serial % 100000:>5} {name:<4} {r[idx['label_comp_id']]:>3}"
+                f"{rec(r, idx)}{serial % 100000:>5} {name:<4} {r[idx['label_comp_id']]:>3}"
                 f" {r[idx['auth_asym_id']][:1]:1}{r[idx['auth_seq_id']]:>4}    "
                 f"{x:>8.3f}{y:>8.3f}{z:>8.3f}{1.0:>6.2f}{0.0:>6.2f}"
                 f"{'':10}{r[idx['type_symbol']]:>2}")
@@ -234,7 +377,7 @@ def emit_diffusion(src, dst, models=16, seed=7, sigma_max=40.0,
             name = r[idx["label_atom_id"]].strip('"')
             name = f" {name:<3}" if len(name) < 4 else name
             out.append(
-                f"ATOM  {serial % 100000:>5} {name:<4} {r[idx['label_comp_id']]:>3}"
+                f"{rec(r, idx)}{serial % 100000:>5} {name:<4} {r[idx['label_comp_id']]:>3}"
                 f" {r[idx['auth_asym_id']][:1]:1}{r[idx['auth_seq_id']]:>4}    "
                 f"{x:>8.3f}{y:>8.3f}{z:>8.3f}{1.0:>6.2f}{0.0:>6.2f}"
                 f"{'':10}{r[idx['type_symbol']]:>2}")
@@ -275,7 +418,7 @@ def emit_unfolding(src, dst, models=30):
             name = r[idx["label_atom_id"]].strip('"')
             name = f" {name:<3}" if len(name) < 4 else name
             out.append(
-                f"ATOM  {serial % 100000:>5} {name:<4} {r[idx['label_comp_id']]:>3}"
+                f"{rec(r, idx)}{serial % 100000:>5} {name:<4} {r[idx['label_comp_id']]:>3}"
                 f" {r[idx['auth_asym_id']][:1]:1}{r[idx['auth_seq_id']]:>4}    "
                 f"{x:>8.3f}{y:>8.3f}{z:>8.3f}{1.0:>6.2f}{0.0:>6.2f}"
                 f"{'':10}{r[idx['type_symbol']]:>2}")
@@ -390,6 +533,12 @@ if __name__ == "__main__":
         for a in big:
             n = int(a.split("=", 1)[1])
             emit_synthetic(n, f"_traj_syn{n}.pdb")
+        sys.exit(0)
+    if "--pathological" in sys.argv:
+        for src in ([a for a in sys.argv[1:] if not a.startswith("--")]
+                    or ["3CHY.cif"]):
+            emit_pathological(src, "_traj_patho_"
+                              + src.split(".")[0].lower() + ".pdb", models=models)
         sys.exit(0)
     if "--collapsed" in sys.argv:
         for src in ([a for a in sys.argv[1:] if not a.startswith("--")]

@@ -3050,11 +3050,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             //                 frames built on them
             //
             // 🔴 ...AND KEEP SSE ONCE MADE AN EXCEPTION HERE, WHERE DROPPING
-            // FAULT. The reasoning above is that the key - object|frame|n -
-            // cannot catch a coordinate swap, so the caches are cleared
-            // THEM WAS THE WHOLE FAULT. It swapped in _topologyKey() instead,
-            // which names the object, the drawn set, the side-chain count and
-            // the position count and DELIBERATELY not the frame: that is what
+            // THEM WAS THE WHOLE FAULT. The reasoning above is that the key -
+            // object|frame|n - cannot catch a coordinate swap, so the caches
+            // are cleared outright. That mode swapped in _topologyKey()
+            // instead, which names the object, the drawn set, the side-chain
+            // count and the position count and DELIBERATELY not the frame:
+            // that is what
             // pinning the assignment means. A key that strong does not need the
             // blanket clear, and the blanket clear destroys it.
             //
@@ -3075,8 +3076,35 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             {
                 this._cartoonSec = null;
                 this._cartoonSecKey = null;
-                this._cartoonPair = null;
-                this._cartoonPairKey = null;
+                // 🔴 THE PAIRING IS NOT CLEARED HERE, AND THAT IS THE SAME
+                // LESSON THE PARAGRAPH ABOVE RECORDS. `_materialiseSidechains`
+                // calls this EVERY FRAME, so a blanket clear re-predicts the
+                // nucleic base pairing from every frame's geometry - and a
+                // plate is emitted per PAIR, so the prim list and the station
+                // mapping follow it. Measured on _traj_1ehz.pdb with side
+                // chains showing and the positions and bonds identical on
+                // every frame: 42, 42, 42, 36, 40, 40 pairs, and 3 of 9 steps
+                // rebuilt. With the ribbon alone - where this clear does not
+                // run per frame - the same trajectory held at 42.
+                //
+                // `_cartoonPairKey` is `_topologyKey()` plus any forced
+                // pairing (see the note in cartoon/geom.js) - which names what
+                // is drawn, how it is merged and how long the array is, and
+                // never the coordinates - so anything that genuinely changes
+                // what is being drawn misses on the key by itself. What a
+                // clear here would add is exactly what must not happen: a
+                // re-prediction because the molecule MOVED.
+                //
+                // 🔴 AND THE OTHER FOUR WERE AUDITED RATHER THAN ASSUMED, which
+                // is the question to ask of anything added to this block: does
+                // this cache's own key already catch what the clear is for?
+                // `_cartoonSec`, `_cartoonLadder`, `_cartoonSheet` and
+                // `_ssColorSec` are all keyed on `secKey`, which HOLDS the
+                // coordinates - they follow the fold on purpose, and for them
+                // the clear is load-bearing for exactly the case the paragraph
+                // above names: a live replace() that swaps coordinates under an
+                // unchanged object|frame|n. Pairing was the only one in here
+                // whose answer belongs to the molecule.
                 this._cartoonLadder = null;
                 this._cartoonLadderKey = null;
                 this._cartoonSheet = null;
@@ -7643,10 +7671,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 names.push(names[owner] !== undefined ? names[owner] : '');
                 numbers.push(numbers[owner] !== undefined ? numbers[owner] : 0);
                 // The table knows this atom's name and element; the arrays are
-                // where every other consumer looks for them. Both are dropped
-                // from a SAVED table - see trimSidechainTable - so a reloaded
-                // session leaves these blank and the side chain colours from
-                // sidechainMap.el instead, which is where it always came from.
+                // where every other consumer looks for them. The NAME is
+                // dropped from a saved table and nothing draws with it.
+                // 🔴 THE ELEMENT IS NOT, AND THE COMMENT THAT USED TO STAND
+                // HERE WAS WRONG: it said a reloaded session colours from
+                // `sidechainMap.el` instead, "which is where it always came
+                // from" - and that field is filled from `sc.elements`, two
+                // lines below, so dropping the array emptied both and a
+                // reloaded session drew every side chain flat. See
+                // trimSidechainTable for the measurement.
                 if (atomEls.length) atomEls.push((sc.elements && sc.elements[k]) || '');
                 // pLDDT is a per-RESIDUE confidence, so an atom of that residue
                 // carries the residue's own value - which also keeps a side
@@ -8459,10 +8492,30 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                                 }
                             }
                         }
-                    } else if (this.positionTypes[i] === 'L') {
+                    } else if (this.positionTypes[i] === 'L'
+                        && !(this.sidechainMap && this.sidechainMap.has(i))) {
                         // Group ligand indices by chain - PER OBJECT, or the
                         // fallback below bonds one structure's ligand atoms to
                         // another's whenever both call the chain A.
+                        // 🔴 SIDE CHAINS ARE EXCLUDED, AND THEY ARE MOST OF
+                        // WHAT GETS HERE. A materialised side-chain atom is
+                        // typed 'L', so without this it joins the distance
+                        // search: 744 of the 773 entries on 3PTB with every
+                        // side chain out, 889 of 907 on 1EHZ. Their
+                        // connectivity is known explicitly - the table says
+                        // which atom bonds to which - and a distance rule is
+                        // re-derived from the coordinates on every frame, so
+                        // two atoms drifting inside the cutoff would add a
+                        // bond no frame before it had. That is a segment
+                        // appearing mid-trajectory, which moves the mesh's
+                        // topology and costs the station fast path a rebuild.
+                        // The counts do not move on either fixture today: what
+                        // this removes is the chance of it, and ~750 atoms of
+                        // per-frame search.
+                        // WHAT IT COSTS: a ligand covalently attached to a
+                        // side chain, on a path where no bonds were supplied,
+                        // gets no stick across that link. A declared bond
+                        // still travels - this is the distance FALLBACK.
                         const chainId = this.chainKeyAt(i);
                         if (!ligandIndicesByChain.has(chainId)) {
                             ligandIndicesByChain.set(chainId, []);

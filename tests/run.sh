@@ -218,6 +218,11 @@ probe_cap () {
     (colab) print 160 ;;
     (focus_mode) print 120 ;;
     (mobile_layout) print 120 ;;
+    # ...and the FOURTH of that family: two shells, each a page load of its
+    # own, and it measures a computed style in both. 7.5 s alone, twice
+    # measured, and killed at 30 in a lane running six browsers - which is a
+    # cap firing during setup and not a fault, exactly as the three above.
+    (selection_shells) print 120 ;;
     # 🔴 RAISING A CAP TO CURE CONTENTION MAKES IT WORSE, measured: capping
     # selection_panel and align_objects up took the ui lane from two "no result
     # posted" to FIVE. A higher cap does not make a probe finish, it lets a
@@ -256,9 +261,9 @@ run_probe () {   # name, then its arguments
 
 if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
   UI=(pick_empty selection_mark focus_mode hover_echo heatmap_objects heatmap_visibility hidden_reload cut_ligands
-      sidechain_toggle mixed_sidechains station_restore nucleic_multi save_multi selection_panel minimal_input
+      sidechain_toggle mixed_sidechains session_elements station_restore nucleic_multi save_multi selection_panel minimal_input
       object_reload python_page python_multi style_per_object align_objects embed panel
-      msa_paired_ui selection_shells mobile_layout notebook_narrow play_stop heatmap_maps heatmap_names
+      msa_paired_ui selection_shells mobile_layout notebook_narrow play_stop heatmap_maps heatmap_names heatmap_resize_paint
       render_page frame_policy embed_follow slots)
   pids=(); names=()
   for t in $UI; do
@@ -279,7 +284,7 @@ if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "gpu" ]]; then
-  for t in ss_every multi_step gpu_recolour gpu_mesh_reuse gpu_tube_reuse gpu_mixed_style gpu_stick_flat disulfides sequence_connectivity dev_rebuild_light colour_repaint station_shader station_corners station_pixels station_frames station_ligand station_foldcuts station_overlay station_sidechains topology_survey station_controls rebuild_actions rebuild_returns render_counts diffusion_connectivity pick_index halo_partial load_work station_unpinned panel_idle frame_share colour_cache ss_agree splice_window station_rows station_edges sheet_merge outline_sync capture_once arrow_rebuilds ss_arrow_shape arrow_faces_2d ss_axis resize_reuse frame_revisit export_html opacity default_object python_opacity named_object gpu_direct; do
+  for t in ss_every multi_step gpu_recolour gpu_mesh_reuse gpu_tube_reuse gpu_mixed_style gpu_stick_flat disulfides sequence_connectivity dev_rebuild_light colour_repaint station_shader station_corners station_pixels station_frames station_ligand station_foldcuts station_overlay station_sidechains topology_survey station_controls rebuild_actions rebuild_returns render_counts diffusion_connectivity pick_index halo_partial load_work station_unpinned panel_idle frame_share colour_cache ss_agree splice_window station_rows station_edges sheet_merge weld_open stick_topology outline_sync capture_once arrow_rebuilds ss_arrow_shape arrow_faces_2d ss_axis resize_reuse frame_revisit export_html opacity default_object python_opacity named_object gpu_direct; do
     run_probe $t || fail=1
   done
   # ...and the same file again with a TAIL in it: 1EHZ's nine ions are rebuilt

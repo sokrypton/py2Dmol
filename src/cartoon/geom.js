@@ -646,8 +646,10 @@ const STICK_SQ = [[1, 1], [1, -1], [-1, -1], [-1, 1]];
 // ...and the same four as two flat lists, for the loops that only want
 // the signs. Written as an array literal inside a per-junction or
 // per-station loop it is five allocations and an iterator each time.
-const MITRE_TOP = [0, 1];
-const MITRE_BOT = [3, 2];
+// The corner a leg gives to the NEXT leg round the junction axis, top then
+// bottom, and the one it gives to the PREVIOUS - see the mitre in drawSticks.
+const MITRE_FWD = [1, 2];
+const MITRE_BACK = [0, 3];
 const SQ_U = [1, 1, -1, -1];
 const SQ_V = [1, -1, -1, 1];
 const STICK_SURF_MAP = [7, 8, 9, 10, 4, 5];
@@ -4096,7 +4098,24 @@ function mergeBondRuns(S) {
                     const tj = -(off[0] * nx3 + off[1] * ny3 + off[2] * nz3) / den;
                     if (tj > t) t = tj;
                 }
-                if (t > 0.35 * len) { cutOk = false; break; }
+                // 🔴 CLAMPED, NOT ABANDONED, BECAUSE THIS DECIDES TOPOLOGY.
+                // A mitred junction emits two shared end polygons and an
+                // abandoned one emits none, so "is this cut too deep" moved the
+                // station and face counts - and it is measured from THIS
+                // frame's geometry, so a side chain swinging a little flipped
+                // it and the station fast path rebuilt the step. Measured on a
+                // 25-frame fold with every side chain shown: the stations were
+                // exactly 904 plus the number of mitred junctions, which swung
+                // between 38 and 56 frame to frame.
+                //
+                // What the test protects against is a leg cut back so far that
+                // the mitre eats it, and clamping gives exactly that protection
+                // without changing what is DRAWN: the cut stops at 0.35 of the
+                // leg either way. The difference is that the junction keeps its
+                // polygons, so the mesh a trajectory steps through has the
+                // topology of the BOND GRAPH - which no frame can move - rather
+                // than of whichever frame happened to be drawn first.
+                if (t > 0.35 * len) t = 0.35 * len;
                 four.push([pA.x + d[0] * t + off[0], pA.y + d[1] * t + off[1],
                     pA.z + d[2] * t + off[2]]);
             }
@@ -4116,8 +4135,31 @@ function mergeBondRuns(S) {
         // came out about 0.03 A apart - a hairline at the ridge. Each
         // shared corner is moved to the midpoint of the two, which costs
         // nothing visible and makes the faces meet exactly.
-        const dist2 = (p, q) => (p[0] - q[0]) * (p[0] - q[0])
-            + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]);
+        //
+        // 🔴 WHICH CORNER FACES WHICH NEIGHBOUR IS THE FRAME'S HANDEDNESS,
+        // NOT A DISTANCE. This was a nearest-of-four search over the two top
+        // corners of each leg and then the two bottom ones - and a search
+        // between two points 0.03 A apart is a coin toss that the molecule
+        // tosses again on every frame. Measured on an AlphaFold 3 fold with a
+        // 43-atom ligand: 70 junctions and 140 pairings on EVERY frame, the
+        // same legs in the same order, and the chosen index pair flipping on
+        // about eight of them a step. A flip is not harmless - the two
+        // neighbours of one leg can land on the SAME corner, which welds three
+        // cuts into one point instead of two pairs - so the ligand's 444 faces
+        // came out as anything from 568 to 692 outline edges, `refreshSticksFrom`
+        // refused the part, and every step rebuilt the whole mesh, protein
+        // included.
+        //
+        // There is nothing to search for. `u` is the AX-WARD vector of the
+        // leg's plane, so `v = d x u` is proportional to `d x ax` for every
+        // leg alike - which is minus the tangential direction of INCREASING
+        // angle about `ax`, the coordinate `ord` sorts on. So a leg's `v`
+        // negative corner always faces the NEXT leg round and its `v` positive
+        // corner always faces the PREVIOUS one, at every junction and on every
+        // frame. With SQ_V = [+1, -1, -1, +1] that is corner 1 and corner 2
+        // forward, corner 0 and corner 3 back - and because forward and back
+        // are different corners by construction, each leg gives exactly two
+        // away and the count cannot move.
         const shareTop = []; const shareBot = [];
         for (let a2 = 0; a2 < kk; a2++) {
             const i2 = ord[a2]; const j2 = ord[(a2 + 1) % kk];
@@ -4125,18 +4167,9 @@ function mergeBondRuns(S) {
             // triples of arrays, rebuilt for every pair of legs at every
             // junction, to iterate two corner indices each.
             for (let tb = 0; tb < 2; tb++) {
-                const ci = tb === 0 ? MITRE_TOP : MITRE_BOT;
-                const cj = ci;
                 const store = tb === 0 ? shareTop : shareBot;
-                let best = Infinity; let bi = ci[0]; let bj = cj[0];
-                for (let xi = 0; xi < ci.length; xi++) {
-                    const x = ci[xi];
-                    for (let yi = 0; yi < cj.length; yi++) {
-                        const y = cj[yi];
-                        const dd = dist2(corner[i2][x], corner[j2][y]);
-                        if (dd < best) { best = dd; bi = x; bj = y; }
-                    }
-                }
+                const bi = tb === 0 ? MITRE_FWD[0] : MITRE_FWD[1];
+                const bj = tb === 0 ? MITRE_BACK[0] : MITRE_BACK[1];
                 const mid = [(corner[i2][bi][0] + corner[j2][bj][0]) / 2,
                     (corner[i2][bi][1] + corner[j2][bj][1]) / 2,
                     (corner[i2][bi][2] + corner[j2][bj][2]) / 2];
@@ -4538,6 +4571,20 @@ function mergeBondRuns(S) {
             const d = dot(v, t);
             return un([v[0] - t[0] * d, v[1] - t[1] * d, v[2] - t[2] * d]);
         };
+        // any unit vector across t - for a station whose carried frame lies
+        // in its own cut plane, where there is no preferred roll to keep
+        const anyPerp = (t) => rej(Math.abs(t[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0], t)
+            || rej([0, 1, 0], t) || [1, 0, 0];
+        // how far a cut plane carries its corners ALONG a bond: r * tan(phi),
+        // phi being the angle between the plane's normal and the bond. Written
+        // out here rather than in the station loop, where it would be a
+        // closure per station.
+        const rStick = Math.max(stickHW, stickHT);
+        const slantReach = (nrm, d) => {
+            const cd = Math.min(1, Math.abs(dot(nrm, d)));
+            const sd = Math.sqrt(Math.max(0, 1 - cd * cd));
+            return cd > 1e-6 ? rStick * (sd / cd) : Infinity;
+        };
         const rot = (v, ax, ang) => {     // Rodrigues, about a unit axis
             const c = Math.cos(ang); const s = Math.sin(ang);
             const k = crs(ax, v); const d = dot(ax, v) * (1 - c);
@@ -4739,22 +4786,73 @@ function mergeBondRuns(S) {
                     L: bonds[nB - 1], R: bonds[0],
                     pPrev: P[nB - 1], pNext: P[1], u: U[0] });
             }
+            // 🔴 A STATION EXISTS BECAUSE THE BOND GRAPH SAYS TWO BONDS
+            // MEET HERE, so it emits its shared section on every frame. Three
+            // geometric exits used to skip one - an unusable bisector, a cut
+            // too oblique to fit the bonds, a frame parallel to the plane -
+            // and each of them is the SAME fault as the mitre's abandoned cut
+            // two hundred lines above: a shared section is one polygon that
+            // both boxes end on, and skipping it gives each its own square
+            // end. That is a different mesh. Measured on an AlphaFold 3 fold
+            // whose ligand is still diffusing, where the bond angles are
+            // nonsense early and settle later: of ten stations that reach this
+            // test, between 0 and 10 fired per frame - the ratio swinging from
+            // 0.75 to 34 - so the ligand's outline moved by forty edges a step,
+            // `refreshSticksFrom` refused the part, and the whole mesh rebuilt.
+            //
+            // So the topology is fixed and the GEOMETRY degrades instead:
+            //   - no bisector (the run doubles back on itself) means a plane
+            //     square across the outgoing bond, which for antiparallel
+            //     tangents is square across the incoming one too. 🔴 NEVER
+            //     OBSERVED: 3,343 stations on _traj_3ptb, 3,512 on _traj_1ehz
+            //     and 261 over every frame of the diffusing ligand this was
+            //     written for, and not one of them had `tIn + tOut` round to
+            //     zero. It is here so the rule has no exception - the
+            //     alternative at that station is the `continue` this replaced,
+            //     which is a topology that depends on the frame - and not
+            //     because it was seen. The same goes for the floor under the
+            //     narrowing below;
+            //   - too oblique means the section is NARROWED until its reach
+            //     fits, which is the mitre's clamp by the other handle - there
+            //     the cut stops short, here the polygon it cuts with does;
+            //   - a frame parallel to the plane takes any perpendicular.
             for (const st of stations) {
-                const b = un([st.tIn[0] + st.tOut[0], st.tIn[1] + st.tOut[1],
+                let b = un([st.tIn[0] + st.tOut[0], st.tIn[1] + st.tOut[1],
                     st.tIn[2] + st.tOut[2]]);
-                if (!b) continue;
-                // the oblique cut reaches h*tan(theta/2) along each
-                // bond, and must not eat the bond it is cutting
-                const c = Math.max(-1, Math.min(1, dot(st.tIn, st.tOut)));
-                const half = Math.acos(c) / 2;
-                const reach = Math.max(stickHW, stickHT) * Math.tan(half);
+                if (!b) b = un(st.tOut) || un(st.tIn);
+                if (!b) continue;   // both tangents are zero: no bond at all
+                // HOW FAR THE CUT REACHES ALONG EACH BOND, from the PLANE
+                // rather than from the bend. A plane whose normal makes an
+                // angle phi with a bond carries its corners r*tan(phi) along
+                // that bond, and the bisector makes the same angle - half the
+                // bend - with both, which is the `r * tan(theta / 2)` this
+                // used to say.
+                //
+                // 🔴 IT HAS TO BE THE PLANE'S because the plane is not always
+                // the bisector any more: where a run doubles back there is no
+                // bisector to normalise and the section is cut square across
+                // the outgoing bond instead. Asked of the BEND, that case
+                // reports tan(90 degrees) - so the narrowing below took the
+                // section to a POINT at exactly the station the fallback
+                // exists to serve. Asked of the plane it reports ~0, which is
+                // what a square cut costs. Identical for a bisector, which is
+                // every other station.
+                const reach = Math.max(slantReach(b, st.tIn),
+                    slantReach(b, st.tOut));
                 const lenL = len3(st.p.x - st.pPrev.x,
                     st.p.y - st.pPrev.y, st.p.z - st.pPrev.z);
                 const lenR = len3(st.pNext.x - st.p.x,
                     st.pNext.y - st.p.y, st.pNext.z - st.p.z);
-                if (reach > 0.30 * Math.min(lenL, lenR)) continue;
-                const uS = rej(st.u, b);
-                if (!uS) continue;
+                const lim = 0.30 * Math.min(lenL, lenR);
+                // ...and a section is never narrowed to nothing: four
+                // corners at one point is a degenerate quad, whose normal is
+                // zero and whose faces are NaN. A twentieth of the width is a
+                // visible pinch and a real polygon.
+                const narrow = reach > lim ? Math.max(0.05, lim / reach) : 1;
+                const secHT = stickHT * narrow;
+                const secHW = stickHW * narrow;
+                let uS = rej(st.u, b);
+                if (!uS) uS = anyPerp(b);
                 // ONE POLYGON, TRAVERSED TWO WAYS. The section is built
                 // once, in the plane bisecting the two bonds, so both
                 // boxes end on the very same four points and the seam
@@ -4771,14 +4869,14 @@ function mergeBondRuns(S) {
                 // face. Reversing v maps the cycle (+u+v, +u-v, -u-v,
                 // -u+v) onto indices 1, 0, 3, 2 of the forward one.
                 const vS = un(crs(b, uS));
-                if (!vS) continue;
+                if (!vS) continue;   // cannot happen: uS is across b
                 const Q = new Array(4);
                 for (let sq = 0; sq < 4; sq++) {
                     const su = SQ_U[sq]; const sv = SQ_V[sq];
                     Q[sq] = [
-                        st.p.x + uS[0] * su * stickHT + vS[0] * sv * stickHW,
-                        st.p.y + uS[1] * su * stickHT + vS[1] * sv * stickHW,
-                        st.p.z + uS[2] * su * stickHT + vS[2] * sv * stickHW];
+                        st.p.x + uS[0] * su * secHT + vS[0] * sv * secHW,
+                        st.p.y + uS[1] * su * secHT + vS[1] * sv * secHW,
+                        st.p.z + uS[2] * su * secHT + vS[2] * sv * secHW];
                 }
                 const QR = [Q[1], Q[0], Q[3], Q[2]];
                 const L = st.L; const R = st.R;
@@ -5886,11 +5984,54 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
     // because pairs here are NOT nested - duplexes span two chains and
     // tertiary contacts pseudoknot - and greedy is O(m log m) against the
     // DP's O(n^3), which matters on ribosome-sized inputs.
+    // 🔴 WHICH BASE PAIRS WITH WHICH BELONGS TO THE MOLECULE, NOT TO THE FRAME,
+    // AND IT USED TO BE KEYED ON secKey - WHICH HOLDS THE COORDINATES. So a
+    // trajectory re-predicted its pairing as it moved, and a plate is emitted
+    // per PAIR: the prim list, and with it the station, piece and face counts,
+    // followed the prediction. Measured on _traj_1ehz.pdb with the positions
+    // and bonds IDENTICAL on every frame (76 and 75): 42, 42, 42, 36, 40, 40
+    // pairs over six frames, with the stations tracking them exactly - 768,
+    // 768, 768, 744, 760, 760 - and 3 of 9 steps rebuilding. Frames 4 and 5
+    // agree on the COUNT and disagree on which pairs, so the mapping moves
+    // even where the count does not.
+    //
+    // The same answer the sticks got: predict it once for the structure and
+    // let the geometry follow. The key is the object and its position count,
+    // plus whatever the caller forced - never the coordinates.
+    //
+    // 🔴 WHAT IT COSTS is an RNA that FOLDS: a pair that forms later in a
+    // trajectory does not appear until something rebuilds the cache. Pairing
+    // is a property of the sequence and the fold, and the fold is what a
+    // trajectory of one molecule holds still by assumption - the same
+    // assumption `cartoonSecEvery` already ships for the protein assignment.
+    // `renderer._cartoonPairKey = null` asks for it again.
+    const forcedPairs = pairsOf(renderer);
+    let forcedSig = 'auto';
+    if (forcedPairs) {
+        let h = 0; let cnt = 0;
+        for (const k of Object.keys(forcedPairs)) {
+            h = (h * 31 + Number(k) * 7 + Number(forcedPairs[k])) >>> 0;
+            cnt += 1;
+        }
+        forcedSig = cnt + ':' + h;
+    }
+    // 🔴 THE KEY IS `_topologyKey()`, THE ONE THE MESH'S OWN SIGNATURE USES.
+    // `parts/multi.js` already answers "what is drawn, merged how, with how
+    // many side-chain atoms materialised, over an array this long" - and
+    // DELIBERATELY not which frame. That is exactly the question a per-object
+    // graph is keyed on, so pairing asks it rather than spelling a second
+    // version of it (the first spelling here was the object name and the
+    // position count, which is that answer with the merge and the overlay left
+    // out). A stub renderer - the node harnesses hand geom.js a plain object -
+    // has no such method, so the old spelling is the fallback.
+    const topoKey = typeof renderer._topologyKey === 'function'
+        ? renderer._topologyKey()
+        : (renderer.currentObjectName || '') + '|' + n;
+    const pairKey = topoKey + '|' + forcedSig;
     let pairOf = renderer._cartoonPair;
-    if (!pairOf || renderer._cartoonPairKey !== secKey) {
-        if (renderer._cartoonPairKey !== secKey) cacheRebuilt = true;
+    if (!pairOf || renderer._cartoonPairKey !== pairKey) {
+        if (renderer._cartoonPairKey !== pairKey) cacheRebuilt = true;
         pairOf = new Int32Array(n).fill(-1);
-        const forcedPairs = pairsOf(renderer);
         if (forcedPairs) {
             for (const k of Object.keys(forcedPairs)) {
                 const i = Number(k);
@@ -6181,7 +6322,7 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
         }
         }
         renderer._cartoonPair = pairOf;
-        renderer._cartoonPairKey = secKey;
+        renderer._cartoonPairKey = pairKey;
     }
 
     // A BASE POINTS AT ITS PARTNER. The prediction gets that sign wrong for
@@ -10909,43 +11050,38 @@ function drawSticks(ctx) {
                 Math.max(-1, Math.min(1,
                     mB[0] * mA[0] + mB[1] * mA[1] + mB[2] * mA[2])));
         }
-        const MAX_SEG_TWIST = 18 * Math.PI / 180;
         const bl = len3(vb.x - va.x, vb.y - va.y, vb.z - va.z);
-        // HOW MANY PIECES ONE BOND IS CUT INTO, and three rules decide it.
+        // 🔴 HOW MANY PIECES ONE BOND IS CUT INTO IS A QUESTION ABOUT THE
+        // BOND GRAPH, NOT ABOUT THIS FRAME. It used to be cut until no piece
+        // twisted more than MAX_SEG_TWIST - and the twist is the rotation of
+        // the section frame between the two ends, which every frame of a
+        // trajectory moves. So a side chain turning a little further asked for
+        // another piece, that piece is stations and faces, and the station fast
+        // path refused the step: 20 of 24 steps of a 25-frame fold rebuilt with
+        // "the station mapping moved", with the ribbon itself rock steady.
         //
-        // TWIST is the first: it is what says whether the ruled side faces read
-        // as wrung, so a stick that turns along its length is cut until no
-        // piece turns more than MAX_SEG_TWIST.
+        // Both halves of the old rule are still here where they are constant:
+        // a CONTACT raises K by its own pitch over its length, and a
+        // two-coloured bond takes an even K so a piece boundary lands at the
+        // middle. What has gone is the term measured from the drawn frame.
         //
-        // 🔴 AND IT IS NOT GATED BY LENGTH, WHICH WAS TRIED AND REPORTED.
-        // `bl > 3.0` stood here, on the reasoning that a covalent bond is 1.5 A
-        // and has not enough of it to see the ruling turn. That reasoning is
-        // wrong: twist is the rotation of the section frame between the two
-        // ends, and a SHORT bond can carry all of it. Measured on 3PTB - 791
-        // bonds, 15 want cutting by twist, and the gate refused ALL FIFTEEN,
-        // the worst a 2.72 A bond turning 59 degrees that asked for four pieces
-        // and got one.
+        // 🔴 WHAT IT COSTS is the case that rule was written for: a bond
+        // carrying real twist now spans it in one ruled piece, whose two
+        // triangles fold. That was measured before it was accepted - at 4
+        // degrees per segment against the shipped 18, over a full rotation of
+        // this fold with every side chain shown, 16 of 18 angles are pixel
+        // IDENTICAL and the two that differ do so by 227 and 51 pixels. The
+        // twist rule was paying for itself on 15 bonds of 791 (its own note),
+        // and it was costing every trajectory its fast path.
         //
-        // One piece across 59 degrees is a ruled, non-planar quad; its two
-        // triangles fold, and with nothing back-face culled you see through the
-        // gap. Reported as faces disappearing on twisted bonds at certain
-        // angles, on a single structure being turned by hand - which is the
-        // shape of the fault: it is in the GEOMETRY, so no amount of rebuilding
-        // fixes it and every angle shows a different piece of it.
-        //
-        // The gate bought nothing to weigh against that: +90 stick faces on
-        // 3PTB (1.5%) and +22 on 1AOI (0.17%) with it removed, and the minimum
-        // of seven builds moved 100.0 -> 99.9 ms and 200.0 -> 199.9. The twist
-        // rule only fires where there IS twist, which is 15 bonds of 791.
-        //
-        // A CONTACT is the case the twist rule cannot serve at all: it can
-        // cross the whole structure dead straight, so it twists not at all and
-        // would come out as one box - one depth key for each of its side faces
-        // over their whole span, sorting as if the contact were all at its own
-        // midpoint, which is exactly what it must not do when it passes behind
-        // one thing and in front of the next. `bd.segA` is its own pitch and it
-        // raises K by LENGTH, below, which is a floor and never a ceiling.
-        let K = Math.max(1, Math.min(8, Math.ceil(Math.abs(tw) / MAX_SEG_TWIST)));
+        // What that rule knew, kept because it is still true of the geometry:
+        // twist is the rotation of the section frame between a bond's two ends,
+        // so a SHORT bond can carry all of it and a length gate (`bl > 3.0`)
+        // refused all fifteen of 3PTB's twisted bonds, the worst 2.72 A turning
+        // 59 degrees. And a CONTACT twists not at all while crossing the whole
+        // structure, so its pitch (`bd.segA`) raises K by LENGTH - which is why
+        // that term survives here and the twist one does not.
+        let K = 1;
         if (bd.segA) {
             K = Math.max(K, Math.min(CONTACT_SEG_MAX,
                 Math.ceil(bl / bd.segA)));
@@ -10953,8 +11089,8 @@ function drawSticks(ctx) {
         // ...AND AN EVEN K WHEN THE BOND IS TWO COLOURS, so a piece boundary
         // lands exactly at the middle and the two halves are whole numbers of
         // pieces. This is the rule that actually decides K on most bonds - 634
-        // of 2,432 on 4HHB, 4,062 of 7,070 on 1AOI - so it outranks both of the
-        // rules above and must stay last.
+        // of 2,432 on 4HHB, 4,062 of 7,070 on 1AOI - so it outranks the rule
+        // above and must stay last.
         if (bd.halfC && bd.halfC.a && bd.halfC.b) K = Math.max(2, K + (K % 2));
         const secs = [secA];
         for (let k = 1; k < K; k++) {

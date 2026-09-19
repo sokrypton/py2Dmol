@@ -226,10 +226,13 @@ function checkHydrogens(){
 // could ever be turned on, because its atoms were never written down and the
 // file they came from is gone.
 //
-// Trimmed instead. `names` and `elements` are dropped - nothing reads them to
-// draw, they exist so the connectivity table can be applied at capture, which
-// has already happened - and coefficients round to 0.01 A, far finer than a
-// side chain drawn a few pixels wide.
+// Trimmed instead. `names` are dropped - the connectivity table they exist for
+// has already been applied at capture - and coefficients round to 0.01 A, far
+// finer than a side chain drawn a few pixels wide. 🔴 `elements` ARE KEPT, and
+// this file asserted the opposite for as long as they were not: an appended
+// side-chain atom's element is what makes a mixed bond two colours, so a
+// reloaded session drew every side chain in one flat colour. They are one
+// letter a row and travel as a comma-joined string.
 function checkSaveLoad(){
   const src=fs.readFileSync(path.join(ROOT,'1TIM.cif'),'utf8');
   const fd=runParse(src,false);
@@ -243,9 +246,16 @@ function checkSaveLoad(){
       +`- a residue that was not showing could never be turned on again`);
     return 1;
   }
-  if(trimmed.names||trimmed.elements){
-    console.log('FAIL save: names/elements are still being written - nothing '
-      +'reads them to draw and they are a third of the bytes');
+  if(trimmed.names){
+    console.log('FAIL save: names are still being written - nothing reads them '
+      +'to draw and they are a third of the bytes');
+    return 1;
+  }
+  // ...and the elements are, because the drawing reads them. A string, not an
+  // array: one letter a row against a JSON array's four characters.
+  if(typeof trimmed.elements!=='string'||!trimmed.elements.length){
+    console.log('FAIL save: the elements did not travel - a reloaded session '
+      +'draws every mixed bond in one colour');
     return 1;
   }
   // through JSON, as a saved session goes

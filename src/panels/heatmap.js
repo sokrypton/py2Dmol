@@ -1532,7 +1532,32 @@ function mountPanel(renderer, heatmapPanel, heatmapCanvas) {
 
         if (hm) {
             hm.size = size;
-            hm.scheduleRender();
+            // 🔴 PAINTED NOW, NOT NEXT FRAME, BECAUSE THE LINE THAT RESIZED IT
+            // ALREADY WIPED IT. Assigning `canvas.width` resets the backing
+            // store, and this context is `alpha: false` (see the constructor),
+            // so what it resets TO is opaque BLACK - not transparent. A
+            // scheduled render paints it on the next animation frame, and
+            // between the two the panel composites as a black rectangle.
+            //
+            // Reported as the big viewer going black for a brief second when
+            // the layout switches from one slot to two. Every one of those
+            // resizes this canvas: the reveal at the start of a fold, a slot
+            // switch, a drag of the divider, a window resize. Caught on a real
+            // headed Chrome by screencasting a live fold at 30 frames a second
+            // - one frame of 592, the big slot 100% black, at the moment the
+            // trunk's contact map took it.
+            //
+            // 🔴 AND THE GAP IS A FRAME ONLY WHEN THE PAGE IS IDLE. During a
+            // fold the main thread is running inference, so the rAF that
+            // scheduleRender waits for can be hundreds of milliseconds away -
+            // which is why it reads as a second rather than a flicker, and why
+            // it shows up in LocalFold and not in a quiet page.
+            //
+            // The fix is not a paper-coloured background under the canvas, nor
+            // dropping `alpha: false`: both leave the canvas unpainted and
+            // merely change what shows through. The rule is that a canvas is
+            // never left cleared - the resize and the paint are one act.
+            hm.render();
         }
     };
 

@@ -184,3 +184,91 @@ the extent, or the framed-objects set - survives that clear. The test sidesteps
 it with one page load per view, which is also what a reader opening a file sees;
 anything that restores several sessions into one live viewer (LocalFold's run
 history is the obvious candidate) should check it before trusting a restore.
+
+---
+
+## 11. Two junction gates still decide a ligand's face count from the frame
+
+The mitre's corner pairing and a run station's shared section both stopped
+being frame decisions (the CLAUDE.md entry beside the twist clamp has the
+numbers: the reported fold went from 9 of 9 steps rebuilding to 0 of 9). Over
+the WHOLE 25-frame trajectory two steps still rebuild, and they are two more
+gates of the same family, both in `mergeBondRuns` / the junction pass of
+`cartoon/geom.js`:
+
+  * **`if (!collarBd && legs.length > 3) { ...; if (tilt > 0.50) continue; }`** -
+    a four-leg centre is mitred when its legs stand around the axis and handed
+    to the collar path when they do not, and a noise frame moved one junction
+    across that line: `tilt4: 1` on frame 15 and not on 14 or 16, which is four
+    faces (444 -> 440 -> 444) and a refusal at each crossing.
+  * **the run walk itself** - ten stations reached the section code on every
+    frame but eleven on frame 15, so which bonds are one RUN moved too
+    (`throughPair` picks an atom's two continuing bonds).
+
+🔴 **AND THE FIXTURE BUILT FOR THE OTHER TWO RULES IS WHERE THESE WOULD SHOW.**
+`_traj_patho_3chy.pdb` carries a three-leg junction with one leg swinging
+through 60 degrees of azimuth; the four-leg planarity gate does not fire on it
+(three legs, not four) and its run decomposition holds. If either of these is
+picked up, extend that ligand - a fourth leg crossing the 0.50 tilt, or a run
+whose `throughPair` choice changes - rather than starting a new fixture: the
+`CONECT` pinning it already has is the hard part.
+
+Both are answers about the MOLECULE - is this centre planar or tetrahedral,
+which bonds are one chain - being recomputed from each frame's coordinates. The
+shape of the fix is the one `_cartoonPairKey` already uses for base pairing:
+compute it once and cache it on the object and its position count, never on the
+coordinates. What that costs is the same thing it costs there - a ligand that
+genuinely changes hybridisation mid-trajectory keeps the answer it was given -
+and it is not obviously worth 2 rebuilds in 24 on a trajectory whose early
+frames are noise. Measured, not fixed.
+
+---
+
+## 12. Fractional secondary structure — parked on `sse-fractional`
+
+A letter is a threshold crossed, and a residue sitting on the threshold crosses
+it back and forth as a structure moves. Measured on `_traj_3ptb.pdb`: **one
+residue flipping is 2,700–4,900 px of a ~28,000 px step**, arriving in a single
+frame while the coordinates drift smoothly. On `_traj_unfold.pdb`, 20 flips are
+22,366 px of a 124,738 px step.
+
+The branch holds a working implementation: `assignSecondaryOpen` returns a
+POSTERIOR over {H, E, C} per residue — a three-state chain over the evidence
+the DSSP tests already compute, forward–backward, O(3n) — and the ribbon draws
+the mixture (`halfW`, `halfT` and the ss colour are all
+`sum p(class) x profile(class)`). **It does not decide the letters**, so every
+reader of `sec` sees what it always saw.
+
+Why it is parked rather than merged:
+
+  * **A dial nobody has chosen.** Sharpening the posterior makes static widths
+    faithful and makes flips step more. Both ends measured — flips move 0.23
+    (3PTB) / 0.62 (1TIM) unsharpened against 0.27 / 0.83 sharpened, where a
+    bare letter flip moves 2.00; p(the letter's own class) on static
+    structures is 0.79–0.84 against 0.83–0.87.
+  * **It changes static pictures**, not only trajectories: 17 of 233 residues
+    on 3PTB are partial.
+  * `tests/paint_trace.js`'s eleven fixtures move, because the node harness's
+    stub renderer picks the posterior up like any other renderer. Re-baselining
+    them is a decision about shipping.
+  * No gate of its own, no CLAUDE.md entry.
+
+What was RULED OUT on the way, so nobody pays for it twice:
+
+  * **A margin below the threshold is not enough.** The first version graded
+    only the evidence that PASSED (`conf`), which cannot see a partner
+    leaving: a fading bond drops out of the set rather than weakening, so of
+    119 flips across three trajectories only 39 had a margin on either side.
+    That is what the posterior is for.
+  * **Raising the transition persistence alone makes it worse** — coil is the
+    longest run in any protein, so a stronger persistence prior mostly
+    strengthens coil: 0.98 took p(E) on 1UBQ from 0.69 to 0.35.
+  * **A dihedral gate that multiplies to zero inside its own band** is a second
+    threshold wearing a ramp's clothes; it halved every strand.
+  * **A ladder EXTENSION carries no hydrogen bonds** — that is its whole point
+    — so it must contribute its spacing comfort as evidence or the ends of
+    every short strand come out mostly coil.
+  * **Colour must be capped, not ramped with the shape.** Taken all the way, a
+    marginal helix end arrives in the loop's green and reads as a loop, which
+    is louder than the width it is drawn at. `SS_COL_BLEND = 0.35`, chosen by
+    looking at five settings in one page load.

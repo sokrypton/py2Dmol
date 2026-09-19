@@ -134,6 +134,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `heatmap_maps.py` | ui | The map panel shows more than one map, and the selection rules do not move. |
 | `heatmap_names.py` | ui | The panel is `heatmap` now, and the names other people hold still work. |
 | `heatmap_objects.py` | ui | The PAE panel belongs to one object, and Multi has no panel at all. |
+| `heatmap_resize_paint.py` | ui | A RESIZED CANVAS IS NEVER LEFT CLEARED, BECAUSE AN OPAQUE ONE CLEARS TO |
 | `heatmap_resolve.js` | node | Which frame's map the panel shows, when the drawn frame has none of its own. |
 | `heatmap_visibility.py` | ui | A PAE box is a selection like any other, and survives like one. |
 | `hidden_reload.py` | ui | Everything switched off is a state you can come back from. |
@@ -190,6 +191,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `selection_shells.py` | ui | The selection panel in the two shells that never had it. |
 | `sequence.js` | node | The sequence strip's input layer, end to end: |
 | `sequence_connectivity.py` | gpu | A chain break is a gap in the numbering, not a distance. |
+| `session_elements.py` | ui | A SAVED SESSION CARRIES WHAT THE DRAWING READS, AND THE SIDE CHAINS' ELEMENTS |
 | `sheet_bench.js` | tool | Score the strand frames the cartoon draws sheets with. |
 | `sheet_bench.py` | tool | Fit the peptide table the cartoon rebuilds backbones with, and score the frames. |
 | `sheet_merge.py` | gpu | A GAP IN A SHEET CLOSING MUST NOT LEAVE A LINE ACROSS IT. |
@@ -222,9 +224,11 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `station_shader.py` | gpu | The station shader compiles, links, and has not forked from VS3D. |
 | `station_sidechains.py` | gpu | Side chains, ligands and contacts are never drawn from a stale row. |
 | `station_unpinned.py` | gpu | A TRAJECTORY TAKES THE STATION PATH WITHOUT BEING ASKED, AND DRAWS THE SAME. |
+| `stick_topology.py` | gpu | WHAT IS DRAWN IS THE GRAPH'S TO DECIDE, SO A TRAJECTORY STEPS WITHOUT A |
 | `style_per_object.py` | ui | The style belongs to the object, and its settings belong to the style. |
 | `test_absolute_focus.py` | tool | ABSOLUTE FOCUS TEST: Compares renders before entering focus mode directly against |
 | `topology_survey.py` | gpu | WHICH CONTROLS ACTUALLY CHANGE THE MESH'S TOPOLOGY, and which only move it. |
+| `weld_open.py` | gpu | A WELD ACROSS A COLLAPSED STATION MUST NOT OUTLIVE THE COLLAPSE. |
 
 <!-- END INDEX -->
 

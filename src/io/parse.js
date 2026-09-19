@@ -999,10 +999,32 @@ function resolveChainNucleicTypes(allResidues) {
  * came from is long gone. Being able to enable a residue later is most of the
  * point of the control.
  *
- * What is dropped is `names` and `elements`. Nothing reads them to draw - they
- * exist so the connectivity table can be applied at capture, which has already
- * happened by now - and they are a third of the bytes. Coefficients round to
- * 0.01 A, which is far finer than a side chain drawn a few pixels wide.
+ * What is dropped is `names`. Nothing reads them to draw - they exist so the
+ * connectivity table can be applied at capture, which has already happened by
+ * now. Coefficients round to 0.01 A, which is far finer than a side chain
+ * drawn a few pixels wide.
+ *
+ * 🔴 `elements` WAS DROPPED WITH THEM AND IT HAS TWO READERS, so a reloaded
+ * session drew every side chain in one flat colour. `_materialiseSidechains`
+ * fills BOTH the positions' element column and `sidechainMap.el` from this
+ * array - the first is what colours an atom, the second what colours the far
+ * half of a mixed bond - so an empty one is oxygen without its red and
+ * nitrogen without its blue, on every side chain at once. Reported exactly
+ * that way. Measured on 3PTB: 744 side-chain atoms carry an element (566 C,
+ * 100 O, 64 N, 14 S) and a reload had 0.
+ *
+ * The comment this replaces said "nothing reads them to draw", and
+ * `core/mol.js` carried the matching claim that the colour comes from
+ * `sidechainMap.el` "which is where it always came from" - true, and that
+ * field is filled from THIS array, so dropping it emptied both. A saved table
+ * carries what the drawing reads; that is the whole rule, and it is the same
+ * one the frame builders in this project keep breaking one field at a time.
+ *
+ * It travels as ONE STRING, comma-joined. An element is one or two characters
+ * and a JSON array spends four bytes a slot on quotes and commas: measured on
+ * 3PTB's 744 atoms, 3.0 KB as an array against 1.5 KB joined, beside 15 KB of
+ * coefficients for the same atoms. A reader splits it back; an array is still
+ * accepted, because a session written by any other version may carry one.
  *
  * Cost on 1TIM: 56 KB against 11 KB of coordinates, per frame. That ratio is
  * the price of the feature; it was 145 KB before this trimming.
@@ -1022,6 +1044,8 @@ function trimSidechainTable(sc) {
         coef,
         bonds: Array.from(sc.bonds),
         toBackbone: Array.from(sc.toBackbone || []),
+        // what an atom IS, which is what colours it - see the note above
+        elements: Array.from(sc.elements || []).join(','),
         // dropped here once and proline's ring went back to diving into the
         // ribbon: this IS the table the renderer reads
         onBackbone: Array.from(sc.onBackbone || []),
@@ -1044,7 +1068,15 @@ function reviveSidechainTable(raw) {
         // absent in a saved table: nothing reads them to draw, and they were
         // dropped to save the bytes - see trimSidechainTable
         names: raw.names || [],
-        elements: raw.elements || [],
+        // ...and the elements are NOT among those, whatever a session written
+        // before this says. A string is the form trimSidechainTable writes; an
+        // array is accepted because another version may have written one, and
+        // an OLD session has neither - it reloads exactly as it did, with no
+        // element colours on its side chains, because the bytes are not there
+        // to give back.
+        elements: typeof raw.elements === 'string'
+            ? (raw.elements.length ? raw.elements.split(',') : [])
+            : (raw.elements || []),
         onBackbone: new Uint8Array(raw.onBackbone || []),
     };
 }
