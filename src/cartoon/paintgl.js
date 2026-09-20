@@ -9132,6 +9132,30 @@ function restoreMesh(sig) {
         m = meshCache.get(sig);
     }
     if (!m) return false;
+    // 🔴 A MESH CACHED BEFORE THE TABLE EXISTED IS NOT A RESTORE - IT IS THE
+    // TABLE THROWN AWAY. activateStations(null) clears the live one and puts
+    // nothing back, so returning to a value whose mesh was cached while the
+    // station path was off leaves the next change with no table at all, and
+    // that change rebuilds. A slider's OWN DEFAULT is always such a value: the
+    // page built its mesh at load, long before anything asked for a table, so
+    // sliding back to where the handle started threw the table away and the
+    // next move paid a full rebuild.
+    //
+    // Reported as "why would sheet flat cause a rebuild?" - and it is not
+    // Flat. Measured on 1TIM by dragging one slider over its range three
+    // times: every pass rebuilt once, always on the first step, and the gate
+    // named `noStations` with the topology unmoved. Descending from the
+    // handle's resting value rebuilt nothing at all, which is the tell - the
+    // rebuild follows the VALUE the mesh was cached at, not the direction or
+    // the size of the step.
+    //
+    // Refusing the restore costs one rebuild, which is what was being paid
+    // anyway, and it is the last one: the build that follows installs a table
+    // and the mesh kept under that signature carries it, so the second visit
+    // to the same value is free. Only when there IS a live table to lose -
+    // with none, a restore takes nothing away and the ordinary decline
+    // handles it.
+    if (stationDraw && residentStations && !m.residentStations) return false;
     // 🔴 AND IT DOES NOT CARRY THE STATION TABLE. The slot holds a mesh -
     // fills, edges, centroids, the residue map - and on the station path the
     // ribbon's GEOMETRY is not in any of those: it is in the station textures,
