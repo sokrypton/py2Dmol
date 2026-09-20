@@ -2826,6 +2826,25 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             if (this.lineWidthSlider) {
                 this.lineWidthSlider.addEventListener('input', (e) => {
+                    // 🔴 ASK FOR THE STATION TABLE, THE WAY THICKNESS AND FLAT
+                    // DO. The width is in the full mesh signature and OUT of
+                    // the topological one (cartoon/paintgl.js) precisely so the
+                    // station path can answer it - widthScale moves each
+                    // station's halfW and nothing else - but the path is only
+                    // armed automatically for a TRAJECTORY, and a single
+                    // structure has to ask. Thickness and Flat ask from
+                    // parts/ui.js; this slider is wired here instead, and was
+                    // simply never told.
+                    // Measured by dragging every control of the Style panel on
+                    // 1TIM and counting mesh rebuilds: Width was 7 of 7 steps,
+                    // the only control in the panel that rebuilt on every one,
+                    // against 1 for Flat and 2 for Thickness - which is the
+                    // single build that MAKES the table. What the path then
+                    // draws is right: tests/station_controls.py puts a
+                    // 3 -> 5.5 width at 0.0002% of the frame against its own
+                    // 6.69% effect, the same figure thickness and flat report.
+                    const G = window.py2dmolCartoonGPU;
+                    if (G && G.setStationDraw) G.setStationDraw(true);
                     this.lineWidth = parseFloat(e.target.value);
                     // THE USER, NOT THE APP. A width the user dragged is
                     // remembered against the style it was dragged in, and a
