@@ -1262,6 +1262,38 @@ float aKFresh;
 // (No backticks in here: this is inside a JS template literal.)
 float aCandFresh;
 
+// 🔴 A STICK FACE'S OUTWARD NORMAL IS ITS OWN QUAD'S, NOT ITS SECTION'S AXIS.
+// A ribbon section is perpendicular to the chain, so for surfaces 0..3 the
+// frame vector IS the face normal and reading it back is exact. A STICK's
+// section is not: a mitred junction and the flush cut where a side chain
+// meets the backbone both slide the four corners along the bond, which tilts
+// ub and wa out of the faces they are supposed to stand on while the
+// faces themselves do not move. buildMeshPart takes a stick face's normal
+// from the Newell sum over its own four corners; this is that sum, over the
+// corners just reconstructed, so the two derivations answer with one number.
+// The axis only chooses the SIGN, which is all it was ever reliable for.
+//
+// What it cost while the two disagreed: the cull is dot(fn, vd) < -0.02,
+// so a face drawn near edge-on is decided by a few hundredths - and one side
+// face of an ILE's arm was kept by the build and culled by the stations. A
+// multi-frame object takes the station path (frames.length > 1) and a
+// one-frame one does not, so the same structure drew a solid bar or a flat
+// plate depending on how many frames it had been loaded with.
+vec3 stickFaceN(vec3 axis) {
+  vec3 q0 = aC0; vec3 q1 = aC1; vec3 q2 = aC2; vec3 q3 = aC3;
+  vec3 n = vec3(
+      (q0.y - q1.y) * (q0.z + q1.z) + (q1.y - q2.y) * (q1.z + q2.z)
+    + (q2.y - q3.y) * (q2.z + q3.z) + (q3.y - q0.y) * (q3.z + q0.z),
+      (q0.z - q1.z) * (q0.x + q1.x) + (q1.z - q2.z) * (q1.x + q2.x)
+    + (q2.z - q3.z) * (q2.x + q3.x) + (q3.z - q0.z) * (q3.x + q0.x),
+      (q0.x - q1.x) * (q0.y + q1.y) + (q1.x - q2.x) * (q1.y + q2.y)
+    + (q2.x - q3.x) * (q2.y + q3.y) + (q3.x - q0.x) * (q3.y + q0.y));
+  // A DEGENERATE QUAD KEEPS THE AXIS. A zero-length Newell sum normalises to
+  // NaN, which discards the face at every angle rather than at the wrong one.
+  if (dot(n, n) < 1e-20) return normalize(axis);
+  return normalize(dot(n, axis) < 0.0 ? -n : n);
+}
+
 vec4 stTexel(int st, int slot) {
   int i = st * 4 + slot;
   int w = int(uStationW);
@@ -1302,8 +1334,9 @@ void buildFromStations() {
       aC1 = midA - waA * hwA + ubA * htA;
       aC2 = midA - waA * hwA - ubA * htA;
       aC3 = midA + waA * hwA - ubA * htA;
-      aNA = tvA; aNB = tvA; aTA = tvA; aTB = tvA;
-      aFlatN = tvA; aFlatShade = tvA; aDots = vec3(0.0);
+      aFlatN = stickFaceN(tvA);
+      aNA = aFlatN; aNB = aFlatN; aTA = tvA; aTB = tvA;
+      aFlatShade = aFlatN; aDots = vec3(0.0);
       aKFresh = pcTexel(int(aPiece + 0.5), 0).w;
       aCandFresh = pcTexel(int(aPiece + 0.5), 1).w;
       return;
@@ -1313,9 +1346,9 @@ void buildFromStations() {
       aC1 = midA + waA * hwA - ubA * htA;
       aC2 = midA - waA * hwA - ubA * htA;
       aC3 = midA - waA * hwA + ubA * htA;
-      vec3 wn = -tvA;
-      aNA = wn; aNB = wn; aTA = tvA; aTB = tvA;
-      aFlatN = wn; aFlatShade = wn; aDots = vec3(0.0);
+      aFlatN = stickFaceN(-tvA);
+      aNA = aFlatN; aNB = aFlatN; aTA = tvA; aTB = tvA;
+      aFlatShade = aFlatN; aDots = vec3(0.0);
       aKFresh = pcTexel(int(aPiece + 0.5), 0).w;
       aCandFresh = pcTexel(int(aPiece + 0.5), 1).w;
       return;
@@ -1330,8 +1363,9 @@ void buildFromStations() {
       aC1 = midA - waA * hwA + ubA * htA;
       aC2 = midB - waB * hwB + ubB * htB;
       aC3 = midB + waB * hwB + ubB * htB;
-      aNA = ubA; aNB = ubB; aTA = tvA; aTB = tvB;
-      aFlatN = ubA; aFlatShade = ubA; aDots = vec3(0.0);
+      aFlatN = stickFaceN(ubA);
+      aNA = aFlatN; aNB = aFlatN; aTA = tvA; aTB = tvB;
+      aFlatShade = aFlatN; aDots = vec3(0.0);
       aKFresh = pcTexel(int(aPiece + 0.5), 0).w;
       aCandFresh = pcTexel(int(aPiece + 0.5), 1).w;
       return;
@@ -1341,8 +1375,9 @@ void buildFromStations() {
       aC1 = midA - waA * hwA - ubA * htA;
       aC2 = midB - waB * hwB - ubB * htB;
       aC3 = midB - waB * hwB + ubB * htB;
-      aNA = -waA; aNB = -waB; aTA = tvA; aTB = tvB;
-      aFlatN = -waA; aFlatShade = -waA; aDots = vec3(0.0);
+      aFlatN = stickFaceN(-waA);
+      aNA = aFlatN; aNB = aFlatN; aTA = tvA; aTB = tvB;
+      aFlatShade = aFlatN; aDots = vec3(0.0);
       aKFresh = pcTexel(int(aPiece + 0.5), 0).w;
       aCandFresh = pcTexel(int(aPiece + 0.5), 1).w;
       return;
@@ -1352,8 +1387,9 @@ void buildFromStations() {
       aC1 = midA + waA * hwA - ubA * htA;
       aC2 = midB + waB * hwB - ubB * htB;
       aC3 = midB - waB * hwB - ubB * htB;
-      aNA = -ubA; aNB = -ubB; aTA = tvA; aTB = tvB;
-      aFlatN = -ubA; aFlatShade = -ubA; aDots = vec3(0.0);
+      aFlatN = stickFaceN(-ubA);
+      aNA = aFlatN; aNB = aFlatN; aTA = tvA; aTB = tvB;
+      aFlatShade = aFlatN; aDots = vec3(0.0);
       aKFresh = pcTexel(int(aPiece + 0.5), 0).w;
       aCandFresh = pcTexel(int(aPiece + 0.5), 1).w;
       return;
@@ -1363,8 +1399,9 @@ void buildFromStations() {
       aC1 = midA + waA * hwA + ubA * htA;
       aC2 = midB + waB * hwB + ubB * htB;
       aC3 = midB + waB * hwB - ubB * htB;
-      aNA = waA; aNB = waB; aTA = tvA; aTB = tvB;
-      aFlatN = waA; aFlatShade = waA; aDots = vec3(0.0);
+      aFlatN = stickFaceN(waA);
+      aNA = aFlatN; aNB = aFlatN; aTA = tvA; aTB = tvB;
+      aFlatShade = aFlatN; aDots = vec3(0.0);
       aKFresh = pcTexel(int(aPiece + 0.5), 0).w;
       aCandFresh = pcTexel(int(aPiece + 0.5), 1).w;
       return;
@@ -4325,10 +4362,11 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused, smOffset) {
             const k4 = SM.faceStation[fi + smOff] * 16;
             const st4 = SM.stations;
             const on = [0, 0, 0];
-            if (f.surf === 4) {
-                on[0] = -st4[k4 + 12]; on[1] = -st4[k4 + 13]; on[2] = -st4[k4 + 14];
-            } else if (f.surf === 5) {
-                on[0] = st4[k4 + 12]; on[1] = st4[k4 + 13]; on[2] = st4[k4 + 14];
+            // 🔴 A STICK'S SIX SURFACES TAKE THEIR OWN QUAD'S NORMAL, not the
+            // section's axis - one rule, shared with the edge refresh and with
+            // the shader. See stickFaceNormalInto.
+            if (STICK_AXIS_OFF[f.surf] >= 0) {
+                stickFaceNormalInto(SM, fi + smOff, f.surf, on);
             } else if (f.surf === 6) {
                 const v1x = st4[k4 + 4] - st4[k4];
                 const v1y = st4[k4 + 5] - st4[k4 + 1];
@@ -4341,14 +4379,6 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused, smOffset) {
                 const nz = v1x * v2y - v1y * v2x;
                 const nl = Math.hypot(nx, ny, nz) || 1;
                 on[0] = nx / nl; on[1] = ny / nl; on[2] = nz / nl;
-            } else if (f.surf === 7) {
-                on[0] = st4[k4 + 4]; on[1] = st4[k4 + 5]; on[2] = st4[k4 + 6];
-            } else if (f.surf === 8) {
-                on[0] = -st4[k4 + 8]; on[1] = -st4[k4 + 9]; on[2] = -st4[k4 + 10];
-            } else if (f.surf === 9) {
-                on[0] = -st4[k4 + 4]; on[1] = -st4[k4 + 5]; on[2] = -st4[k4 + 6];
-            } else if (f.surf === 10) {
-                on[0] = st4[k4 + 8]; on[1] = st4[k4 + 9]; on[2] = st4[k4 + 10];
             } else {
                 const broad4 = f.surf < 2;
                 const sgn4 = (f.surf === 2) ? -1 : 1;
@@ -6736,6 +6766,75 @@ function stationCornerInto(mesh, face, idx, out) {
     out[2] = st[o + 2] + st[o + 10] * hw * sw + st[o + 6] * ht * sg;
 }
 
+// WHICH FRAME VECTOR POINTS OUT OF EACH STICK SURFACE: the offset of the
+// vector in the station's sixteen floats, and its sign. 4 and 5 are the two
+// caps (-tv, +tv), 7..10 the four sides (+ub, -wa, -ub, +wa); every other
+// surface is the ribbon's and reads -1, which is also the test for "is this a
+// stick's". Typed, and indexed by surf, because the edge refresh walks every
+// face of the mesh on every frame of a playback.
+const STICK_AXIS_OFF = new Int8Array(CORNER_SURFS).fill(-1);
+const STICK_AXIS_SGN = new Int8Array(CORNER_SURFS);
+for (const [sf, off, sgn] of [[4, 12, -1], [5, 12, 1], [7, 4, 1],
+    [8, 8, -1], [9, 4, -1], [10, 8, 1]]) {
+    STICK_AXIS_OFF[sf] = off; STICK_AXIS_SGN[sf] = sgn;
+}
+
+/**
+ * A STICK FACE'S OUTWARD NORMAL, FROM ITS OWN FOUR CORNERS.
+ *
+ * 🔴 AND NOT FROM THE SECTION'S AXIS, WHICH IS WHAT IT USED TO BE. A ribbon
+ * section is perpendicular to the chain, so for surfaces 0..3 the frame vector
+ * IS the face normal. A stick's is not: a mitred junction and the flush cut
+ * where a side chain meets the backbone both slide the four corners along the
+ * bond, which tilts `ub` and `wa` out of the faces they are meant to stand on
+ * while the faces themselves stay where they are.
+ *
+ * buildMeshPart derives a stick face's normal from the Newell sum over its own
+ * corners (`f.stick` takes the winding, oriented against the prim's own `nl`).
+ * This is that sum over the corners the station rule reconstructs, so the two
+ * derivations answer with one number - the remedy stationBoundsInto already
+ * has, and the same class of fault the outline had before the station rule was
+ * shared. The axis chooses only the SIGN, which is all it was ever right about.
+ *
+ * VS3D_STATIONS carries the GLSL twin of this (`stickFaceN`); the shader cannot
+ * call a JS function, and that one duplication is the same one every line of
+ * that shader already lives with.
+ */
+function stickFaceNormalInto(mesh, face, surf, out) {
+    const aoff = (surf >= 0 && surf < CORNER_SURFS) ? STICK_AXIS_OFF[surf] : -1;
+    if (aoff < 0) return false;
+    const sgn = STICK_AXIS_SGN[surf];
+    const st = mesh.stations;
+    const o = mesh.faceStation[face] * 16 + aoff;
+    const axx = st[o] * sgn; const axy = st[o + 1] * sgn; const axz = st[o + 2] * sgn;
+    let nx = 0; let ny = 0; let nz = 0;
+    for (let i = 0; i < 4; i += 1) {
+        stationCornerInto(mesh, face, i, i === 0 ? STK_A : STK_B);
+        if (i === 0) { STK_C[0] = STK_A[0]; STK_C[1] = STK_A[1]; STK_C[2] = STK_A[2]; continue; }
+        nx += (STK_A[1] - STK_B[1]) * (STK_A[2] + STK_B[2]);
+        ny += (STK_A[2] - STK_B[2]) * (STK_A[0] + STK_B[0]);
+        nz += (STK_A[0] - STK_B[0]) * (STK_A[1] + STK_B[1]);
+        STK_A[0] = STK_B[0]; STK_A[1] = STK_B[1]; STK_A[2] = STK_B[2];
+    }
+    nx += (STK_A[1] - STK_C[1]) * (STK_A[2] + STK_C[2]);
+    ny += (STK_A[2] - STK_C[2]) * (STK_A[0] + STK_C[0]);
+    nz += (STK_A[0] - STK_C[0]) * (STK_A[1] + STK_C[1]);
+    let nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    // A DEGENERATE QUAD KEEPS THE AXIS, rather than normalising to NaN - which
+    // would make the face's silhouette verdict meaningless at every angle
+    // instead of at one.
+    if (!(nl > 1e-10)) {
+        const al = Math.sqrt(axx * axx + axy * axy + axz * axz) || 1;
+        out[0] = axx / al; out[1] = axy / al; out[2] = axz / al;
+        return true;
+    }
+    if (nx * axx + ny * axy + nz * axz < 0) nl = -nl;
+    out[0] = nx / nl; out[1] = ny / nl; out[2] = nz / nl;
+    return true;
+}
+const STK_A = [0, 0, 0]; const STK_B = [0, 0, 0]; const STK_C = [0, 0, 0];
+const STK_OUT = [0, 0, 0];
+
 /**
  * 🔴 A WELD BETWEEN OPPOSITE SIDES OF THE RIBBON IS ONLY A WELD WHILE THE RIBBON
  * IS COLLAPSED THERE. The edge table is keyed by corner POSITION, so where a
@@ -6866,17 +6965,13 @@ function refreshEdgesFromStations(mesh) {
             const surf = mesh.faceSurf[f];
             const o = mesh.faceStation[f] * 16;
             const b = f * 3;
-            if (surf === 4) {
-                edgeNormals[b] = -st[o + 12];
-                edgeNormals[b + 1] = -st[o + 13];
-                edgeNormals[b + 2] = -st[o + 14];
-                edgeNormalOk[f] = 1;
-                continue;
-            }
-            if (surf === 5) {
-                edgeNormals[b] = st[o + 12];
-                edgeNormals[b + 1] = st[o + 13];
-                edgeNormals[b + 2] = st[o + 14];
+            // The two caps and the four sides are a stick's, and a stick's
+            // normal is its own quad's - see stickFaceNormalInto.
+            if (surf === 4 || surf === 5) {
+                stickFaceNormalInto(mesh, f, surf, STK_OUT);
+                edgeNormals[b] = STK_OUT[0];
+                edgeNormals[b + 1] = STK_OUT[1];
+                edgeNormals[b + 2] = STK_OUT[2];
                 edgeNormalOk[f] = 1;
                 continue;
             }
@@ -6897,23 +6992,11 @@ function refreshEdgesFromStations(mesh) {
                 edgeNormalOk[f] = 1;
                 continue;
             }
-            if (surf === 7) {
-                edgeNormals[b] = st[o + 4]; edgeNormals[b + 1] = st[o + 5]; edgeNormals[b + 2] = st[o + 6];
-                edgeNormalOk[f] = 1;
-                continue;
-            }
-            if (surf === 8) {
-                edgeNormals[b] = -st[o + 8]; edgeNormals[b + 1] = -st[o + 9]; edgeNormals[b + 2] = -st[o + 10];
-                edgeNormalOk[f] = 1;
-                continue;
-            }
-            if (surf === 9) {
-                edgeNormals[b] = -st[o + 4]; edgeNormals[b + 1] = -st[o + 5]; edgeNormals[b + 2] = -st[o + 6];
-                edgeNormalOk[f] = 1;
-                continue;
-            }
-            if (surf === 10) {
-                edgeNormals[b] = st[o + 8]; edgeNormals[b + 1] = st[o + 9]; edgeNormals[b + 2] = st[o + 10];
+            if (surf >= 7 && surf <= 10) {
+                stickFaceNormalInto(mesh, f, surf, STK_OUT);
+                edgeNormals[b] = STK_OUT[0];
+                edgeNormals[b + 1] = STK_OUT[1];
+                edgeNormals[b + 2] = STK_OUT[2];
                 edgeNormalOk[f] = 1;
                 continue;
             }

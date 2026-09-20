@@ -284,7 +284,7 @@ if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "gpu" ]]; then
-  for t in ss_every multi_step gpu_recolour gpu_mesh_reuse gpu_tube_reuse gpu_mixed_style gpu_stick_flat disulfides sequence_connectivity dev_rebuild_light colour_repaint station_shader station_corners station_pixels station_frames station_ligand station_foldcuts station_overlay station_sidechains topology_survey station_controls rebuild_actions rebuild_returns render_counts diffusion_connectivity pick_index halo_partial load_work station_unpinned panel_idle frame_share colour_cache ss_agree splice_window station_rows station_edges sheet_merge weld_open stick_topology outline_sync capture_once arrow_rebuilds ss_arrow_shape arrow_faces_2d ss_axis resize_reuse frame_revisit export_html opacity default_object python_opacity named_object gpu_direct; do
+  for t in ss_every multi_step gpu_recolour gpu_mesh_reuse gpu_tube_reuse gpu_mixed_style gpu_stick_flat disulfides sequence_connectivity dev_rebuild_light colour_repaint station_shader station_corners station_pixels station_frames station_ligand station_foldcuts station_overlay station_sidechains topology_survey station_controls rebuild_actions rebuild_returns render_counts diffusion_connectivity pick_index halo_partial load_work station_unpinned panel_idle frame_share colour_cache ss_agree splice_window station_rows station_edges sheet_merge weld_open stick_topology outline_sync station_stick_faces capture_once arrow_rebuilds ss_arrow_shape arrow_faces_2d ss_axis resize_reuse frame_revisit export_html opacity default_object python_opacity named_object gpu_direct; do
     run_probe $t || fail=1
   done
   # ...and the same file again with a TAIL in it: 1EHZ's nine ions are rebuilt
