@@ -138,6 +138,51 @@ long either way, so what changes is where the run's ends are, not how many
 there are - but it is a change to the run merging rather than to a couple of
 expressions, and the tube style is a second, separate copy of the same idea.
 
+## 6b. The first Style drag on a still structure still costs one build
+
+The station fast path is armed automatically only for a TRAJECTORY
+(`frames.length > 1` in cartoon/paintgl.js); a still structure gets a table
+only when something calls `wantStationTable()`, which the Thickness, Flat and
+Width sliders do. So the FIRST move of the first such slider pays a full
+rebuild - the mesh was built with the path off, so it left neither a table nor
+a topological key - and every move after it is free. Reported twice.
+
+**ARMING EVERY STRUCTURE IS THE FIX, AND IT IS FREE OR BETTER.** Dropping the
+gate to `>= 1` removes that build entirely: 34 of 38 panel controls then
+rebuild nothing at all, Width included. And it makes builds CHEAPER, because
+where the path is armed the ribbon's 48-float instance rows are not built at
+all - the table carries the same geometry in 18. Counterbalanced, minimum of
+eleven, on the GPU:
+
+    1UBQ  2.1 -> 1.8 ms      4HHB  19.4 -> 17.4 ms
+    1TIM 12.6 -> 11.1 ms     1AOI  39.6 -> 34.8 ms
+
+**IT IS BLOCKED BY THE SIDE-CHAIN ARTEFACT IN `docs/FASTPATH_ARTIFACTS.md`,
+and that was measured rather than feared.** Armed everywhere,
+`tests/gpu_recolour.py` fails with *"after showing side chains, a repaint
+differs from what a rebuild draws"* and `tests/gpu_mesh_reuse.py` fails on
+three side-chain toggles with *"the picture differs from a fresh build"*.
+Those are the open defect, reached by the ordinary interactive case instead of
+by a trajectory. Checked against the other suspect: the failures are the
+ARMING, not the restoreMesh refusal added in `fa2463b` - taking that refusal
+back out leaves both probes failing in exactly the same way.
+
+So the order is: fix the side-chain half of the station path first, then drop
+the gate. Two probe harnesses also need `_autoStationTable = false` when it
+happens, and they are worth writing down because both look like renderer bugs
+from the outside:
+
+  * `tests/station_corners.py` compares the station table against `__fill`,
+    the instance rows - which an armed build does not produce, so it reads
+    "1202 faces built against 0 instance rows".
+  * `tests/topology_survey.py` forces `invalidate()` at every value, so the
+    path never goes fast; twelve of those and the GIVE-UP counter switches the
+    path off for the object and clears the table. `_autoStationTable = false`
+    does not stop that today - the give-up tests `stationAuto` alone and would
+    have to test the flag too.
+
+---
+
 ## 7. Focus mode and nucleotides
 
 Suggested and never confirmed: in focus mode, hide base plates by default and
