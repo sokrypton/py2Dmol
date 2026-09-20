@@ -110,6 +110,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `diffusion_connectivity.py` | gpu | A SAMPLER TRAJECTORY IS NOT A MOLECULE YET, AND THE DISTANCE TEST KNOWS IT. |
 | `disulfides.py` | gpu | A disulfide comes from the file, and lands on two cysteines. |
 | `edge_phases.py` | tool | WHERE A RIBBON BUILD'S TIME GOES, phase by phase, medians over rounds. |
+| `element_halves.py` | ui | A side chain's oxygen is red on both painters, and `halves` is shared. |
 | `embed.py` | ui | The embed bundle, in a browser, on a page that has nothing else. |
 | `embed_follow.py` | ui | A BARE EMBED FOLLOWS ITS HOST ELEMENT. |
 | `export_html.py` | gpu | Four exported files, opened one at a time: do they draw? |

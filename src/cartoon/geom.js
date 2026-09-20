@@ -11812,9 +11812,20 @@ if (typeof window !== 'undefined' && window.py2dmolCartoon) {
             if (seg.idx2 + 1 > nPos) nPos = seg.idx2 + 1;
         }
         const segAt = new Int32Array(nPos).fill(-1);
+        // 🔴 BACKBONE SEGMENTS ONLY, AND THE TEST IS bbSeg's OWN. `halves` is
+        // shared: core/mol.js puts a MIXED BOND's two element colours there -
+        // the carbon end takes the residue's colour and the far end its
+        // element's - and the ribbon's colour cut writes into the same map.
+        // They never collide because a backbone bond is carbon to carbon, so
+        // nothing fills a half for one; write halves for every segment in the
+        // list and the ribbon's answer lands on every SIDE-CHAIN bond as
+        // well, and the oxygen loses its red and the nitrogen its blue.
+        // Reported that way within the hour.
+        const isBackbone = (seg) => !!seg
+            && (seg.type === 'P' || seg.type === 'D' || seg.type === 'R')
+            && seg.contactIdx1 === undefined && seg.idx2 === seg.idx1 + 1;
         for (let k = 0; k < segs.length; k++) {
-            const seg = segs[k];
-            if (seg && seg.idx2 === seg.idx1 + 1 && segAt[seg.idx1] < 0) segAt[seg.idx1] = k;
+            if (isBackbone(segs[k]) && segAt[segs[k].idx1] < 0) segAt[segs[k].idx1] = k;
         }
         const sec = ssMode ? secForColor(renderer) : null;
         if (ssMode && !sec) return null;
@@ -11849,10 +11860,12 @@ if (typeof window !== 'undefined' && window.py2dmolCartoon) {
             const col = ovI || pal || base;
             const colFar = ovN || pal || baseFar;
             if (col) out[k] = col;
-            // ...and BOTH halves, always: the rib face reads slot 1 or 2 of
-            // this segment whether or not the two ends differ, so leaving
-            // them out is the far half drawing the near residue's colour.
-            if (col && colFar) halves[k] = { a: col, b: colFar };
+            // ...and BOTH halves, always - for a RIBBON segment: the rib
+            // face reads slot 1 or 2 of its segment whether or not the two
+            // ends differ, so leaving them out is the far half drawing the
+            // near residue's colour. Anything else keeps whatever the caller
+            // put there, which for a mixed bond is its element split.
+            if (col && colFar && isBackbone(seg)) halves[k] = { a: col, b: colFar };
         }
         return out;
     };
