@@ -2993,6 +2993,36 @@ const BACK_INNER_SHADE = 0.3;
 // Helices only: strand concavity sits AT zero about half the time, so
 // tinting there would pick a side from sign noise and flicker on rotation.
 const RICH_INNER_TINT = 0.68;
+// 🔴 ...AND THE SIGN OF THE CONCAVITY HAS TO MEAN SOMETHING BEFORE IT MAY
+// DECIDE A COLOUR. The note above says strands are excluded because their
+// concavity sits at zero and the side would come from sign noise - and the
+// SAME is true of the intervals a helix wins at its ends. `ssCls` gives a
+// transition interval to the helix (both painters read `p.ss`), which is
+// right for the COLOUR - the ribbon leaving a helix must not wear a stub of
+// loop green - and it hands the two-tone rule an interval that is half loop.
+// Measured on 6MRR, richardson, ss colouring: the 128 pieces INSIDE the four
+// helices carry |kAvg| 0.717 to 0.975, median 0.939, and the 16 transition
+// pieces carry 0.012 to 0.666, median 0.22 - and the sign CROSSES ZERO
+// inside a single transition interval (58 runs -0.469, -0.187, +0.22, +0.417
+// over its four pieces). So the pale face swapped sheets a quarter of the
+// way along and the tint landed on the outside of the turn: a pale patch in
+// the loop leaving a helix, with a hard step across the ribbon where the
+// sign flipped. Reported exactly that way.
+// THE RAMP, NOT A THRESHOLD. A cut-off moves the hard step rather than
+// removing it; fading the tint out as the curvature stops being decisive
+// leaves nothing to step. It is the same shape the inner SHADOW already has
+// (`Math.min(1, inner)` in faceLum), which is why the shading was never
+// reported: it was proportional all along and only the colour was binary.
+// The two ends are set from that measurement - full tint by 0.6, which every
+// piece inside a helix clears twice over, and nothing at all below 0.15.
+const RICH_TINT_K0 = 0.15;
+const RICH_TINT_K1 = 0.6;
+// How much of the two-tone this face has earned: 0 where the ribbon is not
+// curving enough for "inner" to mean anything, 1 inside a helix.
+const richTintAmount = (k) => {
+    const a = (Math.abs(k) - RICH_TINT_K0) / (RICH_TINT_K1 - RICH_TINT_K0);
+    return a <= 0 ? 0 : (a >= 1 ? 1 : a);
+};
 const tintWhite = (c, f) => ({
     r: c.r + (255 - c.r) * f,
     g: c.g + (255 - c.g) * f,
@@ -11425,7 +11455,7 @@ window.py2dmolCartoon = { render, SS_PARAMS: SS,
     // had already been restated over there, and one pair had drifted.
     SHADING: { HI_KNEE, RICH_HI_KNEE, LIGHT_AMB, LIGHT_DIFF, LIGHT_HI,
         BACK_INNER_SHADE, RIBBON_INK_MUL, INK_FADE_SCALE,
-        INK_W_MUL, INK_W_MIN },
+        INK_W_MUL, INK_W_MIN, RICH_TINT_K0, RICH_TINT_K1 },
     LOOK_DEFAULTS, SS_PALETTES };
 // Near-white, not pure white: a pure white edge disappears into the page.
 const SHEET_EDGE_RGB = { r: 244, g: 246, b: 240 };
@@ -11766,6 +11796,7 @@ window.py2dmolCartoonShared = {
     BACK_INNER_SHADE, CEL_LEVELS, GRAIN_SCALE, HI_KNEE, INNER_SHADE,
     LIGAND_MODEL, LIGHT, LIGHT_AMB, LIGHT_DIFF, LIGHT_HI,
     LOOP_DIM, OUTLINE_CSS, PENCIL_STRENGTH, RICH_HI_KNEE, RICH_INNER_TINT,
+    richTintAmount,
     SHADE_W_FULL, SHADE_W_MIN, SHEET_EDGE_RGB, SKETCH_ALPHA, SKETCH_BANDS,
     SKETCH_CSS, SKETCH_ERASE_U, SKETCH_PX, SKETCH_UNDER, SKETCH_WOBBLE_PX,
     SS, WASH_BLEED_ALPHA, WASH_BLEED_PX, WASH_OFF_X, WASH_OFF_Y,

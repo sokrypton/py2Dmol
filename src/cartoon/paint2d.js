@@ -23,6 +23,7 @@ const {
     BACK_INNER_SHADE, CEL_LEVELS, GRAIN_SCALE, HI_KNEE, INNER_SHADE,
     LIGAND_MODEL, LIGHT, LIGHT_AMB, LIGHT_DIFF, LIGHT_HI,
     LOOP_DIM, OUTLINE_CSS, PENCIL_STRENGTH, RICH_HI_KNEE, RICH_INNER_TINT,
+    richTintAmount,
     SHADE_W_FULL, SHADE_W_MIN, SHEET_EDGE_RGB, SKETCH_ALPHA, SKETCH_BANDS,
     SKETCH_CSS, SKETCH_ERASE_U, SKETCH_PX, SKETCH_UNDER, SKETCH_WOBBLE_PX,
     SS, WASH_BLEED_ALPHA, WASH_BLEED_PX, WASH_OFF_X, WASH_OFF_Y,
@@ -1161,8 +1162,15 @@ function paintPrims(S) {
                 // sit AT zero half the time, so an inner colour on E would
                 // pick a side from sign noise and flicker under rotation.
                 const inward = (isTop ? kAvg : -kAvg) > 0;
+                // ...AND HOW MUCH THAT SIGN IS WORTH. A transition interval
+                // is classed H for its COLOUR and is half loop, so its
+                // concavity can cross zero inside one interval and the tint
+                // stepped across the ribbon in the loop leaving a helix. The
+                // ramp is in cartoon/geom.js beside the constant, with the
+                // measurement that set its two ends.
+                const kDec = richTintAmount(kAvg);
                 let fc = g.c;
-                if (inward) {
+                if (inward && kDec > 0) {
                     if (rich && g.ss === 'H' && !g.co) {
                         // no explicit two-tone in this palette: synthesise
                         // one by tinting toward white. NOT applied when the
@@ -1174,14 +1182,20 @@ function paintPrims(S) {
                         // is an instruction. Cached on the prim -
                         // paintFace runs per face per piece per frame, and
                         // g.c is fixed for the piece.
-                        fc = g._cIn || (g._cIn = tintWhite(g.c, RICH_INNER_TINT));
+                        fc = g._cIn || (g._cIn = tintWhite(g.c,
+                            RICH_INNER_TINT * kDec));
                     }
                 }
                 // A pale inner hue already reads as "inside", so ease off
                 // the inner shadow on exactly the faces that got one -
                 // otherwise the two encode the same fact twice and the
                 // lighter face is dragged back toward mud.
-                const iMul = (fc === g.c) ? 1 : BACK_INNER_SHADE;
+                // ...and the shadow eases off by exactly as much as the
+                // hue came on, so a partially tinted face is not shaded as
+                // though it were fully tinted (or fully shaded as though it
+                // were not): at kDec 0 this is 1, at 1 it is BACK_INNER_SHADE.
+                const iMul = (fc === g.c) ? 1
+                    : 1 - (1 - BACK_INNER_SHADE) * kDec;
                 if (cel) {
                     // quantized over each term's own full range: tone is
                     // the 0.72-1.0 facing ramp, lum spans the shadowed

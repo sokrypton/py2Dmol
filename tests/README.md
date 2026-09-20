@@ -184,7 +184,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `render_page.py` | ui | render.html - drop a folder of structures in, get every picture out. |
 | `resize_reuse.py` | gpu | A RESIZE IS A CAMERA, NOT A REBUILD - and it draws what a rebuild draws. |
 | `ribbon_bypass.py` | tool | A SKIPPED RIBBON MUST DRAW WHAT A BUILT ONE DRAWS, whatever was changed. |
-| `richardson_tint.py` | tool | The pale inner face belongs to the helix, and stops where the helix does. |
+| `richardson_tint.py` | ui | The pale inner face belongs to the helix, and stops where the helix does. |
 | `save_multi.py` | ui | A Multi session comes back the way it was saved. |
 | `scale_indep.py` | tool | Is the built mesh the SAME mesh at two zooms? The ribbon part's cache key |
 | `selection_mark.py` | ui | Three ways to mark a selection, and each has to do its own job. |

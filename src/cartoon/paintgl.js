@@ -801,6 +801,7 @@ uniform float uVisN;    // how many residues the texture actually holds
 uniform sampler2D uPal;     // three texels per segment: base, half a, half b
 uniform float uPalW;
 uniform float uShadeAmt, uInnerShade, uHiGain, uKnee, uDepthFloor, uCel, uExact;
+uniform float uTintK0, uTintK1;
 // the STANDARD knee, for sticks - richardson's broad one does not apply to a solid
 uniform float uStickKnee;
 out vec3 vCol;
@@ -890,8 +891,23 @@ void main() {
   // they cannot disagree. They could before: the colour was baked into the
   // instance row and aK was read fresh beside it, which drew a face tinted
   // pale by the build frame and shaded as the outside by this one.
-  float twoNow = (aColMode > 2.5 && (aTop > 0.5 ? aK : -aK) > 0.0) ? 1.0 : 0.0;
-  float aIMulE = aColMode > 2.5 ? (twoNow > 0.5 ? 0.3 : 1.0) : aIMul;
+  // ...AND IT IS AN AMOUNT, NOT A FLAG. The sign of aK only means "inner"
+  // where the ribbon is curving enough for the word to mean anything, and a
+  // transition interval - which ssCls gives to the helix for its COLOUR - is
+  // half loop, so its concavity can cross zero inside one interval. Measured
+  // on 6MRR: inside a helix |aK| is 0.72 to 0.98, on a transition piece 0.01
+  // to 0.67, and one interval ran -0.47, -0.19, +0.22, +0.42 over its four
+  // pieces - a pale patch in the loop leaving the helix with a hard step
+  // across the ribbon where the sign flipped. The ramp is richTintAmount in
+  // cartoon/geom.js, which has the measurement that set 0.15 and 0.6; these
+  // ends are uTintK0 and uTintK1, handed in from cartoon/geom.js's own
+  // constants rather than restated here - the SHADING bridge exists because
+  // a second copy of a reference number drifts and nothing compares them.
+  float kDec = clamp((abs(aK) - uTintK0) / max(1e-6, uTintK1 - uTintK0), 0.0, 1.0);
+  float twoNow = (aColMode > 2.5 && (aTop > 0.5 ? aK : -aK) > 0.0) ? kDec : 0.0;
+  // the shadow eases off by exactly as much as the hue came on, so the two
+  // cannot double-count a face that is only partly tinted
+  float aIMulE = aColMode > 2.5 ? (1.0 - (1.0 - 0.3) * twoNow) : aIMul;
   float aTwo = mod(aFlags2.z, 2.0) > 0.5 ? 1.0 : 0.0;
   float aPlate = mod(floor(aFlags2.z / 4.0), 2.0) > 0.5 ? 1.0 : 0.0;
   float aDisc = mod(floor(aFlags2.z / 8.0), 2.0) > 0.5 ? 1.0 : 0.0;
@@ -1078,7 +1094,7 @@ void main() {
   // 3 IS THE PER-FRAME ONE, and it is tested first because it is also
   // greater than 1.5 and 0.5 and would otherwise be read as a white sheet edge.
   if (aColMode > 2.5) {
-    if (twoNow > 0.5) base = base + (vec3(255.0) - base) * 0.68;
+    base = base + (vec3(255.0) - base) * (0.68 * twoNow);
   }
   else if (aColMode > 1.5) base = vec3(244.0, 246.0, 240.0);
   else if (aColMode > 0.5) base = base + (vec3(255.0) - base) * 0.68;
@@ -8013,6 +8029,13 @@ function drawResident(cv, prm, prmAO) {
     const u = (n2, v) => gl.uniform1f(gl.getUniformLocation(P, n2), v);
     u('uShadeAmt', sp.shadeAmt);
     u('uInnerShade', sp.innerShade);
+    // 🔴 THE TWO-TONE RAMP, HANDED IN RATHER THAN WRITTEN OUT. The shader
+    // used to test the sign of aK and tint at full strength either way; the
+    // amount now fades with |aK| (cartoon/geom.js, richTintAmount, with the
+    // measurement that set the ends), and restating 0.15 and 0.6 here is
+    // exactly how the outline weight came to be 1.45x of the reference's.
+    u('uTintK0', sp.tintK0);
+    u('uTintK1', sp.tintK1);
     u('uHiGain', sp.hiGain);
     u('uKnee', sp.knee);
     u('uStickKnee', sp.stickKnee);
@@ -8395,6 +8418,8 @@ function paramsFromRenderer(r) {
         shadeAmt: num(r.cartoonShade, 1),
         hiGain: num(r.cartoonHighlight, 1),
         innerShade: 0.22,
+        tintK0: num(ref().RICH_TINT_K0, 0.15),
+        tintK1: num(ref().RICH_TINT_K1, 0.6),
         knee: rich ? num(ref().RICH_HI_KNEE, 0.25) : num(ref().HI_KNEE, 0.55),
         stickKnee: num(ref().HI_KNEE, 0.55),
         depthFloor: 1 - fade,
