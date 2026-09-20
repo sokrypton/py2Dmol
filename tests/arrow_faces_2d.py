@@ -12,12 +12,34 @@ WHAT EACH ONE GUARDS, measured by taking each fix back out (px differing
 between the painters; the bound is in brackets):
 
                        09-46-27  09-48-01  09-56-52  10-05-33
-    as shipped             52       190       166        85
-    forced top/bottom      84       190       166     1,130   (paint2d)
-    winding cull off       50     1,159       164        85   (paint2d)
-    square tip off        321       184       166       281   (geom.js)
-    both paint2d fixes    113     1,159       502     1,110
-    bound                (200)     (600)     (330)     (180)
+    as shipped            115       310       181       176
+    forced top/bottom     147       310       181     1,215   (paint2d)
+    winding cull off      115     1,297       181       176   (paint2d)
+    square tip off        384       320       181       368   (geom.js)
+    both paint2d fixes    147     1,297       181     1,193
+    bound                (250)     (600)     (330)     (270)
+
+  🔴 THE SHIPPED ROW MOVED, AND NOT BECAUSE ANY OF THESE FACES DID. Centring
+  every colour mode on its residue (`deb3bb3`) put a colour BOUNDARY in the
+  middle of every interval, where before these views had one flat colour per
+  interval - and the two painters antialias that step a pixel apart along its
+  whole length. Proved rather than assumed: with the split forced off and
+  every other part of that change in place, all four views read 52 / 190 /
+  165 / 85, which is what they read before it. Two thirds of the first jump
+  was the OUTLINE taking the half's palette slot instead of the segment's;
+  that is fixed in cartoon/paintgl.js (`palInk`), and the rest is the step.
+
+  🔴 AND 09-56-52 NO LONGER SEPARATES ANYTHING - it reads 181 under every
+  mutation above. That is NOT from the colour change: measured at `7b3438d`,
+  before it, the same view reads 165 shipped and 165 with both paint2d fixes
+  taken out, against the 502 recorded here when the table was written at
+  `f480c1b`. Something between those two commits took its catch away and
+  nobody noticed, because the bound is loose enough that the view went on
+  passing. It is kept as a sentinel on the ordinary case - a long strand at
+  Detail 4 - and it is not evidence for either painter fix any more. Every
+  mutation is still caught by at least one other view: forced top/bottom and
+  the square tip by 10-05-33, the winding cull by 09-48-01, the square tip
+  again by 09-46-27.
 
   * THE FORCED TOP/BOTTOM FACES. `if (g.arrow) showTop = showBot = true`
     drew the arrow's back-facing broad face, and seen from behind and below
@@ -41,8 +63,8 @@ between the painters; the bound is in brackets):
 The number asserted is pixels differing by more than 60 in some channel
 between the two painters. It is never zero - the painters shade differently
 and antialias edges differently - so the bounds sit between the shipped value
-and the nearest broken one. The thinnest is 10-05-33's, 85 shipped against
-281 with the point back, bound 180.
+and the nearest broken one. The thinnest is 10-05-33's, 176 shipped against
+368 with the point back, bound 270.
 
 THE VIEWS ARE INLINE, trimmed to the cutout object, because *.json is
 gitignored: a test whose input is not tracked is a test nobody else can run.
@@ -64,7 +86,7 @@ VIEWS = {
     '10-05-33': '{"version":"2.0","config":{"viewer_id":"standalone-viewer-1","display":{"size":[600,600],"follow":false,"rotate":false,"autoplay":false,"controls":true,"box":true,"background":"white"},"rendering":{"style":"cartoon","detail":2,"gpuDirect":true,"shadow":true,"shadow_strength":0.5,"outline":"full","ortho":0.5,"cyclic":false,"gpu":false,"width":3,"preset":"richardson","thickness":0.7,"smooth":true,"arrows":true,"sheet_flat":0,"pencil":1,"highlight":3,"outline_tint":0.8,"shade":0.7},"color":{"mode":"auto","colorblind":false},"heatmap":{"enabled":true,"size":300},"scatter":{"enabled":false,"size":340,"xlabel":null,"ylabel":null,"xlim":null,"ylim":null},"overlay":{"enabled":false},"selection":{"enabled":true},"ui":{"biounit":true,"loadLigands":true,"filterAdditives":true},"pae":{"enabled":true,"size":300}},"objects":[{"name":"6MRR_A34-37","frames":[{"coords":[[-13.72,-6.18,3.5],[-16.34,-6.71,0.81],[-15.53,-6.62,-2.9],[-18.17,-7.08,-5.6]],"plddts":[10,11,11,11],"name":"6MRR.cif","residue_numbers":[34,35,36,37],"position_names":["LEU","GLU","VAL","ARG"]}],"hasPAE":false,"chains":["A","A","A","A"],"position_types":["P","P","P","P"],"scatter_config":{"xlabel":"X","ylabel":"Y","xlim":null,"ylim":null},"sse":{"0":"C","1":"E","2":"E","3":"C"},"viewerState":{"rotation":[[0.13044681684023846,-0.8333233049604704,-0.5371739917252001],[0.08712861149276133,0.5493425759060299,-0.8310423210380141],[0.987619477853479,0.06160360140988996,0.14426629286752063]],"zoom":1,"ortho":0.5,"focalLength":82.52104305493842,"center":null,"extent":null,"currentFrame":0,"clipNear":null,"clipFar":null,"clipFade":0.1,"style":"cartoon","styleChosen":false}}],"current_object":"6MRR_A34-37","viewer_state":{"current_object_name":"6MRR_A34-37","shown_objects":null,"current_frame":0,"rotation_matrix":[[0.13044681684023846,-0.8333233049604704,-0.5371739917252001],[0.08712861149276133,0.5493425759060299,-0.8310423210380141],[0.987619477853479,0.06160360140988996,0.14426629286752063]],"zoom":1,"ortho":0.5,"focal_length":82.52104305493842,"center":null,"extent":null,"color_mode":"auto","ss_palette":"pymol","line_width":3,"shadow_enabled":true,"shade":0.7,"outline_mode":"full","colorblind_mode":false,"cyclic":false,"ortho_slider_value":0.5,"animation_speed":100,"style":"cartoon","preset":"richardson","thickness":0.7,"detail":2,"smooth":true,"use_gpu":false,"arrows":true,"sheet_flat":0,"pencil":1,"highlight":3,"outline_tint":0.8},"selections_by_object":{}}',
 }
 # between the shipped value and the nearest broken one - see the table above
-BOUND = {'09-46-27': 200, '09-48-01': 600, '09-56-52': 330, '10-05-33': 180}
+BOUND = {'09-46-27': 250, '09-48-01': 600, '09-56-52': 330, '10-05-33': 270}
 
 JS = """
   const frame = () => new Promise(r => requestAnimationFrame(

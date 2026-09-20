@@ -438,6 +438,24 @@ function facesOf(prims, prm, consume) {
                         // plus which derivation applies means a new palette
                         // repaints the mesh without rebuilding it.
                         pal: slot,
+                        // 🔴 THE OUTLINE TAKES THE WHOLE SEGMENT'S COLOUR, NOT
+                        // THE HALF'S, BECAUSE THE 2D PAINTER DOES. `emitSlabInk`
+                        // is called once over the WHOLE interval with `col` -
+                        // the near residue's - deliberately, because per-quarter
+                        // ink runs are two segments long and every chunk join
+                        // reads as a notch. So the ink is one colour across a
+                        // cut, and slot 0 is that colour.
+                        //
+                        // It cost nothing while `halves` were filled only in ss
+                        // mode and under overrides, where both halves are the
+                        // same colour anyway; centring every mode's colours on
+                        // its residue made them genuinely differ, an edge takes
+                        // its slot from whichever face claimed it first, and the
+                        // two painters' outlines parted company:
+                        // tests/arrow_faces_2d.py went 52 / 190 / 165 / 85 px to
+                        // 286 / 325 / 338 / 340, and with the outline switched
+                        // off the same four views moved by 27 / 74 / 3 / 52.
+                        palInk: (p.ci !== undefined && p.ciPalette) ? p.ci * 3 : slot,
                         // ...AND ONLY WHEN THERE IS A SLOT TO REDO IT FROM.
                         // `c` above is ALREADY derived - a helix's inner face
                         // is already tinted 0.68 toward white. Where the slot
@@ -4933,7 +4951,10 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused, smOffset) {
             // edge's, and they were read and coerced inside the loop - so
             // every one of them was fetched four times per face, about 1.6
             // million redundant property loads on a nucleosome.
-            const fInkN = f._inkN; const fStick = !!f.stick; const fPal = f.pal;
+            const fInkN = f._inkN; const fStick = !!f.stick;
+            // the OUTLINE's slot, which is the whole segment's for a ribbon
+            // face and the half's for a stick - see palInk where it is set
+            const fPal = f.palInk === undefined ? f.pal : f.palInk;
             const fTwo = !!f.two; const fNoInk = !!f.noInk; const fCol = f.c || null;
             const fFull = !!f.fullOutline; const fOuter = !!f.outerOnly;
             const fSc = !!f.sc;
