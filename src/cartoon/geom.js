@@ -4844,11 +4844,25 @@ function mergeBondRuns(S) {
                 const lenR = len3(st.pNext.x - st.p.x,
                     st.pNext.y - st.p.y, st.pNext.z - st.p.z);
                 const lim = 0.30 * Math.min(lenL, lenR);
-                // ...and a section is never narrowed to nothing: four
-                // corners at one point is a degenerate quad, whose normal is
-                // zero and whose faces are NaN. A twentieth of the width is a
-                // visible pinch and a real polygon.
-                const narrow = reach > lim ? Math.max(0.05, lim / reach) : 1;
+                // 🔴 AND THE SECTION IS NOT NARROWED, BECAUSE THE PINCH IS
+                // THE THING A READER SEES. This shrank the shared section to
+                // `lim / reach` - as far as a twentieth of the width - so that
+                // its corners would not reach more than 0.30 of the shorter
+                // neighbour along the bond. What that costs is a NOTCH at
+                // every sharp elbow: reported as lost faces in the side chains
+                // while rotating, and visible on a lysine's zigzag at the
+                // reader's own saved view, where each bend showed a step.
+                //
+                // What the reach costs, on the other hand, is OVERLAP - the
+                // section's corners slide along a bond that is already solid
+                // and already that colour - and overlap inside an opaque solid
+                // cannot be seen. The pre-e915167 code made the same trade by
+                // SKIPPING the section at such a station, which left each box
+                // its own square end; those ends interpenetrate near the
+                // corner and read as closed. Sharing the polygon keeps the
+                // topology frame-independent, which is what the station fast
+                // path needs, so the polygon stays shared and full width.
+                const narrow = 1;
                 const secHT = stickHT * narrow;
                 const secHW = stickHW * narrow;
                 let uS = rej(st.u, b);
