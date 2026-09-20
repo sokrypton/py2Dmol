@@ -226,6 +226,37 @@ function bind(renderer, layout) {
     const want = { big: null, small: null };
     const shown = { big: null, small: null };
     let lastSig = '';
+    // 🔴 A STRUCTURE THAT BLINKS IS NOT A STRUCTURE THAT LEFT. The empty case
+    // above - "with nothing to draw, the big slot takes the first thing there
+    // is" - is a FIRST-TIME default, and it was being re-decided on every
+    // frame. Every ingestion path empties an object before the new frames
+    // land (`existing.frames.length = 0`, then addFrame), so for the one or
+    // two frames in between there are no coordinates, and a renderer-level
+    // map - LocalFold keeps a live contact map through a whole fold - was the
+    // first thing there was. The big slot swapped to it and back.
+    //
+    // Reported as: when the last frame is added, after diffusion and the
+    // confidence come back, the contact map briefly replaces the structure.
+    // Measured on that sequence, sampling the slot every animation frame:
+    // structure -> contact -> structure.
+    //
+    // So the default applies while no structure has EVER been there, which is
+    // the case it was written for - a fold whose trunk has produced a map and
+    // no coordinates yet. After that the big slot is the structure's and an
+    // empty canvas for two frames is the honest picture: it is what the
+    // reader was already looking at, with nothing in it for a moment.
+    // A host that WANTS the map big says so (`setSlots`), and that is
+    // `want.big`, which is tested first and is how LocalFold opens a fold.
+    //
+    // 🔴 AND THE HOLD IS PER OBJECT, OR IT SWALLOWS THE CASE IT IS FOR. A
+    // reader who SWITCHES to an object with no coordinates - a trunk that has
+    // produced a map and nothing else - must still get the map big; that is a
+    // standing state, not a blink. What separates the two is which object is
+    // being drawn: a blink is the SAME object mid-update, a switch is a
+    // different one. So this remembers the object the coordinates belonged to
+    // and holds the slot only for that one. tests/slots.py already asserts the
+    // switch case and fails a hold that does not make the distinction.
+    let molObject = null;
 
     const hasCoords = () => {
         const obj = renderer.currentObjectName && renderer.objectsData
@@ -351,14 +382,22 @@ function bind(renderer, layout) {
 
     function refresh() {
         const avail = available();
+        if (avail.indexOf(MOL) >= 0) molObject = renderer.currentObjectName;
+        // ...and forgotten when that object is gone, so a page that clears up
+        // and then loads a map on its own gets the first-time default back
+        // rather than an empty canvas.
+        else if (!renderer.objectsData
+            || !(molObject in (renderer.objectsData || {}))) molObject = null;
+        const molHold = molObject !== null
+            && molObject === renderer.currentObjectName;
         const narrow = !!(mq && mq.matches);
         const sig = avail.join('\u0000') + '|' + want.big + '|' + want.small
-            + '|' + narrow;
+            + '|' + narrow + '|' + (molObject === renderer.currentObjectName ? 1 : 0);
         if (sig === lastSig) return false;
         lastSig = sig;
 
         const big = avail.indexOf(want.big) >= 0 ? want.big
-            : (avail.indexOf(MOL) >= 0 ? MOL : (avail[0] || MOL));
+            : ((avail.indexOf(MOL) >= 0 || molHold) ? MOL : (avail[0] || MOL));
         const rest = avail.filter((v) => v !== big);
         // ...and on a narrow screen there is no second slot at all. The reader's
         // choice is KEPT rather than cleared: turn the phone round and it is back.

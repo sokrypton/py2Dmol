@@ -135,6 +135,36 @@ window.addEventListener('load', () => {
       r.render = orig;
       out.back = Object.assign(snap(), { canvas: r.canvas.width });
 
+      // ---- A BLINK IS NOT A DEPARTURE ----
+      // Every ingestion path empties an object before the new frames land, so
+      // for a frame or two the object it is drawing has no coordinates. With a
+      // renderer-level map on screen - which is how a fold keeps a live
+      // contact map - the big slot used to hand itself to that map and take it
+      // back: reported as the contact map briefly replacing the structure when
+      // the last frame arrives. Sampled every animation frame, it read
+      // structure -> contact -> structure.
+      {
+        const obj = r.objectsData[r.currentObjectName];
+        const kept = obj.frames.slice();
+        const seen = [];
+        let watching = true;
+        const watch = () => {
+          if (!watching) return;
+          const v = String(S.shown().big);
+          if (!seen.length || seen[seen.length - 1] !== v) seen.push(v);
+          requestAnimationFrame(watch);
+        };
+        requestAnimationFrame(watch);
+        await settle(2);
+        obj.frames.length = 0;
+        r.render('emptied'); await settle(3);
+        const during = String(S.shown().big);
+        for (const f of kept) obj.frames.push(f);
+        r.render('back'); await settle(3);
+        watching = false;
+        out.blink = { during, after: String(S.shown().big), trail: seen };
+      }
+
       // ---- no coordinates: a blank object with a contact map alone ----
       S.choose('big', 'map:pae'); await settle(3);
       r.addObject('blank');
@@ -248,6 +278,20 @@ if (sw.get('canvas') or 0) >= (al.get('canvas') or 0):
                f" against {al.get('canvas')} in the big one")
 if bk.get('big') != 'molecular' or bk.get('canvas') != al.get('canvas'):
     bad.append(f"the structure came back wrong: {bk}")
+bk2 = R.get('blink') or {}
+print(f"  blink     while the object is empty: big={bk2.get('during')},"
+      f" after={bk2.get('after')}, trail={bk2.get('trail')}")
+if bk2.get('during') != 'molecular' and bk2.get('during') != 'structure':
+    bad.append(f"the big slot went to {bk2.get('during')} while the object was"
+               " empty for a frame - an ingestion empties an object before the"
+               " new frames land, and the slot must not hand itself to a map"
+               " and back. The empty-slot default is for an object that never"
+               " had coordinates, not for one mid-update.")
+if bk2.get('after') != bk2.get('during'):
+    bad.append(f"the big slot moved from {bk2.get('during')} to"
+               f" {bk2.get('after')} when the frames came back - it should not"
+               " have moved at all")
+
 bl = R.get('blank') or {}
 if bl.get('big') != 'map:contact':
     bad.append(f"an object with no coordinates left its map small: {bl} - that"
