@@ -187,32 +187,175 @@ per frame and are now decided by rule (CLAUDE.md has the numbers). What is left
 is a four-leg centre's planarity test and the run walk itself - see
 `docs/OPEN_WORK.md` 11, which has the measurement and the shape of the fix.
 
-## Problem 3: the fast path draws side-chain STICKS differently from a rebuild (OPEN)
+## Problem 3: the fast path draws the OUTLINE differently from a rebuild (OPEN)
 
-🔴 **EXPOSED BY 1b, NOT CAUSED BY IT.** Until side-chain topology stopped
-following the frame, every step with side chains shown rebuilt - so the fast
-path's own drawing of those sticks was never reached. Now it is:
+🔴 **THE TITLE WAS WRONG AND SO WAS THE FIRST PARAGRAPH.** This said the fast
+path draws the side-chain STICKS differently and that "all of it is the
+sticks", on the strength of hiding the side chains and watching the difference
+go to zero. Hiding them removes their outline too. Measured properly, with the
+outline switched off and the side chains still shown, a stepped frame is
+**pixel-identical** to a rebuild of itself - 0 of 490,000 on `_traj_1ehz.pdb`,
+where the same pair differs by 11,129 with the outline on. The stick FACES are
+right. The ink is not.
 
-| | last step against a rebuild of the same frame |
+**AND IT IS MOSTLY A NUCLEIC FAULT**, which nothing here said. The last step
+against a rebuild of the same frame, side chains shown
+(`tests/stick_topology.py` reports this on every run):
+
+| `_traj_1ehz` (RNA) | `_traj_1bna` (DNA) | `_traj_3ptb` | `_traj_1hvr` | `_traj_patho_3chy` |
+|---|---|---|---|---|
+| 6,494 px | 4,506 px | 39 px | 10 px | 4 px |
+
+**WHAT THE CARD HOLDS, fast step against a rebuild of the same frame**
+(`py2dmolCartoonGPU.stationTexels()`, 1EHZ, side chains shown, 0 rebuilds):
+
+| | |
 |---|---|
-| `_traj_1ehz.pdb`, side chains shown | **6,612 px of 357,604** |
-| the same, side chains hidden | **0** |
-| `_traj_3ptb.pdb`, side chains shown | 33 px |
+| station texture | **identical**, 0 of 131,072 floats |
+| piece texture | **identical**, 0 of 22,760 |
+| instance fill buffer | **identical**, 0 of 636,624 |
+| palette, visibility | **identical** |
+| station row buffer | 1,172 of 238,572 differ, all in lane 6 |
+| **outline buffer** | **16,655 rows against 16,658** |
 
-All of it is the sticks: hide them and the two drawings are exactly equal, so
-the ribbon and the base plates follow the stations perfectly.
-`refreshSticksFrom` is NOT refusing - it rewrites the stick rows and reports no
-reason - so the rows are being written and still do not match a build.
+So the geometry the shader reads is the same to the last bit, and the outline
+is not. Lane 6 of the station row is `face.kAvg`, baked at build and never
+refreshed - it is stale on the fast path, and on the station path the shader
+reads `aK` from the PIECE texture instead (`aKFresh`), which is identical. It
+is worth fixing as a matter of hygiene and it is not this.
 
-`tests/stick_topology.py` asserts the picture with side chains HIDDEN and
-reports the number with them shown, so the gap is visible on every run rather
-than buried.
+**THE OUTLINE ROWS ARE IN A DIFFERENT ORDER**, because a rebuild's edge map
+does not iterate as the build's did, so a row-by-row diff reports 16,218 of
+16,655 and means nothing. Compared as SETS, by lane group:
 
-**Where to start**: compare the stick part's FACES between a fast step and a
-rebuild of the same frame (`__meshDigest`, or the per-part face hashes), not
-pixels - that says whether the rows hold the wrong numbers or the right numbers
-in the wrong place. `tests/station_sidechains.py` covers the same ground for
-proteins and passes, so the difference is worth reading first.
+| endpoints (0-5) | + normals (6-11) | flags (12-19) |
+|---|---|---|
+| 2,592 differ | 14,255 differ | 172 differ |
+
+and matching the rows by their endpoints, **11,663 of the 14,063 matched rows
+carry a different NORMAL, every one of them on a stick edge** (`aEdgeStick`).
+Both are unit vectors - sampled pairs are 10 to 40 degrees apart, not flipped
+and not rescaled. The normals feed the silhouette test, which is what decides
+whether a stroke is inked at all, so a wrong direction is a stroke that
+appears or vanishes: max channel difference 215, not antialiasing.
+
+**TWO DEAD ENDS, BOTH MEASURED:**
+
+  * **It is not the crease rule.** Both paths compare `|dot(n0, n1)|` against a
+    COSINE threshold, and that is only a cosine if both vectors are unit - the
+    build stores raw Newell sums for some faces (magnitude ~29) and the refresh
+    stores unit vectors, so this looked certain. Disabling the crease verdict
+    in BOTH paths leaves the difference at exactly 11,129 px. The
+    normalisation mismatch is real and worth tidying; it is not this.
+  * **It is not the scale.** Problem 1d was a scale bug and grew with zoom
+    (51 px at 1x, 14,111 at 3.5x). This one is 11,129 / 22,273 / 21,914 at
+    zoom 1 / 2 / 3 - it grows with the size of the drawing and then stops,
+    which is what "more pixels along the same strokes" looks like.
+
+### The cause: two SURFACE VOCABULARIES for one face
+
+🔴 **NOT AN ORDERING PROBLEM - THAT WAS THE FIRST READING AND IT IS WRONG.**
+The totals line up (13,254 station faces against 13,263 built, the nine being
+lone-atom discs that carry no station), and printing the two surf arrays side
+by side shows no shift at all:
+
+    face   1202:6/0  1203:6/1  1204:6/2  1205:6/3   ...  1537:6/3
+           1538:6/6  1539:6/6  1540:6/6   ...
+
+Left of the slash is `SM.faceSurf[fi + smOff]`, right is the face's own
+`f.surf`. The station mesh calls a JOINT's four faces **surf 6**; `facesOf`
+calls the same four **0, 1, 2 and 3**. The indices agree; the labels do not.
+
+🔴 **`SM.faceSurf[fi + smOff] !== f.surf` FOR 1,010 OF 13,254 FACES.** Measured
+INSIDE `buildMeshPart`'s own loop, where the station mesh and the face are both
+in hand and no indexing of a probe's is involved - which matters, because two
+earlier attempts at this were misaligned and neither was evidence (see the
+traps below).
+
+`buildMeshPart` gives a face its outward normal from the station frame under
+`if (SM && f.surf !== undefined && f.surf <= 10)` and picks WHICH RULE from
+`f.surf`; `refreshEdgesFromStations` picks it from `mesh.faceSurf[f]`. So for
+every face where the two labels differ the build and the per-frame refresh
+apply different rules - a plate gets the broad/side rule from one and the
+surf-6 cross product from the other - and the outline normals part company.
+Measured inside the build's own loop, 1,010 of 13,254 faces on
+`_traj_1ehz.pdb` with side chains shown:
+
+    mesh surf 6, face surf 0 / 1 / 2 / 3      84 each   (a plate, to the faces
+                                                         four slab surfaces)
+    mesh surf 4/5/7/8/9/10, face surf 6       56 each
+    mesh surf 0/1/2/3, face surf 4..10        28 each
+
+Three blocks of 336.
+
+**WHAT IS RULED OUT, each by measurement:**
+
+  * **Missing stations are not it.** Nine `dot` prims (the ions) emit a face
+    and no station, interleaved through the prim list at 2,878, 4,119, 4,988
+    ... 11,173 - which looks exactly like a shift waiting to happen. It is
+    not: `_traj_1bna.pdb` has NO such prim, every one of its 3,760 prims
+    yields both, and it still differs by 4,506 px. `_traj_3ptb.pdb` has
+    seventy-one of them and differs by 39.
+  * **`SM` being absent for a part is not it.** It is present for all 13,254
+    faces; only the nine-face tail has none.
+  * **Reading the station mesh's surf in the build is not the fix on its
+    own** - tried, one line, `smSurf` in place of `f.surf` in all three branch
+    tests: 11,129 px to 11,126.
+
+🔴 **AND THE VOCABULARY SPLIT IS NOT THE CAUSE EITHER.** It is real - the
+labels do differ - and it explains nothing about the pixels. Two measurements
+closed it:
+
+  * **Stick faces take the station-normal branch, with the SAME label on both
+    sides.** Instrumented at the `if (SM && f.surf !== undefined && f.surf <=
+    10)` itself: 1,795 faces each of surf 4, 5, 7, 8, 9 and 10, every one with
+    `f.surf === SM.faceSurf[fi + smOff]`, and only ELEVEN faces in the whole
+    structure skip the branch (the nine discs, which have no SM, and two with
+    no surf of their own). So the sticks - where the row comparison puts the
+    disagreement - are not where the labels differ.
+  * **Making the build read the mesh's label moves three pixels** (11,129 to
+    11,126), which is what that predicts.
+
+🔴 **AND IT IS NOT THE SLOT ORDER.** Which half of a stroke lands in slot 0 is
+decided by whichever face claimed the edge first, and a rebuild's edge map
+does not iterate as the build's did - so the obvious reading of "same
+endpoints, different normals" is that the pair is written the other way round.
+Canonicalising each row (sort the two (endpoint, normal) halves, then compare
+as multisets) moves it from 14,263 to **14,255**. The strokes genuinely differ.
+
+### Where this stands, and what to do instead of more inference
+
+Five hypotheses are now closed by measurement - the crease rule, the scale, the
+missing stations, the surf vocabulary and the slot order - and the cause is
+still not named. What IS pinned: the faces, the stations, the pieces, the
+palette and the visibility texture are byte-identical, the outline is not, and
+switching the outline off makes a stepped frame pixel-identical to a rebuild.
+
+**Stop inferring and bisect the rows.** This file already describes the method
+under "Row bisection", and it is what cracked problem 1: add the `__killRows`
+hook at the end of `refreshEdgesFromStations`, take a fresh reference, and
+halve the candidate set towards whichever half removes the difference. About
+fourteen rounds for 16,655 rows, and it ends on a row rather than on an
+argument. Every attempt to reason from aggregates in this section has produced
+a plausible story that measurement then refused.
+
+**AND THE 2D PAINTER CANNOT ADJUDICATE IT.** Both GPU pictures sit about
+31,000 px from the 2D one on this fixture (fast 31,006, fresh 30,862), which is
+far too coarse a baseline to resolve an 11,129 px difference between them. Do
+not reach for it as the referee here.
+
+### Traps, all of them paid for once
+
+  * **`_inkN` captured in the edge loop is not every face.** That loop skips
+    interior and zero-area faces: 10,697 entries against 13,254.
+  * **Pushing `fi + smOff` is not enough either.** `refreshSticksFrom` calls
+    `buildMeshPart` with no `smOffset`, so the 9-face tail lands at indices 0-8
+    and clobbers them. Gate the capture on `SM`, or push the offset too.
+  * **Matching outline rows by their ENDPOINTS pairs the wrong rows** where
+    endpoints collide, which is where a reported "worst normal difference of
+    37.56" came from - between two vectors that are both unit.
+  * **A row-by-row diff of the ink buffer is meaningless.** The two lists are
+    in different orders; compare them as multisets.
 
 ## Problem 2: side-chain faces disappear during playback (NOT REPRODUCED)
 
