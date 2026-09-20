@@ -5810,7 +5810,15 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
     // residues - none of them geometry - so it is answered up here and read
     // below. That is what lets a switch into ss mode be a texture upload: the
     // colours no longer wait on a mesh being built to exist.
-    const resolvedNeeded = !!(ssColor || hasColorOverrides);
+    // 🔴 EVERY MODE NEEDS ONE NOW. It used to be ss and overrides alone,
+    // because those were the only two that could give an interval's two ends
+    // different colours - and that was the bug: the OTHER modes could too,
+    // and simply were not asked. The GPU reads a rib face's colour from slot
+    // 1 or 2 of its segment's three texels, so if nothing fills the halves
+    // both fall back to the segment's own colour and the far half of every
+    // interval draws the near residue's again. One array copy per build,
+    // against the ~9.5 KB a FACE a build already allocates.
+    const resolvedNeeded = true;
     const preResolved = (ssColor && !hasColorOverrides && window.py2dmolCartoon
         && window.py2dmolCartoon.resolveSegmentColors)
         ? window.py2dmolCartoon.resolveSegmentColors(renderer, colors) : null;
@@ -8137,7 +8145,20 @@ function drawRun(runIdx, ctx) {
             // from the midpoint before it to the midpoint after it - one
             // residue's width, centred on the residue.
             let col = colors[segIdx];
-            let colFar = col;
+            // 🔴 THE FAR HALF IS THE NEXT RESIDUE'S COLOUR, IN EVERY MODE.
+            // `colors[segIdx]` is getAtomColor of the interval's FIRST
+            // residue, and this used to default to the same value - so only
+            // ss colouring and explicit overrides ever centred a colour on
+            // its residue, and every MODE drew the band from i to i+1 instead
+            // of from i-0.5 to i+0.5. `bbSeg[j]` is the segment joining j to
+            // j+1 and it takes j's colour, so the neighbour's answer is an
+            // array read; at the last residue of a chain there is no such
+            // segment and the renderer is asked directly, which happens once
+            // per chain rather than once per interval.
+            const segFar = bbSeg[iN];
+            let colFar = (segFar >= 0 ? colors[segFar] : null)
+                || (renderer.getAtomColor ? renderer.getAtomColor(iN) : null)
+                || col;
             if (ssColor && isProt) {
                 // An explicit per-residue/chain colour BEATS the palette:
                 // ss colouring is a mode, and a colour the user set by hand
@@ -8154,20 +8175,30 @@ function drawRun(runIdx, ctx) {
                 const pal = (preResolved && preResolved[segIdx])
                     || ssPal[ssCls] || ssPal.C;
                 col = ovI || pal || col;
-                colFar = ovN || pal || colors[segIdx];
+                colFar = ovN || pal || colFar;
             } else if (hasColorOverrides && renderer.getAtomColor) {
                 // Only asked for when the object carries overrides at all,
                 // so the usual path costs nothing extra.
-                colFar = renderer.getAtomColor(iN) || col;
+                colFar = renderer.getAtomColor(iN) || colFar;
             }
-            const twoTone = !!(col && colFar && col !== colFar
-                && (col.r !== colFar.r || col.g !== colFar.g || col.b !== colFar.b));
+            // 🔴 `twoTone` IS GONE, AND ITS ABSENCE IS THE POINT. It asked
+            // whether the two ends of this interval happen to have different
+            // colours, and three things hung off the answer: whether to cut,
+            // which colour each piece took, and which palette slot it read.
+            // All three are now unconditional - the cut is one the interval
+            // already has, each piece takes its own residue's colour, and the
+            // slot names the half - so none of the geometry or the instance
+            // rows depends on the colours any more, which is what keeps a
+            // colour change a texture upload rather than a rebuild.
             // ...and into the published palette, base and both halves. Slot 0
             // is what an uncut piece reads and slot a/b are the two sides of a
             // cut, which is exactly how setPalette lays a segment out.
             if (resolvedCols && segIdx >= 0 && segIdx < resolvedCols.length) {
                 resolvedCols[segIdx] = col;
-                if (twoTone) resolvedHalves[segIdx] = { a: col, b: colFar };
+                // UNCONDITIONALLY, because the slot a face reads is now
+                // unconditional too: a face asking for slot 2 must find the
+                // far residue's colour there whether or not it differs.
+                resolvedHalves[segIdx] = { a: col, b: colFar };
             }
             if (!col) { flushTubeRun(); continue; }
             // Offscreen: contributes nothing on screen and cannot occlude
@@ -9257,8 +9288,41 @@ function drawRun(runIdx, ctx) {
                 // exactly u = 0.5 and the boundary lands on the nearest -
                 // within half a station, 1/6 of a residue at the default
                 // detail and less above it.
-                const midCut = Math.max(1, Math.min(nsub - 1, Math.round(nsub / 2)));
-                if (twoTone) cutSet.push(midCut);
+                // 🔴 AND THE COLOUR BOUNDARY IS ONE OF THE CUTS THE INTERVAL
+                // ALREADY HAS, WHICH IS WHY THIS COSTS NOTHING. A colour
+                // belongs to a RESIDUE and an interval spans two, so the
+                // boundary has to sit at the midpoint - and the quarter cuts
+                // above have already put a piece boundary there: measured, the
+                // rib piece count is IDENTICAL with the cut forced and with it
+                // left to fall where it may, on 1TIM, 4HHB and 1EHZ at detail
+                // 2, 4, 5 and 8. Only detail 3 differs (+35%), because an odd
+                // nsub has no station at exactly u = 0.5 - and there the
+                // nearest existing cut is half a sub-interval out, a sixth of
+                // a residue, which is the tolerance the old forced cut already
+                // accepted for the same reason.
+                //
+                // Snapping to an existing cut rather than forcing one is what
+                // makes the TOPOLOGY independent of the colour: with a cut
+                // that appears only when two residues differ, switching colour
+                // mode moves the station mapping and the whole mesh rebuilds
+                // instead of taking a texture upload.
+                let midCut = -1;
+                {
+                    let bestD = Infinity;
+                    for (let ci = 0; ci < cutSet.length; ci++) {
+                        const c = cutSet[ci];
+                        if (c <= 0 || c >= nsub) continue;
+                        const d = Math.abs(c - nsub / 2);
+                        if (d < bestD) { bestD = d; midCut = c; }
+                    }
+                    // 'none' mode has no interior cut at all, and a piece that
+                    // is not cut is one colour with the boundary back on a
+                    // residue - so there one is forced, as it always was.
+                    if (midCut < 0) {
+                        midCut = Math.max(1, Math.min(nsub - 1, Math.round(nsub / 2)));
+                        cutSet.push(midCut);
+                    }
+                }
                 cutSet.sort((a, b) => a - b);
                 const cutsQ = [];
                 for (let ci = 0; ci + 1 < cutSet.length; ci++) {
@@ -9294,14 +9358,28 @@ function drawRun(runIdx, ctx) {
                     // when it starts at or after it - comparing midpoints
                     // instead lets the piece straddling the cut fall on the
                     // wrong side of it
-                    const far = twoTone && a0 >= midCut;
+                    // ...AND EVERY PIECE TAKES THE COLOUR OF THE RESIDUE IT
+                    // BELONGS TO, not only where the two ends differ. This
+                    // used to be gated on `twoTone`, so in every colour MODE
+                    // (pLDDT, hydrophobicity, chain, rainbow, entropy) the
+                    // whole interval took its FIRST residue's colour and the
+                    // drawing sat half a residue downstream of the data.
+                    const far = a0 >= midCut;
                     const pieceCol = far ? colFar : col;
                     // WHICH PALETTE TEXEL THIS PIECE READS: 0 the segment's own
                     // colour, 1 and 2 the two sides of a colour cut. Without it
                     // both halves of a cut interval read slot 0 and the far one
                     // draws the near one's colour, which is why a rib face
                     // could not be a lookup at all while ss mode was on.
-                    const halfSlot = twoTone ? (far ? 2 : 1) : 0;
+                    // 🔴 ALWAYS 1 OR 2, NEVER 0, AND THAT IS WHAT KEEPS A
+                    // COLOUR CHANGE A TEXTURE UPLOAD. The slot is baked into
+                    // the instance row, so a slot that depends on whether two
+                    // residues happen to differ changes when the colour MODE
+                    // does - and the mesh has to be rebuilt to say so. Slots 1
+                    // and 2 fall back to the segment's own colour when the
+                    // palette carries no halves (setPalette), so naming them
+                    // unconditionally is right in every case.
+                    const halfSlot = far ? 2 : 1;
                     const pieceOv = far ? ovN : ovI;
                     const prim = {
                         kind: 'rib',
@@ -11715,11 +11793,33 @@ if (typeof window !== 'undefined' && window.py2dmolCartoon) {
             }
             return false;
         })());
-        if (!ssMode && !hasOv) return null;      // colors is already the answer
+        // 🔴 IT NO LONGER RETURNS NULL FOR A PLAIN MODE, because `colors` is
+        // NOT already the answer: it gives each segment its FIRST residue's
+        // colour, and the drawing cuts every interval at its midpoint so the
+        // far half can take the SECOND residue's. Those halves are what the
+        // GPU's slot 2 reads, and this is the function the repaint path calls
+        // - so without them a colour change that does not rebuild drew every
+        // band half a residue downstream, which is the fault in the draw
+        // pass by a second route.
         const segs = renderer.segmentIndices;
         if (!segs || !segs.length) return null;
+        // residue -> the segment that STARTS at it, which is the one holding
+        // its colour. Built once here rather than searched per segment.
+        let nPos = 0;
+        for (const seg of segs) {
+            if (!seg) continue;
+            if (seg.idx1 + 1 > nPos) nPos = seg.idx1 + 1;
+            if (seg.idx2 + 1 > nPos) nPos = seg.idx2 + 1;
+        }
+        const segAt = new Int32Array(nPos).fill(-1);
+        for (let k = 0; k < segs.length; k++) {
+            const seg = segs[k];
+            if (seg && seg.idx2 === seg.idx1 + 1 && segAt[seg.idx1] < 0) segAt[seg.idx1] = k;
+        }
         const sec = ssMode ? secForColor(renderer) : null;
         if (ssMode && !sec) return null;
+        const getCol = renderer.getAtomColor
+            ? renderer.getAtomColor.bind(renderer) : null;
         const ssPal = ssPaletteOf(renderer);
         const types = renderer.positionTypes;
         const out = colors.slice();
@@ -11742,15 +11842,17 @@ if (typeof window !== 'undefined' && window.py2dmolCartoon) {
             const ovI = hasOv ? getOv(i) : null;
             const ovN = hasOv ? getOv(iN) : null;
             const base = colors[k];
+            // the far end's own colour, the same way the draw pass reads it
+            const kFar = (iN >= 0 && iN < segAt.length) ? segAt[iN] : -1;
+            const baseFar = (kFar >= 0 ? colors[kFar] : null)
+                || (getCol ? getCol(iN) : null) || base;
             const col = ovI || pal || base;
-            const colFar = ovN || pal || base;
+            const colFar = ovN || pal || baseFar;
             if (col) out[k] = col;
-            // ...and where the two ends disagree, each half takes its own end's
-            // colour - the same split the draw pass cuts the interval for.
-            if (col && colFar && (col.r !== colFar.r || col.g !== colFar.g
-                || col.b !== colFar.b)) {
-                halves[k] = { a: col, b: colFar };
-            }
+            // ...and BOTH halves, always: the rib face reads slot 1 or 2 of
+            // this segment whether or not the two ends differ, so leaving
+            // them out is the far half drawing the near residue's colour.
+            if (col && colFar) halves[k] = { a: col, b: colFar };
         }
         return out;
     };

@@ -95,6 +95,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `cartoon_station.js` | node | WHAT A RIBBON STATION IS, pinned as an invariant. |
 | `colab.py` | ui | COLAB PUTS EVERY CELL OUTPUT IN ITS OWN IFRAME, and that is the whole test. |
 | `colour_cache.py` | gpu | THE SEGMENT COLOURS DO NOT READ A COORDINATE, SO A FRAME STEP NEED NOT |
+| `colour_centre.py` | ui | A colour belongs to a residue, so its band is centred on that residue. |
 | `colour_repaint.py` | gpu | A colour change is a texture upload, and these are the exceptions. |
 | `config.js` | node | EVERY SETTING PYTHON SENDS HAS TO SURVIVE THE TRANSLATION. |
 | `contacts_forms.py` | node | The three spellings of a contact, and the one that draws nothing. |

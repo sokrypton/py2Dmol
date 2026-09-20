@@ -116,27 +116,27 @@ measuring sign-dependence knows which painter it lives in.
 
 ---
 
-## 6. Colour is a residue's, and every mode still draws it half a residue late
+## 6. The round tube still draws a colour half a residue late
 
-The cartoon already centres colour on the residue - `geom.js` cuts an interval
-at its midpoint and colours each half from its own end (`twoTone`, `colFar`) -
-but ONLY under per-residue overrides or in ss mode. Every colour MODE (pLDDT,
-hydrophobicity, chain, rainbow, entropy) falls back to `colFar = col`, so the
-whole interval takes its first residue's colour and the drawing is half a
-residue downstream of the data. `resolveSegmentColors` returns early for the
-same reason (`if (!ssMode && !hasOv) return null`).
+The RIBBON was fixed in `49ff0a6`: every interval is cut at a midpoint it
+already had (the depth sort quarters them), each piece takes its own residue's
+colour, and the palette slot names the half unconditionally - so the geometry
+no longer depends on the colours and a mode change stays a texture upload.
+`tests/colour_centre.py` is the gate. It cost nothing: identical face counts on
+every structure measured, timings inside the harness floor.
 
-The GPU palette already holds three texels a segment (whole, near half, far
-half) and the 2D painter shares the pieces, so no shader work is needed.
+WHAT IS LEFT IS THE ROUND TUBE, in two places - `flushTubeRun` in
+`cartoon/geom.js`, which is what the default cartoon draws its loops with, and
+the tube STYLE in `core/mol.js`. There a run of consecutive intervals sharing a
+colour is merged into ONE polyline prim, so a colour boundary can only fall on
+an interval end. Centring means re-keying the runs on RESIDUES with knots at
+the midpoints: a run would start at the midpoint before its first residue and
+end at the midpoint after its last.
 
-**The design decision, if this is picked up:** cut EVERY interval at its
-midpoint, not only where the two ends differ. A cut that appears only when
-colours differ makes the geometry depend on the colour, so changing colour mode
-becomes a rebuild instead of a texture upload. Cutting always keeps the topology
-colour-independent, at the cost of more pieces - unmeasured. Tube would need the
-same treatment separately (split each capsule at its midpoint).
-
----
+Not obviously more expensive - in a per-residue mode every run is one residue
+long either way, so what changes is where the run's ends are, not how many
+there are - but it is a change to the run merging rather than to a couple of
+expressions, and the tube style is a second, separate copy of the same idea.
 
 ## 7. Focus mode and nucleotides
 
