@@ -756,7 +756,7 @@ class view:
         heatmap=False, heatmap_size=300, pae=None, pae_size=None,
         scatter=None, scatter_size=300, overlay=False, multi=False, cyclic=True,
         sidechains=False, selection=False,
-        persistence=True, id=None, cutoffs=None, slots=2,
+        persistence=True, id=None, cutoffs=None, slots=None,
     ):
         """
         Initialize a py2Dmol viewer.
@@ -825,6 +825,10 @@ class view:
             autoplay (bool): Auto-play animation on load. Default False.
             heatmap (bool): show the residue x residue heatmap panel - the
                 PAE and any other map a frame carries. Default False.
+            heatmap (bool | str): show the heatmap panel (PAE, contact, ...).
+                True puts it BESIDE the structure; **"tab"** puts it on a tab
+                over a single viewer instead, which is the same picture in
+                half the width -- every view is on the tab strip either way.
             heatmap_size (int): heatmap panel size in pixels. Default 300.
             pae (bool): the old name for `heatmap`; still accepted.
             pae_size (int): the old name for `heatmap_size`; still accepted.
@@ -904,6 +908,24 @@ class view:
             heatmap = pae
         if pae_size is not None:
             heatmap_size = pae_size
+
+        # 🔴 AND "tab" IS HOW YOU ASK FOR ONE BOX, because it is the word on
+        # the control and it sits in the argument the caller is already
+        # writing. `slots=1` says the same thing and nobody guesses it: a
+        # reader thinks "put the heatmap on a tab", not "give me one slot".
+        # A misspelling raises rather than quietly drawing the other layout.
+        tabbed = False
+        for _name, _v in (("heatmap", heatmap), ("pae", pae)):
+            if isinstance(_v, str):
+                if _v.lower() not in ("tab", "tabs"):
+                    raise ValueError(
+                        f'{_name} takes True, False, or "tab" for one box with'
+                        f' the panel on a tab - not {_v!r}')
+                tabbed = True
+        if tabbed:
+            heatmap = True
+        if slots is None:
+            slots = 1 if tabbed else 2
 
         # Normalize heatmap_size: if tuple/list, use first value; else as-is
         if isinstance(heatmap_size, (tuple, list)) and len(heatmap_size) > 0:
