@@ -753,7 +753,7 @@ class view:
         color="auto", colorblind=False, ss_palette=None, style="tube", preset=None, smooth=None, thickness=None, sheet_flat=None, pencil=None, arrows=True, base_plates=None, detail=4, fade=0, highlight=None, outline_tint=None,
         shadow=True, shade=None, shadow_strength=0.5,
         outline=None, width=None, ortho=0.5, gpu=True, bg=None, rotate=False, autoplay=False,
-        heatmap=False, heatmap_size=300, pae=None, pae_size=None,
+        heatmap=None, heatmap_size=300, pae=None, pae_size=None,
         scatter=None, scatter_size=300, overlay=False, multi=False, cyclic=True,
         sidechains=False, selection=False,
         persistence=True, id=None, cutoffs=None, slots=None,
@@ -914,6 +914,10 @@ class view:
         # writing. `slots=1` says the same thing and nobody guesses it: a
         # reader thinks "put the heatmap on a tab", not "give me one slot".
         # A misspelling raises rather than quietly drawing the other layout.
+        # Did the caller say anything about the panel? `None` on both means no,
+        # and that is what lets the answer be settled at show() time instead.
+        self._heatmap_asked = heatmap is not None or pae is not None
+        self._slots_asked = slots is not None
         tabbed = False
         for _name, _v in (("heatmap", heatmap), ("pae", pae)):
             if isinstance(_v, str):
@@ -1810,6 +1814,19 @@ class view:
         self._emit_to_output(html_script, payload_json=payload_json, update_last_add=True)
 
 
+    def _any_frame_has_map(self):
+        """Does anything added so far carry a matrix the panel could draw?
+
+        `maps` is the current spelling and `pae` the old one; a frame can
+        carry either, and `mapsOfFrame` in the panel folds them together.
+        Cheap: it stops at the first one rather than walking a trajectory.
+        """
+        for obj in self.objects:
+            for frame in obj.get("frames", []):
+                if frame.get("maps") or frame.get("pae") is not None:
+                    return True
+        return False
+
     def _display_viewer(self, static_data=None, include_libs=True):
         """
         Internal: Renders the viewer's HTML directly into a div.
@@ -1827,6 +1844,24 @@ class view:
         html_template = _resource_text('viewer.html')
 
         viewer_id = self.config["viewer_id"]
+
+        # 🔴 A MAP IN THE DATA IS THE ANSWER TO "DO YOU WANT THE PANEL".
+        # Asking for `heatmap=True` up front is asking the caller to declare
+        # something the frames already say: they added `maps=` or `paes=`, so
+        # of course they want to see it. Settled HERE, at show(), because by
+        # now every add() has happened and the config has not been written.
+        #
+        # It arrives as a TAB rather than beside the structure, which is what
+        # makes it safe to decide for the caller: a tab shares the box they
+        # already asked for, where a second box would double a width they
+        # chose - and in Colab the output frame is measured before any script
+        # runs, so a viewer that grows after the fact cannot get the room.
+        # An explicit heatmap=True/False or slots= still wins; this only
+        # speaks when the caller said nothing.
+        if not getattr(self, "_heatmap_asked", False) and self._any_frame_has_map():
+            self.config.setdefault("heatmap", {})["enabled"] = True
+            if not getattr(self, "_slots_asked", False) and self._slots is None:
+                self._slots = {"big": None, "small": "none"}
 
         # ...AND THE SLAB, WHICH IS THE VIEWER'S. It rides in the config rather
         # than in the object payload because it belongs to the camera and

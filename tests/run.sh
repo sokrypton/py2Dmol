@@ -91,6 +91,16 @@ if [[ "$LANE" == "all" || "$LANE" == "node" ]]; then
     fail=1; print "NODE packaging:"; python3 tests/packaging.py 2>&1 | grep '^FAIL' | head -3
   fi
 
+  # ...and the heatmap panel is decided by the DATA. A caller who passed
+  # maps= or paes= has already said they want the matrix drawn; needing
+  # heatmap=True on top is a flag to remember for nothing. No browser: the
+  # rule is in the payload viewer.py writes.
+  if python3 tests/heatmap_auto.py >/dev/null 2>&1; then
+    print "node heatmap_auto: ok"
+  else
+    fail=1; print "NODE heatmap_auto:"; python3 tests/heatmap_auto.py 2>&1 | grep '^FAIL' | head -3
+  fi
+
   # ...and a grid emits ONE output. Grid.view() said "do not show yourself" by
   # setting _is_live, which also means "you are on the page" - so every add()
   # during collection wrote an update for a viewer that did not exist yet, and
