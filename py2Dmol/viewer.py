@@ -756,7 +756,7 @@ class view:
         heatmap=False, heatmap_size=300, pae=None, pae_size=None,
         scatter=None, scatter_size=300, overlay=False, multi=False, cyclic=True,
         sidechains=False, selection=False,
-        persistence=True, id=None, cutoffs=None,
+        persistence=True, id=None, cutoffs=None, slots=2,
     ):
         """
         Initialize a py2Dmol viewer.
@@ -1137,7 +1137,22 @@ class view:
         # ...AND WHICH VIEW IS IN WHICH SLOT - the structure, a map, the scatter
         # plot, big or small (src/parts/slots.js). A standing choice, so it is
         # state and diffed like the slab rather than queued like orient().
-        self._slots = None
+        # 🔴 `slots=1` IS ONE BOX, AND IT IS NOT THE DEFAULT - MEASURED.
+        # "big" and "small" is a concept this API should not make a reader
+        # hold: every view is on the tab strip over the one box, so a second
+        # box is a second copy of that strip and doubles a width the caller
+        # just declared (view(size=(420, 420)) with a map is 840px of viewer
+        # without being asked). It was tried as the default and reverted:
+        # a parked panel releases its decoded matrix by design, so
+        # view(pae=True) came up with the structure alone and the PAE a tab
+        # away - which is the picture that flag exists to draw.
+        # tests/minimal_input.py said so in one line, both ways round.
+        #
+        # So it is a word you add when one box is what you want, which is
+        # what a notebook cell with its own size usually wants.
+        if slots not in (1, 2):
+            raise ValueError(f"slots must be 1 or 2, not {slots!r}")
+        self._slots = None if slots == 2 else {"big": None, "small": "none"}
         self._sent_slots = False
         # ...AND WHICH RESIDUES SHOW THEIR SIDE CHAINS, as an ordered list of
         # requests rather than a resolved set. show/hide are RELATIVE verbs -
@@ -3171,7 +3186,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             view.add_pdb("AF-Q5VSL9")
             view.set_slots(big="pae")                    # PAE big, structure small
             view.set_slots(big="structure", small="contact")
-            view.set_slots(big="structure", small=False) # ONE box, tabs over it
+            view.set_slots(big="structure", small="none")  # ONE box, tabs over it
             view.set_slots()                             # back to automatic
 
         The viewer has two slots - the big one where the structure is, and the
@@ -3182,9 +3197,15 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
 
         Args:
             big (str, optional): "structure", "scatter", or a map's key.
-            small (str | False, optional): the same, for the small slot -- or
-                False for NO second slot, so the one box carries every view on
-                its tab strip. `None` is not that: it means "choose for me".
+            small (str, optional): the same, for the small slot, plus one
+                name of its own: **"none"**, for no second slot at all, so the
+                one box carries every view on its tab strip.
+
+                "none" is a NAME like the others, which is the point -- the
+                parameter takes one kind of value. Do not reach for `None` to
+                mean it: `None` is "choose for me" and gives you two slots,
+                and that pair is exactly the trap this spelling avoids.
+                `False` is accepted as the obvious Python synonym.
 
         Note:
             A STANDING CHOICE, not a move. A map named before it exists - a PAE
@@ -3195,10 +3216,21 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         """
         if small is not None and small is not False and not isinstance(small, str):
             raise ValueError(
-                f"small must be a view name, False for no second slot, or None"
-                f" for automatic - not {small!r}")
-        self._slots = (None if (big is None and small is None)
-                       else {"big": big, "small": small})
+                'small must be a view name, "none" for no second slot, or'
+                f' None to leave it as it is - not {small!r}')
+        # NAMING ONE SLOT LEAVES THE OTHER ALONE. With one box the default,
+        # `set_slots(big="pae")` must not quietly bring the second one back -
+        # the caller said which view they wanted big, not how many boxes they
+        # wanted. `set_slots()` with nothing is how you ask for automatic.
+        if big is None and small is None:
+            self._slots = None
+        else:
+            current = dict(self._slots or {"big": None, "small": None})
+            if big is not None:
+                current["big"] = big
+            if small is not None:
+                current["small"] = small
+            self._slots = current
         if self._is_live:
             self._send_incremental_update()
 
