@@ -3171,6 +3171,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             view.add_pdb("AF-Q5VSL9")
             view.set_slots(big="pae")                    # PAE big, structure small
             view.set_slots(big="structure", small="contact")
+            view.set_slots(big="structure", small=False) # ONE box, tabs over it
             view.set_slots()                             # back to automatic
 
         The viewer has two slots - the big one where the structure is, and the
@@ -3181,7 +3182,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
 
         Args:
             big (str, optional): "structure", "scatter", or a map's key.
-            small (str, optional): the same, for the small slot.
+            small (str | False, optional): the same, for the small slot -- or
+                False for NO second slot, so the one box carries every view on
+                its tab strip. `None` is not that: it means "choose for me".
 
         Note:
             A STANDING CHOICE, not a move. A map named before it exists - a PAE
@@ -3190,7 +3193,12 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             left None the layout is automatic: the structure big, a map small,
             and a map big when there is no structure to draw.
         """
-        self._slots = None if (big is None and small is None) else {"big": big, "small": small}
+        if small is not None and small is not False and not isinstance(small, str):
+            raise ValueError(
+                f"small must be a view name, False for no second slot, or None"
+                f" for automatic - not {small!r}")
+        self._slots = (None if (big is None and small is None)
+                       else {"big": big, "small": small})
         if self._is_live:
             self._send_incremental_update()
 

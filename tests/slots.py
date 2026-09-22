@@ -205,6 +205,14 @@ window.addEventListener('load', () => {
       r._switchToObject('1UBQ'); r.setFrame(0); await settle(3);
       r.setSlots({ big: 'structure', small: 'contact' }); await settle(3);
       out.api = r.getSlots();
+      // ---- one slot on purpose: small=false, not small=null ----
+      // Last, because a standing choice outlives the leg that made it and
+      // this one would otherwise overwrite the reader's PAE pick above.
+      S.setSlots({ big: 'structure', small: false }); await settle(3);
+      out.oneSlot = { ...snap(),
+        smallHidden: S.layout.small.slot.hidden };   // as the 'alone' leg reads it
+      S.setSlots({ big: 'structure', small: null }); await settle(3);
+      out.twoAgain = snap();
     } catch (e) { out.errors.push(String(e && e.stack || e)); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(out)});
   };
@@ -321,6 +329,16 @@ if bl.get('big') != 'map:contact':
 ef = (R.get('emptyFrame') or {}).get('big')
 rf = (R.get('realFrame') or {}).get('big')
 print(f"  coords    empty frame -> big={ef}, real frame -> big={rf}")
+os1 = R.get('oneSlot') or {}
+os2 = R.get('twoAgain') or {}
+print(f"  one slot  {os1.get('big')}/{os1.get('small')} hidden={os1.get('smallHidden')}"
+      f"   ...and null gives back {os2.get('big')}/{os2.get('small')}")
+if os1.get('small') is not None or not os1.get('smallHidden'):
+    bad.append(f"small=false still used the second slot: {os1} - false is 'no"
+               " second slot', null is 'choose for me'")
+if os2.get('small') is None:
+    bad.append(f"small=null did not hand the slot back to the automatic"
+               f" choice: {os2}")
 if ef != 'map:contact':
     bad.append(f"a frame with an EMPTY coords array counted as a structure:"
                f" big={ef}, expected map:contact - hasCoords is counting frames"

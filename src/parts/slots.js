@@ -418,7 +418,14 @@ function bind(renderer, layout) {
         const rest = avail.filter((v) => v !== big);
         // ...and on a narrow screen there is no second slot at all. The reader's
         // choice is KEPT rather than cleared: turn the phone round and it is back.
-        const small = narrow ? null
+        //
+        // 🔴 AND A HOST MAY ASK FOR ONE SLOT ON ANY SCREEN. `small: false` is
+        // not "no preference" - that is null, and it means choose for me. It
+        // is "there is no second slot", which the tabs make reasonable now:
+        // every view is reachable from the strip over the one box, so a second
+        // box is a second copy of the same tab strip. A notebook cell asking
+        // for a 420px viewer does not want 840 of them.
+        const small = (narrow || want.small === false) ? null
             : (rest.indexOf(want.small) >= 0 ? want.small : smallDefault(rest));
         shown.big = big;
         shown.small = small;
@@ -479,7 +486,11 @@ function bind(renderer, layout) {
     // map by its key - `pae`, `contact`, whatever the frame calls it - which is
     // what Python's set_slots, the embed's config and renderer.setSlots all
     // take. null hands a slot back to the automatic choice.
+    // `false` (or 'none') is NOT null. null is "choose for me"; false is "do
+    // not use this slot at all", which without this line became the map key
+    // 'map:false' and quietly showed nothing.
     const toView = (n) => (n === null || n === undefined) ? null
+        : (n === false || n === 'none') ? false
         : (n === 'structure' || n === MOL) ? MOL
         : n === SCATTER ? SCATTER : MAP + n;
     const toName = (v) => !v ? null : v === MOL ? 'structure'
