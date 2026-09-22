@@ -258,15 +258,32 @@ function bind(renderer, layout) {
     // switch case and fails a hold that does not make the distinction.
     let molObject = null;
 
+    // 🔴 A FRAME IS NOT A STRUCTURE, AND THIS COUNTED FRAMES. The empty case
+    // above is "a fold whose trunk has a contact map and no structure yet",
+    // and the only way a Python caller can SAY that is to add a frame whose
+    // coords are empty - a map has to ride on a frame, there is no other
+    // door. That frame made frames.length 1, so the object counted as a
+    // structure, the big-slot default never fired for the case it was written
+    // for, and an empty Structure tab sat beside the map for the whole trunk.
+    // Reported from ColabFold2's live cell, which is exactly that fold.
+    //
+    // CONSERVATIVE ON PURPOSE: only an explicitly EMPTY array is "no
+    // structure". A frame with no `coords` field at all is unknown, and
+    // unknown stays a structure, so no existing ingestion path can be
+    // switched off by a shape this does not recognise.
+    const framesDrawSomething = (o) => {
+        if (!o || !o.frames || !o.frames.length) return false;
+        const f = o.frames[o.frames.length - 1];
+        return !f || !Array.isArray(f.coords) || f.coords.length > 0;
+    };
     const hasCoords = () => {
         const obj = renderer.currentObjectName && renderer.objectsData
             ? renderer.objectsData[renderer.currentObjectName] : null;
-        if (obj && obj.frames && obj.frames.length) return true;
+        if (framesDrawSomething(obj)) return true;
         const set = renderer.shownObjects;
         if (set instanceof Set) {
             for (const name of set) {
-                const o = renderer.objectsData[name];
-                if (o && o.frames && o.frames.length) return true;
+                if (framesDrawSomething(renderer.objectsData[name])) return true;
             }
         }
         return false;

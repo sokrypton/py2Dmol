@@ -173,6 +173,28 @@ window.addEventListener('load', () => {
       window.Heatmap.updateVisibility(r);
       await settle(3);
       out.blank = snap();
+      // ---- a frame whose coords are EMPTY is also no structure ----
+      // The notebook idiom: a map has to ride on a frame, so "a contact map
+      // and no structure yet" is a frame with an empty coords array. Counting
+      // frames read that as a structure, and an empty Structure tab sat
+      // beside the map for the whole trunk.
+      r.addObject('trunkish');
+      if (r.currentObjectName !== 'trunkish') r._switchToObject('trunkish');
+      // The map rides ON the frame, which is what Python sends - with frames
+      // present the panel resolves maps per frame, so a setMaps() here would
+      // be cleared and the leg would test nothing.
+      r.objectsData['trunkish'].frames.push(
+          { coords: [], maps: { contact: { data: con, n } } });
+      r.setFrame(0);
+      window.Heatmap.updateVisibility(r);
+      await settle(3);
+      out.emptyFrame = snap();
+      // ...and one WITH coordinates is, on the same object.
+      r.objectsData['trunkish'].frames.push(
+          { coords: [[0, 0, 0], [1, 1, 1]], maps: { contact: { data: con, n } } });
+      r.setFrame(1); await settle(3);
+      out.realFrame = snap();
+      r._switchToObject('1UBQ'); await settle(3);
       // ...and the reader's PAE pick comes back with the PAE.
       r.heatmapRenderer.setMaps({ pae: { data: pae, n }, contact: { data: con, n } });
       await settle(3);
@@ -296,6 +318,16 @@ bl = R.get('blank') or {}
 if bl.get('big') != 'map:contact':
     bad.append(f"an object with no coordinates left its map small: {bl} - that"
                " is the case this was built for")
+ef = (R.get('emptyFrame') or {}).get('big')
+rf = (R.get('realFrame') or {}).get('big')
+print(f"  coords    empty frame -> big={ef}, real frame -> big={rf}")
+if ef != 'map:contact':
+    bad.append(f"a frame with an EMPTY coords array counted as a structure:"
+               f" big={ef}, expected map:contact - hasCoords is counting frames"
+               " rather than coordinates, so the map never takes the big slot")
+if rf != 'molecular':
+    bad.append(f"a frame WITH coordinates did not take the big slot: big={rf}"
+               " - the empty-coords rule has gone too far")
 pb = R.get('pickBack') or {}
 if pb.get('big') != 'map:pae':
     bad.append(f"the PAE the reader put in the big slot did not come back with"
