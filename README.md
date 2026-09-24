@@ -288,18 +288,30 @@ a standing instruction — an object added later joins the picture — and namin
 set replaces it. Note this is a different question from `overlay=True`, which
 shows every **frame** of one object.
 
-**Two viewers, one set of tabs.** With a heatmap or a scatter plot, the
-structure's box and the panel's box both carry the same tabs — Structure, each
-map, Scatter — and picking in one what the other shows swaps them. With no
-coordinates yet, a map takes the big box. From code:
+**Numbered slots, one set of tabs.** With a heatmap or a scatter plot the
+viewer is a row of boxes — slot 1 where the structure is, slot 2 where the
+panel is — and every one of them carries the same tabs, Structure, each map,
+Scatter. Picking in one what another shows swaps them, each can be dragged to
+size, and with no coordinates yet a map takes the first. Full screen is slot
+1's.
+From code it is one list, in slot order:
 
 ```python
-viewer.set_slots(big="pae")                     # PAE big, structure small
-viewer.set_slots(big="structure", small="contact")
+viewer.set_slots("pae")                         # the PAE first
+viewer.set_slots("structure", "contact")        # slot 1, slot 2
+viewer.set_slots(None, "contact")               # slot 1 automatic
+viewer.set_slots("pae", count=1)                # ONE box, tabs over it
 viewer.set_slots()                              # back to automatic
 ```
 
-The picker is hidden while there is only one object to pick.
+A short list names the slots it reaches and leaves the rest choosing for
+themselves; how many boxes there are is `count`, or `py2Dmol.view(slots=1)`.
+`set_slots(big=…, small=…)` is the spelling from before the slots were
+numbered and still works.
+
+The object picker is shown from the first object, in every shell: it is
+where the page names what you are looking at, and every panel under it
+edits the object it names.
 
 ### Grid gallery
 The grid carries `size`, `controls`, `box` and `bg` as defaults for every

@@ -74,9 +74,9 @@ window.addEventListener('load', () => {
   // strip is hidden inside a slot, whose tabs name every view - Structure as
   // well as each map - so these read the SMALL slot's map tabs, which is where
   // the panel opens and where its own strip used to be.
-  const mapTabs = () => [...R()._slots.layout.small.tabs.children]
+  const mapTabs = () => [...R()._slots.layout.slots[1].tabs.children]
     .filter((b) => b.dataset.view.startsWith('map:'));
-  const stripShown = () => (R()._slots.layout.small.tabs.hidden ? 'none' : 'flex');
+  const stripShown = () => (R()._slots.layout.slots[1].tabs.hidden ? 'none' : 'flex');
   const tabs = () => mapTabs().map(
     b => b.textContent + (b.getAttribute('aria-selected') === 'true' ? '*' : ''));
 
@@ -292,7 +292,143 @@ window.addEventListener('load', () => {
         size: p.canvas.width,
       };
     } catch (e) { out.errors.push(String(e && e.stack || e)); }
-    await fetch('/_result', {method: 'POST', body: JSON.stringify(out)});
+        // 🔴 A CHAIN ARRAY THAT IS NOT THIS MATRIX'S RULES NO LINES. The
+      // boundaries are walked off `renderer.chains`, which belongs to what is
+      // DRAWN - and a map can be on screen while it is not: a fold's trunk
+      // shows a contact map for the sequence being folded over an object that
+      // still holds the previous fold. A LONGER stale array indexed cleanly
+      // and ruled its own boundaries across the smaller matrix; the guard
+      // only caught the shorter case. Reported as chain lines from previous
+      // objects bleeding through the intermediate maps.
+      //
+      // Measured as ink: the lines are 2px of rgba(0,0,0,0.5) over a colour
+      // ramp, so what is counted is dark pixels, and the control is the same
+      // matrix with a chain array that DOES span it.
+      {
+        const R2 = () => Object.values(window.py2dmol_viewers)[0].renderer;
+        const hm = R2().heatmapRenderer;
+        // 🔴 THE DIFFERENCE FROM A CLEAN RENDER, NOT A DARKNESS THRESHOLD.
+        // The lines are 2px of rgba(0,0,0,0.5) laid over a colour RAMP, so
+        // over a pale cell they land around 124 - a "< 70 on every channel"
+        // count reports the same number whether they were drawn or not, and
+        // the first version of this leg failed its own control with
+        // ruled == clean == 312.
+        const shot = () => {
+          const c = hm.canvas;
+          return c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+        };
+        const differing = (a, b) => {
+          let n = 0;
+          for (let i = 0; i < a.length; i += 4) {
+            if (Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1])
+                + Math.abs(a[i + 2] - b[i + 2]) > 24) n += 1;
+          }
+          return n;
+        };
+        const n = hm.residues || hm.n;
+        const was = R2().chains;
+        // ...one chain, so nothing is ruled: the baseline picture.
+        R2().chains = Array.from({ length: n }, () => 'A');
+        hm.render();
+        await settle(2);
+        const plain = shot();
+        // ...a boundary halfway, in an array that spans the matrix: lines.
+        R2().chains = Array.from({ length: n }, (unused, i) =>
+          (i < Math.floor(n / 2) ? 'A' : 'B'));
+        hm.render();
+        await settle(2);
+        const ruled = differing(plain, shot());
+        // ...and the SAME matrix with side-chain atoms materialised, which
+        // appends positions: the chain array grows past the residue count
+        // while the structure under the map is unchanged. Comparing against
+        // `chains.length` rather than `_baseCount` switches the lines off
+        // for every structure with its side chains out - a different bug of
+        // the same size, and one this leg exists to keep out.
+        R2().chains = Array.from({ length: Math.round(n * 1.2) }, (unused, i) =>
+          (i < Math.floor(n / 2) ? 'A' : 'B'));
+        hm.render();
+        await settle(2);
+        const withSidechains = differing(plain, shot());
+
+        // ...and two boundaries in an array a third longer, WITH a drawn
+        // structure to match it: the state during a fold's trunk, where the
+        // map is the sequence being folded and the object under it is still
+        // the previous, longer fold.
+        //
+        // 🔴 BOTH HALVES, OR THE SIMULATION IS NOT THE BUG. Swapping only
+        // `chains` leaves the drawn residue count equal to the matrix, which
+        // is a page whose map and structure DO agree - measured: the guard
+        // rightly let those lines through and the leg blamed it.
+        const longer = Math.round(n * 1.3);
+        const baseCount = R2()._baseCount;
+        R2()._baseCount = () => longer;
+        R2().chains = Array.from({ length: longer }, (unused, i) =>
+          (i < Math.floor(n / 3) ? 'A' : (i < Math.floor(n * 2 / 3) ? 'B' : 'C')));
+        hm.render();
+        await settle(2);
+        const bled = differing(plain, shot());
+        R2()._baseCount = baseCount;
+        R2().chains = was;
+        hm.render();
+        await settle(2);
+        out.chainLines = { n, ruled, withSidechains, bled };
+
+        // ...AND THE TRUNK'S OWN LINES, which is the case with no drawn
+        // structure at all: a fold shows a contact map for the sequence it is
+        // folding while the object it opened is still EMPTY, and the page
+        // writes that sequence's chain ids straight onto the renderer and the
+        // matrix straight onto the panel. The array spans the matrix exactly;
+        // what does not span it is the drawing, and asking the drawing took
+        // the boundaries off every intermediate map. Reported as losing the
+        // lines between chains during intermediate contact map views.
+        //
+        // 🔴 AN EMPTY OBJECT AND A MAP PUSHED STRAIGHT AT THE PANEL, which is
+        // what the page does. Shadowing `_baseCount` with `() => 0` instead
+        // measured ZERO lines with the guard DISABLED - so it was not
+        // measuring the guard at all: the colour-key cache is built over the
+        // base count, and an empty one gives every position the same chain
+        // key. Last, because it spends the panel's matrix.
+        {
+          const m = Math.round(n / 3);            // small and quick to encode
+          const bytes = new Uint8Array(m * m);
+          for (let i2 = 0; i2 < bytes.length; i2++) bytes[i2] = (i2 * 7) % 256;
+          R2().addObject('trunk_blank');
+          await settle(2);
+          hm.setMaps({ contact: { data: bytes, n: m } });
+          await settle(2);
+          R2().chains = Array.from({ length: m }, () => 'A');
+          hm.render();
+          await settle(2);
+          const oneChain = shot();
+          R2().chains = Array.from({ length: m }, (unused, i2) =>
+            (i2 < Math.floor(m / 2) ? 'A' : 'B'));
+          window.__cbLog = [];
+          hm.render();
+          await settle(2);
+          // ...and the walk's own terms, so a zero says WHICH one refused.
+          const off2 = R2().sourceOffsetOf
+            ? R2().sourceOffsetOf(window.Heatmap.heatmapObject(R2())) : 0;
+          const N2 = hm.residues || hm.n;
+          const at = (i2) => (R2().chainKeyAt ? R2().chainKeyAt(i2) : R2().chains[i2]);
+          let bounds = 0;
+          for (let i2 = 0; i2 < N2 - 1 && i2 + off2 < R2().chains.length - 1; i2++) {
+            if (at(i2 + off2) !== at(i2 + off2 + 1)) bounds += 1;
+          }
+          const dark = (px) => {
+            let k = 0;
+            for (let i2 = 0; i2 < px.length; i2 += 4) {
+              if (px[i2] < 90 && px[i2 + 1] < 90 && px[i2 + 2] < 90) k += 1;
+            }
+            return k;
+          };
+          out.trunkLines = { m, drew: differing(oneChain, shot()),
+                             base: R2()._baseCount(), coords: R2().coords.length,
+                             N: N2, off: off2, chains: R2().chains.length,
+                             bounds, keys: !!R2()._chainColorKeys };
+        }
+      }
+
+  await fetch('/_result', {method: 'POST', body: JSON.stringify(out)});
   };
   window.addEventListener('error', (e) => { LATE.push(String(e.message)); });
   go();
@@ -560,6 +696,31 @@ if not sa.get('pae') or sa.get('pae') == sa.get('contact'):
                " data is identical")
 if R.get('boxesKept') != 1:
     bad.append(f"switching tabs lost the selection: {R.get('boxesKept')} boxes")
+
+cl = R.get('chainLines') or {}
+print(f"  chain lines {cl}")
+tl = R.get('trunkLines') or {}
+print(f"  trunk lines {tl}")
+if (tl.get('coords') or 0) != 0 or (tl.get('base') or 0) != 0:
+    bad.append(f"the trunk leg had a structure drawn ({tl}) - it exists for the"
+               " state where there is none, and with one it proves nothing")
+elif (tl.get('drew') or 0) < 50:
+    bad.append(f"the trunk's own chain lines were not drawn: {tl.get('drew')}"
+               " pixels changed by a boundary in the middle of the matrix. A"
+               " fold's intermediate contact map has the chain ids and no"
+               " coordinates yet, and the question is whether the ARRAY spans"
+               " the matrix - not whether the drawing does")
+if (cl.get('ruled') or 0) < 100:
+    bad.append(f"a chain array that spans the matrix ruled no lines: {cl} -"
+               " the control is broken, so the claim below is empty")
+elif (cl.get('withSidechains') or 0) < 100:
+    bad.append(f"the lines went out when positions were appended: {cl} - a"
+               " chain array is per POSITION and side chains APPEND, so the"
+               " count to compare against is the residue one (_baseCount)")
+elif (cl.get('bled') or 0) > 0:
+    bad.append(f"another object's chain array ruled lines across this matrix:"
+               f" {cl} - the boundaries belong to whatever is DRAWN, and a map"
+               " can be on screen while that is something else")
 
 for m in bad: print('FAIL:', m)
 sys.exit(1 if bad else 0)

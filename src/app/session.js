@@ -483,17 +483,38 @@ function saveViewerState() {
 // The renderer automatically detects if setStatus() is available (index.html) 
 // or uses console.log/alert (viewer.html)
 
-async function loadViewerState(stateData) {
+/**
+ * A SAVED SESSION, OVER WHAT IS ON SCREEN OR BESIDE IT.
+ *
+ * 🔴 `append` IS THE WHOLE OF THE SECOND MODE, AND IT IS THE OBJECTS ONLY.
+ * A session records a viewer as well as its objects - the camera, the shown
+ * set, the slab, the colour mode, the panels - and putting those back is
+ * right when the file REPLACES what is here and wrong when it joins it: a
+ * reader who asks to see an old fold beside the current one has not asked
+ * to be moved to the camera it was saved from. So an appended load brings
+ * the objects and leaves the viewer alone, which is what dropping a file
+ * already does.
+ *
+ * 🔴 AND A NAME THAT IS TAKEN IS RENAMED, not merged into. `addObject` keeps
+ * the frames of an object that already has them, so a session whose object
+ * is called `fold` landing on a page that already has a `fold` would append
+ * its frames to the wrong trajectory and show one structure turning into
+ * another. Renaming is the only answer that cannot silently corrupt the one
+ * already there; the map from old name to new is applied to everything in
+ * the file that names an object.
+ */
+async function loadViewerState(stateData, options = {}) {
     if (!viewerApi || !viewerApi.renderer) {
         setStatus("Error: Viewer not initialized.", true);
         return;
     }
 
     const renderer = viewerApi.renderer;
+    const append = !!options.append;
 
     try {
-        // Clear existing objects
-        renderer.clearAllObjects();
+        // Clear existing objects - unless this session is joining them.
+        if (!append) renderer.clearAllObjects();
 
         // Ensure viewer container is visible
         const viewerContainer = document.getElementById('viewer-container');
@@ -502,8 +523,28 @@ async function loadViewerState(stateData) {
         if (topPanelContainer) topPanelContainer.style.display = 'block';
 
         // Restore objects
+        // ...under names nothing on screen is already using. Empty when the
+        // load is a replace, because the page has just been cleared.
+        const renamed = new Map();
+        if (append) {
+            const taken = new Set(Object.keys(renderer.objectsData || {}));
+            for (const objData of stateData.objects || []) {
+                if (!objData || !objData.name || !taken.has(objData.name)) {
+                    if (objData && objData.name) taken.add(objData.name);
+                    continue;
+                }
+                let suffix = 2;
+                while (taken.has(`${objData.name}_${suffix}`)) suffix += 1;
+                const fresh = `${objData.name}_${suffix}`;
+                renamed.set(objData.name, fresh);
+                taken.add(fresh);
+            }
+        }
+        const nameOf = (name) => renamed.get(name) || name;
         if (stateData.objects && Array.isArray(stateData.objects) && stateData.objects.length > 0) {
-            for (const objData of stateData.objects) {
+            for (const original of stateData.objects) {
+                const objData = renamed.has(original && original.name)
+                    ? { ...original, name: renamed.get(original.name) } : original;
                 if (!objData.name || !objData.frames || !Array.isArray(objData.frames) || objData.frames.length === 0) {
                     console.warn("Skipping invalid object in state file:", objData);
                     continue;
@@ -759,19 +800,35 @@ async function loadViewerState(stateData) {
             // ...the viewer's own contacts, before the frames are built: they
             // become segments inside setCoords, so setting them afterwards
             // stores them correctly and draws nothing until the next reload.
+            // ...under the names they were given, when this session joined
+            // objects already here: a contact names both ends by ADDRESS
+            // (`{object, chain, residue}`), so a renamed object leaves both
+            // ends pointing at something that is not on the page.
             if (Array.isArray(vs.cross_contacts)) {
-                renderer.crossContacts = vs.cross_contacts;
+                renderer.crossContacts = renamed.size === 0 ? vs.cross_contacts
+                    : vs.cross_contacts.map((c) => {
+                        const end = (e) => (e && e.object && renamed.has(e.object))
+                            ? { ...e, object: renamed.get(e.object) } : e;
+                        return { ...c, a: end(c.a), b: end(c.b),
+                                 from: end(c.from), to: end(c.to) };
+                    });
             }
 
             // Set current object first (before setting frame)
-            if (vs.current_object_name && renderer.objectsData[vs.current_object_name]) {
-                renderer.currentObjectName = vs.current_object_name;
+            // ...under the name it was given on the way in, when this session
+            // joined objects that were already here. An APPEND lands on the
+            // object it brought: a reader who asks for an old fold wants to be
+            // editing it, and the one that was here is a click away in the
+            // picker - which py2Dmol shows the moment there are two.
+            const savedCurrent = nameOf(vs.current_object_name);
+            if (savedCurrent && renderer.objectsData[savedCurrent]) {
+                renderer.currentObjectName = savedCurrent;
                 if (renderer.objectSelect) {
-                    renderer.objectSelect.value = vs.current_object_name;
+                    renderer.objectSelect.value = savedCurrent;
                 }
             } else if (stateData.objects && stateData.objects.length > 0) {
                 // Fallback to first object if saved object doesn't exist
-                const firstObjName = stateData.objects[0].name;
+                const firstObjName = nameOf(stateData.objects[0].name);
                 renderer.currentObjectName = firstObjName;
                 if (renderer.objectSelect) {
                     renderer.objectSelect.value = firstObjName;
@@ -779,12 +836,17 @@ async function loadViewerState(stateData) {
             }
 
             // Restore rotation
-            if (vs.rotation_matrix && Array.isArray(vs.rotation_matrix)) {
+            // 🔴 THE CAMERA IS NOT THE OBJECT'S, SO AN APPEND LEAVES IT.
+            // Bringing an old fold in beside the current one and moving the
+            // reader to the angle it was saved from throws away where they
+            // were looking - which a dropped FILE does not do either. The
+            // rotation, the zoom, the centre and the extent are the four.
+            if (!append && vs.rotation_matrix && Array.isArray(vs.rotation_matrix)) {
                 renderer.viewerState.rotation = vs.rotation_matrix;
             }
 
             // Restore zoom
-            if (typeof vs.zoom === 'number') {
+            if (!append && typeof vs.zoom === 'number') {
                 renderer.viewerState.zoom = vs.zoom;
             }
 
@@ -810,7 +872,7 @@ async function loadViewerState(stateData) {
             }
 
             // Restore center (from orient to selection)
-            if (vs.center !== undefined && vs.center !== null) {
+            if (!append && vs.center !== undefined && vs.center !== null) {
                 renderer.viewerState.center = vs.center;
             }
 
@@ -822,7 +884,7 @@ async function loadViewerState(stateData) {
             // restored session cannot end up with a size from the file and a
             // shape from whatever was on screen.
             const savedAspect = vs.extent_aspect || vs.extentAspect;
-            if (typeof vs.extent === 'number' && vs.extent > 0) {
+            if (!append && typeof vs.extent === 'number' && vs.extent > 0) {
                 setViewSpan(renderer.viewerState,
                     halfSpanOf(vs.extent, savedAspect));
             }
@@ -1054,7 +1116,7 @@ async function loadViewerState(stateData) {
             try {
                 // Ensure we have a valid current object
                 if (!renderer.currentObjectName && stateData.objects && stateData.objects.length > 0) {
-                    const firstObjName = stateData.objects[0].name;
+                    const firstObjName = nameOf(stateData.objects[0].name);
                     renderer.currentObjectName = firstObjName;
                     if (renderer.objectSelect) {
                         renderer.objectSelect.value = firstObjName;
@@ -1102,7 +1164,13 @@ async function loadViewerState(stateData) {
                         // leaves the Multi button OFF, which is what keeps
                         // this line honest. Calling setShownObjects(null) here
                         // as well was measured as a no-op and is not here.
-                        const shownSaved = stateData.viewer_state
+                        // ...and NOT ON AN APPEND, where it is the page's
+                        // own answer: the shown set is the VIEWER's, like the
+                        // camera and the slab above, and a session saved with
+                        // Multi on would switch it on for a page that never
+                        // asked - naming its own objects, so what the reader
+                        // was looking at goes off screen.
+                        const shownSaved = !append && stateData.viewer_state
                             && stateData.viewer_state.shown_objects;
                         if (Array.isArray(shownSaved) && renderer.setShownObjects) {
                             renderer.setShownObjects(shownSaved);
@@ -1116,7 +1184,13 @@ async function loadViewerState(stateData) {
                         // shown set is applied the centre and extent from the
                         // file are long gone. They are cheap to put back, and
                         // this is the one place that knows they are the answer.
-                        const savedView = stateData.viewer_state;
+                        // ...and not on an APPEND, where the page's own
+                        // framing is what the reader is looking through. The
+                        // object landed on still brings its OWN camera, which
+                        // is what switching to any object does; what must not
+                        // happen is the whole viewer being re-framed around a
+                        // file that came to join it.
+                        const savedView = append ? null : stateData.viewer_state;
                         if (savedView) {
                             if (savedView.center) {
                                 renderer.viewerState.center = savedView.center;

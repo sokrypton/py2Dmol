@@ -10,7 +10,9 @@ state disagreeing, with nothing raising:
     picture, a different question from `overlay=True` (every FRAME of one);
   * `view.orient(...)` - turn the camera onto a selection, which the first
     frame does unprompted and nothing could ask for again;
-  * the picker row, which a shell with ONE object should not show at all;
+  * the picker row, which is shown for ONE object as well - it is how the
+    reader sees what is loaded, and a row that appears only once a second
+    object arrives is a control that is not where they looked for it;
   * `view(rotate=True)`, which the viewer's own opening orient switched off;
   * `bg` with `box=False`, where turning the frame off repainted the paper -
     and `py2Dmol.grid` defaults `box` to False;
@@ -153,7 +155,7 @@ def check_live():
 
 
 def page():
-    #  ONE object: the picker row has nothing to offer and must be gone.
+    #  ONE object: the picker row is shown anyway, naming what is loaded.
     one = py2Dmol.view((300, 300), id='one')
     one.add(helix(), name='solo')
 
@@ -743,13 +745,14 @@ def main():
     one = R.get('one') or {}
     if one.get('options') != 1:
         bad.append(f"the one-object viewer has {one.get('options')} picker options")
-    if one.get('rowShown') is not False:
-        bad.append('a viewer with ONE object is still showing the picker row -'
-                   ' a label and a dropdown that can only say what it already says')
+    if one.get('rowShown') is not True:
+        bad.append('a viewer with ONE object is hiding the picker row - it is'
+                   ' what says which object is loaded, and it is asked for in'
+                   ' every shell')
     after = R.get('oneAfter') or {}
     if after.get('options') != 2 or after.get('rowShown') is not True:
-        bad.append(f"the picker row did not come back with a second object: {after}"
-                   ' - the rule has to be re-asked, not applied once at load')
+        bad.append(f"the picker row is not showing two objects: {after}"
+                   ' - the row is re-asked on every update, not decided at load')
 
     both = R.get('both') or {}
     if sorted(both.get('drawn') or []) != ['a', 'b']:
@@ -761,8 +764,7 @@ def main():
     if both.get('n') != 60:
         bad.append(f"two 30-position helices merged to {both.get('n')} positions")
     if both.get('rowShown') is not True:
-        bad.append('two objects and no picker row - the hide above is'
-                   ' unconditional, which is worse than never having it')
+        bad.append('two objects and no picker row')
 
     aimed = R.get('aimed') or {}
     if sorted(aimed.get('drawn') or []) != ['a', 'b']:

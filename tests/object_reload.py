@@ -64,6 +64,25 @@ window.addEventListener('load', () => {
                  objects: Object.keys(r.objectsData)};
       R.hiddenAfter = Array.from((r.objectsData[names[1]] || {}).hiddenBackbone || []);
       R.visible = r.visiblePositions ? r.visiblePositions.size : r.coords.length;
+
+      // AND AN OBJECT THAT IS REMOVED STAYS REMOVED. The queue outlives the
+      // object it made, and the skip above is "applied AND still there" - so
+      // the moment removeObject takes one out, the next load rebuilds it from
+      // whatever the queue holds: one frame, no metadata, no confidence.
+      r.removeObject(names[1]);
+      await settle();
+      R.afterRemove = Object.keys(r.objectsData);
+      await load('1UBQ.cif'); await until(loaded); await settle();
+      R.ghost = Object.keys(r.objectsData);
+
+      // ...and the LAST object, which removeObject hands to clearAllObjects -
+      // the renderer's own, which is not the app's and never emptied the
+      // queue. This is the case the report came from.
+      for (const n of Object.keys(r.objectsData)) r.removeObject(n);
+      await settle();
+      R.emptied = Object.keys(r.objectsData);
+      await load('1BBH.cif'); await until(loaded); await settle();
+      R.afterEmpty = Object.keys(r.objectsData);
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});
   };
@@ -120,6 +139,18 @@ if "1BBH" not in R["after"]["objects"] or R["after"]["objects"][-1] != "1BBH":
     bad.append(f"the re-fetched object was not replaced: {R['after']['objects']}")
 if not R["after"]["merged"] or len(R["after"]["drawn"]) != 3:
     bad.append(f"the merge did not survive: drawn {R['after']['drawn']}")
+print(f"  removed one: {R['afterRemove']} -> loaded a file -> {R['ghost']}")
+print(f"  removed them all: {R['emptied']} -> loaded a file -> {R['afterEmpty']}")
+if "1EHZ" in R["ghost"]:
+    bad.append(f"a removed object came back on the next load: {R['ghost']} -"
+               " its entry is still in pendingObjects, which only Clear All"
+               " used to empty")
+if R["emptied"]:
+    bad.append(f"removing every object left some behind: {R['emptied']}")
+if R["afterEmpty"] != ["1BBH"]:
+    bad.append(f"after removing everything, one load brought back more than it"
+               f" loaded: {R['afterEmpty']}")
+
 for m in bad:
     print("FAIL:", m)
 sys.exit(1 if bad else 0)

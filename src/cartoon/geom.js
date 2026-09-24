@@ -8176,10 +8176,27 @@ function drawRun(runIdx, ctx) {
                     || ssPal[ssCls] || ssPal.C;
                 col = ovI || pal || col;
                 colFar = ovN || pal || colFar;
-            } else if (hasColorOverrides && renderer.getAtomColor) {
-                // Only asked for when the object carries overrides at all,
-                // so the usual path costs nothing extra.
-                colFar = renderer.getAtomColor(iN) || colFar;
+            } else if (hasColorOverrides) {
+                // 🔴 THE OVERRIDE ON TOP, NOT THE WHOLE FAR COLOUR. This read
+                // `colFar = renderer.getAtomColor(iN)`, which is the same
+                // answer only where a segment's colour IS its first
+                // residue's - and not in plddt/deepmind, where
+                // `_calculatePlddtColors` gives a backbone segment the
+                // AVERAGE of its two ends. So one manual colour anywhere
+                // switched every OTHER interval from the averaged ramp to the
+                // un-averaged one: 8,763 pixels against 834 on AF-Q5VSL9.
+                //
+                // 🔴 AND IT IS ASKED LIVE, which is why the branch is here at
+                // all rather than deleted. `colors[]` carries an override
+                // only once it has been RECOMPUTED, and a caller may set
+                // `obj.color` and invalidate the segment cache without
+                // touching `colorsNeedUpdate`. Same lookup
+                // `resolveSegmentColors` applies on the repaint path, which
+                // is what the two have to agree about.
+                // tests/plddt_override.py and tests/gpu_recolour.py, one
+                // mutation each.
+                col = ovI || col;
+                colFar = ovN || colFar;
             }
             // 🔴 `twoTone` IS GONE, AND ITS ABSENCE IS THE POINT. It asked
             // whether the two ends of this interval happen to have different
@@ -11850,7 +11867,27 @@ if (typeof window !== 'undefined' && window.py2dmolCartoon) {
                 ? (ssPal[(sec[i] === sec[iN]) ? sec[i]
                     : ((sec[i] === 'H' || sec[iN] === 'H') ? 'H' : 'C')] || ssPal.C)
                 : null;
-            const ovI = hasOv ? getOv(i) : null;
+            // 🔴 THE POSITION THE RENDERER RESOLVES A SEGMENT FROM, NOT
+            // idx1. A bond with one end on a side chain takes that end's
+            // colour - `_colorSegmentPosition`, written for exactly this -
+            // and the CA-CB bond is the case: its idx1 is the BACKBONE alpha
+            // carbon. Asking the override at idx1 gave that bond the main
+            // chain's colour and left every other bond of the same side
+            // chain with the side chain's, so colouring the backbone turned
+            // the first stick of every side chain with it. Reported as
+            // "I color sidechains yellow, then color backbone red, and the
+            // ca-cb bond is red".
+            //
+            // 🔴 AND ONLY THE GPU SHOWED IT. `colors` already has the right
+            // answer here - `_calculateSegmentColors` goes through the same
+            // translation - and the 2D painter draws from that array every
+            // frame. This function exists for the repaint path, so its
+            // answer is what the palette texture holds: the two painters
+            // disagreed about one bond per side chain, which is the second
+            // copy of a rule doing what second copies do.
+            const ovAt = (typeof renderer._colorSegmentPosition === 'function')
+                ? renderer._colorSegmentPosition(seg) : i;
+            const ovI = hasOv ? getOv(ovAt) : null;
             const ovN = hasOv ? getOv(iN) : null;
             const base = colors[k];
             // the far end's own colour, the same way the draw pass reads it

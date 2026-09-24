@@ -140,12 +140,12 @@ class H(http.server.SimpleHTTPRequestHandler):
 
 
 socketserver.ThreadingTCPServer.allow_reuse_address = True
-httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 9793), H)
+httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 9302), H)
 httpd.daemon_threads = True
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
 p = subprocess.Popen([CHROME, "--headless=new", "--user-data-dir=/tmp/py2dmol-multistep",
                       "--no-first-run", "--window-size=900,700",
-                      "http://127.0.0.1:9793/_multistep.html"],
+                      "http://127.0.0.1:9302/_multistep.html"],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 end = time.time() + DEADLINE
 while not box and time.time() < end:

@@ -32,7 +32,7 @@ same list with load order and targets.
 | `parts/panel.js` | the Style panel's rows AND the Selection panel's, as data — `buildStylePanel` / `buildSelectionPanel` build the DOM. **One copy**, mounted by all three shells. The Style panel is skinned per page; the Selection panel carries its own stylesheet (`selectionPanelCSS`), because forty-six rules could not be written out three times. |
 | `parts/selectpanel.js` | what the Selection panel DOES: colour, secondary structure, side chains, elements, bases, contacts, visibility, Find interactions, Align — plus the state readers it syncs from, and `wireSelectionPanel`. Was the web app's own file. Reaches its shell through `py2dmolSelectionHost({renderer, setStatus, afterChange})`. |
 | `parts/viewport.js` | `setupViewport` — find the canvas, size it for the display, keep it sized. The one thing both entry points share. |
-| `parts/slots.js` | the two slots - big where the structure was, small where the heatmap was - and which view is in which: the tabs over both, the swap, and the park a view goes to when neither shows it. `renderer.setSlots`/`getSlots` on `core/mol.js` are its door. |
+| `parts/slots.js` | the slots, NUMBERED FROM 1 - slot 1 where the structure was, slot 2 where the heatmap was - and which view is in which: the tabs over each, the swap, and the park a view goes to when none shows it. `renderer.setSlots`/`getSlots` on `core/mol.js` are its door, and they take a LIST. |
 | `parts/embed.js` | the selector (`positionsFor`), `window.py2Dmol.show` and `wireEmbedUI` — a viewer on a bare canvas, and the JS API on top of it. `core/mol.js` picks between the two wirers on `config.embed`, which `show` sets from whether `controls`/`play` were asked for: with them it is `wireViewerUI` and the notebook's own panel in a scoped shell, without them a canvas and nothing else. |
 | `parts/sidechains.js` | which residues show theirs — `showSidechains`/`hideSidechains`, the relative pair. Was written out in `parts/embed.js`, so only the embed's JS API could reach it. And what colour they are: `setSidechainColor`. |
 | `parts/shadow.js` | which segments darken which. |
@@ -391,18 +391,29 @@ public downloads is exercised on every run.
   one object (`{type: 'L', animate: false}`) — the embed had that and the
   notebook's later copy handled `object` alone. Python sends exactly that
   merged object, so nothing unpacks it on arrival.
-- 🔴 **The one-object picker hide is a rule about what the ROW CONTAINS, and
-  testing the class instead passed everything while being wrong.**
-  `updateUIControls` hides `objectSelect.closest('.toggle-item')` when the row
-  holds nothing but the picker and its label. The first version tested only the
-  class — and `index.html`'s row is `.toggle-item object-row`, so it hid the
-  website's Multi and prev/next buttons too. Every test passed, because a line
-  a few below in the same function forces `#objectRow` back to `flex`: two
-  lines fighting over one element, with the accident winning. The rule now sits
-  AFTER that line so one thing decides, which is also what makes the mutation
-  visible — `tests/multi_object.py` drives index.html's picker down to one
-  option and requires the row to stay. It is re-asked on every update rather
-  than decided at load.
+- 🔴 **THE PICKER IS SHOWN FOR ONE OBJECT TOO. NOTHING DECIDES ON A COUNT.**
+  It used to disappear wherever it was all its row held — the notebook and the
+  embed, where `viewer.html` gives it a row of its own — on the reasoning that
+  a dropdown with one entry can only say what it already says. What that costs
+  is the one place the page NAMES the fold on screen, and every panel under it
+  edits the object named there, so that relationship was invisible until a
+  second object arrived. Asked for: the first object always shows in the menu,
+  in every shell.
+  🔴 **AND `tests/slots.py` IS WHAT ASKS, because it is the only probe with a
+  one-object NOTEBOOK page.** `tests/minimal_input.py` looks like the place and
+  cannot: its payload carries SEVEN objects, so the row is up either way and a
+  leg written there passes against the very hide it is aimed at — measured.
+  The website's row was always exempt (it also holds Multi and prev/next), so
+  `tests/multi_object.py` could not see this one either. Mutated back: the row
+  reports `rowShown: False` with one object and the leg fails.
+  **What the rule WAS, kept because the shape of the mistake recurs** — a rule
+  about what an element CONTAINS, tested by its class: `updateUIControls` hid
+  `objectSelect.closest('.toggle-item')` when the row held nothing but the
+  picker and its label, and the first version tested only the class.
+  `index.html`'s row is `.toggle-item object-row`, so it hid the website's
+  Multi and prev/next too — and every test passed, because a line a few below
+  in the same function forces `#objectRow` back to `flex`: two lines fighting
+  over one element, with the accident winning.
 - 🔴 **AN EMPTY SHOWN SET IS MULTI, ON, WITH EVERYTHING SWITCHED OFF - AND
   `clearAllObjects` LEFT ONE.** `objectMultiOn` IS
   `shownObjects instanceof Set`, so the mode and the set are one fact; `null`
@@ -450,6 +461,28 @@ public downloads is exercised on every run.
   resolves "all of them" itself, at the moment of the call, so what travels is
   always an explicit list; `multi=True` is resolved in `_display_viewer`,
   because the objects it names do not exist until something has been added.
+- 🔴 **AN OBJECT THAT IS REMOVED COMES BACK ON THE NEXT LOAD, BECAUSE THE
+  QUEUE OUTLIVES IT.** `src/app/main.js`'s `pendingObjects` accumulates across
+  loads, and `applyPendingObjects` skips an entry that is `_appliedToRenderer`
+  AND still in `objectsData` - so the moment `removeObject` takes one out, the
+  stale entry stops being skipped and the next `py2dmolLoadFiles` REBUILDS the
+  object from whatever the queue holds: one frame, no metadata, a pLDDT of
+  zero, which draws as no confidence at all. Reported through LocalFold: fold
+  with AlphaFold 3, switch the model row (which removes that fold's object),
+  fold with another model, and the first fold returns beside it as a one-frame
+  ghost - then switching the row back removes the SECOND fold and leaves the
+  ghost alone on screen. *"only one frame, no play bar, and it's the first
+  frame, colored all red."*
+  **THE QUEUE IS THE APP'S, SO THE APP OWNS THE FORGETTING**
+  (`py2dmolForgetPending`), and `core/mol.js` reaches it through that global
+  because it is in bundles `app/main.js` is not.
+  🔴 **AND NO NAME IS EVERY NAME, WHICH THE FIRST FIX MISSED.** There are TWO
+  `clearAllObjects` - the app's function, which has always emptied the queue,
+  and the renderer's METHOD, which knew nothing about it - and `removeObject`
+  hands over to the METHOD when it takes the last object. So forgetting one
+  name from inside `removeObject` fixed every case but the one the report is
+  about: one object on screen, removed, the queue still holding it. Two legs
+  in `tests/object_reload.py` (remove one, remove them all), one mutation each.
 - 🔴 **A FRAME INDEX IS NOT A SHARED CLOCK, AND TWO OBJECTS OF DIFFERENT
   LENGTH IS WHERE THAT SHOWED.** The play strip read `object.frames.length` of
   the object being EDITED and the timer advanced `this.currentFrame` alone,
@@ -491,8 +524,40 @@ public downloads is exercised on every run.
   objects are on screen") applied to the timeline. The frame index was the one
   thing still taken from the object switched TO, and the picker then called
   `setFrame(0)` on top - so choosing the reference structure took the
-  trajectory beside it back to its first frame. Both are guarded on the merge;
-  alone, an object still opens on its first frame.
+  trajectory beside it back to its first frame. Both are guarded on the merge.
+  🔴 **ALONE, AN OBJECT NOW OPENS ON ITS LAST FRAME.** Asked for, and the
+  reason is what a fold's first frame IS: the coarsest sampler step, half
+  collapsed, where the last is the answer the model gives. **A remembered
+  position is not kept**, because the one that matters most is STALE - an
+  object's frame is written when you switch AWAY from it, so a fold left at 0
+  while it had one frame keeps that 0 while the sampler fills it, and coming
+  back lands at the beginning of a trajectory whose end the reader has never
+  seen. Measured: 0 of 4. `tests/session_append.py` is the guard, and its
+  FIRST version could not see this: it built an object nobody had left, where
+  the default was already the last frame, so the rule could be switched off
+  with the leg still green. What distinguishes them is a STALE saved
+  position.
+  🔴 **AND THE PICKER'S OWN HANDLER SAID 0 AND WON.** The rule lives in
+  `_switchToObject`, and the `objectSelect` change listener ran
+  `setFrame(shared ? currentFrame : 0)` immediately after it - so every
+  caller landed on the last frame except the CONTROL A READER USES, which is
+  the only one that matters to them. Reported as: switching between objects
+  should start at the last frame, since that is the final prediction for each
+  object. It takes the frame the switch settled on now, clamped to the new
+  object's length, which is the shared position when several are drawn and
+  the last frame when one is. `tests/session_append.py` drives the picker,
+  because the direct call was already gated and the control was not.
+  🔴 **AND ONLY WHEN THE OBJECT ACTUALLY CHANGES, WHICH BROKE SOMETHING
+  BEFORE IT WAS NOTICED.** Two callers ask for the object already current -
+  `panels/seq.js` when a residue of the drawn object is clicked, and
+  `app/session.js` putting a selection back - and neither is a switch. With
+  the rule firing on those, scrubbing to the middle of a trajectory and then
+  clicking a residue of it dropped the reader at the end.
+  🔴 **AND THE SAME CALL WAS ALREADY RESTORING THE SAVED FRAME OVER THE LIVE
+  ONE**, which predates all of this: `saved.currentFrame` was taken
+  unconditionally, so that click also undid a scrub back to wherever that
+  object had last been LEFT - 1 became 0. A call naming the object already
+  shown now moves nothing at all.
   🔴 **AND THE STRIP IS RE-ASKED ON A SWITCH, which nothing did.** `setFrame`
   does not touch `updateUIControls` on the ordinary path and no switch path did
   either, so the slider and the counter went on describing the object you had
@@ -1330,6 +1395,86 @@ public downloads is exercised on every run.
   The sulfur count was worse than useless — S gold (229,198,64) and the
   hydrophobic band (242,201,76) are 13 apart, so a tolerance of 40 counted each
   as the other and the number moved when nothing about it had.*
+- 🔴 **THE REPAINT PATH ASKED A SEGMENT FOR ITS COLOUR AT `idx1`, AND THE
+  CA-CB BOND'S idx1 IS THE BACKBONE.** `_colorSegmentPosition` exists because
+  that bond is emitted as [owner, CB], so the renderer resolves it through the
+  SIDE-CHAIN end - and `resolveSegmentColors` in `cartoon/geom.js`, which
+  fills the GPU's palette texture on a repaint, read the override off
+  `seg.idx1` instead. So an explicit colour on the main chain reached the
+  first stick of every side chain: colour the side chains yellow, colour the
+  backbone red, and the CA-CB bond of every one of them turns red while the
+  rest stays yellow. Reported exactly that way.
+  **AND ONLY THE GPU SHOWED IT.** `_calculateSegmentColors` goes through the
+  translation and is what the 2D painter draws from EVERY FRAME, so that path
+  is right and self-heals; the palette is uploaded once per colour change and
+  keeps whatever this function said. Two painters, one bond, two colours -
+  which is what a second copy of a rule does.
+  🔴 **AND FOUR MEASUREMENTS SAID "NO BUG" BEFORE ONE SAID WHERE IT WAS.**
+  The segment ARRAY is correct in every route - the JS API, the panel, a
+  literal, a mode, `plddt` - so every data-level check passes; a rebuild does
+  not fix it, so "compare against a forced rebuild" passes; and the canvas
+  counts are dominated by the SELECTION HALO (everything was selected) and by
+  element colouring, which puts real red on oxygens at the tips of side
+  chains. What found it was a SCREENSHOT of the two painters side by side,
+  then reading one pixel: (205, 0, 0) is the backbone's red shaded, where the
+  CPK oxygen red would be (255, 76, 76) and could not have zero green.
+  Then: force the stick branch's baked colour green and the quad stays red
+  (so it comes from the palette), force `pal: -1` and it goes green (so it IS
+  a stick face), and log the palette's own slot at upload - `255,0,0` while
+  the renderer's live answer for the same segment is `255,255,0`.
+  `tests/gpu_recolour.py` asks the two resolvers the same question about
+  every bond with one end in the side-chain map: 73 of 73 differ mutated
+  back, 0 with the fix. It loads a PROTEIN for that leg, because its own
+  fixture is RNA and a nucleotide has no side chain to attach.
+- 🔴 **AND COLOURING ELEVEN RESIDUES RECOLOURED THE WHOLE STRUCTURE, IN pLDDT
+  MODE ONLY.** An interval spans two residues and is drawn in two halves:
+  `colors[segIdx]` for this end, and the NEXT segment's colour for the other.
+  `cartoon/geom.js` said that twice - once in the general expression, through
+  `bbSeg[iN]`, and again in an `else if (hasColorOverrides)` branch that
+  reassigned `colFar = renderer.getAtomColor(iN)`. The two agree wherever a
+  segment's colour IS its first residue's, and they do NOT agree in
+  plddt/deepmind, where `_calculatePlddtColors` gives a backbone segment the
+  AVERAGE of its two ends. So the moment ANY residue carried a manual colour,
+  every OTHER interval in the picture switched from the averaged ramp to the
+  un-averaged one. **Reported as a custom colour not taking in pLDDT mode**:
+  what a reader sees is the whole structure shifting while the residues they
+  picked are a small part of it. What it should have said is `colFar = ovN ||
+  colFar` - the override ON TOP of the colour already computed, which is what
+  `resolveSegmentColors` applies on the repaint path and what the two have to
+  agree about.
+  🔴 **AND DELETING THE BRANCH WAS THE FIRST FIX, AND IT WAS WRONG.**
+  `colors[]` carries an override only once it has been RECOMPUTED, and a
+  caller can set `obj.color` and invalidate the segment cache without touching
+  `colorsNeedUpdate` - `tests/gpu_recolour.py` does exactly that. So the live
+  lookup is why the branch exists at all: with it gone the drawn picture
+  disagreed with a forced rebuild on the two intervals either side of the
+  coloured residue, and that probe said so. **Two probes, one mutation each,
+  and neither catches the other's**: the old rule passes `gpu_recolour` and
+  fails `plddt_override`; the deletion passes `plddt_override` and fails
+  `gpu_recolour`.
+  **THE ARRAY WAS RIGHT THE WHOLE TIME**, which is why four measurements said
+  there was no bug: exactly eleven segments move to the colour asked for, in
+  every mode, and `getColorOverride`, `getAtomColor` and `plddtColors` all
+  answer green at a coloured residue. The fault is downstream of all of them
+  and only the canvas can see it.
+  🔴 **AND A CRYSTAL STRUCTURE CANNOT SHOW IT.** 1UBQ's B-factors sit almost
+  entirely inside one band of the ramp, so the average of two residues and
+  either residue alone are the SAME colour: 3,279 changed pixels either way,
+  mutated or not. It took a real AlphaFold model (AF-Q5VSL9: **8,763 changed
+  pixels against 834 in chain mode, 16% of them the colour asked for**) to see
+  it at all. `tests/plddt_override.py` writes its OWN pLDDT ramp over 20..100
+  so it needs no such fixture, and mutated back it reports 10,937 against
+  3,279. **deepmind is not the discriminating mode** - four broad bands, so
+  the fault moves it 3,279 to 3,673, inside the slack.
+  🔴 **AND EVERY EARLIER MEASUREMENT OF THIS WAS WRONG IN A DIFFERENT WAY.**
+  Counting green over the WHOLE canvas made chain mode look healthy because
+  1UBQ's chain colour is itself green (5,457 "green" pixels, nearly all of
+  them the rest of the structure). Taking the baseline three animation frames
+  after a mode change measured the picture still settling and reported the
+  settling as the effect - 8,761 changed on a structure where the honest
+  answer was 834. `stable()` waits for two identical frames before it believes
+  one, and the probe counts pixels that CHANGED rather than pixels of a
+  colour.
 - 🔴 **A SIDE CHAIN CAN CARRY ITS OWN COLOUR, AND FOR YEARS ONE FILE COULD SAY
   SO.** `obj.sidechainColor` — keyed by RESIDUE, because a side-chain atom is a
   position only while it is drawn and its index is reissued whenever the set
@@ -2243,6 +2388,51 @@ public downloads is exercised on every run.
   probe learnt from `index.html`, one door along: a notebook probe measures
   the last build until `bundle.py build` has run.
 
+- 🔴 **AND THE CHAIN ARRAY HAS TO BE THIS MATRIX'S, WHICH IS A DIFFERENT
+  QUESTION FROM BEING LONG ENOUGH TO INDEX.** `_drawChainBoundaries` walks
+  `renderer.chains`, which belongs to whatever is DRAWN - and a map can be on
+  screen while that is something else: a fold's trunk shows a contact map for
+  the sequence being folded over an object still holding the PREVIOUS fold.
+  The only guard was the walk's own bound, which stops it running off the END
+  of the array, so a stale array that was SHORTER was handled and a longer one
+  indexed cleanly and ruled its own boundaries across the smaller matrix.
+  Reported as chain lines from previous objects, of a different length,
+  bleeding through the intermediate maps. Measured: **3,048 pixels of lines
+  that are not this picture's**, against 1,528 for the real ones.
+  🔴 **AND THE COUNT IS `_baseCount`, NOT `chains.length`.** The array is per
+  POSITION and showing side chains APPENDS positions, so comparing its length
+  switches the lines off for every structure with its side chains out - the
+  same size of bug, arrived at from the other side. Both are in
+  `tests/heatmap_maps.py`, and the second is why: mutating `_baseCount` to
+  `chains.length` leaves the bleed check green.
+  🔴 **AND THE ARRAY IS ASKED AS WELL AS THE DRAWING, WHICH IS THE OTHER HALF
+  AND SHIPPED BROKEN FOR A DAY.** A map can be on screen before there IS a
+  drawing: a fold's intermediate contact map is the sequence being folded, the
+  object it opened is still EMPTY, and the page writes that sequence's chain
+  ids straight onto `renderer.chains`. `_baseCount()` is then 0 against a
+  matrix of 99, so the guard above refused - and the boundaries vanished from
+  every intermediate map. Reported as losing the lines between chains during
+  intermediate contact map views. `drawnResidues === N || chains.length === N`:
+  the stale-array case is still refused, because a fold of a different length
+  matches neither.
+  🔴 **AND SIX MEASUREMENTS OF IT WERE TAKEN AGAINST THE LAST BUILD.**
+  `tests/heatmap_maps.py` runs through `_display_viewer`, which INLINES
+  `bundles/py2Dmol.notebook.min.js` - so every reading was the old bundle, the
+  fix looked dead, and two more fixes were written on top of it. The tell was
+  in the probe's own dump: `hm.constructor.name` came back as `f`, a minified
+  class name, on a page that was supposed to be running the sources.
+  **`bundle.py build` before running a notebook probe**, which this file
+  already says one entry along.
+  *What went with that: a `chainKeyAt` fallback for a colour-key cache shorter
+  than the chain array, written while the bundle was stale. With the build
+  fresh it is unnecessary - the cache is null with one object - and the probe
+  cannot hold a stub of it across a render, so it is not there. The
+  multi-object trunk (a cache that COVERS the range with another object's
+  keys) is not fixed by that fallback either and has not been observed.*
+  🔴 **AND THE SIMULATION HAS TO MOVE BOTH HALVES.** Swapping only
+  `renderer.chains` leaves the drawn residue count equal to the matrix, which
+  is a page whose map and structure AGREE - the first version of that leg did
+  exactly that, and blamed the guard for letting correct lines through.
 - 🔴 **A STORED PAE BOX IS IN RESIDUES; EVERYTHING ON THAT CANVAS IS DRAWN IN
   CELLS - AND THERE ARE FIVE CROSSINGS, NOT THREE.** The entry below found
   three and fixed the drawing that was reported; the same box is drawn TWICE
@@ -3849,14 +4039,63 @@ than leaving the next session to find out the same way.
   together are what catch it. `examples/two-heatmaps.html` loads the embed
   bundle now rather than `full`, which is 539 KB against 774 and one `<script>`
   instead of two.
-- 🔴 **TWO SLOTS, EVERY VIEW, AND A VIEW IS MOVED - NEVER COPIED.**
-  `parts/slots.js` wraps `#canvasContainer` in a big slot and the heatmap box
-  (or the scatter box) in a small one, and both carry the same tabs: Structure,
+- 🔴 **A SLOT IS A NUMBER, AND `big`/`small` WAS THREE CLAIMS IN ONE WORD.**
+  The pair named which slot came first, how large it was, and which one could
+  be dragged - and only the FIRST of those is `parts/slots.js`'s business. The
+  sizes were the WEBSITE'S (600 and 340, a 948px row and a panel column it has
+  always had); in the notebook there was no stylesheet to differ and `big` and
+  `small` were two names for the one number the caller passed as `size=`,
+  which is why the second box came up 300 beside a 420 structure for no reason
+  a reader could see. And the drag was an accident of the name: the knob and
+  `resize: both` went to whichever slot was called big, so **a reader could not
+  make the map bigger**.
+  Now: `.py2dmol-slot--1`, `--2`, ... and a shell states its own sizes against
+  those; every slot body carries `resize: both` and a knob.
+  🔴 **THE SIZE RULE IS "WHATEVER NOTHING ELSE STATED".** A box that arrives
+  with an inline size keeps it - `makeSlot` moves it onto the slot - which is
+  how `embed.html`'s own 260px `#heatmapContainer` stays 260; the viewer's
+  `size` is the FALLBACK. Saying "every slot is the viewer's size" is wrong for
+  a host page that sized its own box, and that sentence was in three comments
+  before it was checked against `embed.html`.
+  🔴 **AND `heatmap.size` IS STILL THE MAP'S CAP, 300.** In a 420px slot a
+  resampled matrix is drawn up to the box and is a hair softer than when the
+  box was 300 too. Deliberate: the matrix is the biggest thing a notebook
+  payload carries and `size=(420, 420)` should not quietly double it.
+  `heatmap_size` is the dial.
+  **FULL SCREEN IS SLOT 1's ALONE** (`parts/viewport.js`), asked for that way:
+  sizing a box is a thing you do to that box, where going full screen takes
+  over the page, so it is one act with one door. The CSS is still keyed on
+  `py2dmol-slot-fs`, written on the way in, so what grows is the slot the
+  pressed button belongs to rather than an index spelled into the stylesheet.
+  **THE API IS A LIST, IN SLOT ORDER** - `setSlots(['structure', 'contact'])`,
+  `view.set_slots("structure", "contact")` - and a SHORT list names the slots
+  it reaches and says nothing about the rest. **How many boxes there are is a
+  separate field**, `count` (`view(slots=1)`, `set_slots(..., count=1)`):
+  those two were one field while it was `small: 'none'`, and a caller naming
+  the first box kept accidentally answering the second.
+  🔴 **AND EVERY DOOR STILL TAKES THE OLD PAIR**, because three parties hold
+  it: LocalFold opens a fold with `setSlots({big: ...})`, every session file
+  and every notebook saved before the numbers carries `{"big", "small"}` under
+  `slots`, and a host stylesheet may say `.py2dmol-slot--big`. `normalizeAsk`
+  reads it (`small: false`/`'none'` is `count: 1`), `_normalize_slots` reads it
+  on the Python side and REWRITES it as a list, `getSlots()` returns an array
+  with `.big`/`.small` hanging off it, and slots 1 and 2 still wear the old
+  classes. Read, never written.
+  🔴 **AND THE SHORT-LIST CHECK PASSED AGAINST A MUTATION FIRST.** An unnamed
+  slot takes a MAP before the structure, so a leg that left a map in slot 2
+  read the same whether the want survived or was cleared - the assertion has
+  to put the one thing the default would NOT pick there. Seven mutations in
+  `tests/slots.py` now: the drag on the first slot alone, a full-screen button
+  on every slot AND on none, the second slot sized from `heatmap_size`, a short
+  list clearing the rest, and the legacy pair dropped.
+- 🔴 **N SLOTS, EVERY VIEW, AND A VIEW IS MOVED - NEVER COPIED.**
+  `parts/slots.js` wraps `#canvasContainer` in slot 1 and the heatmap box
+  (or the scatter box) in slot 2, and each carries the same tabs: Structure,
   each map by key, Scatter. A view is in one slot or in a hidden PARK; picking
-  what the other slot shows swaps them. With no coordinates the big slot's
+  what another slot shows swaps them. With no coordinates slot 1's
   DEFAULT is the first map, which is the case it was asked for - a fold whose
   trunk has a contact map and no structure. A pick is a standing choice (the
-  `_wantKey` rule): a PAE put big comes back big with the next PAE.
+  `_wantKey` rule): a PAE put in slot 1 comes back there with the next PAE.
   **The costs, measured in `tests/slots.py`:** a parked structure draws nothing
   (the loop's existing `getClientRects` gate) and keeps its canvas; `refresh()`
   runs every frame and is a signature compare, **160 ns**; a panel no slot shows
@@ -3877,14 +4116,16 @@ than leaving the next session to find out the same way.
   taking a 500px slot to 352. A size WRITTEN on `#canvasContainer` afterwards is
   handed to its slot by a MutationObserver - `resize_reuse` and `gpu_mesh_reuse`
   resize the viewer that way, and so may any host that predates slots.
-  **Full screen grows the big slot**, and its button lives on the big slot, not
-  the canvas box, which a parked structure took with it.
+  **Full screen grows the slot that was pressed**, and there is a button on
+  every slot body rather than on the canvas box, which a parked structure took
+  with it.
   🔴 **AND ON A PHONE THERE IS ONE SLOT, PARKED RATHER THAN HIDDEN.** Two of
   them side by side are 940px of a 390px screen and stacked they put the map
-  below the fold - and the tabs over the big one reach every view, which is what
-  makes dropping the second one free. Below **980px**, the website's own
+  below the fold - and the tabs over the first reach every view, which is what
+  makes dropping the rest free. Below **980px**, the website's own
   breakpoint (`matchMedia`, the VIEWPORT: a narrow notebook cell on a desktop is
-  a layout choice, a phone is a screen), the small slot's view goes to the park.
+  a layout choice, a phone is a screen), every slot after the first goes to the
+  park.
   A `display: none` would not do: a hidden view is still a DRAWING view, and it
   would keep a second heatmap panel, its decoded matrix and its colour image and
   go on painting a scatter plot nobody can see. The reader's own pick is KEPT,
@@ -3900,6 +4141,31 @@ than leaving the next session to find out the same way.
   and a page that showed a PAE AND a scatter plot now shows one of them at a
   time. **Not measured in Colab:** the tabs appear after the script runs, and
   Colab sizes an output frame from the page before it does.
+- 🔴 **AN OBJECT BETWEEN ITS FRAMES SAYS NOTHING, AND ASKING IT MADE THE TABS
+  BLINK.** Loading a structure over one that is already there EMPTIES the
+  object and refills it, and the refill is not in the same task - so an
+  animation frame lands in the middle, where the renderer still holds the
+  drawn coordinates and the object has no frames and the panel no maps.
+  `parts/slots.js` then saw exactly one view, hid the tab row, and put it back
+  a frame later with three tabs in it: **HIDDEN for 27 ms** between
+  `Structure|Contact` and `Structure|PAE|Contact`, with the layout jumping
+  under it. Reported at the end of a fold, which is where a page replaces a
+  live trajectory with the finished structure.
+  **THE TEST IS ALL THREE TOGETHER**, because each alone is a real state: a
+  fold's blank object has no frames AND no coordinates, and a trunk showing
+  its contact map has no frames AND a map. What cannot happen on purpose is a
+  DRAWN structure whose object has neither, so that state holds the last
+  layout rather than computing a new one.
+  🔴 **AND IT IS `renderer.coords`, NOT `hasCoords()`** - that helper asks
+  whether the object's FRAMES draw something, which is exactly what has
+  collapsed, so the first two attempts at this guard were unreachable. The
+  drawn array is what is on screen. 🔴 **AND THE OBJECT CAN BE GONE RATHER
+  THAN EMPTY**: the loader deletes it and adds it again under the same name,
+  and requiring `objectsData[current]` to exist made the hold a no-op - both
+  measured on a real fold, from an rAF recorder, because a poll at 100 ms
+  walks straight past a 27 ms state.
+  `tests/slots.py` empties the object and the panel's maps and requires the
+  row not to move; mutated back it reports `hidden=True`.
 - 🔴 **A RESIZE CLEARS A CANVAS, AND AN OPAQUE ONE CLEARS TO BLACK - SO THE
   RESIZE AND THE PAINT ARE ONE ACT.** `panels/heatmap.js` takes its context
   with `{ alpha: false }`, which is honest for a canvas that paints every

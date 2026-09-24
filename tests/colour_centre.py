@@ -142,12 +142,12 @@ class H(http.server.SimpleHTTPRequestHandler):
         self.send_response(200); self.send_header("Content-Length", "2")
         self.end_headers(); self.wfile.write(b"ok")
 socketserver.ThreadingTCPServer.allow_reuse_address = True
-httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 9803), H)
+httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 9308), H)
 httpd.daemon_threads = True
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
 p = subprocess.Popen([CHROME, "--headless=new", "--user-data-dir=/tmp/py2dmol-colcentre",
                       "--no-first-run", "--window-size=1000,1000",
-                      "http://127.0.0.1:9803/_colcentre.html?f=" + FILE],
+                      "http://127.0.0.1:9308/_colcentre.html?f=" + FILE],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 end = time.time() + 300
 while not box and time.time() < end: time.sleep(0.5)

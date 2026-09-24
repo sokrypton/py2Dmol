@@ -57,8 +57,13 @@ def payload(add_map, **kw):
 
 def read(html):
     on = re.search(r'"heatmap":\s*\{[^}]*"enabled":\s*(\w+)', html)
+    # HOW MANY BOXES IS A COUNT (src/parts/slots.js). It was spelled
+    # `"small": "none"` while the slots were called big and small, and that
+    # one field answered two questions - which view slot 2 shows and whether
+    # there is a slot 2. The count is the second of them on its own.
+    count = re.search(r'"slots":\s*\{[^}]*"count":\s*(\d+)', html)
     return (on.group(1) if on else "?",
-            "one" if re.search(r'"small":\s*"none"', html) else "two")
+            "one" if count and count.group(1) == "1" else "two")
 
 
 # label, has a map, kwargs, expected panel, expected boxes

@@ -133,6 +133,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `gpu_tube_reuse.py` | gpu | An eye toggle in TUBE style comes back to the instance buffer it built. |
 | `grid.py` | node | A grid emits ONE output, and its viewers go live only once they are on it. |
 | `halo_partial.py` | gpu | THE HALO MUST LAND WHERE IT LANDED, HOWEVER IT WAS PROJECTED. |
+| `heatmap_auto.py` | node | The panel is decided by the DATA, not by a flag the caller must remember. |
 | `heatmap_maps.py` | ui | The map panel shows more than one map, and the selection rules do not move. |
 | `heatmap_names.py` | ui | The panel is `heatmap` now, and the names other people hold still work. |
 | `heatmap_objects.py` | ui | The PAE panel belongs to one object, and Multi has no panel at all. |
@@ -178,6 +179,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `pick_empty.py` | ui | Clicking the viewer with every object switched off must select nothing. |
 | `pick_index.py` | gpu | THE PICK INDEX MUST ANSWER WHAT THE SCAN ANSWERS, POINT BY POINT. |
 | `play_stop.py` | ui | The play button has to survive being pressed WHILE IT IS PLAYING. |
+| `plddt_override.py` | tool | Colouring a few residues by hand must not recolour the whole structure. |
 | `python_multi.py` | ui | WHAT PYTHON ASKS FOR, AND WHETHER THE PAGE DOES IT. |
 | `python_opacity.py` | gpu | set_opacity from Python: does it reach the picture, and survive a session? |
 | `python_page.py` | ui | The PYTHON api's own page, with two objects, checked in a real browser. |
@@ -195,6 +197,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `selection_shells.py` | ui | The selection panel in the two shells that never had it. |
 | `sequence.js` | node | The sequence strip's input layer, end to end: |
 | `sequence_connectivity.py` | gpu | A chain break is a gap in the numbering, not a distance. |
+| `session_append.py` | ui | A saved session over what is on screen, or BESIDE it. |
 | `session_elements.py` | ui | A SAVED SESSION CARRIES WHAT THE DRAWING READS, AND THE SIDE CHAINS' ELEMENTS |
 | `sheet_bench.js` | tool | Score the strand frames the cartoon draws sheets with. |
 | `sheet_bench.py` | tool | Fit the peptide table the cartoon rebuilds backbones with, and score the frames. |
@@ -202,7 +205,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `short_peptide.js` | node | A PEPTIDE TOO SHORT TO HAVE A SHAPE IS DRAWN AS WHAT IT IS: A LIGAND. |
 | `sidechain_chain.js` | node | Side chains, end to end through the WEB APP's own chain: |
 | `sidechain_toggle.py` | ui | Side chains survive the eyes: toggling one object must not strip another's. |
-| `slots.py` | ui | Two slots, every view, and nothing paid twice. |
+| `slots.py` | ui | N slots, every view, and nothing paid twice. |
 | `smoke.js` | node | Node smoke test for the cartoon renderer: loads cartoon/geom.js with |
 | `splice_window.py` | gpu | HOW BIG A PARTIAL REBUILD'S WINDOW WOULD ACTUALLY BE. |
 | `ss_agree.py` | gpu | THE ASSIGNMENT BEHIND THE COLOURS IS THE ONE BEHIND THE GEOMETRY. |

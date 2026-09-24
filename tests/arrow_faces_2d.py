@@ -101,7 +101,7 @@ JS = """
     await new Promise(r => setTimeout(r, 1500));
     const r = window.py2dmol_viewers['standalone-viewer-1'].renderer;
     r.autoRotate = false;
-    const box = document.querySelector('.py2dmol-slot--big > .py2dmol-slot-body')
+    const box = document.querySelector('.py2dmol-slot--1 > .py2dmol-slot-body')
       || document.getElementById('canvasContainer');
     if (box) { box.style.width = '520px'; box.style.height = '520px'; }
     await new Promise(r2 => setTimeout(r2, 800));

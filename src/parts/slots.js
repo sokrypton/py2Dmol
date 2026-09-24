@@ -1,10 +1,12 @@
 // ============================================================================
 // src/parts/slots.js
 // ------------------
-// AI Context: TWO SLOTS, EVERY VIEW (window.py2dmolSlots)
-// - A big slot where the structure was and a small one where the heatmap was.
-// - Both carry the same tabs - Structure, each map, Scatter - and a view lives
-//   in exactly one of them: picking one the other slot is showing swaps them.
+// AI Context: N SLOTS, NUMBERED FROM 1 (window.py2dmolSlots)
+// - A viewer is an ordered list of slots. Slot 1 is where the structure was,
+//   slot 2 where the heatmap was, and a shell may one day provide more.
+// - Every slot carries the same tabs - Structure, each map, Scatter - and a
+//   view lives in exactly one of them: picking one another slot is showing
+//   swaps the two.
 // - A view with no data has no tab. A slot with no view is hidden.
 // ============================================================================
 // WHY THIS EXISTS. An object with no coordinates - a fold whose trunk has
@@ -12,16 +14,36 @@
 // beside a 340px map, which is the picture exactly backwards. Rather than a
 // rule for that one case, the two boxes became places and the views became
 // things that go in them, and the empty case is simply the default choice:
-// with nothing to draw, the big slot takes the first thing there is.
+// with nothing to draw, the first slot takes the first thing there is.
+//
+// 🔴 A SLOT IS AN INDEX, NOT A SIZE. They were `big` and `small` for one
+// release and that name carried three claims at once - which slot comes
+// first, how large it is, and which one may be dragged. Only the FIRST is
+// this file's business: the website makes slot 1 600px and slot 2 340 in its
+// own stylesheet, and where nothing says otherwise a slot is the size the
+// caller asked the VIEWER for - so in the notebook `big` and `small` were two
+// names for one number. Everything a shell can decide for itself is in the
+// shell's CSS, keyed on `.py2dmol-slot--1`, `--2`, ...; what is left here is
+// the order. `big`/`small` are still accepted at every door - see
+// `normalizeAsk` - because a host page and a saved notebook hold them.
+// (FULL SCREEN IS SLOT 1's ALONE and lives in parts/viewport.js: sizing a box
+// is a thing you do to that box, where going full screen takes over the page.)
+//
+// 🔴 AND "NOTHING SAYS OTHERWISE" IS THE WHOLE OF THE SIZE RULE. A box that
+// arrives with an inline size KEEPS it - `makeSlot` moves it to the slot -
+// which is how `embed.html`'s own 260px `#heatmapContainer` stays 260 and how
+// a host page sizes a slot at all. The viewer's size is the FALLBACK, for a
+// box that states none, which is the notebook's panel and the embed's when
+// its page says nothing.
 //
 // 🔴 NOTHING IS DUPLICATED, AND THAT IS THE WHOLE CONSTRAINT. Every view is
 // the one instance the viewer already had, MOVED into a slot or into a hidden
 // park. A parked canvas is skipped by the render loop (core/mol.js asks
 // getClientRects before it draws) and by the viewport (a box measuring 0 is
 // not a resize), so the structure costs nothing while it is not shown. The
-// heatmap is the one view that can be on screen TWICE - PAE big, contacts
-// small - and that is the only case that makes a second panel; see
-// Heatmap.slotPanels for the pool and for why a panel belongs to a map.
+// heatmap is the one view that can be on screen TWICE - PAE in one slot,
+// contacts in another - and that is the only case that makes a second panel;
+// see Heatmap.slotPanels for the pool and for why a panel belongs to a map.
 //
 // 🔴 THE SLOT OWNS THE SIZE, THE VIEW FILLS IT. The boxes carried their own:
 // 600 on the website's canvas, a size token in the notebook's markup, 340 on
@@ -32,11 +54,11 @@
 //
 // 🔴 AND THE CANVAS FOLLOWS ITS BOX NOW, IN EVERY SHELL. The notebook's canvas
 // was sized once from the config and never followed anything, which was right
-// for a box that never changed. The structure can now be put in the small
-// slot, so `prepare` marks it `data-autosize="css"` BEFORE setupViewport reads
-// that - and the notebook's Colab rule (the page must be the right height
-// before any script runs) still holds, because the size token stays inline in
-// the markup and only moves one element outwards when the script does run.
+// for a box that never changed. The structure can now be put in any slot, so
+// `prepare` marks it `data-autosize="css"` BEFORE setupViewport reads that -
+// and the notebook's Colab rule (the page must be the right height before any
+// script runs) still holds, because the size token stays inline in the markup
+// and only moves one element outwards when the script does run.
 (function () {
 'use strict';
 
@@ -44,6 +66,11 @@ const MOL = 'molecular';
 const SCATTER = 'scatter';
 const MAP = 'map:';
 const PANEL_IDS = ['#heatmapContainer', '#paeContainer'];
+// The two names the first version of this file used, in slot order, still
+// accepted wherever a slot is named and still written onto slots 1 and 2 as
+// extra classes - a host stylesheet that says `.py2dmol-slot--big` predates
+// the numbers and is not wrong, only old.
+const LEGACY = ['big', 'small'];
 
 const CSS = `
 .py2dmol-slot { display: flex; flex-direction: column; position: relative;
@@ -78,12 +105,16 @@ display: block !important; }
 and in a slot the view is 100% x 100% !important, so BOTH were wrong: the box
 could no longer be dragged at all (the notebook and the embed lost it outright)
 while its knob still showed, in whichever slot it happened to sit. So the body
-resizes and the body carries the knob: the big slot has one, the small slot has
-neither, and a view's own handle is hidden wherever it lands.
+resizes and the body carries the knob.
+🔴 AND EVERY SLOT HAS ONE, which the big/small version did not: the drag
+went to whichever slot was called big, so a reader could not make the map
+bigger and could not make the structure smaller. That was the name deciding a
+capability - the fault the numbering exists to end - and the answer is that a
+slot is a box you can size, whichever one it is.
 A shell that wants no drag (the website below 980px) says resize: none on the
 body and hides .py2dmol-slot-knob - see src/app/style.css. */
-.py2dmol-slot--big > .py2dmol-slot-body { resize: both; overflow: hidden; }
-.py2dmol-slot--big > .py2dmol-slot-body::-webkit-resizer { display: none; }
+.py2dmol-slot > .py2dmol-slot-body { resize: both; overflow: hidden; }
+.py2dmol-slot > .py2dmol-slot-body::-webkit-resizer { display: none; }
 .py2dmol-slot-body .resize-handle { display: none !important; }
 .py2dmol-slot-knob { position: absolute; bottom: 2px; right: 2px; width: 16px;
 height: 16px; opacity: 0.4; transition: opacity 0.2s; z-index: 4;
@@ -92,7 +123,6 @@ pointer-events: none; }
 .py2dmol-slot-knob::before { content: ''; position: absolute; bottom: 0;
 right: 0; width: 0; height: 0; border-style: solid;
 border-width: 0 0 16px 16px; border-color: transparent transparent #3b82f6; }
-.py2dmol-slot--small > .py2dmol-slot-body > .py2dmol-slot-knob { display: none; }
 `;
 
 function installCSS() {
@@ -112,13 +142,15 @@ const findPanel = (root) => {
 };
 
 /**
- * Wrap a box in a slot, in place. The box's own inline size goes to the slot's
- * body; a box sized by a stylesheet leaves the body to one (see style.css).
+ * Wrap a box in slot number `n` (1-based), in place. The box's own inline size
+ * goes to the slot's body; a box sized by a stylesheet leaves the body to one
+ * (see style.css).
  */
-function makeSlot(box, kind) {
+function makeSlot(box, n) {
     const slot = document.createElement('div');
-    slot.className = 'py2dmol-slot py2dmol-slot--' + kind;
-    slot.dataset.py2dmolSlot = kind;
+    slot.className = 'py2dmol-slot py2dmol-slot--' + n
+        + (LEGACY[n - 1] ? ' py2dmol-slot--' + LEGACY[n - 1] : '');
+    slot.dataset.py2dmolSlot = String(n);
     const tabs = document.createElement('div');
     tabs.className = 'py2dmol-slot-tabs';
     tabs.setAttribute('role', 'tablist');
@@ -138,7 +170,7 @@ function makeSlot(box, kind) {
     for (const k of ['width', 'height']) {
         if (box.style[k]) { body.style[k] = box.style[k]; }
     }
-    return { slot, tabs, body, kind, view: null, sig: '' };
+    return { slot, tabs, body, index: n, view: null, sig: '' };
 }
 
 /**
@@ -164,29 +196,39 @@ function prepare(root, config) {
     installCSS();
 
     const cssOwned = cc.dataset.autosize === 'css';
-    const big = makeSlot(cc, 'big');
-    if (!cssOwned && !big.body.style.width) {
-        // The embed's shell states no size; setupViewport would have written
-        // the config's onto the box. It is the slot's now.
-        const size = (config && config.display && config.display.size) || [300, 300];
-        big.body.style.width = size[0] + 'px';
-        big.body.style.height = size[1] + 'px';
-    }
+    const slots = [makeSlot(cc, 1)];
+    // 🔴 EVERY SLOT IS THE SAME SIZE UNLESS SOMETHING SAYS OTHERWISE, and
+    // that is the size the caller asked the VIEWER for. It used to be the
+    // display size for the structure and `heatmap.size` for the panel - two
+    // different numbers for two boxes side by side, because one of them was
+    // called small. `heatmap.size` still decides what a MAP is: the panel
+    // outside a slot, and how far a matrix is resampled on the way over
+    // (viewer.py's _map_cap). Neither of those is a box in a row of boxes.
+    // "Something" is the shell's stylesheet (`cssOwned`) or an inline size on
+    // the box itself, which makeSlot has already moved onto the body - so
+    // this only fills in what nobody stated.
+    // 🔴 AND THE MAP IS STILL CAPPED AT `heatmap.size`, 300 by default: in a
+    // box larger than that a resampled matrix is drawn up to the box, which
+    // is a hair softer than it was when the box was 300 too. The dial is
+    // `heatmap_size`; the cap is not raised with the box because the matrix
+    // is the biggest thing a notebook payload carries and doubling it is not
+    // something a size= should do quietly.
+    const size = (config && config.display && config.display.size) || [300, 300];
+    const sizeSlot = (s) => {
+        if (cssOwned || s.body.style.width) return;
+        s.body.style.width = size[0] + 'px';
+        s.body.style.height = size[1] + 'px';
+    };
+    sizeSlot(slots[0]);
     cc.dataset.autosize = 'css';
     cc.classList.add('py2dmol-slot-view');
 
-    const small = makeSlot(anchor, 'small');
-    if (panel && !small.body.style.width) {
-        // The notebook's panel is sized by its config, not its markup.
-        const hs = config && config.heatmap && config.heatmap.size;
-        if (hs && !cssOwned) {
-            small.body.style.width = hs + 'px';
-            small.body.style.height = hs + 'px';
-        }
-    }
+    slots.push(makeSlot(anchor, 2));
+    sizeSlot(slots[1]);
     const park = document.createElement('div');
     park.className = 'py2dmol-slot-park';
-    small.slot.parentNode.insertBefore(park, small.slot.nextSibling);
+    const last = slots[slots.length - 1];
+    last.slot.parentNode.insertBefore(park, last.slot.nextSibling);
     // Everything starts parked but the structure; bind() places the rest.
     for (const el of [panel, scatter]) {
         if (!el) continue;
@@ -194,8 +236,10 @@ function prepare(root, config) {
         park.appendChild(el);
     }
     if (scatter) scatter.classList.add('py2dmol-slot-flex');
-    small.slot.hidden = true;
-    return { big, small, park, cc, scatter, root };
+    for (let i = 1; i < slots.length; i++) slots[i].slot.hidden = true;
+    // `big`/`small` name slots 1 and 2 here too, for the same reason the
+    // classes do: three probes and one host reach for them.
+    return { slots, big: slots[0], small: slots[1], park, cc, scatter, root };
 }
 
 /**
@@ -206,13 +250,13 @@ function prepare(root, config) {
  * each of them arrived: a frame, a live update, a host calling setMaps.
  */
 // 🔴 ONE SLOT ON A PHONE, AND IT IS A PARK RATHER THAN A `display: none`.
-// The two slots side by side are 940px of a 390px screen, and stacked they put
-// the structure above the fold and the map below it - where hiding the second
-// one costs nothing now, because the tabs over the first can reach every view.
-// Done HERE and not in a stylesheet because a hidden view is still a DRAWING
-// view: a `display: none` small slot would keep a second heatmap panel, its
-// decoded matrix and its colour image, and would go on painting a scatter plot
-// nobody can see. Parked, every rule this file already has applies.
+// Two slots side by side are 940px of a 390px screen, and stacked they put
+// the structure above the fold and the map below it - where dropping every
+// slot after the first costs nothing now, because the tabs over it can reach
+// every view. Done HERE and not in a stylesheet because a hidden view is still
+// a DRAWING view: a `display: none` slot would keep a second heatmap panel,
+// its decoded matrix and its colour image, and would go on painting a scatter
+// plot nobody can see. Parked, every rule this file already has applies.
 //
 // 980px is the website's own breakpoint (src/app/style.css), which is where its
 // columns stack; the notebook and the embed have no media query of their own
@@ -221,19 +265,61 @@ function prepare(root, config) {
 // means "there is no room for a second picture".
 const NARROW = '(max-width: 980px)';
 
+/**
+ * WHAT A CALLER MAY HAND setSlots, AND IT IS ONE LIST. `['structure',
+ * 'contact']` names the slots in order; a SHORTER list names the slots it
+ * reaches and leaves the rest choosing for themselves, which is what makes
+ * `setSlots(['pae'])` mean "put the PAE first" rather than "throw the other
+ * box away". How MANY boxes there are is `count`, a separate question with a
+ * separate answer, because those two were one field once (`small: false`) and
+ * a caller naming the first slot kept accidentally answering the second.
+ *
+ * Still accepted, and tested: `{big, small}` - the first version's spelling,
+ * held by LocalFold, by every notebook saved before the numbers and by the
+ * `slots` key of every saved session. `small: false`/`'none'` is `count: 1`.
+ */
+function normalizeAsk(x) {
+    if (x === null || x === undefined) return { views: [], reset: true };
+    if (typeof x === 'string') return { views: [x] };
+    if (Array.isArray(x)) return { views: x.slice() };
+    if (typeof x !== 'object') return { views: [] };
+    if (Array.isArray(x.views) || 'count' in x) {
+        return { views: (x.views || []).slice(),
+                 count: 'count' in x ? x.count : undefined };
+    }
+    const out = { views: [], count: undefined };
+    let any = false;
+    for (let i = 0; i < LEGACY.length; i++) {
+        const k = LEGACY[i];
+        if (!(k in x)) { out.views.push(undefined); continue; }
+        any = true;
+        const v = x[k];
+        if (v === false || v === 'none') {
+            // "no slot here" is a count, and it truncates.
+            out.count = i;
+            out.views.push(undefined);
+        } else out.views.push(v);
+    }
+    while (out.views.length && out.views[out.views.length - 1] === undefined) out.views.pop();
+    if (!any && out.count === undefined) return { views: [], reset: true };
+    return out;
+}
+
 function bind(renderer, layout) {
     if (!layout) return null;
-    const want = { big: null, small: null };
-    const shown = { big: null, small: null };
+    const N = layout.slots.length;
+    const want = new Array(N).fill(null);
+    let wantCount = null;               // null = as many as the shell has
+    const shown = new Array(N).fill(null);
     let lastSig = '';
     // 🔴 A STRUCTURE THAT BLINKS IS NOT A STRUCTURE THAT LEFT. The empty case
-    // above - "with nothing to draw, the big slot takes the first thing there
-    // is" - is a FIRST-TIME default, and it was being re-decided on every
-    // frame. Every ingestion path empties an object before the new frames
-    // land (`existing.frames.length = 0`, then addFrame), so for the one or
-    // two frames in between there are no coordinates, and a renderer-level
-    // map - LocalFold keeps a live contact map through a whole fold - was the
-    // first thing there was. The big slot swapped to it and back.
+    // above - "with nothing to draw, the first slot takes the first thing
+    // there is" - is a FIRST-TIME default, and it was being re-decided on
+    // every frame. Every ingestion path empties an object before the new
+    // frames land (`existing.frames.length = 0`, then addFrame), so for the
+    // one or two frames in between there are no coordinates, and a
+    // renderer-level map - LocalFold keeps a live contact map through a whole
+    // fold - was the first thing there was. Slot 1 swapped to it and back.
     //
     // Reported as: when the last frame is added, after diffusion and the
     // confidence come back, the contact map briefly replaces the structure.
@@ -242,16 +328,16 @@ function bind(renderer, layout) {
     //
     // So the default applies while no structure has EVER been there, which is
     // the case it was written for - a fold whose trunk has produced a map and
-    // no coordinates yet. After that the big slot is the structure's and an
-    // empty canvas for two frames is the honest picture: it is what the
-    // reader was already looking at, with nothing in it for a moment.
-    // A host that WANTS the map big says so (`setSlots`), and that is
-    // `want.big`, which is tested first and is how LocalFold opens a fold.
+    // no coordinates yet. After that slot 1 is the structure's and an empty
+    // canvas for two frames is the honest picture: it is what the reader was
+    // already looking at, with nothing in it for a moment.
+    // A host that WANTS the map first says so (`setSlots`), and that is
+    // `want[0]`, which is tested first and is how LocalFold opens a fold.
     //
     // 🔴 AND THE HOLD IS PER OBJECT, OR IT SWALLOWS THE CASE IT IS FOR. A
     // reader who SWITCHES to an object with no coordinates - a trunk that has
-    // produced a map and nothing else - must still get the map big; that is a
-    // standing state, not a blink. What separates the two is which object is
+    // produced a map and nothing else - must still get the map first; that is
+    // a standing state, not a blink. What separates the two is which object is
     // being drawn: a blink is the SAME object mid-update, a switch is a
     // different one. So this remembers the object the coordinates belonged to
     // and holds the slot only for that one. tests/slots.py already asserts the
@@ -263,9 +349,9 @@ function bind(renderer, layout) {
     // and the only way a Python caller can SAY that is to add a frame whose
     // coords are empty - a map has to ride on a frame, there is no other
     // door. That frame made frames.length 1, so the object counted as a
-    // structure, the big-slot default never fired for the case it was written
-    // for, and an empty Structure tab sat beside the map for the whole trunk.
-    // Reported from ColabFold2's live cell, which is exactly that fold.
+    // structure, the first-slot default never fired for the case it was
+    // written for, and an empty Structure tab sat beside the map for the whole
+    // trunk. Reported from ColabFold2's live cell, which is exactly that fold.
     //
     // CONSERVATIVE ON PURPOSE: only an explicitly EMPTY array is "no
     // structure". A frame with no `coords` field at all is unknown, and
@@ -317,13 +403,28 @@ function bind(renderer, layout) {
         const key = v.slice(MAP.length);
         return window.Heatmap && window.Heatmap.labelFor ? window.Heatmap.labelFor(key) : key;
     };
-    const smallDefault = (cands) => cands.find((v) => v.startsWith(MAP))
+    // What a slot after the first takes when nobody said: a map before the
+    // scatter plot before the structure, which is the order in which a second
+    // box earns its place beside a structure.
+    const nextDefault = (cands) => cands.find((v) => v.startsWith(MAP))
         || cands.find((v) => v === SCATTER) || cands.find((v) => v === MOL) || null;
 
+    // A slot is named by its NUMBER (1-based), and `big`/`small` still answer
+    // for 1 and 2 - tabs, hosts and three probes all call choose().
+    const indexOfSlot = (name) => {
+        if (typeof name === 'number') return name - 1;
+        const at = LEGACY.indexOf(name);
+        if (at >= 0) return at;
+        const n = parseInt(name, 10);
+        return isNaN(n) ? -1 : n - 1;
+    };
     const choose = (slotName, v) => {
-        const other = slotName === 'big' ? 'small' : 'big';
-        if (shown[other] === v) want[other] = shown[slotName];
-        want[slotName] = v;
+        const i = indexOfSlot(slotName);
+        if (i < 0 || i >= N) return;
+        // Whichever OTHER slot is showing it gives up what this one had: a
+        // pick is a swap, which is what stops a view being in two places.
+        for (let j = 0; j < N; j++) if (j !== i && shown[j] === v) want[j] = shown[i];
+        want[i] = v;
         lastSig = '';
         refresh();
     };
@@ -349,7 +450,7 @@ function bind(renderer, layout) {
                 b.addEventListener('click', (e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    choose(s.kind, a);
+                    choose(s.index, a);
                 });
                 s.tabs.appendChild(b);
             }
@@ -399,6 +500,34 @@ function bind(renderer, layout) {
 
     function refresh() {
         const avail = available();
+        // 🔴 AN OBJECT BETWEEN ITS FRAMES SAYS NOTHING, AND ASKING IT MADE THE
+        // TABS BLINK. Loading a structure over an object that already has one
+        // empties it and refills it, and the refill is not in the same task -
+        // so a frame lands in the middle, where the renderer still has the old
+        // COORDINATES and the object has no frames and the panel no maps. The
+        // slot then saw exactly one view, hid the tab row, and put it back a
+        // frame later with three tabs in it. Reported as the tabs disappearing
+        // and reappearing at the end of a fold, with the layout jumping.
+        //
+        // The test is all three together, because each alone is a real state:
+        // a fold's blank object has no frames AND no coordinates, and a trunk
+        // showing its contact map has no frames AND a map. What cannot happen
+        // on purpose is a DRAWN structure whose object has neither.
+        const drawn = renderer.objectsData
+            && renderer.objectsData[renderer.currentObjectName];
+        // ...and the object can be GONE rather than empty: the loader
+        // deletes it and adds it again under the same name, which is the
+        // state a frame actually landed in - measured, `objectsData[current]`
+        // was undefined there, so requiring the object made the hold a no-op.
+        // 🔴 AND THE TEST IS THE DRAWN ARRAY, NOT `hasCoords()`. That helper
+        // asks whether the object's FRAMES draw something, which is exactly
+        // what has collapsed here - so using it made the hold unreachable,
+        // measured twice. `renderer.coords` is the array on screen and it
+        // still holds the structure the reader is looking at.
+        const onScreen = !!(renderer.coords && renderer.coords.length);
+        const between = onScreen && avail.length <= 1
+            && !(drawn && drawn.frames && drawn.frames.length);
+        if (between) return false;
         if (avail.indexOf(MOL) >= 0) molObject = renderer.currentObjectName;
         // ...and forgotten when that object is gone, so a page that clears up
         // and then loads a map on its own gets the first-time default back
@@ -408,30 +537,36 @@ function bind(renderer, layout) {
         const molHold = molObject !== null
             && molObject === renderer.currentObjectName;
         const narrow = !!(mq && mq.matches);
-        const sig = avail.join('\u0000') + '|' + want.big + '|' + want.small
-            + '|' + narrow + '|' + (molObject === renderer.currentObjectName ? 1 : 0);
+        const sig = avail.join('\u0000') + '|' + want.join('\u0000')
+            + '|' + wantCount + '|' + narrow
+            + '|' + (molObject === renderer.currentObjectName ? 1 : 0);
         if (sig === lastSig) return false;
         lastSig = sig;
 
-        const big = avail.indexOf(want.big) >= 0 ? want.big
-            : ((avail.indexOf(MOL) >= 0 || molHold) ? MOL : (avail[0] || MOL));
-        const rest = avail.filter((v) => v !== big);
-        // ...and on a narrow screen there is no second slot at all. The reader's
-        // choice is KEPT rather than cleared: turn the phone round and it is back.
+        // ...and on a narrow screen there is one slot whatever was asked for.
+        // The reader's choice is KEPT rather than cleared: turn the phone
+        // round and it is back.
         //
-        // 🔴 AND A HOST MAY ASK FOR ONE SLOT ON ANY SCREEN. `small: false` is
-        // not "no preference" - that is null, and it means choose for me. It
-        // is "there is no second slot", which the tabs make reasonable now:
-        // every view is reachable from the strip over the one box, so a second
-        // box is a second copy of the same tab strip. A notebook cell asking
-        // for a 420px viewer does not want 840 of them.
-        const small = (narrow || want.small === false) ? null
-            : (rest.indexOf(want.small) >= 0 ? want.small : smallDefault(rest));
-        shown.big = big;
-        shown.small = small;
+        // 🔴 AND A HOST MAY ASK FOR FEWER SLOTS ON ANY SCREEN. That is a
+        // COUNT, not a view name, which the tabs make reasonable: every view
+        // is reachable from the strip over the first box, so a second box is
+        // a second copy of the same strip. A notebook cell asking for a 420px
+        // viewer does not want 840 of them.
+        const n = narrow ? 1 : Math.max(1, Math.min(N, wantCount === null ? N : wantCount));
+        const taken = [];
+        for (let i = 0; i < N; i++) {
+            if (i >= n) { shown[i] = null; continue; }
+            const rest = avail.filter((v) => taken.indexOf(v) < 0);
+            let v;
+            if (rest.indexOf(want[i]) >= 0) v = want[i];
+            else if (i === 0) v = ((avail.indexOf(MOL) >= 0 || molHold) ? MOL : (rest[0] || MOL));
+            else v = nextDefault(rest);
+            shown[i] = v || null;
+            if (v) taken.push(v);
+        }
 
         // Which panel shows which map, before anything moves.
-        const mapKeys = [big, small].filter((v) => v && v.startsWith(MAP))
+        const mapKeys = shown.filter((v) => v && v.startsWith(MAP))
             .map((v) => v.slice(MAP.length));
         const panels = window.Heatmap && renderer.heatmapRenderer
             ? window.Heatmap.slotPanels(renderer, mapKeys) : {};
@@ -441,7 +576,9 @@ function bind(renderer, layout) {
             return panels[v.slice(MAP.length)] || null;
         };
         const inUse = new Set();
-        for (const [s, v] of [[layout.big, big], [layout.small, small]]) {
+        for (let i = 0; i < N; i++) {
+            const s = layout.slots[i];
+            const v = shown[i];
             s.view = v;
             const el = v ? elOf(v) : null;
             if (el) {
@@ -452,10 +589,10 @@ function bind(renderer, layout) {
             s.slot.hidden = !el;
             drawTabs(s, avail, v);
         }
-        // WHATEVER NEITHER SLOT SHOWS GOES TO THE PARK, and that is the only
+        // WHATEVER NO SLOT SHOWS GOES TO THE PARK, and that is the only
         // parking there is. A per-slot sweep before each placement was written
-        // first and measured as a no-op: a view taken by the other slot MOVES
-        // (appendChild), and one taken by neither is caught here in the same
+        // first and measured as a no-op: a view taken by another slot MOVES
+        // (appendChild), and one taken by none is caught here in the same
         // synchronous call, before anything paints. A second map panel is not
         // in this list because Heatmap.slotPanels removes it outright.
         for (const el of [layout.cc, layout.scatter, renderer.heatmapContainer]) {
@@ -475,19 +612,18 @@ function bind(renderer, layout) {
         const pool = renderer._heatmapPool || [];
         const entry = pool.find((e) => e.hm === hm);
         if (!entry || !entry.key || available().indexOf(MAP + key) < 0) return false;
-        const at = shown.big === MAP + entry.key ? 'big'
-            : (shown.small === MAP + entry.key ? 'small' : null);
-        if (!at) return false;
-        choose(at, MAP + key);
+        const at = shown.indexOf(MAP + entry.key);
+        if (at < 0) return false;
+        choose(at + 1, MAP + key);
         return true;
     };
 
     // THE NAMES A CALLER USES. `structure` (or `molecular`), `scatter`, and a
     // map by its key - `pae`, `contact`, whatever the frame calls it - which is
     // what Python's set_slots, the embed's config and renderer.setSlots all
-    // take. null hands a slot back to the automatic choice.
-    // `false` (or 'none') is NOT null. null is "choose for me"; false is "do
-    // not use this slot at all", which without this line became the map key
+    // take. null in a list hands that one slot back to the automatic choice.
+    // `false`/`'none'` in a list is the old spelling of "stop here" and
+    // truncates the count, because without this line it became the map key
     // 'map:false' and quietly showed nothing.
     const toView = (n) => (n === null || n === undefined) ? null
         : (n === false || n === 'none') ? false
@@ -499,13 +635,46 @@ function bind(renderer, layout) {
      * ASK FOR A LAYOUT, which is a standing choice rather than a move: a view
      * that does not exist yet (a PAE before the fold has one) takes its slot
      * the moment it does, exactly as a tab the reader clicked would.
+     *
+     *   setSlots(['structure', 'contact'])   slot 1 and slot 2
+     *   setSlots('pae')                      slot 1; the rest choose
+     *   setSlots({views: ['pae'], count: 1}) one box, the PAE in it
+     *   setSlots(null)                       automatic, every slot
+     *   setSlots({big: 'pae', small: 'none'})  the first version's spelling
      */
     const setSlots = (opts) => {
-        const o = opts || {};
-        if ('big' in o) want.big = toView(o.big);
-        if ('small' in o) want.small = toView(o.small);
+        const ask = normalizeAsk(opts);
+        if (ask.reset) {
+            want.fill(null);
+            wantCount = null;
+        }
+        for (let i = 0; i < ask.views.length && i < N; i++) {
+            const v = ask.views[i];
+            if (v === undefined) continue;          // not named: leave it
+            const w = toView(v);
+            if (w === false) { wantCount = i; continue; }   // "none" truncates
+            want[i] = w;
+        }
+        if (ask.count !== undefined && ask.count !== null) {
+            wantCount = Math.max(1, Math.min(N, ask.count | 0));
+        }
         lastSig = '';
         refresh();
+    };
+
+    // WHAT IS ON SCREEN, AS A LIST - and `big`/`small` hang off it, because
+    // that array IS the answer the old pair gave. A probe reads [0]; anything
+    // written before the numbers reads .big and gets slot 1.
+    // 🔴 THOSE TWO DO NOT SURVIVE JSON. A named property on an Array is
+    // dropped by JSON.stringify, so a caller reading this over CDP or out of
+    // a notebook's channel gets a plain list and must index it -
+    // tests/mobile_layout.py did `shown['small']` and threw.
+    const getSlots = () => {
+        const out = shown.map(toName);
+        out.big = out[0] === undefined ? null : out[0];
+        out.small = out.length > 1 ? out[1] : null;
+        out.count = shown.filter((v) => v).length;
+        return out;
     };
 
     const api = {
@@ -513,18 +682,24 @@ function bind(renderer, layout) {
         choose,
         showMap,
         setSlots,
-        getSlots: () => ({ big: toName(shown.big), small: toName(shown.small) }),
-        shown: () => ({ big: shown.big, small: shown.small }),
+        getSlots,
+        shown: () => {
+            const out = shown.slice();
+            out.big = out[0];
+            out.small = out.length > 1 ? out[1] : null;
+            return out;
+        },
         available,
         layout,
+        count: () => N,
     };
     renderer._slots = api;
-    // ...and the layout a config asked for: `slots: {big: 'pae'}` from the
-    // embed's show() or Python's set_slots before show().
+    // ...and the layout a config asked for: `slots: ['pae']` from the embed's
+    // show(), or Python's set_slots before show().
     if (renderer.config && renderer.config.slots) setSlots(renderer.config.slots);
     return api;
 }
 
-window.py2dmolSlots = { prepare, bind, MOL, SCATTER, MAP };
+window.py2dmolSlots = { prepare, bind, normalizeAsk, MOL, SCATTER, MAP };
 
 })();

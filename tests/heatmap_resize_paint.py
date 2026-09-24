@@ -53,7 +53,7 @@ JS = """(async () => {
   await until(() => r.coords && r.coords.length > 0, 30000);
   await settle(8);
   // A map, so the panel is on screen with something to draw - the reported
-  // case is a contact map taking the big slot during a fold.
+  // case is a contact map taking slot 1 during a fold.
   const n = Math.min(r.coords.length, 64);
   const data = new Uint8Array(n * n);
   for (let i = 0; i < data.length; i++) data[i] = (i * 37) % 255;

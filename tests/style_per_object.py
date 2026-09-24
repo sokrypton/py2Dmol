@@ -152,12 +152,12 @@ class H(http.server.SimpleHTTPRequestHandler):
 
 
 socketserver.ThreadingTCPServer.allow_reuse_address = True
-httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 9787), H)
+httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 9307), H)
 httpd.daemon_threads = True
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
 p = subprocess.Popen([CHROME, "--headless=new", "--user-data-dir=/tmp/py2dmol-styleobj",
                       "--no-first-run", "--window-size=1000,900",
-                      "http://127.0.0.1:9787/_styleobj.html?files=" + ",".join(FILES)],
+                      "http://127.0.0.1:9307/_styleobj.html?files=" + ",".join(FILES)],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 end = time.time() + DEADLINE
 while not box and time.time() < end:

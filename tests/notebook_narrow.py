@@ -35,7 +35,7 @@ from cdp import launch, evaluate, wait_for  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROBE = os.path.join(ROOT, "_nbnarrow.html")
-# 🔴 NOT 9667: tests/sidechain_toggle.py binds it, and run.sh puts both in
+# 🔴 NOT 9306: tests/sidechain_toggle.py binds it, and run.sh puts both in
 # the same parallel lane - so this failed in the suite and passed alone,
 # which reads exactly like a flaky gate and is a port.
 PORT, DBG = 9679, 9244

@@ -56,15 +56,18 @@ MEASURE = r"""(() => {
 
   // 🔴 ONE SLOT ON A PHONE (src/parts/slots.js). Two of them side by side are
   // 940px of a 390px screen and stacked they push the map below the fold, and
-  // the tabs over the big one can reach every view - so below the breakpoint
-  // the small slot is not merely hidden, it holds nothing: a parked view draws
+  // the tabs over the first can reach every view - so below the breakpoint
+  // slot 2 is not merely hidden, it holds nothing: a parked view draws
   // nothing and keeps no picture, which a `display: none` would not give.
   const S = r._slots;
   R.slots = S ? {
+    // AN ARRAY, one entry per slot - and it comes over as a plain JSON list,
+    // so the `.big`/`.small` the API hangs off it for JS callers are NOT here.
+    // Read it by index.
     shown: S.shown(),
-    smallHidden: S.layout.small.slot.hidden,
-    tabs: [...S.layout.big.tabs.children].map((b) => b.dataset.view),
-    tabsHidden: S.layout.big.tabs.hidden,
+    smallHidden: S.layout.slots[1].slot.hidden,
+    tabs: [...S.layout.slots[0].tabs.children].map((b) => b.dataset.view),
+    tabsHidden: S.layout.slots[0].tabs.hidden,
     holding: (r._heatmapPool || []).filter((e) => !!e.hm.bytes).length,
   } : null;
 
@@ -143,8 +146,8 @@ MEASURE = r"""(() => {
   // 🔴 THE KNOB IS THE SLOT'S NOW (src/parts/slots.js), not the canvas box's:
   // the box is 100% x 100% inside a slot and the BODY carries the drag, so a
   // handle on the box marked a drag that does not exist - and it travelled
-  // with the structure into the small slot, which never resizes.
-  const rh = document.querySelector('.py2dmol-slot--big > .py2dmol-slot-body'
+  // with the structure into slot 2.
+  const rh = document.querySelector('.py2dmol-slot--1 > .py2dmol-slot-body'
       + ' > .py2dmol-slot-knob')
     || document.querySelector('#canvasContainer .resize-handle');
   R.resizeHandle = rh ? getComputedStyle(rh).display : 'absent';
@@ -215,7 +218,7 @@ try:
                    return !!(v && v.renderer && v.renderer.coords && v.renderer.coords.length); })()""",
                  what="the structure to reach the renderer")
         # ...AND A MAP ON THE FRAME, or there is only one view and the slots
-        # have nothing to choose between: the small slot would be empty at
+        # have nothing to choose between: slot 2 would be empty at
         # every width and the narrow rule would be measuring nothing.
         evaluate(ws, """(() => {
             const r = window.py2dmol_viewers['standalone-viewer-1'].renderer;
@@ -272,7 +275,7 @@ try:
             deviceScaleFactor=2, mobile=True)
     evaluate(ws, "new Promise(r => setTimeout(() => r(1), 600))")
     before = evaluate(ws, "(() => { const b = document.querySelector("
-                          "'.py2dmol-slot--big > .py2dmol-slot-body')"
+                          "'.py2dmol-slot--1 > .py2dmol-slot-body')"
                           ".getBoundingClientRect();"
                           " return [Math.round(b.width), Math.round(b.height)]; })()", False)
     fs = ws.call("Runtime.evaluate", userGesture=True, awaitPromise=True,
@@ -281,7 +284,7 @@ try:
         if (!btn) return {error: 'no full-screen button'};
         btn.click();
         await new Promise((r) => setTimeout(r, 900));
-        const b = document.querySelector('.py2dmol-slot--big > .py2dmol-slot-body')
+        const b = document.querySelector('.py2dmol-slot--1 > .py2dmol-slot-body')
             .getBoundingClientRect();
         return {on: !!document.fullscreenElement,
                 body: [Math.round(b.width), Math.round(b.height)],
@@ -306,19 +309,19 @@ for name in ("320px", "360px", "390px", "desktop"):
         continue
     narrow = name != "desktop"
     if narrow:
-        if not sl["smallHidden"] or sl["shown"]["small"] is not None:
-            bad.append("%s: the small slot is still up - two pictures do not fit"
+        if not sl["smallHidden"] or sl["shown"][1] is not None:
+            bad.append("%s: slot 2 is still up - two pictures do not fit"
                        " on a phone, and the tabs can reach the map" % name)
-        if sl["holding"] != (1 if str(sl["shown"]["big"]).startswith("map:") else 0):
+        if sl["holding"] != (1 if str(sl["shown"][0]).startswith("map:") else 0):
             bad.append("%s: %d heatmap panels hold a decoded matrix while the"
-                       " small slot is off - hiding a view is not parking it"
+                       " second slot is off - hiding a view is not parking it"
                        % (name, sl["holding"]))
         if sl["tabsHidden"] or "map:pae" not in (sl["tabs"] or []):
-            bad.append("%s: the big slot's tabs are %s (hidden: %s) - with the"
-                       " small slot gone they are the only way to the map"
+            bad.append("%s: slot 1's tabs are %s (hidden: %s) - with the"
+                       " second slot gone they are the only way to the map"
                        % (name, sl["tabs"], sl["tabsHidden"]))
-    elif sl["shown"]["small"] != "map:pae":
-        bad.append("desktop: the map did not come back to the small slot: %s" % sl)
+    elif sl["shown"][1] != "map:pae":
+        bad.append("desktop: the map did not come back to slot 2: %s" % sl)
 
 fsr = results.get("fullscreen") or {}
 print("full screen on a phone: %s -> %s" % (fsr.get("before"), fsr.get("after")))
@@ -328,7 +331,7 @@ if fa.get("error") or not fa.get("on"):
 else:
     was, now = (fsr.get("before") or [0, 0]), fa.get("body") or [0, 0]
     if not (now[1] > was[1] + 40):
-        bad.append("full screen left the big slot at %s against %s - the slot"
+        bad.append("full screen left slot 1 at %s against %s - the slot"
                    " is what grows, and the 980px block and the full-screen"
                    " block are the same specificity, so ORDER decides them"
                    % (now, was))
@@ -485,7 +488,7 @@ if D["resizeHandle"] == "none":
     bad.append("the desktop resize knob was hidden too - that rule is meant"
                " to be narrow-only")
 if D["resizeHandle"] == "absent":
-    bad.append("the desktop viewer has no resize knob at all - the big slot is"
+    bad.append("the desktop viewer has no resize knob at all - a slot is"
                " draggable and nothing says so")
 for name in ("320px", "360px", "390px", "desktop"):
     if (results[name] or {}).get("strayHandles"):

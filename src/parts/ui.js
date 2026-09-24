@@ -1910,8 +1910,10 @@ const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject
     // ...and which view is in which slot (parts/slots.js) - a standing choice,
     // so order does not matter to it: a map named before it exists takes its
     // slot when it arrives.
+    // null is "automatic again", which setSlots reads as a reset - the pair
+    // that used to be spelled out here.
     if (viewerBlock && 'slots' in viewerBlock && renderer._slots) {
-        renderer.setSlots(viewerBlock.slots || { big: null, small: null });
+        renderer.setSlots(viewerBlock.slots || null);
     }
     if (viewerBlock && viewerBlock.orient) {
         applyOrientRequest(viewerBlock.orient);

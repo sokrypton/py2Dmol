@@ -122,12 +122,12 @@ class H(http.server.SimpleHTTPRequestHandler):
 
 
 socketserver.ThreadingTCPServer.allow_reuse_address = True
-httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 9773), H)
+httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 9305), H)
 httpd.daemon_threads = True
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
 p = subprocess.Popen([CHROME, "--headless=new", "--user-data-dir=/tmp/py2dmol-gpustickflat",
                       "--no-first-run", "--window-size=1100,900",
-                      "http://127.0.0.1:9773/_gpustickflat.html?f=" + FILE],
+                      "http://127.0.0.1:9305/_gpustickflat.html?f=" + FILE],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 # ...WITH ITS OWN BUDGET. Six legs, two structures and a dozen camera flights
 # to wait out: 15 s alone against the shared 30, which the parallel UI lane

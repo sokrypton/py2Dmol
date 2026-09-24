@@ -1360,6 +1360,45 @@ class HeatmapRenderer {
         // residues - the chains past that got no line at all - and then ruled
         // the ones it did find at a residue index times a cell width.
         const N = this.residues || n;
+
+        // 🔴 AND THE CHAIN ARRAY HAS TO BE THIS MATRIX'S. `renderer.chains`
+        // belongs to whatever is DRAWN, and a map can be on screen while it
+        // is not: a fold's trunk shows a contact map for the sequence being
+        // folded, over an object that still holds the PREVIOUS fold - so a
+        // longer stale array was walked and its boundaries ruled across a
+        // smaller matrix. Reported as chain lines from previous objects, of
+        // a different length, bleeding through the intermediate maps.
+        //
+        // The guard below only stopped the walk running off the END of the
+        // array, which is the case where the stale one is SHORTER; a longer
+        // one indexed cleanly and drew nonsense.
+        //
+        // Unmerged, the array covers exactly the matrix's residues, so
+        // spanning it means being exactly as long; merged, it covers every
+        // source and this object starts at `off`, so the most that can be
+        // asked is that it reaches. Not a guess in either case: a boundary
+        // list that does not span the picture is not the picture's.
+        // 🔴 AND THE COUNT IS `_baseCount`, NOT `chains.length`. The chain
+        // array is per POSITION, and showing side chains APPENDS positions -
+        // so an exact comparison against its length switched the lines off
+        // for every structure with its side chains out, which is a different
+        // bug of the same size. `_baseCount` is the positions before those
+        // were materialised, which is the residue count this matrix is in.
+        // 🔴 AND THE ARRAY IS ASKED AS WELL AS THE DRAWING, because a map can
+        // be on screen before there IS a drawing: a fold's intermediate
+        // contact map is the sequence being folded, the object it opened is
+        // still empty, and the page writes that sequence's chain ids straight
+        // onto the renderer. `_baseCount()` is then 0 and the array is exactly
+        // the matrix - so asking the drawing alone took the boundaries off
+        // every intermediate map. Reported as losing the lines between chains
+        // during intermediate contact map views.
+        const merged = !!(renderer.multiState && renderer.multiState.enabled);
+        const drawnResidues = renderer._baseCount
+            ? renderer._baseCount() : renderer.chains.length;
+        const spansThisMatrix = merged
+            ? drawnResidues - off >= N
+            : (drawnResidues === N || renderer.chains.length === N);
+        if (!spansThisMatrix) return;
         for (let r = 0; r < N - 1 && r + off < renderer.chains.length - 1; r++) {
             const chain1 = chainAt(r + off);
             const chain2 = chainAt(r + off + 1);
@@ -1622,8 +1661,8 @@ function mountPanel(renderer, heatmapPanel, heatmapCanvas) {
     updateSize();
     // ...and AGAIN WHENEVER THE BOX CHANGES. The panel was a fixed square, so
     // it laid out when it was shown and when its chrome changed, and nothing
-    // else could move it. In a slot it is whatever the slot is - the big one,
-    // the small one, a box the reader is dragging - so the box is watched.
+    // else could move it. In a slot it is whatever the slot is - slot 1,
+    // slot 2, a box the reader is dragging - so the box is watched.
     // updateSize bails while the box measures 0, which is a parked panel.
     if (typeof ResizeObserver !== 'undefined') {
         let lastW = -1, lastH = -1;
@@ -1902,8 +1941,8 @@ const Heatmap = {
      * maps it is showing - none, one or two - and gets back the container to
      * put where for each.
      *
-     * 🔴 A PANEL BELONGS TO A MAP, NOT TO A SLOT. Moving a map from the small
-     * slot to the big one moves its panel, so the colour image it already
+     * 🔴 A PANEL BELONGS TO A MAP, NOT TO A SLOT. Moving a map from one
+     * slot to another moves its panel, so the colour image it already
      * built comes with it and a swap costs a layout, not two n^2 rebuilds.
      *
      * The page's own panel is always the pool's first entry and is PARKED

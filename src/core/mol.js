@@ -2194,10 +2194,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         // --- PAE / Visibility ---
         /**
-         * WHICH VIEW IS IN WHICH SLOT - `{big, small}`, each `structure`,
-         * `scatter` or a map's key. The slots are parts/slots.js; these two
-         * are on every viewer so the verb exists wherever it is documented,
-         * and a viewer with nothing to swap SAYS so rather than doing nothing.
+         * WHICH VIEW IS IN WHICH SLOT - AN ORDERED LIST, one name per slot,
+         * each `structure`, `scatter` or a map's key:
+         *
+         *     v.setSlots(['structure', 'contact']);   // slot 1, slot 2
+         *     v.setSlots('pae');                      // slot 1; the rest choose
+         *     v.setSlots({views: ['pae'], count: 1}); // one box, the PAE in it
+         *     v.setSlots(null);                       // automatic again
+         *
+         * A SHORT LIST NAMES THE SLOTS IT REACHES and leaves the rest
+         * choosing for themselves, so naming the first box is not also an
+         * answer about how many boxes there are - that is `count`.
+         * `{big, small}` is the first version's spelling and still works.
+         * The slots are parts/slots.js; these two are on every viewer so the
+         * verb exists wherever it is documented, and a viewer with nothing to
+         * swap SAYS so rather than doing nothing.
          */
         setSlots(opts) {
             if (!this._slots) {
@@ -2207,8 +2218,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._slots.setSlots(opts);
         }
 
+        /** The list, with `.big`/`.small` on it for what read those. */
         getSlots() {
-            return this._slots ? this._slots.getSlots() : { big: 'structure', small: null };
+            if (this._slots) return this._slots.getSlots();
+            const out = ['structure'];
+            out.big = 'structure';
+            out.small = null;
+            out.count = 1;
+            return out;
         }
 
         setHeatmapRenderer(heatmapRenderer) {
@@ -2781,17 +2798,28 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
 
                     this._switchToObject(newObjectName);
-                    // ...AND THE TIMELINE STAYS WHERE IT WAS while several
-                    // objects are on screen, for the same reason the camera
-                    // does (see _switchToObject): both structures are in front
-                    // of you and picking which one to work on is not a request
-                    // to move anything. Dropping to 0 took the trajectory
-                    // beside the one you picked back to its first frame.
-                    // Alone, an object opens on its first frame as it always
-                    // did.
-                    const shared = (this.multiState && this.multiState.enabled)
-                        || this._mergeWanted();
-                    this.setFrame(shared && this.currentFrame > 0 ? this.currentFrame : 0);
+                    // ...AND THE FRAME IS THE ONE THE SWITCH SETTLED ON, which
+                    // is where the two answers to this question became one.
+                    // The timeline stays where it was while several objects
+                    // are on screen, for the same reason the camera does (see
+                    // _switchToObject): both structures are in front of you
+                    // and picking which one to work on is not a request to
+                    // move anything. Alone, an object opens on its LAST frame
+                    // - the one it ended on, which for a prediction is the
+                    // answer and for a fold's first frame is the coarsest
+                    // sampler step.
+                    //
+                    // 🔴 AND THIS LINE USED TO SAY 0 AND WIN. `_switchToObject`
+                    // sets the frame and this ran straight after it, so the
+                    // last-frame rule was true of every caller except the one
+                    // a reader uses - the picker. Reported as: switching
+                    // between objects should start at the last frame, since
+                    // that is the final prediction for each object.
+                    const frames = (this.objectsData[newObjectName]
+                        && this.objectsData[newObjectName].frames) || [];
+                    const at = frames.length
+                        ? Math.min(Math.max(0, this.currentFrame), frames.length - 1) : 0;
+                    this.setFrame(at);
                     // ...AND THE PLAY STRIP IS RE-ASKED. setFrame does not
                     // touch it on the ordinary path, and nothing else on a
                     // switch did either - so the slider and the counter went on
@@ -3677,6 +3705,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // _maskForObject.
             const mergedMask = (this.multiState && this.multiState.enabled)
                 || this._mergeWanted();
+            // ...and whether this is a switch at all. Several callers ask for
+            // the object already current - the sequence strip when a residue
+            // of it is clicked, the session restore to put a selection back -
+            // and for those nothing about the timeline may move.
+            const wasShowing = this.currentObjectName;
             // Save current object's selection state and viewer state
             if (this.currentObjectName && this.currentObjectName !== newObjectName && this.objectsData[this.currentObjectName]) {
                 const obj = this.objectsData[this.currentObjectName];
@@ -3878,7 +3911,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 focalLength: saved.focalLength,
                 center: saved.center ? { ...saved.center } : null,
                 extent: saved.extent,
-                currentFrame: saved.currentFrame
+                // 🔴 THE LIVE POSITION WHERE THIS IS NOT A SWITCH. Asking for
+                // the object already shown restored its SAVED frame over the
+                // one on screen, so a reader who had scrubbed to the middle
+                // of a trajectory was dropped back at whatever position that
+                // object was last left at - by clicking a residue of it in
+                // the sequence strip, which calls this with the current name.
+                // Older than the last-frame rule below and found with it.
+                currentFrame: newObjectName === wasShowing
+                    ? this.currentFrame : saved.currentFrame
             };
 
             // ...and its clip. An object that has never been clipped comes back
@@ -3950,6 +3991,39 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Restore currentFrame from viewerState
             this.currentFrame = this.viewerState.currentFrame;
+
+            // 🔴 SWITCHING TO AN OBJECT SHOWS ITS LAST FRAME, WHICH IS THE ONE
+            // IT ENDED ON. Asked for: "when switching between objects, can we
+            // have the last frame displayed? since that is the final". For a
+            // fold the first frame is the coarsest sampler step - half
+            // collapsed, backbone that does not join up - and the last is the
+            // answer the model gives.
+            //
+            // 🔴 AND A REMEMBERED POSITION IS NOT KEPT, because the one that
+            // matters most is STALE. An object's frame is written when you
+            // switch AWAY from it, so a fold left at frame 0 while it had one
+            // frame keeps that 0 while the sampler goes on filling it - and
+            // coming back lands at the beginning of a trajectory whose end the
+            // reader has never seen. Keeping the old position sounds kinder
+            // and is wrong exactly where it was asked about. Measured: 0 of 4.
+            //
+            // Never on the MERGED path: several objects share one timeline
+            // there, and moving it is what "picking an object to work on does
+            // not move anything" refuses.
+            // 🔴 AND ONLY WHEN THE OBJECT ACTUALLY CHANGES. `_switchToObject`
+            // is called with the name already current by two paths that are
+            // not switches at all - `panels/seq.js` when a residue of the
+            // drawn object is clicked, and `app/session.js` to put a
+            // selection back - and moving the frame there takes a reader who
+            // has scrubbed to the middle of a trajectory and drops them at
+            // the end for clicking on it. Reported as: this broke something.
+            if (!merged && newObjectName !== wasShowing) {
+                const frameCount = (obj.frames && obj.frames.length) || 0;
+                if (frameCount > 0) {
+                    this.currentFrame = frameCount - 1;
+                    this.viewerState.currentFrame = this.currentFrame;
+                }
+            }
 
             // Restore scatter plot for the new object using its stored data/metadata
             if (this.scatterRenderer) {
@@ -6234,29 +6308,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 };
                 const row = only('objectRow');
                 if (row) row.style.display = 'flex';
-                // ONE OBJECT IS NOT A CHOICE - WHERE THE PICKER IS ALL THE
-                // ROW HOLDS. In the notebook shell it has a row to itself,
-                // and with a single object that row is a label and a dropdown
-                // that can only say what it already says. index.html's picker
-                // sits in #objectRow beside Multi and the prev/next buttons,
-                // which stay useful with one object.
+                // 🔴 AND THE PICKER IS SHOWN FOR ONE OBJECT TOO. It used to
+                // hide itself where it was all its row held - a label and a
+                // dropdown that can only say what it already says - which
+                // reads as economy and costs the reader the one place the
+                // page NAMES what they are looking at. Every panel below it
+                // edits the object named there, so with the row absent that
+                // relationship is invisible until a second object arrives,
+                // and the name of the fold on screen is nowhere.
                 //
-                // The rule is what the row CONTAINS, not which page it is on,
-                // and it is AFTER the line above so that one rule decides. It
-                // tested the class first, which was wrong and looked right:
-                // index.html's row is `.toggle-item object-row`, so it hid
-                // the website's Multi button too - and passed every test,
-                // because the line above happened to put the row back.
+                // Asked for: the first object always shows in the menu, in
+                // every shell. What is left of the old rule is the element
+                // lookup above; nothing now decides on a COUNT.
                 const pickerRow = this.objectSelect.closest
                     ? this.objectSelect.closest('.toggle-item') : null;
-                const alone = pickerRow && [...pickerRow.children].every(
-                    (el) => el === this.objectSelect
-                        || (el.tagName === 'LABEL'
-                            && el.htmlFor === this.objectSelect.id));
-                if (alone) {
-                    pickerRow.style.display =
-                        this.objectSelect.options.length > 1 ? '' : 'none';
-                }
+                if (pickerRow) pickerRow.style.display = '';
                 // ...the LIST still follows the mode, and the mode is the
                 // button's business: hiding it here on a count would close a
                 // list the user had opened.
@@ -7347,7 +7413,111 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         // Clear all objects
+        /**
+         * ONE OBJECT GOES, AND THE REST OF THE PAGE DOES NOT.
+         *
+         * 🔴 THE COUNTERPART OF `addObject`, AND THERE WAS NONE. The only way
+         * to be rid of an object was `clearAllObjects`, so a caller that
+         * wanted to recycle ITS own object had to throw away everything the
+         * reader had beside it - reported through LocalFold, where pressing
+         * Fold after restoring a past session destroyed the restored fold
+         * along with the previous run. One file had written the delete out by
+         * hand (`parts/embed.js`), which is the other half of the same gap.
+         *
+         * 🔴 AND A NAME LIVES IN SIX PLACES, WHICH IS WHY THIS IS A VERB. The
+         * data, the shown set, the cross contacts, the focus memory, the
+         * merge caches and whichever object is being edited - a hand-rolled
+         * `delete objectsData[name]` leaves five of them pointing at
+         * something that no longer exists, and each fails differently:
+         * a shown set naming a dead object merges nothing under a lit Multi
+         * button, a cross contact resolves one end and draws to the origin.
+         *
+         * With nothing left it hands over to `clearAllObjects`, which is the
+         * same act for every object at once and already resets the rest.
+         */
+        removeObject(name) {
+            if (!this.objectsData || !this.objectsData[name]) return false;
+            const others = Object.keys(this.objectsData).filter((n) => n !== name);
+            if (others.length === 0) { this.clearAllObjects(); return true; }
+
+            delete this.objectsData[name];
+            // ...the shown set, through the setter, which is what keeps
+            // `_framedObjects` in step. Down to nothing shown it goes back to
+            // the RESTING state (null) rather than to an empty Set, which is
+            // Multi with everything switched off - see clearAllObjects.
+            // 🔴 AN ARRAY, WHICH IS WHAT THE SETTER TAKES. It answers with a
+            // Set and is fed a LIST (`names.filter`), so handing it the Set
+            // back threw `names.filter is not a function` - and the throw
+            // came from inside removeObject, so the object was already gone
+            // and the page was left half-updated. Caught by the probe.
+            if (this.shownObjects instanceof Set && this.shownObjects.has(name)) {
+                const left = [...this.shownObjects].filter((n) => n !== name);
+                this.setShownObjects(left.length > 0 ? left : null);
+            }
+            // ...the contacts that JOIN objects, which name theirs by address.
+            if (Array.isArray(this.crossContacts) && this.crossContacts.length > 0) {
+                this.crossContacts = this.crossContacts.filter(
+                    (c) => (c?.a?.object ?? c?.from?.object) !== name
+                        && (c?.b?.object ?? c?.to?.object) !== name);
+            }
+            // ...and the focus mode's memory of where it was in this one.
+            if (this._focusByObject) delete this._focusByObject[name];
+            // ...and the web app's queue of loaded files, which OUTLIVES the
+            // object it made: `applyPendingObjects` rebuilds any entry whose
+            // object is not in `objectsData`, so a removed object came back on
+            // the next load as a one-frame ghost. The clear above forgets the
+            // whole queue, which is why this is only the surviving case.
+            this._forgetPending(name);
+            // ...and every cache keyed on what is merged.
+            this._sourceGroupsCache = null;
+            this._mergedSetCache = null;
+            this._mergedLigCache = null;
+            // 🔴 NOT `_drawnStatsKey`, WHICH IS A METHOD. I nulled it here as
+            // though it were the cache it names, and the next merge died on
+            // `this._drawnStatsKey is not a function`. The cached answer lives
+            // on multiState (`stats`/`statsKey`, see parts/multi.js), and
+            // clearing the key is enough: a stats object whose key no longer
+            // matches is recomputed.
+            if (this.multiState) {
+                this.multiState.stats = null;
+                this.multiState.statsKey = null;
+            }
+            if (this.objectSelect) {
+                for (const option of [...this.objectSelect.options]) {
+                    if (option.value === name) option.remove();
+                }
+            }
+            // ...and if it was the one being edited, the reader lands on
+            // another rather than on nothing.
+            if (this.currentObjectName === name) {
+                const next = others[others.length - 1];
+                if (typeof this._switchToObject === "function") this._switchToObject(next);
+                else { this.currentObjectName = next; this.setFrame(0); }
+            } else if (typeof this.updateUIControls === "function") {
+                this.updateUIControls();
+            }
+            // 🔴 AND WHAT IS DRAWN IS REBUILT, NOT JUST INVALIDATED. With
+            // several objects on screen the drawn array is a MERGE of them,
+            // and taking one out of the shown set does not rebuild it: the
+            // probe read 152 positions before and 152 after removing one of
+            // two 76-residue objects - the right names, the right set, and
+            // the departed object still in the picture.
+            if (typeof this.reloadDrawn === "function") this.reloadDrawn(true);
+            this.invalidate?.();
+            return true;
+        }
+
+        /** The app's file queue, where there is one - see removeObject. */
+        _forgetPending(name) {
+            if (typeof window !== 'undefined' && window.py2dmolForgetPending) {
+                window.py2dmolForgetPending(name);
+            }
+        }
+
         clearAllObjects() {
+            // ...and the app's queue of loaded files, all of it: an object
+            // rebuilt from a stale entry is a ghost (see removeObject).
+            this._forgetPending();
             // THE VIEWER'S OWN CONTACTS GO TOO. An object's contacts belong to
             // it and vanish with it; these join two objects and live on the
             // viewer, so clearing the objects left them pointing at names that

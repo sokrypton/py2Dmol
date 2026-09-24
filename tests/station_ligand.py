@@ -122,7 +122,7 @@ JS = """
   // ---- 3. and it draws what a rebuild draws ----
   // ...at a size worth comparing: index.html/dev.html keep the viewer hidden
   // until something loads, and the canvas is measured while it is.
-  const box = document.querySelector('.py2dmol-slot--big > .py2dmol-slot-body')
+  const box = document.querySelector('.py2dmol-slot--1 > .py2dmol-slot-body')
     || document.getElementById('canvasContainer');
   if (box) { box.style.width = '600px'; box.style.height = '600px'; }
   await settle(8);

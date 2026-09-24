@@ -238,12 +238,12 @@ class H(http.server.SimpleHTTPRequestHandler):
 
 
 socketserver.ThreadingTCPServer.allow_reuse_address = True
-httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 9793), H)
+httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 9303), H)
 httpd.daemon_threads = True
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
 p = subprocess.Popen([CHROME, "--headless=new", "--user-data-dir=/tmp/py2dmol-richtint",
                       "--no-first-run", "--window-size=1000,1000",
-                      "http://127.0.0.1:9793/_richtint.html?f=" + FILE],
+                      "http://127.0.0.1:9303/_richtint.html?f=" + FILE],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 end = time.time() + DEADLINE
 while not box and time.time() < end:

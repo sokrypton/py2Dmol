@@ -60,7 +60,7 @@ JS = """(async () => {
   await settle(6);
   // A COMPARISON ON A HIDDEN VIEWER IS TWO BLANK FRAMES AGREEING, so the box is
   // sized and the size is reported.
-  const box = document.querySelector('.py2dmol-slot--big > .py2dmol-slot-body')
+  const box = document.querySelector('.py2dmol-slot--1 > .py2dmol-slot-body')
     || document.getElementById('canvasContainer');
   if (box) { box.style.width = '600px'; box.style.height = '600px'; }
   await settle(8);

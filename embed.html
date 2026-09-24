@@ -381,11 +381,14 @@ distogram &mdash; with a drag on it that selects.</p>
    <code>xlabel</code>/<code>ylabel</code> caption the axes &mdash; all of them
    beating the panel's built-in scale for that key. The tab is named by the key,
    so two maps in one frame are two tabs.</p>
-    <p class="note"><strong>Two slots, the same tabs over both.</strong> The
-   viewer's box and this one each show the structure, a map or the scatter plot;
-   picking in one what the other shows swaps them, and with no coordinates yet
-   the map takes the big one. <code>slots: {big: 'contact'}</code> in the
-   options, or <code>v.setSlots({big: 'pae'})</code> later, chooses from code.</p>
+    <p class="note"><strong>Numbered slots, the same tabs over each.</strong>
+   The viewer's box is slot 1 and this one is slot 2; each shows the structure,
+   a map or the scatter plot, each can be dragged to size, and picking in one
+   what another shows swaps them. With no coordinates yet the map takes the
+   first, and full screen is slot 1's.
+   <code>slots: ['contact']</code> in the options, or
+   <code>v.setSlots(['pae', 'structure'])</code> later, chooses from code &mdash;
+   one name per slot, in order, and a short list leaves the rest alone.</p>
     <p class="note">Dragging a box on the plot selects those residues in the
    structure, and a box is stored in <strong>residues</strong> &mdash; so it
    means the same thing on every map, whatever each one's resolution.</p>

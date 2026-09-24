@@ -640,6 +640,43 @@ MAP_LIMITS = {"pae": (0.0, 255.0 / 8.0), "contact": (0.0, 1.0)}
 MAP_LIMITS_DEFAULT = (0.0, 1.0)   # a probability, which most of them are
 
 
+# ============================================================================
+# THE SLOT LAYOUT, AS ONE SHAPE: {"views": [...], "count": n or None}
+# ----------------------------------------------------------------------------
+# A viewer is an ordered list of slots (src/parts/slots.js) and this is the
+# standing choice about them: which view each one shows, and how many there
+# are. Two questions, two fields, deliberately - they were ONE field for a
+# release (`small: "none"` meant both "slot 2 shows nothing" and "there is no
+# slot 2"), and a caller naming the first box kept accidentally answering the
+# second.
+#
+# 🔴 AND THE FIRST VERSION'S SHAPE STILL ARRIVES HERE. `{"big": ..., "small":
+# ...}` is in every session file and every notebook saved before the numbers,
+# and it is what load_state hands back; `small` False or "none" is `count: 1`.
+# Read, never written: what goes out is the list.
+def _normalize_slots(spec):
+    if spec is None:
+        return None
+    if isinstance(spec, dict) and ("views" in spec or "count" in spec):
+        return {"views": list(spec.get("views") or []),
+                "count": spec.get("count")}
+    if isinstance(spec, dict):
+        views, count = [], None
+        for i, key in enumerate(("big", "small")):
+            v = spec.get(key)
+            if v is False or v == "none":
+                count = i
+                views.append(None)
+            else:
+                views.append(v)
+        while views and views[-1] is None:
+            views.pop()
+        return {"views": views, "count": count}
+    if isinstance(spec, (list, tuple)):
+        return {"views": list(spec), "count": None}
+    return {"views": [spec], "count": None}
+
+
 def _map_cap(config):
     box = config.get("heatmap") or config.get("pae") or {}
     return max(int(box.get("size") or 300), 256)
@@ -829,11 +866,21 @@ class view:
                 True puts it BESIDE the structure; **"tab"** puts it on a tab
                 over a single viewer instead, which is the same picture in
                 half the width -- every view is on the tab strip either way.
-            heatmap_size (int): heatmap panel size in pixels. Default 300.
+            heatmap_size (int): what a MAP is, in pixels - the panel outside a
+                slot, and how far a wider matrix is resampled on the way over.
+                Default 300. It is NOT the size of the second box: every slot
+                is the size this viewer asked for (`size`), and each can be
+                dragged from its own corner. Raise it for a big viewer, where
+                a 300-cell matrix is drawn up to a larger box.
             pae (bool): the old name for `heatmap`; still accepted.
             pae_size (int): the old name for `heatmap_size`; still accepted.
             scatter (bool/dict): Enable scatter plot. Default None.
             scatter_size (int): Scatter plot size in pixels. Default 300.
+            slots (int): how many boxes the viewer has - 1 puts every view on
+                the tab strip over the one box, 2 is the structure with a
+                panel beside it. Default 2, or 1 when the panel was asked for
+                as a tab (`heatmap="tab"`). Which view goes in which is
+                `set_slots`.
             overlay (bool): Enable overlay mode (show all frames simultaneously). Default False.
             multi (bool): Draw every object at once rather than one at a time.
                 Default False. `overlay` is about FRAMES of one object; this is
@@ -1160,12 +1207,13 @@ class view:
         # the slab is: it is the camera and the drawing, not any one object.
         self._focus = None
         self._sent_focus = False
-        # ...AND WHICH VIEW IS IN WHICH SLOT - the structure, a map, the scatter
-        # plot, big or small (src/parts/slots.js). A standing choice, so it is
-        # state and diffed like the slab rather than queued like orient().
+        # ...AND WHICH VIEW IS IN WHICH SLOT - the structure, a map, the
+        # scatter plot, one per numbered slot (src/parts/slots.js). A standing
+        # choice, so it is state and diffed like the slab rather than queued
+        # like orient().
         # 🔴 `slots=1` IS ONE BOX, AND IT IS NOT THE DEFAULT - MEASURED.
-        # "big" and "small" is a concept this API should not make a reader
-        # hold: every view is on the tab strip over the one box, so a second
+        # A second box is a concept this API should not make a reader hold:
+        # every view is on the tab strip over the first one, so another
         # box is a second copy of that strip and doubles a width the caller
         # just declared (view(size=(420, 420)) with a map is 840px of viewer
         # without being asked). It was tried as the default and reverted:
@@ -1176,9 +1224,17 @@ class view:
         #
         # So it is a word you add when one box is what you want, which is
         # what a notebook cell with its own size usually wants.
-        if slots not in (1, 2):
-            raise ValueError(f"slots must be 1 or 2, not {slots!r}")
-        self._slots = None if slots == 2 else {"big": None, "small": "none"}
+        # A COUNT, and nothing else - which view goes where is set_slots.
+        # Two is what every shell we ship provides (the canvas box and the
+        # panel box); the ceiling is theirs rather than this file's, so the
+        # message names it.
+        if not isinstance(slots, int) or isinstance(slots, bool) or slots < 1:
+            raise ValueError(f"slots is how many boxes you want, 1 or more"
+                             f" - not {slots!r}")
+        if slots > 2:
+            raise ValueError(f"slots must be 1 or 2: the shells ship two boxes"
+                             f" (the canvas and the panel), not {slots}")
+        self._slots = None if slots == 2 else {"views": [], "count": slots}
         self._sent_slots = False
         # ...AND WHICH RESIDUES SHOW THEIR SIDE CHAINS, as an ordered list of
         # requests rather than a resolved set. show/hide are RELATIVE verbs -
@@ -1861,7 +1917,7 @@ class view:
         if not getattr(self, "_heatmap_asked", False) and self._any_frame_has_map():
             self.config.setdefault("heatmap", {})["enabled"] = True
             if not getattr(self, "_slots_asked", False) and self._slots is None:
-                self._slots = {"big": None, "small": "none"}
+                self._slots = {"views": [], "count": 1}
 
         # ...AND THE SLAB, WHICH IS THE VIEWER'S. It rides in the config rather
         # than in the object payload because it belongs to the camera and
@@ -1897,7 +1953,7 @@ class view:
             self.config.pop("sidechains", None)
         self._sent_sidechains = len(self._sidechains)
         if self._slots is not None:
-            self.config["slots"] = dict(self._slots)
+            self.config["slots"] = copy.deepcopy(self._slots)
         else:
             self.config.pop("slots", None)
         self._sent_slots = copy.deepcopy(self._slots)
@@ -3235,59 +3291,98 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         if self._is_live:
             self._send_incremental_update()
 
-    def set_slots(self, big=None, small=None):
+    def set_slots(self, *views, count=None, big=None, small=None):
         """
-        Choose what the two viewers show.
+        Choose what each slot shows.
 
             view = py2Dmol.view(pae=True)
             view.add_pdb("AF-Q5VSL9")
-            view.set_slots(big="pae")                    # PAE big, structure small
-            view.set_slots(big="structure", small="contact")
-            view.set_slots(big="structure", small="none")  # ONE box, tabs over it
-            view.set_slots()                             # back to automatic
+            view.set_slots("pae")                       # PAE first
+            view.set_slots("structure", "contact")      # slot 1, slot 2
+            view.set_slots(None, "contact")             # slot 1 automatic
+            view.set_slots("pae", count=1)              # ONE box, tabs over it
+            view.set_slots()                            # back to automatic
 
-        The viewer has two slots - the big one where the structure is, and the
-        small one where the heatmap is - and each can show the structure, any
-        map the frames carry (by its key: "pae", "contact", ...) or the scatter
-        plot. The same tabs are over both, so a reader can swap them by hand;
-        this is the same choice made from code.
+        A viewer is an ordered list of slots - slot 1 where the structure is,
+        slot 2 where the heatmap is - and each can show the structure, any map
+        the frames carry (by its key: "pae", "contact", ...) or the scatter
+        plot. The same tabs are over every slot, so a reader can swap them by
+        hand; this is the same choice made from code.
 
         Args:
-            big (str, optional): "structure", "scatter", or a map's key.
-            small (str, optional): the same, for the small slot, plus one
-                name of its own: **"none"**, for no second slot at all, so the
-                one box carries every view on its tab strip.
+            *views (str): one name per slot, in order: "structure", "scatter",
+                or a map's key. `None` in the list hands that slot back to the
+                automatic layout, which is not the same as leaving it out -
+                a slot you do not name keeps whatever it was told last.
 
-                "none" is a NAME like the others, which is the point -- the
-                parameter takes one kind of value. Do not reach for `None` to
-                mean it: `None` is "choose for me" and gives you two slots,
-                and that pair is exactly the trap this spelling avoids.
-                `False` is accepted as the obvious Python synonym.
+                A SHORT LIST NAMES THE SLOTS IT REACHES and says nothing about
+                the rest, so `set_slots("pae")` puts the PAE first and leaves
+                the second box exactly as it was. How many boxes there are is
+                a different question with its own answer, below.
+            count (int, optional): how many slots to use. 1 is one box with
+                every view on its tab strip, which is what a notebook cell
+                that already chose its own width usually wants; it is also
+                `py2Dmol.view(slots=1)`. None leaves the number alone.
+            big, small (str, optional): the names this took before the slots
+                were numbered, still accepted and still meaning slots 1 and 2.
+                `small="none"` (or False) is `count=1`.
 
         Note:
             A STANDING CHOICE, not a move. A map named before it exists - a PAE
             for a prediction still running - takes its slot when it arrives,
-            and until then the slot shows what it would have anyway. With both
-            left None the layout is automatic: the structure big, a map small,
-            and a map big when there is no structure to draw.
+            and until then the slot shows what it would have anyway. With
+            nothing named the layout is automatic: the structure first, a map
+            beside it, and a map first when there is no structure to draw.
         """
+        for v in views:
+            if v is not None and not isinstance(v, str):
+                raise ValueError(
+                    'a slot takes a view name - "structure", "scatter" or a'
+                    f" map's key - or None to leave it as it is, not {v!r}")
         if small is not None and small is not False and not isinstance(small, str):
             raise ValueError(
                 'small must be a view name, "none" for no second slot, or'
                 f' None to leave it as it is - not {small!r}')
-        # NAMING ONE SLOT LEAVES THE OTHER ALONE. With one box the default,
-        # `set_slots(big="pae")` must not quietly bring the second one back -
-        # the caller said which view they wanted big, not how many boxes they
+        if count is not None and (not isinstance(count, int)
+                                  or isinstance(count, bool) or count < 1):
+            raise ValueError(f"count is how many slots to use, 1 or more"
+                             f" - not {count!r}")
+        # NAMING ONE SLOT LEAVES THE OTHERS ALONE. With one box the default,
+        # `set_slots("pae")` must not quietly bring the second one back - the
+        # caller said which view they wanted first, not how many boxes they
         # wanted. `set_slots()` with nothing is how you ask for automatic.
-        if big is None and small is None:
+        if not views and count is None and big is None and small is None:
             self._slots = None
-        else:
-            current = dict(self._slots or {"big": None, "small": None})
-            if big is not None:
-                current["big"] = big
-            if small is not None:
-                current["small"] = small
-            self._slots = current
+            if self._is_live:
+                self._send_incremental_update()
+            return
+        # 🔴 A SLOT NAMED None IS AUTOMATIC; A SLOT NOT NAMED IS UNCHANGED,
+        # and those are different answers - `set_slots(None, "contact")` hands
+        # the first box back to the layout, where `set_slots("contact")` does
+        # not touch the second. So what is merged is the positions the caller
+        # WROTE, not the values they wrote there.
+        named = {i: v for i, v in enumerate(views)}
+        for i, v in ((0, big), (1, small)):
+            if v is None:
+                continue
+            if v is False or v == "none":
+                count = i if count is None else count
+            else:
+                named[i] = v
+        current = _normalize_slots(self._slots) or {"views": [], "count": None}
+        got = list(current["views"])
+        while named and len(got) <= max(named):
+            got.append(None)
+        for i, v in named.items():
+            got[i] = v
+        # NO TRAILING TRIM. An explicit null is "this slot is automatic" and
+        # has to travel: the browser's own `want` persists between calls (a
+        # reader's tab click writes it too), so a list that stops short of a
+        # slot leaves whatever was last asked for standing there.
+        current["views"] = got
+        if count is not None:
+            current["count"] = count
+        self._slots = current
         if self._is_live:
             self._send_incremental_update()
 
@@ -5027,7 +5122,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # exist, which is what a standing instruction should do.
             self._clip = self.config.get("clip")
             self._shown_objects = self.config.get("shown_objects")
-            self._slots = self.config.get("slots")
+            # ...and a file written before the slots were numbered says
+            # {"big": ..., "small": ...}, which is read and rewritten as a list.
+            self._slots = _normalize_slots(self.config.get("slots"))
             # ...and the side chains, which are written from _sidechains and
             # so would be popped at the next show() exactly like the two above.
             self._sidechains = self.config.get("sidechains") or []

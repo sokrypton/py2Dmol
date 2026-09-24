@@ -136,10 +136,10 @@ function setupViewport(containerElement, config) {
         canvas.style.width = newWidth + 'px';
         canvas.style.height = newHeight + 'px';
         // ...but NOT the column, when the canvas is in a slot (parts/slots.js).
-        // The column holds the BIG slot and the canvas can be in the small one,
-        // so its width is no longer the column's: a 300px structure in the
-        // small slot narrowed the column under a 500px scatter plot and the
-        // small slot slid over the top of it.
+        // The column holds the slots and the canvas can be in any of them, so
+        // its width is no longer the column's: a 300px structure in the second
+        // slot narrowed the column under a 500px scatter plot and that slot
+        // slid over the top of it.
         if (viewerWrapper && !(canvasContainer && canvasContainer.closest('.py2dmol-slot'))) {
             viewerWrapper.style.width = newWidth + 'px';
         }
@@ -260,7 +260,15 @@ function setupViewport(containerElement, config) {
         observer.observe(followed || canvasContainer);
     };
 
-    installFullscreen(containerElement, canvasContainer);
+    // 🔴 FULL SCREEN IS SLOT 1's, AND ONLY SLOT 1's. The drag and its knob are
+    // every slot's - a box you can size is what a slot IS - but going full
+    // screen takes over the page, so it is one act with one door rather than
+    // the same act offered once per box. Asked for that way.
+    // With no slots at all (a bare canvas, an embed with nothing to put in a
+    // second box) it is the canvas box's, as it was.
+    const firstBody = containerElement && containerElement.querySelector
+        ? containerElement.querySelector('.py2dmol-slot--1 > .py2dmol-slot-body') : null;
+    installFullscreen(containerElement, firstBody || canvasContainer);
 
     return { canvas, ctx, dpr, width, height, attach, settle };
 }
@@ -363,16 +371,22 @@ const FS_CSS = `
 }
 .${FS_CLASS} #canvasContainer .resize-handle { display: none; }
 /* 🔴 AND THE SLOT, WHEN THERE IS ONE (parts/slots.js). The canvas box sits in
-   the big slot's body now, and the body is what has a size - 600x600 on the
+   a slot's body now, and the body is what has a size - 600x600 on the
    website, the size token in the notebook - so growing the box grew nothing:
    the rule above made it width:auto inside a fixed body, and height:auto made
    it as tall as its own canvas, which only follows the box. Full screen grows
    the SLOT, whichever view is in it, and the view fills the body as it always
    does in a slot. Named by id as well as by class so it outranks both the rule
-   above and the slot's own 100% rule. */
-.${FS_CLASS} *:has(> .py2dmol-slot--big) { flex: 1 1 auto; min-width: 0; min-height: 0; }
-.${FS_CLASS} .py2dmol-slot--big { flex: 1 1 auto; min-width: 0; min-height: 0; align-self: stretch; }
-.${FS_CLASS} .py2dmol-slot--big > .py2dmol-slot-body {
+   above and the slot's own 100% rule.
+   🔴 AND IT IS KEYED ON A CLASS THIS FILE WRITES, not on the slot's number.
+   The button is slot 1's (see the install below) and that is a decision about
+   the CONTROL, not about the rule: what grows is whichever slot the button
+   that was pressed belongs to, marked on the way in. A shell that one day
+   offers the act elsewhere needs no new rule here, and nothing in the
+   stylesheet has to be spelled out once per slot. */
+.${FS_CLASS} *:has(> .py2dmol-slot-fs) { flex: 1 1 auto; min-width: 0; min-height: 0; }
+.${FS_CLASS} .py2dmol-slot-fs { flex: 1 1 auto; min-width: 0; min-height: 0; align-self: stretch; }
+.${FS_CLASS} .py2dmol-slot-fs > .py2dmol-slot-body {
 width: auto !important;
 height: auto !important;
 flex: 1 1 auto;
@@ -443,11 +457,10 @@ function fsTargetOf(viewer) {
     return { target: parent, hide };
 }
 
-function installFullscreen(containerElement, canvasContainer) {
-    if (typeof document === 'undefined' || !canvasContainer) return;
+function installFullscreen(containerElement, host) {
+    if (typeof document === 'undefined' || !host) return;
     if (!document.fullscreenEnabled && !document.webkitFullscreenEnabled) return;
-    const bigSlot = canvasContainer.closest('.py2dmol-slot--big');
-    if ((bigSlot || canvasContainer).querySelector('.py2dmol-fs-btn')) return;
+    if (host.querySelector(':scope > .py2dmol-fs-btn')) return;
     fsStyleOnce();
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -457,11 +470,11 @@ function installFullscreen(containerElement, canvasContainer) {
     // A glyph, not an icon font: index.html loads Font Awesome and the notebook
     // does not, and a button whose label is an empty <i> is an invisible button.
     btn.textContent = '\u26F6';
-    // ...on the BIG SLOT when there is one, not on the canvas box: full screen
-    // is for whatever is big, and a structure moved to the small slot or parked
-    // took the only way in with it.
-    const bigBody = canvasContainer.closest('.py2dmol-slot--big > .py2dmol-slot-body');
-    (bigBody || canvasContainer).appendChild(btn);
+    // ...on the SLOT'S BODY when there is one, not on the canvas box: full
+    // screen is for whatever is in the box, and a structure moved to another
+    // slot or parked took the only way in with it.
+    host.appendChild(btn);
+    const slot = host.closest ? host.closest('.py2dmol-slot') : null;
 
     const viewer = containerElement
         && (containerElement.closest ? containerElement.closest('.py2dmol-viewer-instance') : null);
@@ -472,6 +485,8 @@ function installFullscreen(containerElement, canvasContainer) {
         if (!target) return;
         hidden = hide.map((el) => ({ el, was: el.style.display }));
         for (const h of hidden) h.el.style.display = 'none';
+        // ...and THIS slot is the one that grows.
+        if (slot) slot.classList.add('py2dmol-slot-fs');
         target.classList.add(FS_CLASS);
         const req = target.requestFullscreen || target.webkitRequestFullscreen;
         if (req) {
@@ -484,6 +499,8 @@ function installFullscreen(containerElement, canvasContainer) {
         hidden = [];
         document.querySelectorAll('.' + FS_CLASS)
             .forEach((el) => el.classList.remove(FS_CLASS));
+        document.querySelectorAll('.py2dmol-slot-fs')
+            .forEach((el) => el.classList.remove('py2dmol-slot-fs'));
     };
     btn.addEventListener('click', () => {
         const on = document.fullscreenElement || document.webkitFullscreenElement;

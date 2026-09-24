@@ -223,6 +223,60 @@ window.addEventListener('load', () => {
         diff: diffPixels.n, totalPx: diffPixels.total,
         fast: window.__stationFastPath || 0,
       };
+      // 🔴 AND THE REPAINT'S OWN RESOLVER MUST AGREE WITH THE RENDERER
+      // ABOUT WHICH POSITION A SEGMENT TAKES ITS COLOUR FROM. `colors` is
+      // what the 2D painter draws from and `resolveSegmentColors` is what
+      // fills the palette texture, so where the two disagree the two
+      // painters draw one bond in two colours. The bond it happens on is the
+      // CA-CB: its idx1 is the BACKBONE alpha carbon and the renderer
+      // resolves it through the SIDE-CHAIN end (_colorSegmentPosition), so
+      // an override read at idx1 hands the main chain's colour to the first
+      // stick of every side chain. Reported as: colour the side chains
+      // yellow, colour the backbone red, and the CA-CB bond goes red.
+      {
+        // ...on a PROTEIN, because this probe's own fixture is RNA and a
+        // nucleotide has no side chain to attach. Loaded here rather than at
+        // the top so every leg above still measures what it was written for.
+        await load('1UBQ.cif');
+        await until(loaded);
+        await settle(4);
+        const all = Array.from({length: r._baseCount ? r._baseCount() : r.coords.length},
+          (u, i) => i);
+        r.setResidueSelection(new Set(all));
+        await settle(2);
+        r.showSidechains({positions: all});
+        await settle(4);
+        r.setSidechainColor('#ffff00', {positions: all});
+        // ...the main chain forced to another colour, in the shape the
+        // selection panel writes (parts/selectpanel.js: setSelectionColor).
+        const obj = r.objectsData[r.currentObjectName];
+        const pos = {};
+        for (const i of all) pos[i] = '#ff0000';
+        obj.color = {type: 'advanced', value: {position: pos}};
+        r.colorsNeedUpdate = true; r.plddtColorsNeedUpdate = true;
+        r.reloadDrawn(true);
+        await settle(6);
+        const cols = r._calculateSegmentColors();
+        const C = window.py2dmolCartoon;
+        const live = C && C.resolveSegmentColors
+          ? C.resolveSegmentColors(r, cols) : null;
+        const hex = (c) => c ? [c.r | 0, c.g | 0, c.b | 0].join(',') : 'none';
+        let seen = 0, differ = 0, sample = null;
+        (r.segmentIndices || []).forEach((seg, k) => {
+          if (!seg || !r.sidechainMap) return;
+          const one = r.sidechainMap.has(seg.idx1) !== r.sidechainMap.has(seg.idx2);
+          if (!one) return;                 // the CA-CB bonds, and only those
+          seen += 1;
+          if (!live) return;
+          if (hex(live[k]) !== hex(cols[k])) {
+            differ += 1;
+            if (!sample) sample = {k, painter: hex(cols[k]), palette: hex(live[k])};
+          }
+        });
+        R.attach = {seen, differ, sample, resolved: !!live,
+                    sidechain: hex(r.getAtomColor([...r.sidechainMap.keys()][0])),
+                    backbone: hex(r.getAtomColor(0))};
+      }
     } catch (e) { R.error = String((e && e.stack) || e); }
     await fetch('/_result', {method: 'POST', body: JSON.stringify(R)});
   };
@@ -333,6 +387,22 @@ if not R.get("overrideRebuilt"):
     bad.append("a per-residue override did not rebuild, for the same reason")
 if not R.get("overrideSame"):
     bad.append("the override's picture differs from a rebuild's")
+at = R.get("attach") or {}
+print(f"  CA-CB bonds: {at.get('seen')} seen, {at.get('differ')} coloured"
+      f" differently by the palette than by the painter"
+      f" (side chain {at.get('sidechain')}, backbone {at.get('backbone')})")
+if not at.get("resolved"):
+    bad.append("resolveSegmentColors answered null - this leg measured nothing")
+elif not at.get("seen"):
+    bad.append("no CA-CB bond was found, so the check is empty - the fixture"
+               " must have side chains materialised")
+elif at.get("differ"):
+    bad.append(f"{at['differ']} of {at['seen']} CA-CB bonds take a different"
+               f" colour from the palette than from the painter: {at.get('sample')}"
+               " - the GPU draws the first stick of every side chain in the"
+               " main chain's colour while the 2D painter draws it in the side"
+               " chain's")
+
 for m in bad:
     print("FAIL:", m)
 sys.exit(1 if bad else 0)

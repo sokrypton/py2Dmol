@@ -2369,6 +2369,26 @@ function dropToTubeIfCartoonWontFit(r) {
     setStatus('');
 }
 
+/**
+ * AN OBJECT THAT IS REMOVED IS REMOVED FROM THE QUEUE TOO.
+ *
+ * 🔴 `pendingObjects` OUTLIVES THE OBJECT IT MADE, AND THE NEXT LOAD REBUILDS
+ * IT. `applyPendingObjects` skips an entry that is `_appliedToRenderer` AND
+ * still in `objectsData`, so the moment `removeObject` takes one out the stale
+ * entry stops being skipped and the next `py2dmolLoadFiles` puts the object
+ * back - with the one frame the queue holds and none of the metadata that
+ * followed it. No name means EVERY name, for the renderer's own
+ * `clearAllObjects`, which is not this file's and never knew the queue existed.
+ *
+ * It is the app's list, so the app owns the forgetting; `core/mol.js` reaches
+ * it through this global because it is in bundles this file is not.
+ */
+function py2dmolForgetPending(name) {
+    pendingObjects = name === undefined
+        ? [] : pendingObjects.filter((obj) => obj?.name !== name);
+}
+window.py2dmolForgetPending = py2dmolForgetPending;
+
 function applyPendingObjects() {
     const viewerContainer = document.getElementById('viewer-container');
     const topPanelContainer = document.getElementById('sequence-viewer-container');
