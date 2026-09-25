@@ -823,6 +823,8 @@ class HeatmapRenderer {
 
     _selectMap(key, entry) {
         this.mapKey = key;
+        // ...the layout this matrix was computed for, where it states one.
+        this.mapChains = (entry && Array.isArray(entry.chains)) ? entry.chains : null;
         const base = scaleFor(key);
         const spec = {};
         if (entry) {
@@ -1341,6 +1343,36 @@ class HeatmapRenderer {
     // Helper to draw chain boundary lines in PAE plot
     _drawChainBoundaries(n, cellSize) {
         const renderer = this.mainRenderer;
+        // 🔴 THE MAP'S OWN LAYOUT WINS, AND IT DEFINES ITS OWN RESIDUE AXIS.
+        // Everything below is the fallback for a map that says nothing - a
+        // parsed structure's PAE, where the renderer's array IS this
+        // matrix's.
+        //
+        // 🔴 AND IT SCALES BY ITS OWN LENGTH, NOT BY `this.residues`. That
+        // field comes from a DIFFERENT key of the same entry (`n`/`pae_n`),
+        // so the two are independent inputs and can disagree - and this file
+        // has the scar to prove what that costs: a residue index scaled by
+        // the wrong count is a line ruled in the wrong place, silently, which
+        // is the whole fault the field exists to stop. Saying the array is
+        // the axis removes the dependency instead of testing it, and it is
+        // EXACTLY `residueToCell` wherever the two agree, which is every
+        // payload anything in this tree produces.
+        if (Array.isArray(this.mapChains) && this.mapChains.length > 0) {
+            // 🔴 RESIDUES HERE, CELLS THERE. The map's array is one entry
+            // per RESIDUE and `n` is the matrix SIDE; on a resampled matrix
+            // they are different numbers, which is the crossing every worst
+            // fault in this panel has been. The walk is over the array and
+            // `residueToCell` is what puts the line on the picture.
+            const own = this.mapChains;
+            const marks = new Set();
+            for (let r = 0; r + 1 < own.length; r++) {
+                if (own[r] !== own[r + 1]) marks.add(r + 1);
+            }
+            this._paintChainLines(marks, n, cellSize,
+                                  (residue) => Math.min(
+                                      n - 1, Math.floor(residue * n / own.length)));
+            return;
+        }
         if (!renderer.chains || renderer.chains.length === 0) return;
 
         const boundaries = new Set(); // Set of RESIDUE positions where the chain changes
@@ -1409,22 +1441,27 @@ class HeatmapRenderer {
             }
         }
 
-        if (boundaries.size === 0) return; // No boundaries to draw
+        this._paintChainLines(boundaries, n, cellSize, null);
+    }
 
-        // Draw vertical and horizontal lines at chain boundaries
-        this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)'; // More visible black lines
+    /**
+     * The lines themselves, for either source of boundaries.
+     *
+     * `toCell` converts a RESIDUE to a cell where the caller has not already
+     * done it - the crossing this panel's worst faults have all been - and is
+     * null when the set is in cells already.
+     */
+    _paintChainLines(boundaries, n, cellSize, toCell) {
+        if (!boundaries || boundaries.size === 0) return;
+        this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
         this.ctx.lineWidth = 2;
-        this.ctx.setLineDash([]); // Solid lines
-
+        this.ctx.setLineDash([]);
         this.ctx.beginPath();
         for (const pos of boundaries) {
-            const coord = Math.floor(pos * cellSize);
-
-            // Vertical line
+            const cell = toCell === null ? pos : toCell(pos);
+            const coord = Math.floor(cell * cellSize);
             this.ctx.moveTo(coord, 0);
             this.ctx.lineTo(coord, this.size);
-
-            // Horizontal line
             this.ctx.moveTo(0, coord);
             this.ctx.lineTo(this.size, coord);
         }
@@ -1772,6 +1809,18 @@ const Heatmap = {
                     colors: Array.isArray(e.colors) ? e.colors : null,
                     xlabel: (typeof e.xlabel === 'string') ? e.xlabel : null,
                     ylabel: (typeof e.ylabel === 'string') ? e.ylabel : null,
+                    // 🔴 AND WHOSE CHAINS THESE ARE. The boundaries were ruled
+                    // from `renderer.chains`, which belongs to whatever is
+                    // DRAWN - and during a fold that is the PREVIOUS job's
+                    // structure, because the new object has none yet. The
+                    // guard that stood there compared LENGTHS, which cannot
+                    // tell "this array describes this matrix" from "this
+                    // array happens to be the same size": change the copy
+                    // count or the sequence length so the totals coincide and
+                    // the last job's boundaries are ruled across this
+                    // picture. A map that states its own layout cannot be
+                    // wrong about it.
+                    chains: Array.isArray(e.chains) ? e.chains : null,
                     // ...and the pre-vmin/vmax spelling, which said the same
                     // thing as `vmin: 0, vmax: 255/perUnit`.
                     perUnit: e.per_unit || e.perUnit || 0,

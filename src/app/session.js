@@ -150,8 +150,17 @@ function buildViewerState() {
                         else if (Array.isArray(raw)) data = raw;
                         if (!data) continue;
                         const entry = { data };
+                        // 🔴 `chains` IS A SELF-DESCRIPTION LIKE THE REST, AND
+                        // LEAVING IT OFF THIS LIST IS THE BLEED COMING BACK. A
+                        // map states the chain layout ITS OWN matrix was built
+                        // for; dropped here, the reload falls back to
+                        // `renderer.chains`, which belongs to whatever is DRAWN
+                        // - so a saved session reopened beside a different
+                        // structure rules another fold's boundaries across this
+                        // matrix, which is the fault the field exists to fix.
                         for (const f of ['n', 'vmin', 'vmax', 'colors',
-                                         'xlabel', 'ylabel', 'per_unit']) {
+                                         'xlabel', 'ylabel', 'per_unit',
+                                         'chains']) {
                             if (m && m[f] !== undefined && m[f] !== null) {
                                 entry[f] = m[f];
                             }

@@ -1401,6 +1401,14 @@ class view:
                 for ax in ("xlabel", "ylabel"):
                     if opts.get(ax) is not None:
                         entry[ax] = str(opts[ax])
+                # ...and the chain layout the MATRIX was built for, which is a
+                # different question from the one the drawn structure answers:
+                # a map can be on screen beside an object of another length.
+                # Per RESIDUE, like `chains` itself - the panel crosses to
+                # cells with residueToCell, so a resampled matrix still rules
+                # its boundaries in the right places.
+                if opts.get("chains"):
+                    entry["chains"] = [str(c) for c in opts["chains"]]
                 packed[key] = entry
             if packed:
                 payload["maps"] = packed
@@ -1508,7 +1516,8 @@ class view:
               opts = {}
               if isinstance(m, dict):
                   opts = {k: m.get(k) for k in
-                          ("vmin", "vmax", "colors", "xlabel", "ylabel")}
+                          ("vmin", "vmax", "colors", "xlabel", "ylabel",
+                           "chains")}
                   m = m.get("data")
                   if m is None:
                       continue

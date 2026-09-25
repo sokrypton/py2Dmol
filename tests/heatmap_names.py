@@ -135,6 +135,10 @@ window.addEventListener('load', () => {
         o0.frames[0].maps = { contact: {
           data: bytes, n: n0 * 2, vmin: 0, vmax: 7,
           colors: ['#ffffff', '#123456'], xlabel: 'Scored', ylabel: 'Aligned',
+          // ...and the chain layout THIS MATRIX was built for. Dropped by the
+          // save it falls back to renderer.chains, which is another object's
+          // answer - the bleed the field exists to stop.
+          chains: Array.from({length: n0}, (u, i) => (i < 10 ? 'X' : 'Y')),
         } };
         o0.frames[0].pae_n = n0 * 2;
       }
@@ -166,6 +170,8 @@ window.addEventListener('load', () => {
         out.savedMap = (sf && sf.maps && sf.maps.contact)
           ? { n: sf.maps.contact.n, vmax: sf.maps.contact.vmax,
               colors: sf.maps.contact.colors, xlabel: sf.maps.contact.xlabel,
+              chainsLen: (sf.maps.contact.chains || []).length,
+              chainsAt0: (sf.maps.contact.chains || [])[0],
               len: (sf.maps.contact.data || []).length }
           : null;
         out.savedPaeN = sf ? sf.pae_n : null;
@@ -191,7 +197,8 @@ window.addEventListener('load', () => {
         const rf = (r.objectsData[r.currentObjectName] || {}).frames;
         const m = rf && rf[0] && rf[0].maps && rf[0].maps.contact;
         out.reloadedMap = m
-          ? { n: m.n, vmax: m.vmax, colors: m.colors, xlabel: m.xlabel }
+          ? { n: m.n, vmax: m.vmax, colors: m.colors, xlabel: m.xlabel,
+              chainsLen: (m.chains || []).length, chainsAt0: (m.chains || [])[0] }
           : null;
         out.reloadedPaeN = rf && rf[0] ? rf[0].pae_n : null;
         out.restoredHasOldField = vs ? ('paeBoxes' in vs) : null;
@@ -317,8 +324,14 @@ if not sm:
                " field by field and a field neither names is dropped")
 elif not rm:
     bad.append(f"the session SAVED a map and the reload dropped it: {sm}")
+elif not sm.get('chainsLen') or sm.get('chainsLen') != rm.get('chainsLen'):
+    bad.append(f"the map's own chain layout did not survive the round trip:"
+               f" saved {sm.get('chainsLen')} entries, reloaded"
+               f" {rm.get('chainsLen')} - without it the reload rules the DRAWN"
+               f" object's boundaries across this matrix, which is the bleed")
 elif (rm.get('vmax') != 7 or rm.get('xlabel') != 'Scored'
-      or rm.get('colors') != ['#ffffff', '#123456'] or rm.get('n') != sm.get('n')):
+      or rm.get('colors') != ['#ffffff', '#123456'] or rm.get('n') != sm.get('n')
+      or rm.get('chainsAt0') != sm.get('chainsAt0')):
     bad.append(f"the map came back changed: saved {sm}, reloaded {rm} - the"
                " bounds, the colours and the captions are what a reload"
                " cannot re-derive, so losing them is silent")

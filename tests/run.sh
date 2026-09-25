@@ -14,21 +14,31 @@
 # profile, so they do not interact - except the GPU ones, which MEASURE TIME
 # ("the reused toggles are not faster than the builds") and would be timing
 # each other's contention. Those run one at a time, after the rest.
-# 🔴 THE UI LANE FAILS ABOUT ONE RUN IN SIX, AND IT IS NOT THE PARALLELISM.
+# 🔴 IT WAS THE PARALLELISM, AND THE EXPERIMENT THAT SAID OTHERWISE NEVER
+# VARIED ITS VARIABLE.
 #
 # A probe reports "page error: no result posted" or is KILLED, passes on its own
-# a moment later, and a different probe fails next time. The obvious reading is
-# contention between six Chromes, and it was asserted several times before it
-# was measured. It is wrong. Alternating whole-lane runs on the same machine:
+# a moment later, and a different probe fails next time. That was measured as
+# whole-lane runs at four JOBS settings, which all came back the same:
 #
 #     JOBS=6   0, 0, 0 failures     68s, 78s, 77s
 #     JOBS=1   1, 0, 0 failures     70s, 76s, 65s
 #     JOBS=3   2, 0                 79s, 77s
 #     JOBS=2   0                    69s
 #
-# Same failure rate serial as six-way, and the same wall time - the lane is
-# ~70s either way, so the parallelism is not buying much either. Whatever the
-# cause is, it is not how many browsers are running.
+# Same rate at every setting, same wall time - so the note concluded the cause
+# was not how many browsers run. **Every one of those runs was 39-way
+# parallel.** The throttle is `while (( $(jobs -r | wc -l) >= JOBS ))`, and
+# `$(...)` is a SUBSHELL, which does not inherit the job table: `jobs -r` reads
+# empty there whatever is running, the `while` exits at once, and the whole ui
+# array launches together. JOBS has never done anything. See `live_jobs` below,
+# which counts the pids this script launched, because a pid crosses a subshell
+# where a job table does not.
+#
+# The lesson is the one this tree keeps relearning: a measurement through a
+# broken instrument measures the instrument. Four settings, one behaviour, and
+# the flatness of the result was the tell - a knob that changes nothing is
+# either irrelevant or disconnected, and this one was disconnected.
 #
 # WHAT TO DO WITH A FAILURE, THEN: run that probe on its own. If it passes, it
 # is this. If it fails, it is real. Do not lower JOBS and conclude anything
@@ -44,11 +54,12 @@
 set -u
 cd "$(dirname "$0")/.."
 LANE="${1:-all}"
-# 🔴 TWO AT A TIME NOW, NOT SIX. The measurement above predates the GPU frame's own
-# layer under every canvas (cartoon/paintgl.js, direct presentation): with each page
-# compositing a full-size WebGL canvas through swiftshader, six at once starved the
-# probes into "page error: no result posted" - 15 of 33 in one run, 2 at JOBS=2, none
-# alone, all on the same code. The lane takes a little longer and says something.
+# 🔴 TWO AT A TIME, AND FOR THE FIRST TIME IT IS ACTUALLY TWO. Each page
+# composites a full-size WebGL canvas through swiftshader (cartoon/paintgl.js,
+# direct presentation), and the whole array at once starved the probes into
+# "page error: no result posted" - 18 to 21 of 39 per run, a different set each
+# time, every one passing alone. That was read as machine load for most of a
+# session before the throttle itself was tested.
 JOBS="${JOBS:-2}"
 fail=0
 
@@ -248,6 +259,24 @@ probe_cap () {
     (*) print $CAP ;;
   esac
 }
+# 🔴 `jobs -r` IN A COMMAND SUBSTITUTION IS ALWAYS EMPTY, so the throttle
+# below never engaged and every ui probe launched AT ONCE - 39 browsers, not
+# the two JOBS says. `$(...)` runs in a SUBSHELL and a subshell does not
+# inherit the job table, so `$(jobs -r | wc -l)` reads 0 forever and the
+# `while` it guards exits immediately. Measured standalone: five backgrounded
+# jobs, `jobs -r` reports 0 at every one of them.
+#
+# That is exactly the starvation the note at the top of this file describes and
+# believes it fixed by setting JOBS=2: probes timing out into "no result
+# posted", a different set each run, all passing alone. It was never running
+# two at a time. Counting the pids WE launched works from a subshell, because a
+# pid is global where a job table is not.
+live_jobs () {
+  local n=0 p
+  for p in $pids; do kill -0 $p 2>/dev/null && (( n++ )); done
+  print $n
+}
+
 run_probe () {   # name, then its arguments
   local name=$1; shift
   local log=/tmp/py2dmol-test-$name.log
@@ -279,7 +308,7 @@ if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
   for t in $UI; do
     ( run_probe $t ) & pids+=($!); names+=($t)
     # ...at most JOBS at a time: every one of them is a browser
-    while (( $(jobs -r | wc -l) >= JOBS )); do sleep 0.2; done
+    while (( $(live_jobs) >= JOBS )); do sleep 0.2; done
   done
   ( run_probe multi_object 1BBH.cif 1EHZ.cif ) & pids+=($!); names+=(multi_object)
   ( run_probe multi_frame_fit ) & pids+=($!); names+=(multi_frame_fit)

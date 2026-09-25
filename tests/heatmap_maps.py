@@ -425,6 +425,69 @@ window.addEventListener('load', () => {
                              base: R2()._baseCount(), coords: R2().coords.length,
                              N: N2, off: off2, chains: R2().chains.length,
                              bounds, keys: !!R2()._chainColorKeys };
+
+          // 🔴 AND A MAP THAT STATES ITS OWN CHAINS IS NOT THE RENDERER'S TO
+          // GET WRONG. The guard above compares LENGTHS, which cannot tell
+          // "this array describes this matrix" from "this array happens to
+          // be the same size" - so a fold whose copy count or sequence
+          // length changes such that the totals COINCIDE had the previous
+          // job's boundaries ruled across its picture. Reported as chain
+          // lines from previous jobs bleeding through during transitions.
+          //
+          // The fixture is that coincidence exactly: the renderer holds a
+          // THREE-chain layout of the same total length as the map's TWO.
+          // What is measured is WHERE the lines are, not how many pixels are
+          // dark - a count cannot tell one layout's lines from another's.
+          const columns = (px, side) => {
+            const found = [];
+            for (let x = 0; x < side; x += 1) {
+              let dark = 0;
+              for (let y = 0; y < side; y += 1) {
+                const at3 = (y * side + x) * 4;
+                if (px[at3] < 120 && px[at3 + 1] < 120 && px[at3 + 2] < 120) dark += 1;
+              }
+              if (dark > side / 2) found.push(x);
+            }
+            // ...clustered, because a 2px line is two adjacent columns.
+            const runs = [];
+            for (const x of found) {
+              const last = runs[runs.length - 1];
+              if (last !== undefined && x - last[last.length - 1] <= 2) last.push(x);
+              else runs.push([x]);
+            }
+            return runs.map((run) => Math.round(run.reduce((a, b) => a + b, 0) / run.length));
+          };
+          const third = Math.floor(m / 3);
+          R2().chains = Array.from({ length: m }, (unused, i2) =>
+            (i2 < third ? 'A' : (i2 < 2 * third ? 'B' : 'C')));
+          hm.setMaps({ contact: { data: bytes, n: m,
+                                  chains: Array.from({ length: m }, (unused, i2) =>
+                                    (i2 < Math.floor(m / 2) ? 'X' : 'Y')) } });
+          hm.render();
+          await settle(2);
+          // ...in CELLS, which is what the boundaries are counted in: the
+          // columns come back in canvas PIXELS and the canvas is not the
+          // matrix. Same crossing as everything else in this panel.
+          const perCell = hm.canvas.width / m;
+          out.ownChains = { m, half: Math.floor(m / 2), third, perCell,
+                            lines: columns(shot(), hm.canvas.width)
+                              .map((x) => Math.round(x / perCell)) };
+          // 🔴 AND THE MAP'S ARRAY IS ITS OWN RESIDUE AXIS, which a
+          // matrix that states a DIFFERENT residue count is the only way to
+          // see. Half as many chain entries as the matrix has residues: the
+          // boundary is still at the array's midpoint, so it belongs at the
+          // middle of the picture. Scaled by `residues` instead it lands at
+          // a quarter, which is what this pins.
+          const halfLen = Math.floor(m / 2);
+          hm.setMaps({ contact: { data: bytes, n: m, pae_n: m * 2,
+                                  chains: Array.from({ length: halfLen },
+                                    (unused, i2) =>
+                                      (i2 < Math.floor(halfLen / 2) ? 'X' : 'Y')) } });
+          hm.render();
+          await settle(2);
+          out.ownAxis = { m, want: Math.floor(m / 2),
+                          lines: columns(shot(), hm.canvas.width)
+                            .map((x) => Math.round(x / perCell)) };
         }
       }
 
@@ -478,7 +541,12 @@ v.add(CO, name='pred', chains=CH,
                     'xlabel': 'Scored position',
                     'ylabel': 'Aligned position'},
         'disorder': custom,
-        'rmsd': {'data': rmsd, 'vmin': 0, 'vmax': 25.5},
+        # 🔴 ...AND ONE MAP STATES THE CHAIN LAYOUT ITS OWN MATRIX WAS
+        # BUILT FOR, which is a different question from the one the drawn
+        # object answers. Deliberately NOT the structure's own split, so a
+        # `chains` that fell out of the payload cannot pass by matching it.
+        'rmsd': {'data': rmsd, 'vmin': 0, 'vmax': 25.5,
+                 'chains': ['P'] * (SPLIT + 3) + ['Q'] * (N - SPLIT - 3)},
         'pae': {'data': pae * 0.5, 'vmin': 0, 'vmax': 30}})
 
 # ---- the wire, before any browser: what viewer.py actually packed ----
@@ -551,6 +619,18 @@ else:
         if (c.get('vmin'), c.get('vmax')) != (lo, hi):
             bad.append(f"{k} went out over {c.get('vmin')}..{c.get('vmax')},"
                        f" not {lo}..{hi}")
+    # ...and the chain layout survived viewer.py's field-by-field pack. It is
+    # the sixth thing a map says about itself and the pack names each one, so
+    # a key it does not name is a key it throws away - the fault this file
+    # records against `align`, `maps` and the per-atom columns.
+    rm = wire_maps.get('rmsd', {})
+    if list(rm.get('chains') or [])[:1] != ['P'] or len(rm.get('chains') or []) != N:
+        bad.append(f"the rmsd map's own chains did not reach the wire:"
+                   f" {len(rm.get('chains') or [])} entries, first"
+                   f" {list(rm.get('chains') or [])[:1]} - without them the"
+                   f" panel rules the DRAWN object's boundaries instead")
+    if wire_maps.get('contact', {}).get('chains') is not None:
+        bad.append("a map that said nothing about chains got some anyway")
         if c.get('n') != N:
             bad.append(f"{k} claims {c.get('n')} residues, not {N}")
     if wire_maps['contact'].get('colors') != ['#ffffff', '#ff0000']:
@@ -699,6 +779,35 @@ if R.get('boxesKept') != 1:
 
 cl = R.get('chainLines') or {}
 print(f"  chain lines {cl}")
+oa = R.get('ownAxis') or {}
+if not oa.get('lines'):
+    bad.append("a map whose chains array is shorter than its residue count"
+               " drew no boundary at all")
+elif abs(oa['lines'][0] - oa['want']) > 2:
+    bad.append(f"the map's chains were scaled by the matrix's residue count"
+               f" rather than by their own length: boundary at cell"
+               f" {oa['lines'][0]}, its array's midpoint is {oa['want']}")
+else:
+    print(f"a map's chains ARE its residue axis: boundary at {oa['lines'][0]}"
+          f" of {oa['m']}, its array's own midpoint {oa['want']}")
+
+oc = R.get('ownChains') or {}
+if oc:
+    print(f"a map stating its own chains: lines at {oc['lines']},"
+          f" its boundary is {oc['half']} of {oc['m']}"
+          f" (the renderer says {oc['third']} and {2 * oc['third']})")
+    # The map's one boundary, and NEITHER of the renderer's two. A tolerance
+    # of 2 covers the line's own width and the cell rounding.
+    near = lambda a, b: abs(a - b) <= 2
+    if not any(near(x, oc['half']) for x in oc['lines']):
+        bad.append(f"a map stating its own chains was not ruled at its own"
+                   f" boundary {oc['half']}: lines at {oc['lines']}")
+    for stale in (oc['third'], 2 * oc['third']):
+        if any(near(x, stale) for x in oc['lines']):
+            bad.append(f"the renderer's stale layout bled through at {stale}:"
+                       f" lines at {oc['lines']} - a map that states its"
+                       " chains is not the renderer's to get wrong")
+
 tl = R.get('trunkLines') or {}
 print(f"  trunk lines {tl}")
 if (tl.get('coords') or 0) != 0 or (tl.get('base') or 0) != 0:
