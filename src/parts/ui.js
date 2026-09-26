@@ -253,6 +253,15 @@ if (typeof wireSelectionPanel === 'function'
 // `config.heatmap.enabled` is the switch, and `config.pae.enabled` is the
 // same object under its old name - normalizeConfig aliases them, so a host
 // page or a saved session written before the rename still turns the panel
+// ...and the confidence trace, which is the same decision one panel along: the
+// module is in every bundle and does nothing at all until a container exists,
+// so what turns it on is the switch AND the markup. `panels/plddt.js` finds
+// its own box (#plddtContainer), scoped to this viewer and falling back to the
+// page, because an embed's host puts it BESIDE the viewer.
+if (config.plddt?.enabled && window.Plddt && window.Plddt.initialize) {
+    window.Plddt.initialize(renderer);
+}
+
 // on. See src/panels/heatmap.js.
 if (config.heatmap?.enabled ?? config.pae?.enabled) {
     // Initialize immediately if the panel is already loaded

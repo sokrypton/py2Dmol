@@ -52,6 +52,9 @@ same list with load order and targets.
 ### Panels, all optional
 
 `panels/heatmap.js` (`window.Heatmap`, aliased `window.PAE`) ·
+`panels/plddt.js` (`window.Plddt` — the confidence trace as a slot view, an SVG
+graph rather than a canvas; OFF unless a caller asks, because `plddts` holds a
+B-factor column for every file that is not a prediction) ·
 `panels/seq.js` (`window.SEQ`) ·
 `panels/msa.js` (`window.MSA`) · `panels/scatter.js` (`window.ScatterPlotViewer`)
 

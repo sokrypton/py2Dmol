@@ -73,6 +73,12 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "size": 300
     },
+    # The confidence trace, one column per residue of the drawn frame. Off by
+    # default like the heatmap: it adds a tab, which is a layout change.
+    "plddt": {
+        "enabled": False,
+        "size": 300
+    },
     "scatter": {
         "enabled": False,
         "size": 300
@@ -181,6 +187,10 @@ def _nest_config(**flat):
         config["heatmap"]["enabled"] = flat["heatmap"]
     if flat.get("heatmap_size") is not None:
         config["heatmap"]["size"] = flat["heatmap_size"]
+    if flat.get("plddt") is not None:
+        config["plddt"]["enabled"] = flat["plddt"]
+    if flat.get("plddt_size") is not None:
+        config["plddt"]["size"] = flat["plddt_size"]
 
     # Scatter
     if "scatter" in flat:
@@ -791,6 +801,7 @@ class view:
         shadow=True, shade=None, shadow_strength=0.5,
         outline=None, width=None, ortho=0.5, gpu=True, bg=None, rotate=False, autoplay=False,
         heatmap=None, heatmap_size=300, pae=None, pae_size=None,
+        plddt=None, plddt_size=300,
         scatter=None, scatter_size=300, overlay=False, multi=False, cyclic=True,
         sidechains=False, selection=False,
         persistence=True, id=None, cutoffs=None, slots=None,
@@ -1141,6 +1152,13 @@ class view:
             autoplay=autoplay,
             heatmap=heatmap,
             heatmap_size=heatmap_size,
+            # 🔴 NAMED HERE OR THROWN AWAY. `_nest_config` is called with
+            # explicit keywords, so a parameter this call does not name is
+            # a parameter the viewer never hears about - the same shape as
+            # `align`, `maps` and the per-atom columns, each of which was
+            # a working feature that did nothing on one path.
+            plddt=plddt,
+            plddt_size=plddt_size,
             scatter=scatter,
             scatter_size=scatter_size,
             overlay=overlay,

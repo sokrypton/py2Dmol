@@ -1031,6 +1031,13 @@ const DEFAULT_CONFIG = {
         enabled: false,
         size: 300
     },
+    // The confidence trace. OFF by default like the heatmap, and for the same
+    // reason: it adds a tab to every viewer that exists, and a tab is a
+    // layout change rather than a decoration.
+    plddt: {
+        enabled: false,
+        size: 300
+    },
     scatter: {
         enabled: false,
         size: 300
@@ -1187,6 +1194,10 @@ function normalizeConfig(rawConfig = {}) {
             size: cfg.heatmap?.size || cfg.heatmap_size
                 || cfg.pae?.size || cfg.pae_size || DEFAULT_CONFIG.heatmap.size
         },
+        plddt: {
+            enabled: cfg.plddt?.enabled ?? cfg.plddt ?? DEFAULT_CONFIG.plddt.enabled,
+            size: cfg.plddt?.size || cfg.plddt_size || DEFAULT_CONFIG.plddt.size
+        },
         scatter: {
             enabled: cfg.scatter?.enabled ?? cfg.scatter ?? DEFAULT_CONFIG.scatter.enabled,
             size: cfg.scatter?.size || cfg.scatter_size || DEFAULT_CONFIG.scatter.size
@@ -1228,7 +1239,7 @@ function normalizeConfig(rawConfig = {}) {
     }
 
     // Carry over any additional top-level keys not explicitly normalized
-    const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "heatmap", "pae", "scatter", "overlay", "selection", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "ortho", "colorblind", "heatmap_size", "pae_size", "scatter_size", "cyclic", "style", "detail", "base_plates", "ss_palette", "preset", "gpu", "shade", ...PRESET_KEYS]);
+    const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "heatmap", "pae", "plddt", "plddt_size", "scatter", "overlay", "selection", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "ortho", "colorblind", "heatmap_size", "pae_size", "scatter_size", "cyclic", "style", "detail", "base_plates", "ss_palette", "preset", "gpu", "shade", ...PRESET_KEYS]);
     for (const [key, value] of Object.entries(cfg)) {
         if (!knownKeys.has(key)) {
             normalized[key] = value;

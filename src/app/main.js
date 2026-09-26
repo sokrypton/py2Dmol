@@ -323,6 +323,18 @@ function initializeViewerConfig() {
         // else. parts/panel.js builds the panel now and parts/ui.js mounts it
         // on this flag, so the page asks rather than reaching in.
         selection: { enabled: true },
+        // 🔴 AND THE CONFIDENCE TRACE IS NOT ONE OF THEM, DELIBERATELY. The
+        // panel is in this bundle and the box is in index.html, but nothing
+        // here turns it on: `src/io/parse.js` reads a B-FACTOR column into
+        // `plddts` for every file there is, so switching it on for the website
+        // would offer a plot titled pLDDT over a 1987 crystal structure, and
+        // grow a tab row on a page that had one view a moment ago.
+        //
+        // A host that knows its structures ARE predictions asks for it in one
+        // line - `window.Plddt.initialize(renderer)` - which is how LocalFold
+        // has it. `py2Dmol.view(plddt=True)` and `{plddt: {enabled: true}}` are
+        // the same switch for the notebook and the embed, where the caller is
+        // the one who loaded the data and knows what it is.
         display: {
             size: [FIXED_WIDTH, FIXED_HEIGHT],
             rotate: false,

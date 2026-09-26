@@ -64,6 +64,12 @@
 
 const MOL = 'molecular';
 const SCATTER = 'scatter';
+// The confidence trace - one point per residue of the DRAWN frame, where a map
+// is n x n and the scatter plot is one point per FRAME. Three index spaces in
+// one row of tabs, which is why each is its own view rather than a mode of
+// another: panels/scatter.js jumps to a frame when a point is clicked, and a
+// click here means a residue.
+const PLDDT = 'plddt';
 const MAP = 'map:';
 const PANEL_IDS = ['#heatmapContainer', '#paeContainer'];
 // The two names the first version of this file used, in slot order, still
@@ -191,7 +197,10 @@ function prepare(root, config) {
     let panel = findPanel(root) || findPanel(document);
     if (panel && panel.closest('.py2dmol-slot-body, .py2dmol-slot-park')) panel = null;
     const scatter = root.querySelector('#scatterContainer');
-    const anchor = panel || scatter;
+    let plddt = root.querySelector('#plddtContainer')
+        || document.querySelector('#plddtContainer');
+    if (plddt && plddt.closest('.py2dmol-slot-body, .py2dmol-slot-park')) plddt = null;
+    const anchor = panel || scatter || plddt;
     if (!anchor) return null;
     installCSS();
 
@@ -230,7 +239,7 @@ function prepare(root, config) {
     const last = slots[slots.length - 1];
     last.slot.parentNode.insertBefore(park, last.slot.nextSibling);
     // Everything starts parked but the structure; bind() places the rest.
-    for (const el of [panel, scatter]) {
+    for (const el of [panel, scatter, plddt]) {
         if (!el) continue;
         el.classList.add('py2dmol-slot-view');
         park.appendChild(el);
@@ -239,7 +248,7 @@ function prepare(root, config) {
     for (let i = 1; i < slots.length; i++) slots[i].slot.hidden = true;
     // `big`/`small` name slots 1 and 2 here too, for the same reason the
     // classes do: three probes and one host reach for them.
-    return { slots, big: slots[0], small: slots[1], park, cc, scatter, root };
+    return { slots, big: slots[0], small: slots[1], park, cc, scatter, plddt, root };
 }
 
 /**
@@ -391,6 +400,16 @@ function bind(renderer, layout) {
     const available = () => {
         const out = [];
         if (hasCoords()) out.push(MOL);
+        // 🔴 THE TRACE SITS BESIDE THE STRUCTURE, NOT AFTER THE MAPS. It
+        // belongs to the structure and exists from the same frame; maps arrive
+        // over TIME - a fold's contact map lands after its PAE - so a tab
+        // after them moves every time one arrives, and a reader aiming at
+        // pLDDT mid-fold hits Contact. Measured in LocalFold as
+        // Structure|PAE|pLDDT becoming Structure|PAE|Contact|pLDDT.
+        // `hasData` refuses a FLAT array: setCoords pads a missing score to
+        // 50.0 for every position.
+        if (layout.plddt && renderer.plddtRenderer
+            && window.Plddt && window.Plddt.hasData(renderer)) out.push(PLDDT);
         if (window.Heatmap && renderer.heatmapRenderer) {
             for (const k of window.Heatmap.loadedKeys(renderer)) out.push(MAP + k);
         }
@@ -400,6 +419,7 @@ function bind(renderer, layout) {
     const labelOf = (v) => {
         if (v === MOL) return 'Structure';
         if (v === SCATTER) return 'Scatter';
+        if (v === PLDDT) return 'pLDDT';
         const key = v.slice(MAP.length);
         return window.Heatmap && window.Heatmap.labelFor ? window.Heatmap.labelFor(key) : key;
     };
@@ -499,6 +519,18 @@ function bind(renderer, layout) {
     }
 
     function refresh() {
+        // 🔴 THE TRACE IS DRAWN FROM HERE, BEFORE THE SIGNATURE CHECK BELOW.
+        // That check answers "has the LAYOUT changed" and returns false on
+        // nearly every frame, so anything hung after it runs once and then
+        // never again - while the plot's data is the DRAWN FRAME'S and moves
+        // whenever the play bar does. Driving it from here rather than from
+        // the five places that sync the heatmap keeps it to ONE driver, which
+        // is the list this tree keeps failing to hold complete.
+        //
+        // It costs nothing while the tab is not up, and `update` carries its
+        // own signature so a still structure is not repainted at 60 Hz.
+        if (window.Plddt && renderer.plddtRenderer
+            && shown.indexOf(PLDDT) >= 0) window.Plddt.update(renderer);
         const avail = available();
         // 🔴 AN OBJECT BETWEEN ITS FRAMES SAYS NOTHING, AND ASKING IT MADE THE
         // TABS BLINK. Loading a structure over an object that already has one
@@ -542,7 +574,6 @@ function bind(renderer, layout) {
             + '|' + (molObject === renderer.currentObjectName ? 1 : 0);
         if (sig === lastSig) return false;
         lastSig = sig;
-
         // ...and on a narrow screen there is one slot whatever was asked for.
         // The reader's choice is KEPT rather than cleared: turn the phone
         // round and it is back.
@@ -573,6 +604,7 @@ function bind(renderer, layout) {
         const elOf = (v) => {
             if (v === MOL) return layout.cc;
             if (v === SCATTER) return layout.scatter;
+            if (v === PLDDT) return layout.plddt;
             return panels[v.slice(MAP.length)] || null;
         };
         const inUse = new Set();
@@ -595,7 +627,16 @@ function bind(renderer, layout) {
         // (appendChild), and one taken by none is caught here in the same
         // synchronous call, before anything paints. A second map panel is not
         // in this list because Heatmap.slotPanels removes it outright.
-        for (const el of [layout.cc, layout.scatter, renderer.heatmapContainer]) {
+        // 🔴 EVERY VIEW'S BOX IS IN THIS LIST OR IT NEVER LEAVES THE SLOT.
+        // A view no slot shows is parked HERE and nowhere else, so a box left
+        // out simply stays where it was put - the slot goes on showing it
+        // while the tabs say something else, and picking another view does
+        // nothing a reader can see. Reported as the second slot getting stuck
+        // on the confidence trace. It is the same shape as every field-by-field
+        // rebuild in this tree: a hand-kept list, and the cost of forgetting
+        // one is silence.
+        for (const el of [layout.cc, layout.scatter, layout.plddt,
+                          renderer.heatmapContainer]) {
             if (el && !inUse.has(el) && el.parentNode !== layout.park) layout.park.appendChild(el);
         }
         // A view that comes back out of the park was skipped while it was
@@ -603,6 +644,15 @@ function bind(renderer, layout) {
         if (inUse.has(layout.cc) && typeof renderer.render === 'function') renderer._renderOwed = true;
         if (layout.scatter && inUse.has(layout.scatter) && renderer.scatterRenderer) {
             renderer.scatterRenderer.render(true);
+        }
+        // ...and the trace, which was parked with a box of no size: its
+        // measurement is stale by construction, so it re-measures rather than
+        // trusting the signature.
+        if (layout.plddt && inUse.has(layout.plddt) && renderer.plddtRenderer
+            && window.Plddt) {
+            renderer.plddtRenderer._dirtySize = true;
+            window.Plddt.invalidate(renderer);
+            window.Plddt.update(renderer);
         }
         return true;
     }
@@ -628,9 +678,9 @@ function bind(renderer, layout) {
     const toView = (n) => (n === null || n === undefined) ? null
         : (n === false || n === 'none') ? false
         : (n === 'structure' || n === MOL) ? MOL
-        : n === SCATTER ? SCATTER : MAP + n;
+        : n === SCATTER ? SCATTER : n === PLDDT ? PLDDT : MAP + n;
     const toName = (v) => !v ? null : v === MOL ? 'structure'
-        : v === SCATTER ? SCATTER : v.slice(MAP.length);
+        : v === SCATTER ? SCATTER : v === PLDDT ? PLDDT : v.slice(MAP.length);
     /**
      * ASK FOR A LAYOUT, which is a standing choice rather than a move: a view
      * that does not exist yet (a PAE before the fold has one) takes its slot

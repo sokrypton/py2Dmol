@@ -333,6 +333,10 @@ print(f"  draws while parked {R.get('parkedDraws')}, after coming back"
 
 bad = list(R.get('errors') or [])
 al = R.get('alone') or {}
+# A structure alone does not grow chrome, and that includes the confidence
+# trace: nothing on this page switches it on, because a B-factor column is not
+# a confidence one and only the caller knows the difference. See the note in
+# src/app/main.js's viewerConfig.
 if al.get('big') != 'molecular' or not al.get('smallHidden') or not al.get('bigTabsHidden'):
     bad.append(f"a structure with nothing else changed the page: {al}")
 if al.get('nSlots') != 2:

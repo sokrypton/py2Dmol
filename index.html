@@ -529,6 +529,12 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                         <canvas id="heatmapCanvas" style="cursor: crosshair;"></canvas>
                     </div>
 
+                    <!-- The confidence trace, one column per residue of the drawn
+                         frame. Hidden until parts/slots.js parks it: the panel
+                         mounts only when the data is not a flat pad, so a
+                         crystal structure never grows the tab. -->
+                    <div id="plddtContainer" class="container-box" style="display: none;"></div>
+
                     <!-- Scatter Plot Container (mirrors main viewer sizing; JS sets dimensions) -->
                     <div id="scatterContainer" class="container-box" style="display: none; position: relative;">
                         <canvas id="scatterCanvas" style="cursor: pointer;"></canvas>

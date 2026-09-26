@@ -180,6 +180,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `pick_index.py` | gpu | THE PICK INDEX MUST ANSWER WHAT THE SCAN ANSWERS, POINT BY POINT. |
 | `play_stop.py` | ui | The play button has to survive being pressed WHILE IT IS PLAYING. |
 | `plddt_override.py` | tool | Colouring a few residues by hand must not recolour the whole structure. |
+| `plddt_panel.py` | ui | The confidence trace as a slot view: the tab, the picture, and the drag. |
 | `python_multi.py` | ui | WHAT PYTHON ASKS FOR, AND WHETHER THE PAGE DOES IT. |
 | `python_opacity.py` | gpu | set_opacity from Python: does it reach the picture, and survive a session? |
 | `python_page.py` | ui | The PYTHON api's own page, with two objects, checked in a real browser. |
