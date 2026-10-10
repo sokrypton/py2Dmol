@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>py2Dmol plugins</title>
+<style>
+  :root { --bg: #fafafa; --card: #fff; --ink: #222; --muted: #555; --line: #e3e3e3;
+          --code: #f4f4f4; --accent: #2b6cb0; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 24px 16px 64px;
+         background: var(--bg); color: var(--ink); }
+  main { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 0 0 6px; }
+  p { max-width: 62em; color: var(--muted); margin: 0 0 10px; }
+  code { background: var(--code); padding: 1px 4px; border-radius: 3px; }
+  .bar { position: sticky; top: 0; z-index: 5; display: flex; gap: 16px; flex-wrap: wrap;
+         align-items: center; padding: 10px 0; margin-bottom: 8px; background: var(--bg);
+         border-bottom: 1px solid var(--line); }
+  .seg { display: inline-flex; border: 1px solid #ccc; border-radius: 6px; overflow: hidden; }
+  .seg button { font: inherit; border: 0; background: var(--card); padding: 4px 12px; cursor: pointer; }
+  .seg button + button { border-left: 1px solid #ccc; }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+            padding: 16px; margin: 16px 0; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+  .viewer { width: 440px; height: 380px; max-width: 100%; flex: 0 0 auto; }
+  .side { flex: 1 1 360px; min-width: 0; }
+  .ctl { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin: 4px 0 10px; }
+  .status { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .status.bad { color: #b00020; }
+  details { margin-top: 6px; }
+  summary { cursor: pointer; color: var(--accent); }
+  pre { background: var(--code); border-radius: 8px; padding: 10px 12px; overflow-x: auto;
+        font-size: 12px; line-height: 1.45; margin: 6px 0 0; max-height: 420px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Plugins</h1>
+<p>A plugin is a piece of JavaScript that draws things that are not residues, using
+three primitives: <code>ctx.line</code>, <code>ctx.dot</code> and <code>ctx.tri</code>. Points are in the
+file's own coordinates, so a plugin turns, zooms and clips with the structure. Each example
+prints its plugin and the code that hands it a payload; the payloads are computed here from
+the structure being drawn. See <code>docs/PLUGINS.md</code> for the full contract.</p>
+
+<div class="bar">
+  <span>Renderer <span class="seg" id="painter">
+    <button data-v="gpu" aria-pressed="true">GPU</button><button data-v="2d">2D</button></span></span>
+  <span>Style <span class="seg" id="style">
+    <button data-v="richardson" aria-pressed="true">Cartoon</button><button data-v="tube">Tube</button></span></span>
+</div>
+
+<section>
+  <h2>1. Lines: a bounding box</h2>
+  <p>Twelve edges around the alpha carbons of ubiquitin. <code>bounds()</code> tells the viewer how far
+  the plugin reaches, so the opening view fits the box as well as the protein.</p>
+  <div class="row">
+    <div class="viewer" id="v-box"></div>
+    <div class="side">
+      <div class="ctl"><label><input type="checkbox" id="box-shown" checked> shown</label></div>
+      <div class="status" id="s-box"></div>
+      <details open><summary>plugin</summary><pre data-src="p-box"></pre></details>
+      <details><summary>payload</summary><pre data-src="u-box"></pre></details>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>2. Balls and lines: a binding pocket</h2>
+  <p>Trypsin with benzamidine (3PTB). A ball at the ligand's centre, a wire sphere at the chosen
+  radius, and a line from the ligand to every alpha carbon inside it. The radius and the
+  contacts are plugin <em>options</em>: changing one redraws without sending the payload again.</p>
+  <div class="row">
+    <div class="viewer" id="v-pocket"></div>
+    <div class="side">
+      <div class="ctl">
+        <label>radius <input type="range" id="pocket-r" min="4" max="14" step="0.5" value="8">
+          <span id="pocket-rv">8 &Aring;</span></label>
+        <label><input type="checkbox" id="pocket-c" checked> contacts</label>
+      </div>
+      <div class="status" id="s-pocket"></div>
+      <details open><summary>plugin</summary><pre data-src="p-pocket"></pre></details>
+      <details><summary>payload</summary><pre data-src="u-pocket"></pre></details>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>3. Triangles: principal axes</h2>
+  <p>Triosephosphate isomerase (1TIM). The three principal axes of the alpha carbons, each as long
+  as two standard deviations along it, with arrowheads built from triangles. Triangles are
+  opaque, flat-shaded and lit by their own normal. The GPU tube has no shape for a triangle,
+  so in tube style on the GPU this viewer draws with the 2D tube instead.</p>
+  <div class="row">
+    <div class="viewer" id="v-axes"></div>
+    <div class="side">
+      <div class="status" id="s-axes"></div>
+      <details open><summary>plugin</summary><pre data-src="p-axes"></pre></details>
+      <details><summary>payload</summary><pre data-src="u-axes"></pre></details>
+    </div>
+  </div>
+</section>
+</main>
+
+<!-- The full bundle carries both renderers, so the bar above can switch between them. -->
+<script src="../py2Dmol/resources/bundles/py2Dmol.full.min.js"></script>
+
+<!-- ============================== the plugins ============================== -->
+<!-- Each registers itself whether it runs before or after the library. -->
+
+<script id="p-box">
+(function () {
+  var P = window.py2dmolPlugins = window.py2dmolPlugins || { list: [], pending: [] };
+  var def = {
+    name: 'box', version: '1', apiVersion: 1,
+    options: { shown: true, color: '#e4572e' },
+    bounds: function (ctx) {
+      var b = ctx.payloads[0] && ctx.payloads[0].payload;
+      return b ? { min: b.min, max: b.max } : null;
+    },
+    prims: function (ctx) {
+      if (!ctx.options.shown) return;
+      ctx.payloads.forEach(function (p) {
+        var lo = p.payload.min, hi = p.payload.max;
+        var c = function (i) {   // corner i: bit 0 = x, bit 1 = y, bit 2 = z
+          return [i & 1 ? hi[0] : lo[0], i & 2 ? hi[1] : lo[1], i & 4 ? hi[2] : lo[2]];
+        };
+        for (var i = 0; i < 8; i++) {
+          for (var bit = 1; bit < 8; bit <<= 1) {
+            if (!(i & bit)) ctx.line(c(i), c(i | bit), { color: ctx.options.color, width: 0.4 });
+          }
+        }
+      });
+    },
+  };
+  if (P.register) P.register(def); else P.pending.push(def);
+})();
+</script>
+
+<script id="p-pocket">
+(function () {
+  var P = window.py2dmolPlugins = window.py2dmolPlugins || { list: [], pending: [] };
+  // An icosahedron subdivided once: 42 points on the unit sphere and the
+  // 120 edges between them, built once and scaled per frame.
+  var SPHERE = (function () {
+    var t = (1 + Math.sqrt(5)) / 2;
+    var v = [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t],
+             [0, -1, -t], [0, 1, -t], [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]];
+    var f = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4],
+             [11, 10, 2], [10, 7, 6], [7, 1, 8], [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8],
+             [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]];
+    var unit = function (p) { var m = Math.hypot(p[0], p[1], p[2]); return [p[0] / m, p[1] / m, p[2] / m]; };
+    v = v.map(unit);
+    var mid = {};
+    var half = function (a, b) {
+      var k = a < b ? a + ',' + b : b + ',' + a;
+      if (mid[k] === undefined) {
+        v.push(unit([(v[a][0] + v[b][0]) / 2, (v[a][1] + v[b][1]) / 2, (v[a][2] + v[b][2]) / 2]));
+        mid[k] = v.length - 1;
+      }
+      return mid[k];
+    };
+    var edges = {};
+    f.forEach(function (tri) {
+      var a = tri[0], b = tri[1], c = tri[2];
+      var ab = half(a, b), bc = half(b, c), ca = half(c, a);
+      [[a, ab], [ab, b], [b, bc], [bc, c], [c, ca], [ca, a], [ab, bc], [bc, ca], [ca, ab]]
+        .forEach(function (e) { edges[e[0] < e[1] ? e[0] + ',' + e[1] : e[1] + ',' + e[0]] = e; });
+    });
+    return { points: v, edges: Object.keys(edges).map(function (k) { return edges[k]; }) };
+  })();
+  var dist = function (a, b) { return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]); };
+  var def = {
+    name: 'pocket', version: '1', apiVersion: 1,
+    options: { radius: 8, contacts: true },
+    // a key() for everything prims() reads that the registry does not already
+    // track - here nothing: payloads and options are folded in for us
+    bounds: function (ctx) {
+      var p = ctx.payloads[0] && ctx.payloads[0].payload, r = ctx.options.radius;
+      return p ? { min: [p.center[0] - r, p.center[1] - r, p.center[2] - r],
+                   max: [p.center[0] + r, p.center[1] + r, p.center[2] + r] } : null;
+    },
+    prims: function (ctx) {
+      var r = ctx.options.radius;
+      ctx.payloads.forEach(function (pl) {
+        var p = pl.payload, o = p.center;
+        ctx.dot(o, { color: '#7b2cbf', radius: 1.2 });
+        SPHERE.edges.forEach(function (e) {
+          var a = SPHERE.points[e[0]], b = SPHERE.points[e[1]];
+          ctx.line([o[0] + r * a[0], o[1] + r * a[1], o[2] + r * a[2]],
+                   [o[0] + r * b[0], o[1] + r * b[1], o[2] + r * b[2]],
+                   { color: '#9d4edd', width: 0.12 });
+        });
+        if (!ctx.options.contacts) return;
+        p.residues.forEach(function (ca) {
+          // from the ligand atom nearest this residue
+          var best = null, bd = Infinity;
+          p.ligand.forEach(function (a) { var d = dist(a, ca); if (d < bd) { bd = d; best = a; } });
+          if (bd <= r) {
+            ctx.line(best, ca, { color: '#f4a261', width: 0.15 });
+            ctx.dot(ca, { color: '#f4a261', radius: 0.45 });
+          }
+        });
+      });
+    },
+  };
+  if (P.register) P.register(def); else P.pending.push(def);
+})();
+</script>
+
+<script id="p-axes">
+(function () {
+  var P = window.py2dmolPlugins = window.py2dmolPlugins || { list: [], pending: [] };
+  var COLORS = ['#d62828', '#2a9d8f', '#1d4e89'];
+  var add = function (a, b, s) { return [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s]; };
+  var cross = function (a, b) {
+    return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  };
+  var unit = function (a) { var m = Math.hypot(a[0], a[1], a[2]); return [a[0] / m, a[1] / m, a[2] / m]; };
+  // A cone of `n` triangles from a ring at `base` to the point `tip`, plus the
+  // disc closing it. Triangles are double-sided, so winding does not matter.
+  var cone = function (ctx, base, tip, dir, radius, color) {
+    var u = unit(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+    var w = cross(dir, u), n = 12, ring = [];
+    for (var i = 0; i < n; i++) {
+      var t = 2 * Math.PI * i / n;
+      ring.push(add(add(base, u, radius * Math.cos(t)), w, radius * Math.sin(t)));
+    }
+    for (var j = 0; j < n; j++) {
+      ctx.tri(ring[j], ring[(j + 1) % n], tip, { color: color });
+      ctx.tri(ring[j], ring[(j + 1) % n], base, { color: color });
+    }
+  };
+  var def = {
+    name: 'axes', version: '1', apiVersion: 1,
+    bounds: function (ctx) {
+      var p = ctx.payloads[0] && ctx.payloads[0].payload;
+      if (!p) return null;
+      var lo = p.center.slice(), hi = p.center.slice();
+      p.axes.forEach(function (ax) {
+        [1, -1].forEach(function (s) {
+          var q = add(p.center, ax.dir, s * (ax.half + 4));
+          for (var k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], q[k]); hi[k] = Math.max(hi[k], q[k]); }
+        });
+      });
+      return { min: lo, max: hi };
+    },
+    prims: function (ctx) {
+      ctx.payloads.forEach(function (pl) {
+        var p = pl.payload;
+        p.axes.forEach(function (ax, i) {
+          var a = add(p.center, ax.dir, -ax.half), b = add(p.center, ax.dir, ax.half);
+          ctx.line(a, b, { color: COLORS[i], width: 0.6 });
+          cone(ctx, b, add(b, ax.dir, 4), ax.dir, 1.4, COLORS[i]);
+        });
+        ctx.dot(p.center, { color: '#333333', radius: 1.0 });
+      });
+    },
+  };
+  if (P.register) P.register(def); else P.pending.push(def);
+})();
+</script>
+
+<!-- =========================== using them on a page ========================== -->
+
+<script>
+// Shared by the examples below: a structure as text (the copy beside this
+// repo when there is one, the PDB otherwise), and the alpha carbons of a
+// parsed frame. One position per residue is the alpha carbon.
+async function structureText(id) {
+  try {
+    const res = await fetch('../' + id + '.cif');
+    if (res.ok) return await res.text();
+  } catch (e) { /* not served from the repo */ }
+  return py2Dmol.fetch(id);
+}
+function alphaCarbons(frame) {
+  return frame.coords.filter((_, i) => frame.position_types[i] === 'P');
+}
+const viewers = [];
+// The bar decides the renderer and style of every viewer, including one made
+// after a click. The full bundle opens on the 2D renderer; the GPU one is
+// asked for by setting useGPU, which is what the website's own checkbox does.
+const bar = { painter: 'gpu', style: 'richardson' };
+const gpuOk = () => !!(window.py2dmolCartoonGPU && window.py2dmolCartoonGPU.available());
+function applyBar(r) {
+  r.useGPU = bar.painter === 'gpu' && gpuOk();
+  if (window.py2dmolCartoonGPU) window.py2dmolCartoonGPU.invalidate();
+  r.setStyle(bar.style);
+  r.render('bar');
+}
+function adopt(v, statusId, name) {
+  viewers.push(v);
+  applyBar(v);
+  report(statusId, v, name);
+}
+function report(id, v, name) {
+  const el = document.getElementById(id);
+  const errs = window.py2dmolPlugins.errors(v).filter((e) => e.name === name);
+  el.className = 'status' + (errs.length ? ' bad' : '');
+  el.textContent = errs.length ? errs.map((e) => e.painter + ': ' + e.message).join('; ')
+    : 'plugin "' + name + '" drawing, no errors';
+}
+</script>
+
+<script id="u-box">
+(async () => {
+  const text = await structureText('1UBQ');
+  const frame = py2Dmol.frameFromText(text);
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  for (const p of alphaCarbons(frame)) {
+    for (let k = 0; k < 3; k++) { min[k] = Math.min(min[k], p[k]); max[k] = Math.max(max[k], p[k]); }
+  }
+  // the payload goes to the renderer show() returns; the view widens to fit bounds()
+  const v = py2Dmol.show('v-box', text, { style: 'richardson' });
+  py2dmolPlugins.setPayload(v, 'box', {
+    payloads: [{ object: null, frame: null, payload: { min, max } }],
+  });
+  document.getElementById('box-shown').onchange = (e) =>
+    py2dmolPlugins.setOption(v, 'box', 'shown', e.target.checked);
+  adopt(v, 's-box', 'box');
+})();
+</script>
+
+<script id="u-pocket">
+(async () => {
+  const text = await structureText('3PTB');
+  const frame = py2Dmol.frameFromText(text);
+  const ligand = frame.coords.filter((_, i) => frame.position_names[i] === 'BEN');
+  const center = [0, 1, 2].map((k) => ligand.reduce((s, p) => s + p[k], 0) / ligand.length);
+  // every alpha carbon that could ever be inside the largest radius
+  const residues = alphaCarbons(frame).filter((p) =>
+    Math.hypot(p[0] - center[0], p[1] - center[1], p[2] - center[2]) < 20);
+  const v = py2Dmol.show('v-pocket', text, { style: 'richardson' });
+  py2dmolPlugins.setPayload(v, 'pocket', {
+    payloads: [{ object: null, frame: null, payload: { center, ligand, residues } }],
+  });
+  const r = document.getElementById('pocket-r');
+  r.oninput = () => {
+    document.getElementById('pocket-rv').textContent = r.value + ' Å';
+    py2dmolPlugins.setOption(v, 'pocket', 'radius', parseFloat(r.value));
+  };
+  document.getElementById('pocket-c').onchange = (e) =>
+    py2dmolPlugins.setOption(v, 'pocket', 'contacts', e.target.checked);
+  adopt(v, 's-pocket', 'pocket');
+})();
+</script>
+
+<script id="u-axes">
+(async () => {
+  const text = await structureText('1TIM');
+  const frame = py2Dmol.frameFromText(text);
+  const ca = alphaCarbons(frame);
+  const center = [0, 1, 2].map((k) => ca.reduce((s, p) => s + p[k], 0) / ca.length);
+  // the covariance of the alpha carbons, and its eigenvectors by Jacobi rotations
+  const C = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  for (const p of ca) for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+    C[i][j] += (p[i] - center[i]) * (p[j] - center[j]) / ca.length;
+  }
+  const V = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  for (let sweep = 0; sweep < 20; sweep++) {
+    for (const [i, j] of [[0, 1], [0, 2], [1, 2]]) {
+      if (Math.abs(C[i][j]) < 1e-12) continue;
+      const th = 0.5 * Math.atan2(2 * C[i][j], C[j][j] - C[i][i]);
+      const c = Math.cos(th), s = Math.sin(th);
+      for (let k = 0; k < 3; k++) {          // C <- C G
+        const a = C[k][i], b = C[k][j]; C[k][i] = c * a - s * b; C[k][j] = s * a + c * b;
+      }
+      for (let k = 0; k < 3; k++) {          // C <- G^T C
+        const a = C[i][k], b = C[j][k]; C[i][k] = c * a - s * b; C[j][k] = s * a + c * b;
+      }
+      for (let k = 0; k < 3; k++) {          // V <- V G
+        const a = V[k][i], b = V[k][j]; V[k][i] = c * a - s * b; V[k][j] = s * a + c * b;
+      }
+    }
+  }
+  const axes = [0, 1, 2]
+    .map((k) => ({ dir: [V[0][k], V[1][k], V[2][k]], half: 2 * Math.sqrt(Math.max(C[k][k], 0)) }))
+    .sort((a, b) => b.half - a.half);
+  const v = py2Dmol.show('v-axes', text, { style: 'richardson' });
+  py2dmolPlugins.setPayload(v, 'axes', {
+    payloads: [{ object: null, frame: null, payload: { center, axes } }],
+  });
+  adopt(v, 's-axes', 'axes');
+})();
+</script>
+
+<script>
+// Print every block above beside its example, from the same source that ran.
+for (const pre of document.querySelectorAll('pre[data-src]')) {
+  pre.textContent = document.getElementById(pre.dataset.src).textContent.trim();
+}
+// The bar: one renderer and one style for every viewer on the page.
+function pick(groupId, value) {
+  for (const b of document.querySelectorAll('#' + groupId + ' button')) {
+    b.setAttribute('aria-pressed', String(b.dataset.v === value));
+  }
+}
+if (!gpuOk()) {
+  bar.painter = '2d';
+  pick('painter', '2d');
+  const b = document.querySelector('#painter [data-v="gpu"]');
+  b.disabled = true; b.title = 'WebGL2 is not available in this browser';
+}
+document.getElementById('painter').onclick = (e) => {
+  const v = e.target.dataset && e.target.dataset.v;
+  if (!v || e.target.disabled) return;
+  bar.painter = v; pick('painter', v);
+  viewers.forEach(applyBar);
+};
+document.getElementById('style').onclick = (e) => {
+  const v = e.target.dataset && e.target.dataset.v;
+  if (!v) return;
+  bar.style = v; pick('style', v);
+  viewers.forEach(applyBar);
+};
+// errors can appear at draw time (a painter's budget, a bad coordinate)
+setInterval(() => {
+  const ids = ['s-box', 's-pocket', 's-axes'], names = ['box', 'pocket', 'axes'];
+  viewers.forEach((v) => {
+    const i = ['v-box', 'v-pocket', 'v-axes'].findIndex((id) => v.canvas && v.canvas.closest('#' + id));
+    if (i >= 0) report(ids[i], v, names[i]);
+  });
+}, 1000);
+</script>
+</body>
+</html>
