@@ -4794,9 +4794,11 @@ than leaving the next session to find out the same way.
   residue 0 passes against the bug; `tests/plugin_browser.py` fades it.
 - 🔴 **A LIVE VIEWER IS SENT ITS PLUGINS, SOURCE AND ALL.**
   `add_plugin` / `set_plugin_option` after `show()` go out under `viewer.plugins` (`_plugin_delta`,
-  `applyPluginBlock`): only what changed, without `payloads` when those are unchanged, and with the
-  plugin's `source` the first time the page needs it, because in Colab the update runs in another
-  iframe - `tests/colab.py` loads the cells as iframes in both orders and requires the plugin to
+  `applyPluginBlock`): only what changed, without `payloads` when those are unchanged, only the NEW
+  ones after `payloads_from` when they grew (re-sending the whole list made a loop quadratic, in the
+  notebook file too), and with the plugin's `source` whenever the page has not had THAT source - the
+  first time, or after it was re-registered with new code, which `register()` now replaces even under
+  the same version - because in Colab the update runs in another iframe - `tests/colab.py` loads the cells as iframes in both orders and requires the plugin to
   register in the VIEWER's document.
 - 🔴 **THE TUBE DRAWS PLUGINS, THROUGH ITS OWN TWO DOORS** (`docs/PLUGINS.md` 7b). The 2D tube
   interleaves the projected prims with its segments by depth; the GPU tube carries lines and balls as

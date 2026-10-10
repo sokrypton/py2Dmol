@@ -1943,8 +1943,10 @@ function applyPluginBlock(block) {
     if (!P || !P.setPayload || !block || typeof block !== 'object') return;
     for (const name of Object.keys(block)) {
         const entry = block[name] || {};
-        const known = (P.list || []).some((d) => d.name === name);
-        if (entry.source && !known) {
+        // Python sends the source only when this page has not had THAT source:
+        // the first time, or after register_plugin was given new code. Run it
+        // either way - register() ignores a copy it already has.
+        if (entry.source) {
             try {
                 const el = document.createElement('script');
                 el.setAttribute('data-py2dmol-plugin', name);
@@ -1956,6 +1958,8 @@ function applyPluginBlock(block) {
         }
         const data = { options: entry.options || {}, version: entry.version };
         if (Array.isArray(entry.payloads)) data.payloads = entry.payloads;
+        // ...only the payloads added since the last send, after the first k
+        if (Number.isInteger(entry.payloads_from)) data.payloadsFrom = entry.payloads_from;
         P.setPayload(renderer, name, data);
     }
 }

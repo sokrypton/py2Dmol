@@ -297,8 +297,14 @@ with warnings.catch_warnings(record=True) as w:
     lv.add_plugin('volume', {'b': 2})
 ok(not any('show()' in str(x.message) for x in w), 'live: add_plugin no longer tells the reader to show() again')
 lp = last_plugins() or {}
-ok([x['payload'] for x in (lp.get('volume') or {}).get('payloads', [])] == [{'a': 1}, {'b': 2}],
-   'live: add_plugin on a viewer already on the page SENDS the plugin, with every payload it now has')
+ok([x['payload'] for x in (lp.get('volume') or {}).get('payloads', [])] == [{'b': 2}]
+   and (lp.get('volume') or {}).get('payloads_from') == 1,
+   'live: add_plugin on a viewer already on the page SENDS the new payload alone, after the 1 the page has')
+lv.add_plugin('volume', {'c': 3})
+lp = last_plugins() or {}
+ok([x['payload'] for x in (lp.get('volume') or {}).get('payloads', [])] == [{'c': 3}]
+   and (lp.get('volume') or {}).get('payloads_from') == 2,
+   'live: ...and the next one sends ITS payload, not every payload before it')
 ok('source' not in (lp.get('volume') or {}), 'live: no source for a plugin the process never registered')
 n0 = len(sent)
 lv.set_plugin_option('volume', 'level', 0.5)
@@ -315,6 +321,13 @@ ok((lp.get('livep') or {}).get('source') == LIVE_SRC, 'live: a plugin the page h
 ok('</script' not in sent[-1].lower(), 'live: a payload holding </script> is escaped in the update')
 lv.set_plugin_option('livep', 'k', 1)
 ok('source' not in (last_plugins() or {}).get('livep', {}), 'live: ...and its source travels once')
+# an edited plugin, registered again under the same name and version, travels again
+_keep_src = V._PLUGIN_SOURCES['livep']
+py2Dmol.register_plugin('livep', LIVE_SRC + '\n// edited', version=_keep_src[1])
+lv.set_plugin_option('livep', 'k', 2)
+ok((last_plugins() or {}).get('livep', {}).get('source') == LIVE_SRC + '\n// edited',
+   'live: NEW code for a plugin the page already has is sent again')
+V._PLUGIN_SOURCES['livep'] = _keep_src
 pg = fresh(tmp)
 pg.add_plugin('livep', {'x': 1})
 pg.to_html()

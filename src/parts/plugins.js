@@ -323,6 +323,17 @@ function viewMapper(r, object, c) {
 // the console, and null back - never a throw. A direct register() and a
 // definition parked before the bundle must behave alike, and a throw at load
 // time would kill the whole bundle.
+// A definition's CODE, for telling two copies of one plugin apart: the source
+// of every function it carries, by property name. Asked only when a plugin
+// arrives a second time.
+function codeOf(def) {
+    let s = '';
+    for (const k of Object.keys(def).sort()) {
+        if (typeof def[k] === 'function') s += k + '=' + String(def[k]) + ';';
+    }
+    return s;
+}
+
 function register(def) {
     let problem = null;
     if (!def || typeof def !== 'object') problem = 'register() takes a plugin object';
@@ -354,11 +365,15 @@ function register(def) {
     if (at >= 0) {
         // The same plugin arriving twice - one inline script per viewer on a
         // page - is not an event. A different VERSION under the same name is,
-        // and replaces the old one in place.
-        if (P.list[at] === def || P.list[at].version === def.version) return P.list[at];
+        // and so is different CODE under the same version: an author edits the
+        // plugin and runs the cell again without bumping it, and keeping the
+        // first copy drew the old code with nothing to say so. Last one wins.
+        const old = P.list[at];
+        if (old === def || (old.version === def.version && codeOf(old) === codeOf(def))) return old;
         if (typeof console !== 'undefined') {
-            console.warn('py2Dmol: plugin "' + def.name + '" replaced: version '
-                + P.list[at].version + ' -> ' + def.version);
+            console.warn('py2Dmol: plugin "' + def.name + '" replaced: '
+                + (old.version === def.version ? 'new code, version ' + def.version
+                    : 'version ' + old.version + ' -> ' + def.version));
         }
         P.list[at] = def;
     } else {
@@ -725,9 +740,25 @@ P.errors = function (r) {
 
 // JS-side doors, for a host page that has no Python: hand a viewer a payload
 // (creating its entry), or change one option. Both redraw it.
+// `payloadsFrom: k` makes `payloads` a TAIL: the entry keeps its first k and
+// these follow them. It is how the live path sends one add_plugin without
+// re-sending every payload before it, and it is idempotent - a Colab reopen
+// replays the same delta onto a page that already has it, and gets the same
+// list. A page holding FEWER than k (a delta it never saw) keeps what it has
+// and says so: the tail is still drawn.
 P.setPayload = function (r, name, data) {
     const st = stateFor(r);
     let e = st.entries.get(name);
+    if (data && Number.isInteger(data.payloadsFrom) && Array.isArray(data.payloads)) {
+        const k = data.payloadsFrom;
+        const had = (e && Array.isArray(e.data.payloads)) ? e.data.payloads : [];
+        if (had.length < k) {
+            note(st, 'gap:' + name + ':' + k, 'plugin "' + name + '": ' + (k - had.length)
+                + ' earlier payload(s) never reached this page', 'warn');
+        }
+        data = Object.assign({}, data, { payloads: had.slice(0, k).concat(data.payloads) });
+        delete data.payloadsFrom;
+    }
     if (!e) e = addEntry(st, name, data || {});
     else {
         e.data.payloads = Array.isArray(data && data.payloads) ? data.payloads : e.data.payloads;

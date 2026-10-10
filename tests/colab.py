@@ -574,6 +574,9 @@ def build_plugin_cells():
     v.add(np.stack([np.cos(t) * 5, np.sin(t) * 5, t * 1.5], axis=1), align=False, name='m')
     v.add_plugin('cpl', {'a': [-7.0, 0.0, 9.0], 'b': [7.0, 0.0, 9.0]}, options={'shown': False})
     v.set_plugin_option('cpl', 'shown', True)
+    # a second payload arrives as a TAIL after the first - in its own iframe, so
+    # both orders must still end with the two in order
+    v.add_plugin('cpl', {'a': [-7.0, 3.0, 9.0], 'b': [7.0, 3.0, 9.0]})
     return [c['html'] for c in CELLS]
 
 
@@ -593,8 +596,9 @@ for label, order in (('plugin-viewer-first', lambda c: c), ('plugin-viewer-last'
     if 'cpl' not in (pl.get('list') or []):
         bad.append(f'{label}: the plugin never registered in the VIEWER\'s iframe - its source has'
                    ' to travel inside the update, because the update runs in another document')
-    if len(snap.get('payloads') or []) != 1 or (snap.get('options') or {}).get('shown') is not True:
-        bad.append(f'{label}: the viewer holds {snap} - wanted one payload and shown=True')
+    ys = [p['payload']['a'][1] for p in (snap.get('payloads') or [])]
+    if ys != [0.0, 3.0] or (snap.get('options') or {}).get('shown') is not True:
+        bad.append(f'{label}: the viewer holds {snap} - wanted the two payloads in order and shown=True')
     if (R.get('magenta') or 0) < 100:
         bad.append(f"{label}: the plugin is not drawn ({R.get('magenta')} px)")
     if pl.get('errors'):

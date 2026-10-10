@@ -1350,7 +1350,7 @@ class view:
         # so an option changed after show() reaches the viewer without re-sending
         # a payload that may be a whole isosurface.
         self._sent_plugins = {}
-        self._sent_plugin_sources = set()
+        self._sent_plugin_sources = {}
         # ...AND WHETHER THE PAYLOAD CARRIES SIDE-CHAIN ATOMS. Read by
         # _parse_model, the only thing that can collect them, and a VIEWER-wide
         # setting rather than a per-load one: the table is per FRAME with no
@@ -2347,7 +2347,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                                   + container_html)
         # the page now holds every payload and every source written above
         self._sent_plugins = copy.deepcopy(self._plugins)
-        self._sent_plugin_sources = {n for n in self._plugins if n in _PLUGIN_SOURCES}
+        self._sent_plugin_sources = {n: _PLUGIN_SOURCES[n][0] for n in self._plugins
+                                     if n in _PLUGIN_SOURCES}
         # Only include library scripts if requested (grid optimization)
         if include_libs:
             # ONE BUNDLE, NOT FIFTEEN SCRIPTS.
@@ -2467,7 +2468,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._sidechain_atoms = None
         self._plugins = {}
         self._sent_plugins = {}
-        self._sent_plugin_sources = set()
+        self._sent_plugin_sources = {}
         self._is_live = False
 
         # Reset incremental update tracking
@@ -5113,10 +5114,14 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         """What the page does not have yet: {name: entry} for every plugin whose
         payload changed since the last send. An entry whose payloads are what
         the page holds carries no `payloads` key - the browser keeps its own -
-        so dragging an option does not re-send a mesh. The JavaScript of a
-        plugin the page has never seen travels as `source`, because in Colab
-        every output is its own iframe and a <script> beside the update would
-        run in the wrong document."""
+        so dragging an option does not re-send a mesh; one whose payloads only
+        GREW carries the new ones and `payloads_from`, the count the page
+        already has, so a loop of add_plugin calls costs each call its own
+        payload rather than every payload before it. The JavaScript travels as
+        `source` when the page has not had this source - the first time, or
+        after register_plugin was given new code - because in Colab every
+        output is its own iframe and a <script> beside the update would run in
+        the wrong document."""
         out = {}
         for name, cur in self._plugins.items():
             sent = self._sent_plugins.get(name)
@@ -5124,13 +5129,22 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 continue
             entry = {"version": cur.get("version"), "apiVersion": cur.get("apiVersion"),
                      "options": copy.deepcopy(cur.get("options") or {})}
-            if sent is None or sent.get("payloads") != cur.get("payloads"):
-                entry["payloads"] = copy.deepcopy(cur.get("payloads") or [])
-            if name not in self._sent_plugin_sources and name in _PLUGIN_SOURCES:
-                entry["source"] = _PLUGIN_SOURCES[name][0]
-                self._sent_plugin_sources.add(name)
+            now = cur.get("payloads") or []
+            had = (sent or {}).get("payloads")
+            if had is None or had != now:
+                k = len(had) if had is not None and now[:len(had)] == had else 0
+                entry["payloads"] = copy.deepcopy(now[k:])
+                if k:
+                    entry["payloads_from"] = k
+            src = _PLUGIN_SOURCES.get(name)
+            if src is not None and self._sent_plugin_sources.get(name) != src[0]:
+                entry["source"] = src[0]
+                self._sent_plugin_sources[name] = src[0]
             out[name] = entry
-            self._sent_plugins[name] = copy.deepcopy(cur)
+            # a payload is never edited once appended, so the record shares
+            # them rather than copying every payload on every call
+            self._sent_plugins[name] = dict(cur, payloads=list(now),
+                                            options=copy.deepcopy(cur.get("options") or {}))
         return out
 
     def save_state(self, filepath):

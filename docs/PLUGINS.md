@@ -103,10 +103,15 @@ v.set_plugin_option(name, key, value)
 - It is sent with `show()`, and **a viewer already on the page is sent what changed**: `add_plugin` and
   `set_plugin_option` on a live viewer go out as an incremental update, under `viewer.plugins`, as
   `{name: entry}` for the plugins that changed. An entry whose payloads the page already holds carries
-  no `payloads` key and the browser keeps its own, so changing an option does not re-send a mesh. A
-  plugin the page has never had carries its JavaScript as `source`, run in the viewer's own document:
-  in Colab every output is its own iframe, so a `<script>` beside the update would run in the wrong
-  one. Every `<` in that update is escaped, as on the static path. (`_plugin_delta` in `viewer.py`,
+  no `payloads` key and the browser keeps its own, so changing an option does not re-send a mesh; one
+  whose payloads only GREW carries the new ones and `payloads_from`, the count the page already holds,
+  so a loop of `add_plugin` calls costs each call its own payload and not every payload before it
+  (with `persistence=True` that is also the size of the notebook). Applying a tail is idempotent, so a
+  Colab reopen that replays it lands on the same list; a page holding fewer than `payloads_from` keeps
+  what it has, draws the tail, and warns. A plugin whose JavaScript the page has not had - the first
+  time, or after `register_plugin` was given new code - carries it as `source`, run in the viewer's own
+  document: in Colab every output is its own iframe, so a `<script>` beside the update would run in
+  the wrong one. Every `<` in that update is escaped, as on the static path. (`_plugin_delta` in `viewer.py`,
   `applyPluginBlock` in `parts/ui.js`.)
 - Both styles draw plugins - see section 7b for how the tube does it.
 - Names match `[A-Za-z0-9][A-Za-z0-9_.-]{0,63}` (they become an HTML attribute and a state-file key).
@@ -194,7 +199,10 @@ same or a newer registry wins, and an older bundle loaded afterwards cannot down
 no) registry is taken over: its registered plugins are kept, its per-viewer state is started afresh,
 and a viewer re-attaches on its next question.
 
-**`dispose`** is called on a plugin being **replaced** (same name, new version). A viewer has no
+**`dispose`** is called on a plugin being **replaced**: same name, and a new version OR new code under
+the same version (an author edits the plugin and runs the cell again without bumping it - keeping the
+first copy drew the old code with nothing to say so). The last registration wins, for every viewer on
+the page; an identical copy, one inline script per viewer, is still no event. A viewer has no
 teardown hook to call it from, so a plugin must not rely on `dispose` for cleanup when a viewer goes
 away.
 

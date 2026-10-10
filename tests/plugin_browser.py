@@ -603,6 +603,14 @@ def main():
             nd = differ(back, shot(ws, tag + '_live_new'))
             ok(nd > 200, '[%s] live: a plugin first added after show() arrives with its source and draws (%d px changed)'
                % (tag, nd))
+            # ...and the next add_plugin arrives as a TAIL: the new payload alone, after
+            # the one the page has (_plugin_delta's payloads_from)
+            ev(ws, LIVE % json.dumps({'plugins': {'livedot': {'options': {}, 'payloads_from': 1,
+                'payloads': [{'object': None, 'frame': None, 'payload': {'at': [ctr[0] + 4, ctr[1], ctr[2]]}}]}}}), False)
+            ev(ws, SETTLE)
+            npl = ev(ws, "window.py2dmolPlugins.snapshot(Object.values(window.py2dmol_viewers)[0].renderer)"
+                         ".livedot.payloads.length")
+            ok(npl == 2, '[%s] live: a payload tail is APPENDED to what the page holds (%s payloads)' % (tag, npl))
             ev(ws, "window.py2dmolPlugins.restore(Object.values(window.py2dmol_viewers)[0].renderer,"
                    " {wire: window.py2dmolPlugins.snapshot(Object.values(window.py2dmol_viewers)[0].renderer).wire},"
                    " {replace: true})", False)

@@ -351,6 +351,10 @@ reset();
     const P = global.window.py2dmolPlugins;
     P.register(def); P.register({ name: 'twice', version: '1', apiVersion: 1, prims() {} });
     ok(P.list.length === 1 && P.list[0] === def, 'the same name and version registered twice is one plugin');
+    const edited = { name: 'twice', version: '1', apiVersion: 1, prims() { return 1; } };
+    P.register(edited);
+    ok(P.list.length === 1 && P.list[0] === edited && logged.warn.some((m) => /new code/.test(m)),
+        'new CODE under the same name and version replaces it (an edited plugin, cell run again)');
     P.register({ name: 'twice', version: '2', apiVersion: 1, prims() {} });
     ok(P.list.length === 1 && P.list[0].version === '2' && logged.warn.some((m) => /replaced/.test(m)),
         'a new VERSION under the same name replaces it in place, with a warning');
@@ -441,6 +445,15 @@ reset();
     const k1 = P.key(r);
     P.setPayload(r, 'k', { payloads: [{ object: null, frame: null, payload: { x: 1 } }] });
     ok(P.key(r) !== k1, 'key moves with a new payload');
+    // a TAIL (payloadsFrom: k) keeps the first k and appends; replayed, it is the same list
+    const pl = () => P.snapshot(r).k.payloads.map((x) => x.payload);
+    P.setPayload(r, 'k', { payloadsFrom: 1, payloads: [{ object: null, frame: null, payload: { x: 2 } }] });
+    ok(JSON.stringify(pl()) === '[{"x":1},{"x":2}]', 'a tail is appended after the payloads the page has');
+    P.setPayload(r, 'k', { payloadsFrom: 1, payloads: [{ object: null, frame: null, payload: { x: 2 } }] });
+    ok(JSON.stringify(pl()) === '[{"x":1},{"x":2}]', 'the same tail replayed (a Colab reopen) gives the same list');
+    P.setPayload(r, 'k', { payloadsFrom: 5, payloads: [{ object: null, frame: null, payload: { x: 9 } }] });
+    ok(JSON.stringify(pl()) === '[{"x":1},{"x":2},{"x":9}]' && logged.warn.some((m) => /never reached/.test(m)),
+        'a tail after payloads the page never had keeps what it has, draws the tail, and says so');
     // frame-bound payloads select by frame
     global.window.py2dmol_plugins = { v1: { k: { version: '1', apiVersion: 1, options: {}, payloads: [
         { object: null, frame: 0, payload: 'f0' }, { object: null, frame: 1, payload: 'f1' }] } } };
