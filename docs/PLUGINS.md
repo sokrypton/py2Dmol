@@ -111,7 +111,12 @@ v.set_plugin_option(name, key, value)
   what it has, draws the tail, and warns. A plugin whose JavaScript the page has not had - the first
   time, or after `register_plugin` was given new code - carries it as `source`, run in the viewer's own
   document: in Colab every output is its own iframe, so a `<script>` beside the update would run in
-  the wrong one. Every `<` in that update is escaped, as on the static path. (`_plugin_delta` in `viewer.py`,
+  the wrong one. `register_plugin` knows no viewers, so new code reaches a live one with that plugin's
+  next `add_plugin` or `set_plugin_option`. Every `<` in that update is escaped, as on the static path.
+  With `persistence=True` a plugin update is a cell of its own and `replace()` does not overwrite it
+  (it rewrites the last cell that carried a FRAME), so a reopen replays every tail; with
+  `persistence=False` the one mailbox cell holds only the last update, so a reopen has the static
+  payloads and that update's tail - the mode, as for frames. (`_plugin_delta` in `viewer.py`,
   `applyPluginBlock` in `parts/ui.js`.)
 - Both styles draw plugins - see section 7b for how the tube does it.
 - Names match `[A-Za-z0-9][A-Za-z0-9_.-]{0,63}` (they become an HTML attribute and a state-file key).
@@ -187,9 +192,13 @@ The reach limit is not configurable, since a setting that could raise it would h
 2D painter normalises `near` over. `near` is **clamped to 0..1 for plugin prims** (as the GPU clamps
 `near01`), so with depth fade they stay inside their colour ramp instead of extrapolating past it.
 
-**`register()`** returns the registered definition, the existing one (same name and version,
-idempotent), or `null` for a refusal; it does not throw. A different version under the same name
-replaces the old one, with a console warning.
+**`register()`** returns the registered definition, the existing one (same name, version and code,
+idempotent), or `null` for a refusal; it does not throw. A different version, or different code
+under the same version, replaces the old one, with a console warning.
+
+**`init` runs once per viewer.** A payload arriving later - a live `add_plugin`, `setPayload`, a
+session appended onto the viewer - calls `setPayload` on the instance already there; only a
+replacement (above) or a session that REPLACES the scene disposes it and calls `init` again.
 
 **The registry is idempotent to a second evaluation.** `py2dmolPlugins.__impl` marks the real
 implementation and the state (`__core`: which viewers exist, what they hold) lives on the registry

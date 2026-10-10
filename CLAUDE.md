@@ -4799,7 +4799,11 @@ than leaving the next session to find out the same way.
   notebook file too), and with the plugin's `source` whenever the page has not had THAT source - the
   first time, or after it was re-registered with new code, which `register()` now replaces even under
   the same version - because in Colab the update runs in another iframe - `tests/colab.py` loads the cells as iframes in both orders and requires the plugin to
-  register in the VIEWER's document.
+  register in the VIEWER's document. 🔴 **A payload for a plugin the viewer already holds is NOT a
+  bind**: `bindDef` ran `init` again for every live `add_plugin` and dropped the old instance with no
+  `dispose`; an entry already bound to that definition gets `setPayload` alone (`tests/plugin_seam.js`).
+  And with `persistence=True` a frameless update must not become the cell `replace()` overwrites
+  (`carries_frames`), or the overwrite deletes a payload tail and a reopen replays a gap.
 - 🔴 **THE TUBE DRAWS PLUGINS, THROUGH ITS OWN TWO DOORS** (`docs/PLUGINS.md` 7b). The 2D tube
   interleaves the projected prims with its segments by depth; the GPU tube carries lines and balls as
   capsule INSTANCES (`collectModel`, model space) and gives any frame with a plugin TRIANGLE to the 2D

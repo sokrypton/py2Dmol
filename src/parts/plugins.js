@@ -165,11 +165,26 @@ function hostOf(st) {
 
 // Give the viewer's entry for `def.name` (if it has one) its plugin: init, then
 // setPayload. Called when a viewer attaches and when a plugin registers late.
+// An entry that already HAS this plugin is only told its payload moved: `init`
+// is once per viewer, and running it again for every live add_plugin left the
+// previous instance behind with no dispose.
 // `dispose` is called on the plugin being REPLACED - the only teardown there is:
 // a viewer has no destroy hook to call it from (docs/PLUGINS.md).
 function bindDef(st, def) {
     const e = st.entries.get(def.name);
     if (!e) return;
+    if (e.def === def) {
+        try {
+            if (typeof def.setPayload === 'function') def.setPayload(ctxBase(st, e));
+            st.err.load.delete(e.name);
+        } catch (err) {
+            fail(st, e, err, 'load');
+        }
+        e.rev++;
+        st.extKey = null;
+        paintBadge(st);
+        return;
+    }
     if (e.def && e.def !== def && typeof e.def.dispose === 'function') {
         try { e.def.dispose({ instance: e.inst, host: hostOf(st) }); } catch (err) { /* replaced */ }
     }
@@ -822,6 +837,9 @@ P.restore = function (r, map, opts) {
                 payloads: keep ? prev.data.payloads.concat(payloads) : payloads,
                 options: keep ? Object.assign({}, prev.data.options, d.options || {}) : d.options }));
             if (prev) e.rev = prev.rev + 1;
+            // ...and keeps the instance the plugin already has here, so the
+            // bind below is a payload change, not a second init
+            if (keep) { e.def = prev.def; e.inst = prev.inst; }
             const def = P.list.find((x) => x.name === name);
             if (def) bindDef(st, def);
         }

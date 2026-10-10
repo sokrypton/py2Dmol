@@ -336,6 +336,41 @@ pg._is_live = True
 pg.add_plugin('livep', {'x': 2})
 ok('source' not in (last_plugins() or {}).get('livep', {}), 'live: no source for a plugin whose script the page already carries')
 
+# A FRAMELESS UPDATE IS NOT THE CELL replace() OVERWRITES. With persistence=True each
+# update is a cell of its own and replace() rewrites the LAST add() cell; a plugin
+# payload sent between the two used to become that cell, so the replace deleted it and
+# a reopened notebook replayed every later payload tail with a gap where it had been.
+class _Handle:
+    def __init__(self, html):
+        self.html = [html]
+    def update(self, html):
+        self.html.append(html)
+cells = []
+def _display(html, display_id=None):
+    cells.append(_Handle(html))
+    return cells[-1]
+_keep_display = V.display
+V.display = _display
+try:
+    rp = fresh(tmp)
+    rp.to_html()
+    rp._is_live = True
+    with open(os.devnull, 'w') as dn:
+        old, sys.stdout = sys.stdout, dn
+        try:
+            rp.add_pdb(helix_pdb(os.path.join(tmp, 'h.pdb')), name='crn')
+            n_add = len(cells)
+            rp.add_plugin('volume', {'a': 1})
+            rp.replace(rp._coords + 1.0, name='crn')
+        finally:
+            sys.stdout = old
+    ok(n_add >= 1 and len(cells) == n_add + 1
+       and len(cells[n_add].html) == 1 and len(cells[n_add - 1].html) == 2,
+       'live: replace() rewrites the add() cell, NOT the plugin update sent after it (%s)'
+       % [len(c.html) for c in cells])
+finally:
+    V.display = _keep_display
+
 # ---- 4c. the tube draws plugins now, so add_plugin has nothing to warn about there ---------------
 tv = py2Dmol.view()
 with warnings.catch_warnings(record=True) as w:

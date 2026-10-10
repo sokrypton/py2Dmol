@@ -600,6 +600,13 @@ reset();
     P.register({ name: 'p', version: '2', apiVersion: 1, init() { inits++; return {}; }, prims() {}, key() { return 'k2'; } });
     ok(r1._renders === 1 && r2._renders === 1 && r3._renders === 1,
         'twice: a late registration redraws EVERY viewer, including those the first evaluation saw (' + [r1, r2, r3].map((r) => r._renders).join(',') + ')');
+    // a payload arriving for a plugin a viewer already holds is a payload change: setPayload,
+    // never a second init (a live add_plugin used to re-init and drop the instance undisposed)
+    P.setPayload(r1, 'p', { payloadsFrom: 1, payloads: [{ object: null, frame: null, payload: { x: 2 } }] });
+    P.setPayload(r1, 'p', { options: { a: 1 } });
+    ok(inits === 6, 'twice: a live payload for a bound plugin does NOT run init again (' + inits + ')');
+    P.restore(r1, { p: { payloads: [{ object: null, frame: null, payload: { x: 3 } }] } });
+    ok(inits === 6, 'twice: ...nor does a session APPENDED onto it (' + inits + ')');
 }
 
 // ---- an OLDER copy of the library cannot downgrade a NEWER registry --------------------------------------

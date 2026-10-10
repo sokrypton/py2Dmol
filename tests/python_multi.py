@@ -91,7 +91,7 @@ def check_live():
     bad = []
     v = py2Dmol.view((200, 200))
     v._emitted = []
-    v._emit_to_output = lambda html, payload_json=None, update_last_add=False: \
+    v._emit_to_output = lambda html, payload_json=None, update_last_add=False, **kw: \
         v._emitted.append(html)
     v.add(helix(), name='a', align=False)
     v.add(helix(120.0), name='b', align=False)
@@ -125,7 +125,7 @@ def check_live():
     #  new objects, which reads as "the third structure did not load".
     m = py2Dmol.view((200, 200), multi=True)
     m._emitted = []
-    m._emit_to_output = lambda html, payload_json=None, update_last_add=False: \
+    m._emit_to_output = lambda html, payload_json=None, update_last_add=False, **kw: \
         m._emitted.append(html)
     m.add(helix(), name='a', align=False)
     m._display_viewer(static_data=m.objects)

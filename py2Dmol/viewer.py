@@ -1365,7 +1365,8 @@ class view:
         self._orient_request = None
 
 
-    def _emit_to_output(self, html_content: str, payload_json: Optional[str] = None, update_last_add: bool = False) -> None:
+    def _emit_to_output(self, html_content: str, payload_json: Optional[str] = None, update_last_add: bool = False,
+                        carries_frames: bool = True) -> None:
         """
         Emit HTML to output based on persistence mode.
 
@@ -1375,6 +1376,10 @@ class view:
             html_content (str): HTML content to emit (usually JavaScript)
             payload_json (str, optional): JSON payload for mailbox mode
             update_last_add (bool): If True, this is a replace() operation
+            carries_frames (bool): False for an update with no new frame (a
+                colour, a plugin payload). It gets a cell of its own and is NOT
+                the cell a later replace() overwrites - that would delete it,
+                and a reopened notebook would replay the frame without it.
 
         Behavior:
             persistence=True + add():
@@ -1399,7 +1404,9 @@ class view:
             else:
                 # Add mode: Create new output with display_id and store handle
                 display_id = f"py2dmol_add_{viewer_id}_{self._live_seq}"
-                self._latest_output_handle = display(HTML(html_content), display_id=display_id)
+                handle = display(HTML(html_content), display_id=display_id)
+                if carries_frames:
+                    self._latest_output_handle = handle
                 self._live_seq += 1  # Increment for next unique display_id
         else:
             # Mailbox mode: Use handle.update() for all operations
@@ -1916,7 +1923,8 @@ class view:
 
         # Emit to output using helper
         html_script = f'<script style="display:none">{update_js}</script>'
-        self._emit_to_output(html_script, payload_json=payload_json, update_last_add=False)
+        self._emit_to_output(html_script, payload_json=payload_json, update_last_add=False,
+                             carries_frames=bool(new_frames_by_object))
 
     def _send_replace_update(self, object_name: str, frame_data: Dict[str, Any], meta: Dict[str, Any]) -> None:
         """
