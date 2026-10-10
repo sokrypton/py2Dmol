@@ -597,7 +597,7 @@ def main():
                        "var d={name:'livedot',version:'1',apiVersion:1,prims:function(c){c.payloads.forEach("
                        "function(p){c.dot(p.payload.at,{color:[0,0,255],radius:3});});}};"
                        "if(P.register)P.register(d);else P.pending.push(d);})();")
-            ev(ws, LIVE % json.dumps({'plugins': {'livedot': {'source': dot_src, 'options': {},
+            ev(ws, LIVE % json.dumps({'plugins': {'livedot': {'source': dot_src, 'options': {}, 'apiVersion': 1,
                 'payloads': [{'object': None, 'frame': None, 'payload': {'at': ctr}}]}}}), False)
             ev(ws, SETTLE)
             nd = differ(back, shot(ws, tag + '_live_new'))
@@ -611,6 +611,9 @@ def main():
             npl = ev(ws, "window.py2dmolPlugins.snapshot(Object.values(window.py2dmol_viewers)[0].renderer)"
                          ".livedot.payloads.length")
             ok(npl == 2, '[%s] live: a payload tail is APPENDED to what the page holds (%s payloads)' % (tag, npl))
+            api = ev(ws, "window.py2dmolPlugins.snapshot(Object.values(window.py2dmol_viewers)[0].renderer)"
+                         ".livedot.apiVersion")
+            ok(api == 1, '[%s] live: the payload\'s apiVersion arrives, as it does on the static path (%s)' % (tag, api))
             ev(ws, "window.py2dmolPlugins.restore(Object.values(window.py2dmol_viewers)[0].renderer,"
                    " {wire: window.py2dmolPlugins.snapshot(Object.values(window.py2dmol_viewers)[0].renderer).wire},"
                    " {replace: true})", False)

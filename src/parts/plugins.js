@@ -779,6 +779,7 @@ P.setPayload = function (r, name, data) {
         e.data.payloads = Array.isArray(data && data.payloads) ? data.payloads : e.data.payloads;
         if (data && data.options) Object.assign(e.data.options, data.options);
         if (data && data.version != null) e.data.version = data.version;
+        if (data && data.apiVersion != null) e.data.apiVersion = data.apiVersion;
     }
     e.rev++;
     st.extKey = null;

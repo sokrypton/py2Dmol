@@ -1956,7 +1956,8 @@ function applyPluginBlock(block) {
                 console.error('py2Dmol: plugin "' + name + '" could not be loaded:', err);
             }
         }
-        const data = { options: entry.options || {}, version: entry.version };
+        const data = { options: entry.options || {}, version: entry.version,
+            apiVersion: entry.apiVersion };
         if (Array.isArray(entry.payloads)) data.payloads = entry.payloads;
         // ...only the payloads added since the last send, after the first k
         if (Number.isInteger(entry.payloads_from)) data.payloadsFrom = entry.payloads_from;

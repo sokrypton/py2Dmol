@@ -445,6 +445,9 @@ reset();
     const k1 = P.key(r);
     P.setPayload(r, 'k', { payloads: [{ object: null, frame: null, payload: { x: 1 } }] });
     ok(P.key(r) !== k1, 'key moves with a new payload');
+    // a later payload's apiVersion replaces the entry's, as its version does (ctx.apiVersion)
+    P.setPayload(r, 'k', { apiVersion: 7 });
+    ok(P.snapshot(r).k.apiVersion === 7, 'setPayload: a later apiVersion reaches the entry (' + P.snapshot(r).k.apiVersion + ')');
     // a TAIL (payloadsFrom: k) keeps the first k and appends; replayed, it is the same list
     const pl = () => P.snapshot(r).k.payloads.map((x) => x.payload);
     P.setPayload(r, 'k', { payloadsFrom: 1, payloads: [{ object: null, frame: null, payload: { x: 2 } }] });
