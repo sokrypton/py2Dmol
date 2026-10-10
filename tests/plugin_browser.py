@@ -274,6 +274,16 @@ PLUGIN_JS = r"""
           }
         }
         if (q.ball) c.dot(o, {color: [0, 200, 0], radius: q.ball});
+        // a big flat triangle through the middle, only when asked: the GPU tube has
+        // no shape for one and must hand the frame to the 2D tube
+        // - one in each axis plane, so whichever way the opening orient turned the
+        // model, one of them faces the camera
+        if (c.options.tri) {
+          var T = {color: [255, 140, 0]};
+          c.tri([o[0] - h, o[1] - h, o[2]], [o[0] + h, o[1] - h, o[2]], [o[0], o[1] + h, o[2]], T);
+          c.tri([o[0] - h, o[1], o[2] - h], [o[0] + h, o[1], o[2] - h], [o[0], o[1], o[2] + h], T);
+          c.tri([o[0], o[1] - h, o[2] - h], [o[0], o[1] + h, o[2] - h], [o[0], o[1], o[2] + h], T);
+        }
         window.__pluginEmitted = n;
       });
     }
@@ -300,10 +310,11 @@ def bundle_path(tmp):
     return out, 'UNMINIFIED STAND-IN (the tracked bundle predates the registry; run tools/bundle.py build)'
 
 
-def make_page(tmp, bundle, gpu, order, half, ball=0, plugin=True, subdiv=1):
+def make_page(tmp, bundle, gpu, order, half, ball=0, plugin=True, subdiv=1, style='cartoon'):
     path = structure_file(tmp)
-    v = py2Dmol.view(size=(SIZE, SIZE), style='cartoon', gpu=bool(gpu), controls=False,
-                     preset='richardson', id='probe%d%s' % (gpu, order))
+    kw = {'preset': 'richardson'} if style == 'cartoon' else {}
+    v = py2Dmol.view(size=(SIZE, SIZE), style=style, gpu=bool(gpu), controls=False,
+                     id='probe%d%s%s' % (gpu, order, style), **kw)
     old, sys.stdout = sys.stdout, open(os.devnull, 'w')
     try:
         v.add_pdb(path, name='obj')
@@ -321,7 +332,7 @@ def make_page(tmp, bundle, gpu, order, half, ball=0, plugin=True, subdiv=1):
         if order == 'before':
             head = html.index('<script src=')
             html = html[:head] + m.group(0) + html[head:]
-    page = os.path.join(tmp, 'page_%d_%s_%s_%d.html' % (gpu, order, half, subdiv))
+    page = os.path.join(tmp, 'page_%d_%s_%s_%d_%s.html' % (gpu, order, half, subdiv, style))
     open(page, 'w').write(html)
     return page
 
@@ -428,6 +439,93 @@ def web_session(ws, tmp):
     opts = ((out['appended'] or {}).get('wire') or {}).get('options') or {}
     ok(opts.get('mine') == 7 and opts.get('level') == 2,
        "[web] ...and layers the file's options over the viewer's rather than replacing them (%s)" % opts)
+
+
+ORANGE = lambda r, g, b: r > 200 and 90 < g < 190 and b < 70
+R0 = "Object.values(window.py2dmol_viewers)[0].renderer"
+
+
+def tube_legs(ws, tmp, bundle, gpu, R):
+    """THE TUBE DRAWS PLUGINS. The 2D tube lays each piece down between the segments by
+    depth; the GPU tube carries lines and balls as capsule instances and hands a frame with a
+    TRIANGLE to the 2D tube, which draws all three."""
+    tag = ('gpu' if gpu else '2d') + ' tube'
+    open_page(ws, make_page(tmp, bundle, gpu, 'after', 10, plugin=False, style='tube'))
+    ev(ws, SETTLE)
+    base = shot(ws, tag.replace(' ', '_') + '_baseline')
+    ok(count(base, RED) == 0 and count(base, INK) > 2000, '[%s] baseline: no red, a structure is drawn' % tag)
+    open_page(ws, make_page(tmp, bundle, gpu, 'after', 14, ball=1.0, style='tube'))
+    ev(ws, SETTLE)
+    ok(ev(ws, R0 + ".style", False) == 'tube', '[%s] the viewer is in the tube style' % tag)
+    on = shot(ws, tag.replace(' ', '_') + '_wire')
+    red = count(on, RED)
+    ok(red >= MIN_WIRE_PX, '[%s] the plugin draws in the tube: %d red px' % (tag, red))
+    ok(count(on, GREEN) > 40, '[%s] ...and its ball (%d green px)' % (tag, count(on, GREEN)))
+    ok(ev(ws, 'window.py2dmolPlugins.errors(%s).length' % R0, False) == 0, '[%s] no plugin error' % tag)
+    if gpu:
+        ok(ev(ws, R0 + ".gpuDrewLastFrame", False) is True,
+           '[%s] the GPU tube drew it, as capsules - it did not fall back to 2D' % tag)
+        b0 = ev(ws, 'window.__tubeBuilds || 0', False)
+        rotate(ws, 0.6)
+        ok(count(shot(ws, tag.replace(' ', '_') + '_rot'), RED) >= MIN_WIRE_PX
+           and ev(ws, 'window.__tubeBuilds || 0', False) == b0,
+           '[%s] turning the model keeps the wireframe with NO instance rebuild' % tag)
+        rotate(ws, -0.6)
+    ev(ws, "window.py2dmolPlugins.setOption(%s, 'wire', 'shown', false)" % R0, False)
+    ev(ws, SETTLE)
+    ok(count(shot(ws, tag.replace(' ', '_') + '_off'), RED) == 0, '[%s] an option takes it off' % tag)
+    ev(ws, "window.py2dmolPlugins.setOption(%s, 'wire', 'shown', true)" % R0, False)
+    ev(ws, SETTLE)
+    back = shot(ws, tag.replace(' ', '_') + '_back')
+    ok(count(back, RED) >= MIN_WIRE_PX, '[%s] ...and back' % tag)
+    ev(ws, "window.py2dmolPlugins.setOption(%s, 'wire', 'ink', true)" % R0, False)
+    ev(ws, SETTLE)
+    nd = differ(back, shot(ws, tag.replace(' ', '_') + '_ink'))
+    ok(nd > 500, '[%s] ink:true gives the strokes a rim (%d px differ)' % (tag, nd))
+    ev(ws, "window.py2dmolPlugins.setOption(%s, 'wire', 'ink', false)" % R0, False)
+    ev(ws, SETTLE)
+    nd0 = differ(back, shot(ws, tag.replace(' ', '_') + '_noink'))
+    ok(nd0 < 50, '[%s] ...and ink:false takes it off again (%d px differ)' % (tag, nd0))
+    # A TRIANGLE: the 2D tube fills it; the GPU tube has no shape for one and gives the
+    # frame to the 2D tube, which then draws the lines and the ball too
+    ev(ws, "window.py2dmolPlugins.setOption(%s, 'wire', 'tri', true)" % R0, False)
+    ev(ws, SETTLE)
+    tri = shot(ws, tag.replace(' ', '_') + '_tri')
+    ok(count(tri, ORANGE) > 2000 and count(tri, RED) > 0.5 * MIN_WIRE_PX,
+       '[%s] a plugin triangle is filled (%d orange px) and the lines stay (%d red px)'
+       % (tag, count(tri, ORANGE), count(tri, RED)))
+    if gpu:
+        ok(ev(ws, R0 + ".gpuDrewLastFrame", False) is False,
+           '[%s] ...because a triangle sends the frame to the 2D tube' % tag)
+    ev(ws, "window.py2dmolPlugins.setOption(%s, 'wire', 'tri', false)" % R0, False)
+    ev(ws, SETTLE)
+    if gpu:
+        ok(ev(ws, R0 + ".gpuDrewLastFrame", False) is True,
+           '[%s] ...and the GPU takes the frame back when the triangle goes' % tag)
+    # DEPTH: the structure runs through the cube, so its near segments cover the cube's
+    # far edges. Painted over everything instead, the cube would show exactly as much red
+    # with the structure there as without it.
+    with_s = count(shot(ws, tag.replace(' ', '_') + '_depth_with'), RED)
+    # ...taken away in the way that keeps each painter on its own path: the GPU tube FADES
+    # it (hidden, it has no segments to build and hands the frame to 2D), and the 2D tube,
+    # which does not ghost, HIDES it
+    gone, back_ = ((".setOpacity(null, 0)", ".setOpacity(null, 1)") if gpu else
+                   (".setVisibility({positions: [0], visibilityMode: 'explicit'})", ".resetVisibility()"))
+    ev(ws, R0 + gone, False)
+    ev(ws, SETTLE)
+    without = count(shot(ws, tag.replace(' ', '_') + '_depth_without'), RED)
+    if gpu:
+        ok(ev(ws, R0 + ".gpuDrewLastFrame", False) is True, '[%s] (the faded frame is still the GPU\'s)' % tag)
+    ev(ws, R0 + back_, False)
+    ev(ws, SETTLE)
+    ok(without - with_s > 30, '[%s] the structure hides the cube edges behind it (%d red px with it, %d without)'
+       % (tag, with_s, without))
+    # A CUBE LARGER THAN THE STRUCTURE is not clipped by the depth range
+    open_page(ws, make_page(tmp, bundle, gpu, 'after', 45, style='tube'))
+    ev(ws, SETTLE)
+    big = count(shot(ws, tag.replace(' ', '_') + '_big'), RED)
+    R[tag + '_big'] = big
+    ok(big >= MIN_WIRE_PX, '[%s] a cube larger than the structure is drawn (%d red px)' % (tag, big))
 
 
 def main():
@@ -625,6 +723,8 @@ def main():
                 ev(ws, SETTLE)
                 got = count(shot(ws, tag + '_' + order), RED)
                 ok(got >= MIN_WIRE_PX, '[%s] plugin registered %s the library: it draws (%d red px)' % (tag, order.upper(), got))
+        for gpu in (0, 1):
+            tube_legs(ws, tmp, bundle, gpu, R)
         web_session(ws, tmp)
     finally:
         proc.kill()
@@ -634,6 +734,10 @@ def main():
         ratio = R['gpu_big'] / float(R['2d_big'])
         ok(ratio > 0.88, 'GPU depth range: a cube larger than the structure is NOT clipped (GPU %d px vs 2D %d px, ratio %.2f)'
            % (R['gpu_big'], R['2d_big'], ratio))
+    if R.get('2d tube_big'):
+        ratio = R['gpu tube_big'] / float(R['2d tube_big'])
+        ok(ratio > 0.88, 'GPU tube depth range: a cube larger than the structure is NOT clipped'
+           ' (GPU %d px vs 2D %d px, ratio %.2f)' % (R['gpu tube_big'], R['2d tube_big'], ratio))
     print('browser probe:', 'FAILED %d' % bad if bad else 'ok')
     sys.exit(1 if bad else 0)
 

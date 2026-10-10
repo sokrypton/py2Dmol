@@ -4792,12 +4792,20 @@ than leaving the next session to find out the same way.
   lines; that texture is per-residue OPACITY, so filed under residue 0 they faded with it, on the GPU
   only. **Hiding a residue never reaches that texture** - it is a rebuild - so a probe that HIDES
   residue 0 passes against the bug; `tests/plugin_browser.py` fades it.
-- 🔴 **A LIVE VIEWER IS SENT ITS PLUGINS, AND THE TUBE SAYS IT DRAWS NONE, ON THE VIEWER.**
+- 🔴 **A LIVE VIEWER IS SENT ITS PLUGINS, SOURCE AND ALL.**
   `add_plugin` / `set_plugin_option` after `show()` go out under `viewer.plugins` (`_plugin_delta`,
   `applyPluginBlock`): only what changed, without `payloads` when those are unchanged, and with the
   plugin's `source` the first time the page needs it, because in Colab the update runs in another
-  iframe. `tube` is the DEFAULT style and never reaches `geom.js`'s `render()`, so a payload there
-  draws nothing: the badge says so while the style is up and Python's `add_plugin` warns.
+  iframe - `tests/colab.py` loads the cells as iframes in both orders and requires the plugin to
+  register in the VIEWER's document.
+- 🔴 **THE TUBE DRAWS PLUGINS, THROUGH ITS OWN TWO DOORS** (`docs/PLUGINS.md` 7b). The 2D tube
+  interleaves the projected prims with its segments by depth; the GPU tube carries lines and balls as
+  capsule INSTANCES (`collectModel`, model space) and gives any frame with a plugin TRIANGLE to the 2D
+  tube. Two traps: a no-ink capsule is given a skirt of zero width, never dropped - outline and fill are
+  one pass, and dropping an instance from it leaves the prepass depth with a paper-white hole over it;
+  and the plugin's reach is NOT folded into the tube's depth range, because `gl_FragDepth` is clamped
+  into it and out-of-range pieces already sort correctly - the fold was written, mutated out, and
+  changed no pixel. In a composed (two-style) frame only the cartoon half draws them.
 
 ## Tests
 

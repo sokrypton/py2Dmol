@@ -108,7 +108,7 @@ v.set_plugin_option(name, key, value)
   in Colab every output is its own iframe, so a `<script>` beside the update would run in the wrong
   one. Every `<` in that update is escaped, as on the static path. (`_plugin_delta` in `viewer.py`,
   `applyPluginBlock` in `parts/ui.js`.)
-- `add_plugin` on a viewer in the `tube` style warns: that style draws no plugin (section 7).
+- Both styles draw plugins - see section 7b for how the tube does it.
 - Names match `[A-Za-z0-9][A-Za-z0-9_.-]{0,63}` (they become an HTML attribute and a state-file key).
 
 ### Trust model
@@ -254,11 +254,43 @@ says so **in the file**, as an XML comment `<!-- py2dmol plugin <name> not drawn
 file stays valid), and once on the console. A raster export through the 2D painter (PNG on a 2D viewer)
 has no annotation layer and uses the same cap as the screen, where the badge shows it.
 
-**The tube style draws no plugin**: it never reaches `geom.js`'s `render()`. It says so ON THE
-VIEWER, in the badge, for as long as that style is up - and on the console once - and the notice goes
-when the style changes to one that draws plugins. A console line alone is invisible in a notebook, and
-`tube` is the default style, so Python's `add_plugin` warns as well. Drawing plugins in the tube's own
-pipelines (2D and GPU) is a follow-up (section 12).
+## 7b. The tube draws plugins too
+
+The tube never reaches `geom.js`'s `render()`, where the cartoon collects plugins, and it is the DEFAULT
+style - so it has its own two doors, one per painter, and the plugin cannot tell them apart.
+
+- **The 2D tube** (`_tubePluginPrims` and `_paintTubeSegments` in `core/mol.js`) asks the same
+  `collect` for the same projected prims, with this style's own projection, sorts them far to near and
+  lays each one down in the segment loop before the first segment nearer than it: the painter's
+  algorithm, extended to pieces the structure did not make. A line is a round stroke on a rim darkened
+  0.7 (the tube's own gap filler) when `ink` is asked for, a ball a disc, a triangle a flat fill lit by
+  its own normal (`0.72 + 0.28 * nl`, the cartoon's split).
+- **The GPU tube** (`buildTube` in `cartoon/paintgl.js`) holds model-space capsules - two endpoints, a
+  radius, a colour - rotated by a uniform. A plugin's line IS one and its ball is one of zero length, so
+  `py2dmolPlugins.collectModel` runs the plugin into model space (the object's alignment applied, as
+  `renderer.coords` has it, and nothing else) and they join the instance buffer: free round ends,
+  residue -1, the annotation slot set so they are flat and unshaded like a contact, and 2 there where
+  the plugin asked for no ink, which gives the capsule a skirt of NO WIDTH (`VSTUBE`). Not dropping it:
+  the outline and the fill are one pass that picks per fragment, and an instance dropped from it leaves
+  the depth prepass's surface with nothing drawn over it - a paper-white hole where the line should be.
+  The instances depend on no view, so turning the model rebuilds nothing; the plugins' key is in
+  `sharedGeometryKey`, so a changed option or payload does.
+- **A triangle has no capsule to be.** `collectModel` counts them, and a frame whose plugins emit one is
+  handed to the 2D tube, which draws all three kinds; the refusal is remembered against the key so a
+  turning model does not ask again every frame. The cost is the 2D tube's speed for as long as the
+  triangles are there.
+- **Their reach does not join the GPU tube's depth range**, unlike the cartoon's (section 8). The tube
+  writes `gl_FragDepth` clamped into that range, so a piece beyond the structure's depth sorts to the
+  front or the back of it, which is the right order against the structure, and is never cut off;
+  widening the range would only spend the structure's own depth precision. Measured: removing the fold
+  draws a cube 2.9x the structure's radius exactly as before, so it is not there.
+- **In a composed frame** - two objects in two styles, drawn into one depth buffer - the cartoon half
+  draws the plugins and the tube half does not, or they would be drawn twice (`S.compose`, which is in
+  the tube's key for that reason). Read, not measured: no probe composes a frame with a plugin.
+
+`tests/plugin_browser.py` drives both painters in the tube: drawn, an option off and on, the rim, a
+triangle (and the GPU giving the frame up for it, and taking it back), the structure hiding the cube
+edges behind it, a cube larger than the structure, and on the GPU a rotation with no rebuild.
 
 The caps are a decision, not a limit found by measurement. Measured while choosing them (not in the
 suite): the 2D painter was still interactive at about 7,700 lines (43 ms median JavaScript per
@@ -351,9 +383,12 @@ cell when the library is not shared, so the registry is paid there once per cell
 - **Several objects, and an alignment, in a browser.** The arithmetic is tested (`_modelToView` with an
   `alignTransform` against `_transformedFrame`), and `ctx.toView(p, objectName)` picks the object; no
   browser page drew a plugin over two aligned objects.
-- **The tube style** draws no plugin geometry; it says so on the viewer and in Python (section 7).
-- **The live path in a real Colab.** The update carries the plugin's source and the viewer runs it;
-  that was driven through the handler in a page, not through Colab's own iframes.
+- **Colab's own frontend.** `tests/colab.py` reproduces its shape - one iframe per cell output, one
+  origin, BroadcastChannel the only bridge, iframes loading in either order - and a plugin added after
+  `show()` arrives there with its source, registers in the VIEWER's document and draws. Colab's sandbox
+  attributes and CSP are not reproduced (its frontend is not open source); a CSP that forbade inline
+  script would refuse the injected source, and nothing here would know.
+- **A composed frame with a plugin** (two objects, two styles): read, not measured (section 7b).
 - **A notebook with the library borrowed over a BroadcastChannel** (Colab). The plugin script does not
   care whether it runs before the library; the three orders are tested in a page, not through a real
   borrow.
@@ -367,7 +402,7 @@ cell when the library is not shared, so the registry is paid there once per cell
 | Style-panel rows and a legend for a plugin | `rows()` / `legend()` in the definition and a mount in `parts/panel.js`, touching no DOM outside the viewer |
 | `cover` / translucency | a real blend pass in `paintgl.js` |
 | removing a plugin on a live viewer | the live block sends changed entries only; a removal would travel as `None` (see the set/unset trap in `CLAUDE.md`) once there is a `remove_plugin` |
-| the tube style | a seam in `_drawFrame` and the GPU tube model; today it refuses, visibly |
+| triangles on the GPU tube | a triangle instance type in `buildTube`; today such a frame goes to the 2D tube |
 | a separate depth range for plugin geometry | only if the speckle in section 8 matters; it costs a second pass |
 | multi-object in a browser | a probe with two aligned objects |
 | `remove_plugin`, and what repeated `add_plugin` means | payloads accumulate today; decide replace, append or keyed |
@@ -384,7 +419,8 @@ Run the node checks with `tests/run.sh node`; the browser probes need Chromium (
 
 | file | lane | claim |
 |---|---|---|
-| `tests/plugin_seam.js` | node | registry, seam and `paint2d` without a browser: nothing changes without a plugin, colour and depth order reach the canvas, the prim schema, the `apiVersion` messages, registration in every order, the budget (exactly the cap passes, one over draws nothing), a throwing plugin rolls back, the key moves with options / payload / frame, `bounds` and the per-axis floor, `noInk`, `_modelToView` equals `_rotateAt` and applies `alignTransform`, non-finite and absurd coordinates, one cap per painter and the SVG comment, the tube notice, `linesKeyOf` |
+| `tests/plugin_seam.js` | node | registry, seam and `paint2d` without a browser: nothing changes without a plugin, colour and depth order reach the canvas, the prim schema, the `apiVersion` messages, registration in every order, the budget (exactly the cap passes, one over draws nothing), a throwing plugin rolls back, the key moves with options / payload / frame, `bounds` and the per-axis floor, `noInk`, `_modelToView` equals `_rotateAt` and applies `alignTransform`, non-finite and absurd coordinates, one cap per painter and the SVG comment, `collectModel` (the tube's model-space capsules), `linesKeyOf` |
 | `tests/plugin_state.py` | node | the round trip, unknown names kept and warned about once, a no-plugin page and state file byte-identical to the tree before this change (`--golden`), the page script and its escaping, per-page inlining, validation of every `add_plugin` argument |
-| `tests/plugin_browser.py` | gpu | a wireframe in both painters and in PNG / SVG capture, a rotation without a GPU rebuild, the key moving the picture through a rebuild, a cube larger than the structure not clipped, the ball keeping the structure's cheap recolour, three registration orders, the `ink` toggle, a tight fit on both axes, 10,008 strokes with an SVG export that carries the comment |
+| `tests/plugin_browser.py` | gpu | a wireframe in both painters and in PNG / SVG capture, a rotation without a GPU rebuild, the key moving the picture through a rebuild, a cube larger than the structure not clipped, the ball keeping the structure's cheap recolour, three registration orders, the `ink` toggle, a tight fit on both axes, 10,008 strokes with an SVG export that carries the comment, and all of it again in the TUBE on both painters (section 7b) |
+| `tests/colab.py` | ui | a plugin added after `show()` reaches a viewer in another iframe, with its source, in either load order |
 | `tests/bundles.js` | node | every bundle carries `py2dmolPlugins` |

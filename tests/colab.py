@@ -218,6 +218,15 @@ window.addEventListener('load', async () => {
             ? Math.round((whole.near - whole.far) * 10) / 10 : null;
         for (const [n, o] of Object.entries(r.objectsData)) out.objs[n] = read(o);
       }
+      // ...AND THE PLUGINS, read in the VIEWER's document: whether the source
+      // that travelled inside an update ran HERE, and what payload it holds.
+      const PP = w.py2dmolPlugins;
+      out.plugins = PP ? {
+        list: (PP.list || []).map(d => d.name),
+        snap: PP.snapshot ? PP.snapshot(r) : null,
+        errors: PP.errors ? PP.errors(r).map(e => e.message) : [],
+        scripts: w.document.querySelectorAll('script[data-py2dmol-plugin]').length,
+      } : null;
       // INK IS PIXELS UNLIKE THE CORNER, not pixels with alpha. The
       // background is opaque, so an alpha count returns the canvas area
       // whatever is drawn on it - 398 x 398 = 158404 every single time,
@@ -228,9 +237,11 @@ window.addEventListener('load', async () => {
         if (g && g.getImageData) {
           const d = g.getImageData(0, 0, cv.width, cv.height).data;
           const b = [d[0], d[1], d[2]];
+          out.magenta = 0;
           for (let p = 0; p < d.length; p += 4) {
             if (Math.abs(d[p] - b[0]) + Math.abs(d[p + 1] - b[1])
                 + Math.abs(d[p + 2] - b[2]) > 24) out.ink++;
+            if (d[p] > 200 && d[p + 2] > 200 && d[p + 1] < 90) out.magenta++;
           }
         } else out.ink = -1;
       }
@@ -540,6 +551,54 @@ for share in (False, True):
         bad.append(f'unshared cells came out {kb} KB - they should both carry'
                    ' the whole library, and this is the control that says the'
                    ' comparison above means anything')
+
+# --- 6b. a PLUGIN added after show() ------------------------------------------
+# The page that show() wrote carries no plugin at all, so its JavaScript has to
+# travel INSIDE an update - a <script> beside the update would run in that
+# update's own iframe, which is not where the viewer is. Then an option, which
+# travels without the payload. The viewer must end up holding the plugin, its
+# payload and the option, and drawing it - whichever iframe loads first.
+CPL_JS = ("(function(){var P=window.py2dmolPlugins=window.py2dmolPlugins||{list:[],pending:[]};"
+          "var d={name:'cpl',version:'1',apiVersion:1,prims:function(c){if(!c.options.shown)return;"
+          "c.payloads.forEach(function(p){c.line(p.payload.a,p.payload.b,{color:[255,0,255],width:1.5});});}};"
+          "if(P.register)P.register(d);else P.pending.push(d);})();")
+
+
+def build_plugin_cells():
+    fresh_kernel()
+    del CELLS[:]
+    py2Dmol.register_plugin('cpl', CPL_JS)
+    v = py2Dmol.view(persistence=True)
+    v.show()
+    t = np.linspace(0, 4 * np.pi, 30)
+    v.add(np.stack([np.cos(t) * 5, np.sin(t) * 5, t * 1.5], axis=1), align=False, name='m')
+    v.add_plugin('cpl', {'a': [-7.0, 0.0, 9.0], 'b': [7.0, 0.0, 9.0]}, options={'shown': False})
+    v.set_plugin_option('cpl', 'shown', True)
+    return [c['html'] for c in CELLS]
+
+
+pcells = build_plugin_cells()
+if 'cpl' in pcells[0]:
+    bad.append('the show() cell already names the plugin, so this does not test a plugin'
+               ' that arrives after it')
+for label, order in (('plugin-viewer-first', lambda c: c), ('plugin-viewer-last', lambda c: c[1:] + c[:1])):
+    R = run(order(pcells), label)
+    pl = R.get('plugins') or {}
+    snap = (pl.get('snap') or {}).get('cpl') or {}
+    print(f"{label}: registered {pl.get('list')}, {len(snap.get('payloads') or [])} payload(s),"
+          f" options {snap.get('options')}, {R.get('magenta')} px of the plugin's colour")
+    if R.get('err'):
+        bad.append(f'{label}: page error {R["err"]}')
+        continue
+    if 'cpl' not in (pl.get('list') or []):
+        bad.append(f'{label}: the plugin never registered in the VIEWER\'s iframe - its source has'
+                   ' to travel inside the update, because the update runs in another document')
+    if len(snap.get('payloads') or []) != 1 or (snap.get('options') or {}).get('shown') is not True:
+        bad.append(f'{label}: the viewer holds {snap} - wanted one payload and shown=True')
+    if (R.get('magenta') or 0) < 100:
+        bad.append(f"{label}: the plugin is not drawn ({R.get('magenta')} px)")
+    if pl.get('errors'):
+        bad.append(f"{label}: plugin errors {pl.get('errors')}")
 
 # --- 7. persistence=False is a single slot, and says so -----------------------
 # Not a fault - the mode is documented as ephemeral - but it is the difference

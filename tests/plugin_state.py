@@ -323,17 +323,12 @@ pg._is_live = True
 pg.add_plugin('livep', {'x': 2})
 ok('source' not in (last_plugins() or {}).get('livep', {}), 'live: no source for a plugin whose script the page already carries')
 
-# ---- 4c. the default style draws no plugin, and add_plugin says so where the reader is --------------
+# ---- 4c. the tube draws plugins now, so add_plugin has nothing to warn about there ---------------
 tv = py2Dmol.view()
 with warnings.catch_warnings(record=True) as w:
     warnings.simplefilter('always')
     tv.add_plugin('volume', {'a': 1})
-ok(any('tube' in str(x.message) for x in w), "add_plugin on a 'tube' viewer warns that the style draws no plugin")
-cv = py2Dmol.view(style='richardson')
-with warnings.catch_warnings(record=True) as w:
-    warnings.simplefilter('always')
-    cv.add_plugin('volume', {'a': 1})
-ok(not any('tube' in str(x.message) for x in w), 'add_plugin on a cartoon viewer does not')
+ok(not any('tube' in str(x.message) for x in w), "add_plugin on a 'tube' viewer does not warn - the tube draws plugins")
 
 # ---- 5. controls: the existing whitelist is why the payload is viewer-level ---------------------------
 e = fresh(tmp)

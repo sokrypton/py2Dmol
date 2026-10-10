@@ -760,28 +760,50 @@ load('src/core/svg.js');
     ok(/mesh id "abc" - bad  x  & trailing-/.test(out), 'comment(): and what is left of the message is readable');
 }
 
-// ---- the tube style draws no plugin, and says so -----------------------------------------------------------
+// ---- the GPU tube's plugins: the same plugin, as MODEL-SPACE capsules ---------------------------------------
+// The tube's instances never hold a screen coordinate, so collectModel runs the plugin into model space:
+// a point goes through its object's alignment and nothing else - the rotation is a uniform. A triangle has
+// no capsule to be and is only counted (the tube then gives the frame to the 2D path).
 reset();
 {
     const P = global.window.py2dmolPlugins;
-    P.register({ name: 'tb', version: '1', apiVersion: 1, prims() {} });
+    P.register({ name: 'tb', version: '1', apiVersion: 1, prims(c) {
+        c.line([1, 2, 3], [4, 5, 6], { color: [255, 0, 0], width: 0.8, ink: true });
+        c.dot([7, 8, 9], { color: '#00ff00', radius: 2 });
+        if (c.options.tri) c.tri([0, 0, 0], [1, 0, 0], [0, 1, 0], { color: [0, 0, 255] });
+        if (c.options.far) c.line([0, 0, 0], [1e30, 0, 0]);
+    } });
     attach('tb');
-    const rt = mk({ style: 'tube' }).r;
-    P.styleNotice(rt); P.styleNotice(rt);
-    ok(logged.warn.filter((m) => /tube/.test(m) && /"tb"/.test(m)).length === 1, 'tube: one warning naming the plugin and the style, once per viewer');
-    const rc = mk({ style: 'cartoon', viewerId: 'v1' }).r;
-    logged.warn.length = 0;
-    P.styleNotice(rc);
-    ok(logged.warn.length === 0, 'tube: no warning in the cartoon style');
-    ok(P.errors(rt).some((x) => x.painter === 'style' && /"tb"/.test(x.message)),
-        'tube: the notice is ON THE VIEWER (errors(), the badge), not only in the console');
-    rt.style = 'cartoon';
-    P.styleNotice(rt);
-    ok(!P.errors(rt).some((x) => x.painter === 'style'), 'tube: ...and it goes when the style changes to one that draws plugins');
+    const { r } = mk();
+    const m = P.collectModel(r, r.objectsData.obj);
+    ok(m && m.lines.length === 1 && m.dots.length === 1 && m.tris === 0, 'collectModel: one line and one ball, no triangle');
+    const ln = m.lines[0]; const dt = m.dots[0];
+    ok(ln.a.join() === '1,2,3' && ln.b.join() === '4,5,6' && ln.rad === 0.4 && ln.c.r === 255 && ln.ink === true,
+        'collectModel: a line is its two MODEL-space ends, half its width as a radius, its colour and its ink');
+    ok(dt.p.join() === '7,8,9' && dt.rad === 2 && dt.c.g === 255 && dt.ink === false,
+        'collectModel: a ball is its centre and radius in Angstrom, no ink unless asked');
+    r.objectsData.obj.alignTransform = { t: [10, 0, 0], u: [1, 0, 0, 0, 1, 0, 0, 0, 1] };
+    ok(P.collectModel(r, r.objectsData.obj).lines[0].a.join() === '11,2,3',
+        'collectModel: the object\'s alignment is applied, as renderer.coords has it applied');
+    delete r.objectsData.obj.alignTransform;
+    P.setOption(r, 'tb', 'tri', true);
+    const mt = P.collectModel(r, r.objectsData.obj);
+    ok(mt.tris === 1 && mt.lines.length === 1, 'collectModel: a triangle is COUNTED, not drawn (the tube has no shape for it)');
+    P.setOption(r, 'tb', 'tri', false);
+    P.setOption(r, 'tb', 'far', true);
+    const mf = P.collectModel(r, r.objectsData.obj);
+    ok(mf.lines.length === 1 && P.errors(r).some((x) => x.painter === 'gpu' && /dropped/.test(x.message)),
+        'collectModel: an absurd coordinate is refused and reported, as on the screen path');
+    P.setOption(r, 'tb', 'far', false);
+    const cap0 = P.caps.gpu;
+    P.caps.gpu = 1;
+    const mb = P.collectModel(r, r.objectsData.obj);
+    ok(mb.lines.length === 0 && mb.dots.length === 0 && P.errors(r).some((x) => /maxPrims=1/.test(x.message)),
+        'collectModel: over the GPU cap the plugin draws NOTHING, as on the screen path');
+    P.caps.gpu = cap0;
     delete global.window.py2dmol_plugins;
-    const rn = mk({ style: 'tube', viewerId: 'nobody' }).r;
-    P.styleNotice(rn);
-    ok(logged.warn.length === 0, 'tube: no warning for a viewer with no plugin payload');
+    const rn = mk({ viewerId: 'nobody' }).r;
+    ok(P.collectModel(rn, rn.objectsData.obj) === null, 'collectModel: null for a viewer with no plugin payload');
 }
 
 // ---- the GPU's cached part is keyed on what a plugin line IS, noInk and all -------------------------------

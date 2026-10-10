@@ -12257,6 +12257,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 outlineWidthPx: this.relativeOutlineWidth * pxScale,
                 // ...one painter of a composed frame, when it is one
                 compose: compose || null,
+                // ...and whose plugins these are (parts/plugins.js collectModel)
+                object,
             })) return false;
 
             // NOT PROJECTED NOW. Nothing in the picture needs screen
@@ -12765,12 +12767,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // An auto slab follows its selection through a rotation; everything
             // below reads the planes, so it is brought up to date first.
             this._refreshAutoClip();
-            // A plugin payload in a style that draws no plugin says so on the
-            // viewer, and stops saying so when the style changes back.
-            if (typeof window !== 'undefined'
-                && window.py2dmolPlugins && window.py2dmolPlugins.styleNotice) {
-                window.py2dmolPlugins.styleNotice(this);
-            }
             if (this.currentFrame < 0) {
                 // Clear canvas if no frame is set
                 this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
@@ -12971,11 +12967,41 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          *
          * @param {object} S - everything _drawFrame computed for this frame
          */
+        /* A PLUGIN'S GEOMETRY FOR THE 2D TUBE: the prims parts/plugins.js builds
+         * for the cartoon, projected with this style's own arithmetic (the same
+         * as projectPosition's), sorted far to near. null when there are none,
+         * which is every viewer without a plugin.
+         */
+        _tubePluginPrims(ctx, displayWidth, displayHeight, object, scale) {
+            const P = (typeof window !== 'undefined') ? window.py2dmolPlugins : null;
+            if (!P || !P.collect) return null;
+            const vs = this.viewerState;
+            const persp = isPerspective(vs);
+            const fl = vs.focalLength;
+            const cx = displayWidth / 2;
+            const cy = displayHeight / 2;
+            const project = (x, y, z) => {
+                if (persp) {
+                    const dz = fl - z;
+                    if (dz <= 0.1) return null;
+                    const pe = fl / dz;
+                    return [cx + x * scale * pe, cy - y * scale * pe, z, pe];
+                }
+                return [cx + x * scale, cy - y * scale, z, 1];
+            };
+            const prims = [];
+            P.collect({ renderer: this, object, prims, project, scale, persp, fl, ctx,
+                displayWidth, displayHeight });
+            if (!prims.length) return null;
+            prims.sort((a, b) => a.z - b.z);
+            return prims;
+        }
+
         _paintTubeSegments(S) {
             const { ctx, colors, segments, segData, visibleOrder, numRendered,
                     shadows, tints, zValues, displayWidth, displayHeight, isPerspective,
                     clipCull, pxScale, baseLineWidthPixels, outlineWidthPx,
-                    renderShadows, SELECTION_INK_EXTRA } = S;
+                    renderShadows, SELECTION_INK_EXTRA, pluginPrims } = S;
             // ...and the five read straight off the instance
             const currentScreenFrameId = this.screenFrameId;
             // ...written by _markOuterEndpoints, which took its own alias with
@@ -13019,10 +13045,57 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         // the context is lost, or this is an export - and the stroking loop
         // below is the answer, unchanged.
 
+        // A PLUGIN'S PIECE, painted where the depth order puts it: before the
+        // first segment nearer than it. The same marks the segments make - a
+        // round stroke on a darker rim, a disc - with the rim only where the
+        // plugin asked for ink; a triangle is filled flat, lit by its own
+        // normal the way the cartoon's 2D painter lights a joint. It leaves the
+        // canvas properties changed, so the cache above is forgotten.
+        const pp = pluginPrims;
+        let pi = 0;
+        const rimOn = this.outlineMode !== 'none';
+        const paintPlugin = (g) => {
+            if (clipCull && !this.clipAccepts(g.z)) return;
+            const c = g.c;
+            const css = (k) => `rgb(${(c.r * k) | 0},${(c.g * k) | 0},${(c.b * k) | 0})`;
+            if (g.kind === 'line') {
+                ctx.lineCap = 'round';
+                if (!g.noInk && rimOn) {
+                    ctx.strokeStyle = css(0.7);
+                    ctx.lineWidth = g.w + outlineWidthPx;
+                    ctx.beginPath(); ctx.moveTo(g.x1, g.y1); ctx.lineTo(g.x2, g.y2); ctx.stroke();
+                }
+                ctx.strokeStyle = css(1);
+                ctx.lineWidth = g.w;
+                ctx.beginPath(); ctx.moveTo(g.x1, g.y1); ctx.lineTo(g.x2, g.y2); ctx.stroke();
+            } else if (g.kind === 'dot') {
+                if (!g.noInk && rimOn) {
+                    ctx.fillStyle = css(0.7);
+                    ctx.beginPath(); ctx.arc(g.x1, g.y1, g.r + outlineWidthPx / 2, 0, Math.PI * 2); ctx.fill();
+                }
+                ctx.fillStyle = css(1);
+                ctx.beginPath(); ctx.arc(g.x1, g.y1, g.r, 0, Math.PI * 2); ctx.fill();
+            } else if (g.kind === 'joint' && g.q && g.q.length >= 3) {
+                const f = css(0.72 + 0.28 * Math.max(0, g.nl || 0));
+                ctx.fillStyle = f;
+                // a hairline of the fill's own colour closes the antialiased
+                // seam between two triangles of one surface
+                ctx.strokeStyle = f;
+                ctx.lineWidth = 0.75;
+                ctx.lineJoin = 'round';
+                ctx.beginPath();
+                ctx.moveTo(g.q[0][0], g.q[0][1]);
+                for (let k = 1; k < g.q.length; k++) ctx.lineTo(g.q[k][0], g.q[k][1]);
+                ctx.closePath(); ctx.fill(); ctx.stroke();
+            }
+            lastStrokeStyle = null; lastLineWidth = null; lastLineCap = null;
+        };
+
         // Simplified loop - visibleOrder is already culled
         // Only iterate over visible segments - no need for visibility check inside loop
         for (let i = 0; i < numRendered; i++) {
             const idx = visibleOrder[i];
+            if (pp) while (pi < pp.length && pp[pi].z <= zValues[idx]) paintPlugin(pp[pi++]);
             // ...except by the clip, which is applied here rather than to
             // the order, so that what it cuts is still projected
             if (clipCull && !this.clipAccepts(zValues[idx])) continue;
@@ -13201,6 +13274,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 ctx.stroke();
             }
         }
+
+        // ...and the plugin pieces nearer than every segment
+        if (pp) while (pi < pp.length) paintPlugin(pp[pi++]);
 
         // ====================================================================
         // END OF REFACTORED LOOP
@@ -13904,6 +13980,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
+            // ...AND THE PLUGINS' GEOMETRY (parts/plugins.js), projected the way
+            // the positions above were and sorted far to near, so the stroking
+            // loop can lay each piece down between the segments it lies between.
+            const pluginPrims = this._tubePluginPrims(ctx, displayWidth, displayHeight,
+                object, scale);
+
             // ====================================================================
             // ...and paint them. The state the pass needs, in one object.
             this._paintTubeSegments({
@@ -13911,7 +13993,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 visibleOrder, numRendered, shadows, tints,
                 zValues, displayWidth, displayHeight, isPerspective,
                 clipCull, pxScale, baseLineWidthPixels, outlineWidthPx,
-                renderShadows, SELECTION_INK_EXTRA,
+                renderShadows, SELECTION_INK_EXTRA, pluginPrims,
             });
         }
 

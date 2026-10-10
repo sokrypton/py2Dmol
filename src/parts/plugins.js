@@ -113,7 +113,7 @@ function viewerIdOf(r) {
 // the viewer is drawn; and `load` is init/setPayload/key/bounds, which no
 // painter asks. An export that overruns must not look like the viewer's own
 // failure - and never enters the GPU's cache key.
-const PAINTERS = ['2d', 'gpu', 'svg', 'load', 'style'];
+const PAINTERS = ['2d', 'gpu', 'svg', 'load'];
 
 // The state a viewer carries for plugins. Built lazily on the first question,
 // from what Python put on the page (window.py2dmol_plugins[viewerId]) and from
@@ -122,8 +122,7 @@ function stateFor(r) {
     let st = states.get(r);
     if (st) return st;
     st = { r, id: viewerIdOf(r), entries: new Map(), logged: new Set(), badge: null,
-        extKey: null, ext: 0, err: { '2d': new Map(), gpu: new Map(), svg: new Map(), load: new Map(),
-            style: new Map() } };
+        extKey: null, ext: 0, err: { '2d': new Map(), gpu: new Map(), svg: new Map(), load: new Map() } };
     states.set(r, st);
     core.live.push(hasWeakRef ? new WeakRef(r) : r);
     const all = (typeof window !== 'undefined' && window.py2dmol_plugins && st.id)
@@ -216,7 +215,7 @@ function fail(st, e, err, painter) {
 function paintBadge(st) {
     if (typeof document === 'undefined') return;
     const msgs = [];
-    for (const p of ['2d', 'gpu', 'load', 'style']) for (const m of st.err[p].values()) msgs.push(m);
+    for (const p of ['2d', 'gpu', 'load']) for (const m of st.err[p].values()) msgs.push(m);
     try {
         if (!msgs.length) {
             if (st.badge && st.badge.parentNode) st.badge.parentNode.removeChild(st.badge);
@@ -425,21 +424,29 @@ P.key = function (r) {
     return s ? s + 'cap' + P.caps.gpu : '';
 };
 
-// THE SEAM, called from cartoon/geom.js's render() after the depth range and
-// before the filters and the sort. `g` is what geometry has that a plugin needs
-// and cannot build itself: the projection and the lighting (and the context,
-// which says whether this is an export). Pushes onto g.prims and returns how
-// many it added.
-P.collect = function (g) {
-    const r = g.renderer;
-    const st = stateFor(r);
-    if (!st.entries.size) return 0;
-    const painter = painterOf(r, g.ctx);
+// THE KEY LIGHT the cartoon shades by (cartoon/geom.js LIGHT), for a caller
+// that has none of its own to hand over - the tube.
+const DEFAULT_LIGHT = (() => {
+    const v = [-0.45, 0.6, 0.75];
+    const m = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    return [v[0] / m, v[1] / m, v[2] / m];
+})();
+
+// EVERY PLUGIN OF ONE VIEWER, RUN ONCE, INTO ONE OF TWO SHAPES. `sink` decides
+// what a line, a ball and a triangle BECOME: projected prims for a painter that
+// draws in screen space (both 2D painters, and the cartoon's GPU harvest), or
+// model-space capsules for the GPU tube, whose instances never hold a screen
+// coordinate. Everything else - the budget, the refusals, the rollback of a
+// plugin that throws, the error state, the SVG comment - is this one function,
+// so the two shapes cannot disagree about any of it.
+//
+// sink.place(p, name) -> a point the sink can hold, or null (refused: counted)
+// sink.line/dot/tri(points..., o) -> a record, or null (dropped: behind the
+//   camera, degenerate - not an error)
+function runEntries(st, g, painter, sink) {
+    const r = st.r;
     const cap = capOf(painter);
-    const reach = reachOf(r, g.object);
     let added = 0;
-    const c = r._computeViewCentre(g.object) || { x: 0, y: 0, z: 0 };
-    const toView = viewMapper(r, g.object, c);
     for (const e of st.entries.values()) {
         if (!e.def) continue;
         // Collected into a list of its own, appended only on success: a plugin
@@ -452,18 +459,11 @@ P.collect = function (g) {
                 throw new PluginBudgetError(e.name, cap, labelOf(painter), P.caps);
             }
         };
-        // A VIEW-SPACE POINT THE PAINTERS CAN HOLD: finite, and not absurdly far.
-        const place = (p, name) => {
-            if (!finite3(p)) return null;
-            const v = toView(p, name);
-            if (!finite3(v) || v[0] * v[0] + v[1] * v[1] + v[2] * v[2] > reach * reach) return null;
-            return v;
-        };
         const base = ctxBase(st, e);
         const ctx = Object.assign(base, {
             maxPrims: cap, painter, scale: g.scale, persp: g.persp,
             displayWidth: g.displayWidth, displayHeight: g.displayHeight,
-            toView, project: g.project,
+            toView: g.toView, project: g.project,
             // a straight stroke between two MODEL-space points. `width` is in
             // Angstrom. NEAR-PLANE CLIPPING IS NOT DONE: a segment with either
             // end behind the camera (or within 0.1 A of it) is dropped whole -
@@ -471,60 +471,36 @@ P.collect = function (g) {
             // far from the structure (counted, and reported once per frame).
             line(a, b, o) {
                 o = o || {};
-                const va = place(a, o.object); const vb = place(b, o.object);
+                const va = sink.place(a, o.object); const vb = sink.place(b, o.object);
                 if (!va || !vb) { refused++; return false; }
-                const A = g.project(va[0], va[1], va[2]); const B = g.project(vb[0], vb[1], vb[2]);
-                if (!A || !B) return false;
+                const rec = sink.line(va, vb, o);
+                if (!rec) return false;
                 bump();
-                const wA = o.width > 0 ? o.width : 0.35;
-                out.push({ kind: 'line', pts: [A, B], x1: A[0], y1: A[1], x2: B[0], y2: B[1],
-                    z: (A[2] + B[2]) / 2, w: Math.max(0.5, wA * g.scale * (A[3] + B[3]) / 2), wA,
-                    zBias: 0, c: rgbOf(o.color), flat: true, pA: A, pB: B, sel: false,
-                    // REQUIRED: paint2d reads g.joints[0] unconditionally when ink
-                    // is on, and a line without it throws at ink time
-                    joints: [null, null],
-                    noInk: !o.ink, plugin: true });
+                out.push(rec);
                 return true;
             },
             // a ball at a MODEL-space point; `radius` in Angstrom
             dot(p, o) {
                 o = o || {};
-                const v = place(p, o.object);
+                const v = sink.place(p, o.object);
                 if (!v) { refused++; return false; }
-                const A = g.project(v[0], v[1], v[2]);
-                if (!A) return false;
+                const rec = sink.dot(v, o);
+                if (!rec) return false;
                 bump();
-                const rA = o.radius > 0 ? o.radius : 0.5;
-                out.push({ kind: 'dot', x1: A[0], y1: A[1], z: A[2], r: rA * g.scale * A[3], rA,
-                    c: rgbOf(o.color), pA: A, sel: false, noInk: !o.ink, plugin: true,
-                    // no residue owns it, so no residue's visibility hides it
-                    resId: -1 });
+                out.push(rec);
                 return true;
             },
-            // an OPAQUE flat triangle, from the existing `joint` prim: one
-            // colour, lit by its own normal, double-sided.
+            // an OPAQUE flat triangle: one colour, lit by its own normal,
+            // double-sided.
             tri(a, b, cc, o) {
                 o = o || {};
-                const va = place(a, o.object); const vb = place(b, o.object);
-                const vc = place(cc, o.object);
+                const va = sink.place(a, o.object); const vb = sink.place(b, o.object);
+                const vc = sink.place(cc, o.object);
                 if (!va || !vb || !vc) { refused++; return false; }
-                const A = g.project(va[0], va[1], va[2]); const B = g.project(vb[0], vb[1], vb[2]);
-                const C = g.project(vc[0], vc[1], vc[2]);
-                if (!A || !B || !C) return false;
-                const ux = vb[0] - va[0]; const uy = vb[1] - va[1]; const uz = vb[2] - va[2];
-                const wx = vc[0] - va[0]; const wy = vc[1] - va[1]; const wz = vc[2] - va[2];
-                let nx = uy * wz - uz * wy; let ny = uz * wx - ux * wz; let nz = ux * wy - uy * wx;
-                const ln = Math.sqrt(nx * nx + ny * ny + nz * nz);
-                if (!(ln > 1e-12)) return false;          // degenerate: nothing to draw
-                // double-sided: take the normal that faces the viewer (+z)
-                const sg = nz < 0 ? -1 / ln : 1 / ln;
-                nx *= sg; ny *= sg; nz *= sg;
+                const rec = sink.tri(va, vb, vc, o);
+                if (!rec) return false;
                 bump();
-                // ONLY `nl`: the GPU drops `unlit` on this kind of face
-                out.push({ kind: 'joint', q: [A, B, C], z: (A[2] + B[2] + C[2]) / 3,
-                    c: rgbOf(o.color), gs0: -1, resId: -1, sc: false, ci: undefined, half: 0,
-                    nl: nx * g.light[0] + ny * g.light[1] + nz * g.light[2], two: true, face: 1,
-                    noInk: true, plugin: true });
+                out.push(rec);
                 return true;
             },
         });
@@ -536,7 +512,7 @@ P.collect = function (g) {
                 // THE PLUGIN DREW, MINUS WHAT COULD NOT BE DRAWN - and says so,
                 // once per frame, in its own error state.
                 fail(st, e, new Error(refused + ' primitive' + (refused === 1 ? '' : 's')
-                    + ' dropped: a coordinate was not finite, or lay more than ' + reach
+                    + ' dropped: a coordinate was not finite, or lay more than ' + g.reach
                     + ' A from the view centre'), painter);
             } else if (st.err[painter].delete(e.name)) {
                 paintBadge(st);
@@ -550,6 +526,138 @@ P.collect = function (g) {
         }
     }
     return added;
+}
+
+const lightOf = (va, vb, vc, light) => {
+    const ux = vb[0] - va[0]; const uy = vb[1] - va[1]; const uz = vb[2] - va[2];
+    const wx = vc[0] - va[0]; const wy = vc[1] - va[1]; const wz = vc[2] - va[2];
+    let nx = uy * wz - uz * wy; let ny = uz * wx - ux * wz; let nz = ux * wy - uy * wx;
+    const ln = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (!(ln > 1e-12)) return null;                // degenerate: nothing to draw
+    // double-sided: take the normal that faces the viewer (+z)
+    const sg = nz < 0 ? -1 / ln : 1 / ln;
+    nx *= sg; ny *= sg; nz *= sg;
+    return nx * light[0] + ny * light[1] + nz * light[2];
+};
+
+// THE SEAM, called from cartoon/geom.js's render() after the depth range and
+// before the filters and the sort, and from core/mol.js's 2D tube pass. `g` is
+// what the caller has that a plugin needs and cannot build itself: the
+// projection and the lighting (and the context, which says whether this is an
+// export). Pushes PROJECTED prims - the shape both painters draw - onto
+// g.prims and returns how many it added.
+P.collect = function (g) {
+    const r = g.renderer;
+    const st = stateFor(r);
+    if (!st.entries.size) return 0;
+    const painter = painterOf(r, g.ctx);
+    const reach = reachOf(r, g.object);
+    const c = r._computeViewCentre(g.object) || { x: 0, y: 0, z: 0 };
+    const toView = viewMapper(r, g.object, c);
+    const light = g.light || DEFAULT_LIGHT;
+    const sink = {
+        // A VIEW-SPACE POINT THE PAINTERS CAN HOLD: finite, and not absurdly far.
+        place(p, name) {
+            if (!finite3(p)) return null;
+            const v = toView(p, name);
+            if (!finite3(v) || v[0] * v[0] + v[1] * v[1] + v[2] * v[2] > reach * reach) return null;
+            return v;
+        },
+        line(va, vb, o) {
+            const A = g.project(va[0], va[1], va[2]); const B = g.project(vb[0], vb[1], vb[2]);
+            if (!A || !B) return null;
+            const wA = o.width > 0 ? o.width : 0.35;
+            return { kind: 'line', pts: [A, B], x1: A[0], y1: A[1], x2: B[0], y2: B[1],
+                z: (A[2] + B[2]) / 2, w: Math.max(0.5, wA * g.scale * (A[3] + B[3]) / 2), wA,
+                zBias: 0, c: rgbOf(o.color), flat: true, pA: A, pB: B, sel: false,
+                // REQUIRED: paint2d reads g.joints[0] unconditionally when ink
+                // is on, and a line without it throws at ink time
+                joints: [null, null],
+                noInk: !o.ink, plugin: true };
+        },
+        dot(v, o) {
+            const A = g.project(v[0], v[1], v[2]);
+            if (!A) return null;
+            const rA = o.radius > 0 ? o.radius : 0.5;
+            return { kind: 'dot', x1: A[0], y1: A[1], z: A[2], r: rA * g.scale * A[3], rA,
+                c: rgbOf(o.color), pA: A, sel: false, noInk: !o.ink, plugin: true,
+                // no residue owns it, so no residue's visibility hides it
+                resId: -1 };
+        },
+        tri(va, vb, vc, o) {
+            const A = g.project(va[0], va[1], va[2]); const B = g.project(vb[0], vb[1], vb[2]);
+            const C = g.project(vc[0], vc[1], vc[2]);
+            if (!A || !B || !C) return null;
+            const nl = lightOf(va, vb, vc, light);
+            if (nl === null) return null;
+            // ONLY `nl`: the GPU drops `unlit` on this kind of face
+            return { kind: 'joint', q: [A, B, C], z: (A[2] + B[2] + C[2]) / 3,
+                c: rgbOf(o.color), gs0: -1, resId: -1, sc: false, ci: undefined, half: 0,
+                nl, two: true, face: 1, noInk: true, plugin: true };
+        },
+    };
+    return runEntries(st, { prims: g.prims, ctx: g.ctx, scale: g.scale, persp: g.persp,
+        displayWidth: g.displayWidth, displayHeight: g.displayHeight, toView,
+        project: g.project, reach }, painter, sink);
+};
+
+// ...AND THE SAME PLUGINS AS GEOMETRY IN MODEL SPACE, for the GPU tube. Its
+// instances are capsules - two endpoints, a radius, a colour - in the space of
+// the drawn coordinates (renderer.coords: the frame with its alignment applied),
+// rotated by a uniform, so a plugin's line IS an instance and its ball is one
+// of zero length. Each point goes through the object's alignment and nothing
+// else, which is what renderer.coords has had done to it. A TRIANGLE has no
+// capsule to be: it is counted, and the tube hands such a frame to the 2D path.
+// Returns {lines, dots, tris} - lines {a, b, rad, c, ink}, dots {p, rad, c, ink}
+// in Angstrom - or null for a viewer with no plugin.
+P.collectModel = function (r, object) {
+    if (!r) return null;
+    const st = stateFor(r);
+    if (!st.entries.size) return null;
+    const reach = reachOf(r, object);
+    const c = r._computeViewCentre(object) || { x: 0, y: 0, z: 0 };
+    const cv = [c.x, c.y, c.z];
+    const xfCache = {};
+    const xfOf = (name) => {
+        if (name == null || name === r.currentObjectName) return object ? object.alignTransform || null : null;
+        if (!(name in xfCache)) {
+            const o = r.objectsData && r.objectsData[name];
+            xfCache[name] = (o && o.alignTransform) || null;
+        }
+        return xfCache[name];
+    };
+    const prims = [];
+    let tris = 0;
+    const sink = {
+        place(p, name) {
+            if (!finite3(p)) return null;
+            let x = p[0]; let y = p[1]; let z = p[2];
+            const xf = xfOf(name);
+            if (xf) {
+                const t = xf.t; const u = xf.u;
+                const ax = t[0] + u[0] * x + u[1] * y + u[2] * z;
+                const ay = t[1] + u[3] * x + u[4] * y + u[5] * z;
+                const az = t[2] + u[6] * x + u[7] * y + u[8] * z;
+                x = ax; y = ay; z = az;
+            }
+            const dx = x - cv[0]; const dy = y - cv[1]; const dz = z - cv[2];
+            if (!Number.isFinite(dx + dy + dz) || dx * dx + dy * dy + dz * dz > reach * reach) return null;
+            return [x, y, z];
+        },
+        line(va, vb, o) {
+            return { kind: 'line', a: va, b: vb, rad: (o.width > 0 ? o.width : 0.35) / 2,
+                c: rgbOf(o.color), ink: !!o.ink };
+        },
+        dot(v, o) {
+            return { kind: 'dot', p: v, rad: o.radius > 0 ? o.radius : 0.5,
+                c: rgbOf(o.color), ink: !!o.ink };
+        },
+        tri() { tris++; return { kind: 'tri' }; },
+    };
+    runEntries(st, { prims, ctx: null, scale: 0, persp: false, displayWidth: 0,
+        displayHeight: 0, toView: viewMapper(r, object, c), project: () => null, reach }, 'gpu', sink);
+    return { lines: prims.filter((x) => x.kind === 'line'),
+        dots: prims.filter((x) => x.kind === 'dot'), tris };
 };
 
 // WHAT A PLUGIN ADDS TO THE FIT-TO-VIEW: a radius in Angstrom about the view
@@ -613,33 +721,6 @@ P.errors = function (r) {
         for (const [name, message] of st.err[painter]) out.push({ name, message, painter });
     }
     return out;
-};
-
-// THE TUBE STYLE DRAWS NO PLUGIN: the tube never goes through cartoon/geom.js's
-// render(), which is where plugins are collected. Asked by core/mol.js's render()
-// on every frame, so the notice follows the style both ways: ON the viewer, in
-// its badge, while a style that draws no plugin is up - a console line alone is
-// invisible in a notebook, and a payload that silently draws nothing is the
-// bug - and gone again once the style is one that does. A viewer with no
-// payload pays one WeakMap lookup.
-P.styleNotice = function (r) {
-    if (!r) return;
-    const st = states.get(r) || stateFor(r);
-    if (!st.entries.size) return;
-    const off = r.style !== 'cartoon' && r.style !== undefined;
-    if (!off) {
-        if (st.err.style.size) { st.err.style.clear(); paintBadge(st); }
-        return;
-    }
-    if (st.err.style.has(r.style)) return;
-    st.err.style.clear();
-    const names = Array.from(st.entries.keys()).map((n) => '"' + n + '"').join(', ');
-    const msg = 'plugin' + (st.entries.size > 1 ? 's ' : ' ') + names
-        + ' not drawn: the "' + r.style + '" style draws no plugin geometry -'
-        + ' switch to a cartoon style (richardson, ribbon or 3d)';
-    st.err.style.set(r.style, msg);
-    note(st, 'style:' + r.style, msg, 'warn');
-    paintBadge(st);
 };
 
 // JS-side doors, for a host page that has no Python: hand a viewer a payload

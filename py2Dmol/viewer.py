@@ -5042,9 +5042,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         The plugin defines the payload's schema; py2Dmol only carries it - in
         the generated page, and through ``save_state`` / ``load_state``, where
         it is kept even by a process that has never heard of the plugin. It
-        lives on the VIEWER, not on an object, and is sent with ``show()`` (a
-        viewer already on the page does not see a later ``add_plugin`` until it
-        is shown again).
+        lives on the VIEWER, not on an object, and is sent with ``show()``; on
+        a viewer already on the page it is sent at once, with the plugin's
+        JavaScript if the page does not have it yet. Every style draws it.
 
         Args:
             name (str): the plugin. Its JavaScript comes from ``register_plugin``
@@ -5080,16 +5080,6 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             raise ValueError("add_plugin(%r): the payload must be JSON (%s)" % (name, e)) from None
         except TypeError as e:
             raise TypeError("add_plugin(%r): the payload must be JSON (%s)" % (name, e)) from None
-        # THE DEFAULT STYLE DRAWS NO PLUGIN - the tube never reaches the cartoon
-        # geometry the plugins are collected in - so say so here, where the
-        # reader is, rather than only in a browser console a notebook hides.
-        if (self.config.get("rendering") or {}).get("style", "tube") == "tube":
-            import warnings
-            warnings.warn(
-                "add_plugin(%r): this viewer opens in the 'tube' style, which draws"
-                " no plugin geometry - use style='richardson', 'ribbon' or '3d'"
-                " (the viewer says the same until the style is changed)" % (name,),
-                stacklevel=2)
         p = self._plugins.setdefault(name, {
             "version": version, "apiVersion": api_version, "options": {}, "payloads": []})
         if version is not None:
@@ -5103,7 +5093,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         return self
 
     def set_plugin_option(self, name, key, value):
-        """Set one option of plugin ``name`` (it must have a payload already)."""
+        """Set one option of plugin ``name`` (it must have a payload already).
+        On a viewer already on the page the option is sent at once, without
+        re-sending the payloads."""
         if name not in self._plugins:
             raise KeyError("no payload for plugin %r has been added - call"
                            " add_plugin first" % (name,))

@@ -1969,7 +1969,11 @@ void main() {
   // perspective factors rather than per pixel.
   float pe = (peA + peB) * 0.5;
   vRfill = aRad * uScale * pe;
-  vRpx = vRfill + uGrowPx * uRatio;
+  // A PLUGIN'S CAPSULE THAT ASKED FOR NO INK (annotation slot 2) grows no
+  // skirt: the outline and the fill are ONE pass that picks per fragment, so
+  // the rim is taken away by giving it no width - dropping the instance would
+  // leave the prepass's depth with nothing drawn over it, a paper-white hole.
+  vRpx = vRfill + (aNoAO > 1.5 ? 0.0 : uGrowPx * uRatio);
   // A QUAD THAT COVERS THE CAPSULE: along the segment, extended by the radius
   // at each end so the round caps are inside it, and half a radius wider than
   // the tube on each side.
@@ -10449,6 +10453,8 @@ function colourKeyOf(colors) {
     return d;
 }
 let tubeShadowTick = 0;
+// the key of the last tube whose plugins emitted triangles - see renderTubeApp
+let tubeTriKey = null;
 function tubeKeyOf(renderer, S) {
     if (S.renderShadows) return 'shaded:' + (++tubeShadowTick);
     return sharedGeometryKey(renderer).concat([
@@ -10459,6 +10465,9 @@ function tubeKeyOf(renderer, S) {
         colourKeyOf(S.colors),
         // how many of the ordered segments are actually drawn
         S.count,
+        // ...and whether this tube draws the plugins: alone it does, as one
+        // painter of a composed frame it does not - the cartoon half has them
+        S.compose ? 'composed' : '',
     ]).join('|');
 }
 
@@ -10516,7 +10525,7 @@ function restoreTube(sig) {
 // them are the POSITIONS the segment runs between - carried so the tube can be
 // ghosted the way the cartoon is. See uVis in VSTUBE.
 const TUBE_FLOATS = 17;
-function buildTube(renderer, S) {
+function buildTube(renderer, S, plug) {
     if (!gl) return false;
     const co = renderer.coords || [];
     const n = co.length;
@@ -10588,7 +10597,8 @@ function buildTube(renderer, S) {
     const slotOf = new Int32Array(cnt).fill(-1);
     // REUSED. At 30,000 segments this is a 1.5 MB allocation, and it was being
     // made every frame to hold bytes that had not changed.
-    const need = cnt * TUBE_FLOATS;
+    const nPlug = plug ? plug.lines.length + plug.dots.length : 0;
+    const need = (cnt + nPlug) * TUBE_FLOATS;
     if (!tubeData || tubeData.length < need) tubeData = new Float32Array(need);
     const data = tubeData;
     let o = 0;
@@ -10699,6 +10709,35 @@ function buildTube(renderer, S) {
         const ownB = claim[sg2.idx2] - 1;
         if (ownA >= 0 && slotOf[ownA] >= 0) data[at + 13] = colOf[ownA];
         if (ownB >= 0 && slotOf[ownB] >= 0) data[at + 14] = colOf[ownB];
+    }
+    // A PLUGIN'S LINES AND BALLS ARE CAPSULES TOO (parts/plugins.js
+    // collectModel): model-space endpoints - a ball's two coincide - a radius
+    // in Angstrom and a colour, which is every byte an instance holds. Free
+    // round ends; residue -1, owned by no residue; and 1 in the annotation
+    // slot, flat and unshaded like a contact - or 2 where the plugin asked for
+    // no ink, which VSTUBE reads as "no rim".
+    // THEIR REACH DOES NOT JOIN THE DEPTH RANGE, unlike the cartoon's
+    // (buildMeshPart). The tube writes gl_FragDepth CLAMPED into the range, so
+    // a piece beyond the structure's depth sorts to the front or the back of
+    // it - which is the right order against the structure - and is never cut
+    // off; stretching the range would only spend the structure's own depth
+    // precision. Measured: a cube 2.9x the structure's radius draws the same
+    // with and without the fold.
+    if (plug) {
+        const put = (pa, pb, rr, cc, ink) => {
+            data[o++] = pa[0] - cx; data[o++] = pa[1] - cy; data[o++] = pa[2] - cz;
+            data[o++] = pb[0] - cx; data[o++] = pb[1] - cy; data[o++] = pb[2] - cz;
+            data[o++] = Math.max(0.02, rr);
+            data[o++] = cc.r; data[o++] = cc.g; data[o++] = cc.b;
+            data[o++] = 1; data[o++] = 1;
+            data[o++] = ink ? 1 : 2;
+            const packed = (cc.r * 65536) + (cc.g * 256) + cc.b;
+            data[o++] = packed; data[o++] = packed;
+            data[o++] = -1; data[o++] = -1;
+            count++;
+        };
+        for (const ln of plug.lines) put(ln.a, ln.b, ln.rad, ln.c, ln.ink);
+        for (const dt of plug.dots) put(dt.p, dt.p, dt.rad, dt.c, dt.ink);
     }
     rad = Math.sqrt(rad) + 2;    // room for the capsule's own bulge
     // HOW MANY SEGMENTS PER SQUARE ANGSTROM the occlusion pass should assume.
@@ -11136,6 +11175,7 @@ function renderTubeApp(renderer, ctx, displayWidth, displayHeight, S) {
         // Measured on 4UG0: 18 ms of a 26 ms frame, every frame, to arrive at
         // the buffer that was already there.
         const key = tubeKeyOf(renderer, S);
+        if (key === tubeTriKey) return false;
         if (key !== tubeSig || !tubeCount) {
             // the way back to a picture already built is an upload; only worth
             // holding one where an eye can switch something off and on again
@@ -11143,7 +11183,17 @@ function renderTubeApp(renderer, ctx, displayWidth, displayHeight, S) {
                 if (!restoreTube(key)) { keepTube(tubeSig); }
             } else { spareTube = null; }
             if (!tubeLive || tubeLive.sig !== key) {
-                if (!buildTube(renderer, S)) { tubeSig = null; return false; }
+                // THE PLUGINS, as capsules - unless this tube is one half of a
+                // composed frame, whose cartoon half draws them. A plugin that
+                // emits TRIANGLES has nothing to be here: the frame goes to the
+                // 2D tube, which draws all three kinds, and the refusal is
+                // remembered against the plugins' own key so a turning model
+                // does not ask again every frame.
+                const PL = (typeof window !== 'undefined') ? window.py2dmolPlugins : null;
+                const plug = (!compose && PL && PL.collectModel)
+                    ? PL.collectModel(renderer, S.object || null) : null;
+                if (plug && plug.tris) { tubeTriKey = key; tubeSig = null; return false; }
+                if (!buildTube(renderer, S, plug)) { tubeSig = null; return false; }
             }
             tubeSig = key;
             tubeLive.sig = key;
