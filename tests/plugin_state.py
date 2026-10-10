@@ -275,12 +275,65 @@ ok(k._plugins == {}, 'a refused add_plugin leaves NO half-made entry behind')
 k.add_plugin('volume', {}, object='crn', frame=0, api_version=1, version='0.1')
 ok(k._plugins['volume']['apiVersion'] == 1 and k._plugins['volume']['payloads'][0]['object'] == 'crn', 'the valid spelling of all of them is accepted')
 k.clear()
+# ---- 4b. THE LIVE PATH: a viewer already on the page is sent what changed --------------------------
+# The page is written by to_html(), which records what it inlined; every later
+# add_plugin / set_plugin_option on a live viewer is an incremental update, and
+# what that update carries is read off the payload the viewer would be handed.
+LIVE_SRC = '(function(){var P=window.py2dmolPlugins=window.py2dmolPlugins||{list:[],pending:[]};}());'
+py2Dmol.register_plugin('livep', LIVE_SRC, version='1')
 lv = fresh(tmp)
+lv.add_plugin('volume', {'a': 1})
+lv.to_html()
+sent = []
+def _cap(html, payload_json=None, **kw):
+    if payload_json:
+        sent.append(payload_json)
+lv._emit_to_output = _cap
 lv._is_live = True
+def last_plugins():
+    return (json.loads(sent[-1]).get('viewer') or {}).get('plugins') if sent else None
 with warnings.catch_warnings(record=True) as w:
     warnings.simplefilter('always')
-    lv.add_plugin('volume', {'a': 1})
-ok(any('show()' in str(x.message) for x in w), 'add_plugin on a viewer that is already on the page warns that it is sent with show()')
+    lv.add_plugin('volume', {'b': 2})
+ok(not any('show()' in str(x.message) for x in w), 'live: add_plugin no longer tells the reader to show() again')
+lp = last_plugins() or {}
+ok([x['payload'] for x in (lp.get('volume') or {}).get('payloads', [])] == [{'a': 1}, {'b': 2}],
+   'live: add_plugin on a viewer already on the page SENDS the plugin, with every payload it now has')
+ok('source' not in (lp.get('volume') or {}), 'live: no source for a plugin the process never registered')
+n0 = len(sent)
+lv.set_plugin_option('volume', 'level', 0.5)
+lp = last_plugins() or {}
+ok(len(sent) == n0 + 1 and (lp.get('volume') or {}).get('options', {}).get('level') == 0.5,
+   'live: set_plugin_option is sent at once')
+ok('payloads' not in (lp.get('volume') or {}), 'live: an option change does NOT re-send the payloads (the mesh stays on the page)')
+n0 = len(sent)
+lv.set_plugin_option('volume', 'level', 0.5)
+ok(len(sent) == n0, 'live: an option set to what it already is sends nothing')
+lv.add_plugin('livep', {'x': '</script><b>'})
+lp = last_plugins() or {}
+ok((lp.get('livep') or {}).get('source') == LIVE_SRC, 'live: a plugin the page has never had travels WITH its source')
+ok('</script' not in sent[-1].lower(), 'live: a payload holding </script> is escaped in the update')
+lv.set_plugin_option('livep', 'k', 1)
+ok('source' not in (last_plugins() or {}).get('livep', {}), 'live: ...and its source travels once')
+pg = fresh(tmp)
+pg.add_plugin('livep', {'x': 1})
+pg.to_html()
+pg._emit_to_output = _cap
+pg._is_live = True
+pg.add_plugin('livep', {'x': 2})
+ok('source' not in (last_plugins() or {}).get('livep', {}), 'live: no source for a plugin whose script the page already carries')
+
+# ---- 4c. the default style draws no plugin, and add_plugin says so where the reader is --------------
+tv = py2Dmol.view()
+with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter('always')
+    tv.add_plugin('volume', {'a': 1})
+ok(any('tube' in str(x.message) for x in w), "add_plugin on a 'tube' viewer warns that the style draws no plugin")
+cv = py2Dmol.view(style='richardson')
+with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter('always')
+    cv.add_plugin('volume', {'a': 1})
+ok(not any('tube' in str(x.message) for x in w), 'add_plugin on a cartoon viewer does not')
 
 # ---- 5. controls: the existing whitelist is why the payload is viewer-level ---------------------------
 e = fresh(tmp)

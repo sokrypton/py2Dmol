@@ -29,6 +29,11 @@ WHAT IS MEASURED, per painter (gpu=0 is the 2D painter, gpu=1 the WebGL2 one):
     recolour (window.__gpuPaletteComplete stays true);
   * three registration orders: the plugin script before the library, after it, and registered
     from the console after the viewer is already drawing.
+  * fading residue 0 out (set_opacity) leaves the plugin's ball drawn - it belongs to no residue;
+  * a live update (the handler Python's incremental update calls) changes an option with no payload,
+    and brings a plugin the page has never had, with its source;
+  * and on dev.html, the website's session file: saved, replaced, cleared by a file with none, and
+    appended with the object renamed.
 Each of these fails when the guard behind it is removed.
 """
 import base64
@@ -370,6 +375,61 @@ def png_capture(ws):
     return base64.b64decode(url.split(',', 1)[1])
 
 
+WEB_SESSION = """(async () => {
+  const until = async (f, ms) => { const t0 = performance.now();
+    while (!f()) { if (performance.now() - t0 > ms) throw new Error('timeout'); await new Promise(r => setTimeout(r, 50)); } };
+  await window.processFiles([{name: 'h.pdb', readAsync: () => Promise.resolve(%(text)s)}], false);
+  const r = window.py2dmol_viewers['standalone-viewer-1'].renderer;
+  await until(() => r.coords && r.coords.length > 0, 30000);
+  const P = window.py2dmolPlugins;
+  const obj = r.currentObjectName;
+  P.setPayload(r, 'wire', {options: {shown: true, level: 2},
+    payloads: [{object: obj, frame: null, payload: {center: [0, 0, 0], half: 3}}]});
+  const before = P.snapshot(r);
+  const state = window.buildViewerState();
+  const saved = JSON.parse(JSON.stringify(state.plugins || null));
+  await window.loadViewerState(JSON.parse(JSON.stringify(state)));
+  await until(() => r.coords && r.coords.length > 0, 30000);
+  const replaced = P.snapshot(r);
+  const bare = JSON.parse(JSON.stringify(state)); delete bare.plugins;
+  await window.loadViewerState(bare);
+  await until(() => r.coords && r.coords.length > 0, 30000);
+  const cleared = P.snapshot(r);
+  await window.loadViewerState(JSON.parse(JSON.stringify(state)));
+  await until(() => r.coords && r.coords.length > 0, 30000);
+  P.setOption(r, 'wire', 'mine', 7);
+  await window.loadViewerState(JSON.parse(JSON.stringify(state)), {append: true});
+  await until(() => Object.keys(r.objectsData).length > 1, 30000);
+  const appended = P.snapshot(r);
+  return JSON.stringify({obj, before, saved, replaced, cleared, appended,
+                         objects: Object.keys(r.objectsData)});
+})()"""
+
+
+def web_session(ws, tmp):
+    """THE WEBSITE'S SESSION FILE carries a viewer's plugin payloads, at the top level
+    where Python's save_state writes them, and a load puts them back: replaced by a
+    replacing load (a file with none leaves none), added beside by an append, with
+    the object an append renamed followed."""
+    text = open(structure_file(tmp)).read()
+    ws.call('Page.navigate', url='file://' + os.path.join(ROOT, 'dev.html'))
+    cdp.wait_for(ws, "typeof window.processFiles === 'function' && !!window.py2dmolPlugins"
+                     " && !!(window.py2dmol_viewers || {})['standalone-viewer-1']", 60, 'dev.html')
+    out = json.loads(ev(ws, WEB_SESSION % {'text': json.dumps(text)}))
+    w = (out['saved'] or {}).get('wire') or {}
+    ok(len(w.get('payloads') or []) == 1 and (w.get('options') or {}).get('level') == 2,
+       '[web] the session file carries the viewer\'s plugin payload and options, under "plugins"')
+    ok(out['replaced'] == out['before'], '[web] a replacing load puts the payloads back exactly')
+    ok(out['cleared'] is None, '[web] ...and a file with no plugins leaves none (a replacing load replaces them)')
+    ap = ((out['appended'] or {}).get('wire') or {}).get('payloads') or []
+    names = [p.get('object') for p in ap]
+    ok(len(ap) == 2 and names[0] == out['obj'] and names[1] != out['obj'] and names[1] in out['objects'],
+       '[web] an append adds the file\'s payloads beside, bound to the object under its NEW name (%s)' % names)
+    opts = ((out['appended'] or {}).get('wire') or {}).get('options') or {}
+    ok(opts.get('mine') == 7 and opts.get('level') == 2,
+       "[web] ...and layers the file's options over the viewer's rather than replacing them (%s)" % opts)
+
+
 def main():
     tmp = tempfile.mkdtemp()
     bundle, which = bundle_path(tmp)
@@ -407,6 +467,48 @@ def main():
             ok(count(on, GREEN) > 40, '[%s] ...and its ball (%d green px)' % (tag, count(on, GREEN)))
             ok(ev(ws, 'window.py2dmolPlugins.errors(Object.values(window.py2dmol_viewers)[0].renderer).length', False) == 0,
                '[%s] no plugin error' % tag)
+            # ...AND NO RESIDUE'S OPACITY REACHES IT. A plugin's ball and triangle
+            # belong to no residue; on the GPU they were filed under residue 0, and
+            # the per-residue coverage texture the fill shader reads is set_opacity's
+            # - so fading residue 0 out took the ball with it while the 2D painter
+            # kept it. (Hiding is a rebuild that drops the residue's geometry and
+            # never asks the texture, so it is opacity that reaches this.)
+            g0 = count(on, GREEN)
+            ev(ws, "Object.values(window.py2dmol_viewers)[0].renderer.setOpacity({positions: [0]}, 0)", False)
+            ev(ws, SETTLE)
+            hid = shot(ws, tag + '_res0_faded')
+            ok(count(hid, GREEN) > 0.8 * g0, "[%s] fading residue 0 out leaves the plugin's ball drawn (%d green px, %d before)"
+               % (tag, count(hid, GREEN), g0))
+            ev(ws, "Object.values(window.py2dmol_viewers)[0].renderer.setOpacity({positions: [0]}, 1)", False)
+            ev(ws, SETTLE)
+            # ...AND A LIVE UPDATE REACHES IT. This is the handler Python's incremental
+            # update calls, handed the viewer block _plugin_delta builds: an option
+            # with no payloads (the mesh stays), then a plugin the page has never had,
+            # which arrives with its source.
+            LIVE = "Object.values(window.py2dmol_viewers)[0].handleIncrementalStateUpdate({}, {}, null, %s)"
+            ev(ws, LIVE % json.dumps({'plugins': {'wire': {'options': {'shown': False}}}}), False)
+            ev(ws, SETTLE)
+            ok(count(shot(ws, tag + '_live_off'), RED) == 0, '[%s] live: an option sent after show() takes the wireframe off' % tag)
+            ev(ws, LIVE % json.dumps({'plugins': {'wire': {'options': {'shown': True}}}}), False)
+            ev(ws, SETTLE)
+            back = shot(ws, tag + '_live_on')
+            ok(count(back, RED) >= MIN_WIRE_PX,
+               '[%s] live: ...and back, from the payload the page already held' % tag)
+            ctr = centre_of(structure_file(tmp))
+            dot_src = ("(function(){var P=window.py2dmolPlugins=window.py2dmolPlugins||{list:[],pending:[]};"
+                       "var d={name:'livedot',version:'1',apiVersion:1,prims:function(c){c.payloads.forEach("
+                       "function(p){c.dot(p.payload.at,{color:[0,0,255],radius:3});});}};"
+                       "if(P.register)P.register(d);else P.pending.push(d);})();")
+            ev(ws, LIVE % json.dumps({'plugins': {'livedot': {'source': dot_src, 'options': {},
+                'payloads': [{'object': None, 'frame': None, 'payload': {'at': ctr}}]}}}), False)
+            ev(ws, SETTLE)
+            nd = differ(back, shot(ws, tag + '_live_new'))
+            ok(nd > 200, '[%s] live: a plugin first added after show() arrives with its source and draws (%d px changed)'
+               % (tag, nd))
+            ev(ws, "window.py2dmolPlugins.restore(Object.values(window.py2dmol_viewers)[0].renderer,"
+                   " {wire: window.py2dmolPlugins.snapshot(Object.values(window.py2dmol_viewers)[0].renderer).wire},"
+                   " {replace: true})", False)
+            ev(ws, SETTLE)
             cap = png_capture(ws)
             ok(count(cap, RED) >= MIN_WIRE_PX, '[%s] ...in a PNG capture too (%d red px)' % (tag, count(cap, RED)))
             if not gpu:
@@ -523,6 +625,7 @@ def main():
                 ev(ws, SETTLE)
                 got = count(shot(ws, tag + '_' + order), RED)
                 ok(got >= MIN_WIRE_PX, '[%s] plugin registered %s the library: it draws (%d red px)' % (tag, order.upper(), got))
+        web_session(ws, tmp)
     finally:
         proc.kill()
     # the GPU depth-range regression: the big cube is not clipped, measured against the

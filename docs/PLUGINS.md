@@ -100,8 +100,15 @@ v.set_plugin_option(name, key, value)
   as a control).
 - `object` binds it to an object by name (as `add_contacts` does); `frame` to a frame; `None` means
   "whatever is drawn". `options` merge over earlier ones.
-- It is sent with `show()`. **A viewer already on the page does not see a later `add_plugin`**: it
-  warns, and the payload appears when the viewer is shown again (section 12, the live channel).
+- It is sent with `show()`, and **a viewer already on the page is sent what changed**: `add_plugin` and
+  `set_plugin_option` on a live viewer go out as an incremental update, under `viewer.plugins`, as
+  `{name: entry}` for the plugins that changed. An entry whose payloads the page already holds carries
+  no `payloads` key and the browser keeps its own, so changing an option does not re-send a mesh. A
+  plugin the page has never had carries its JavaScript as `source`, run in the viewer's own document:
+  in Colab every output is its own iframe, so a `<script>` beside the update would run in the wrong
+  one. Every `<` in that update is escaped, as on the static path. (`_plugin_delta` in `viewer.py`,
+  `applyPluginBlock` in `parts/ui.js`.)
+- `add_plugin` on a viewer in the `tube` style warns: that style draws no plugin (section 7).
 - Names match `[A-Za-z0-9][A-Za-z0-9_.-]{0,63}` (they become an HTML attribute and a state-file key).
 
 ### Trust model
@@ -247,8 +254,11 @@ says so **in the file**, as an XML comment `<!-- py2dmol plugin <name> not drawn
 file stays valid), and once on the console. A raster export through the 2D painter (PNG on a 2D viewer)
 has no annotation layer and uses the same cap as the screen, where the badge shows it.
 
-**The tube style draws no plugin**: it never reaches `geom.js`'s `render()`. It says so once per
-viewer on the console, naming the plugin.
+**The tube style draws no plugin**: it never reaches `geom.js`'s `render()`. It says so ON THE
+VIEWER, in the badge, for as long as that style is up - and on the console once - and the notice goes
+when the style changes to one that draws plugins. A console line alone is invisible in a notebook, and
+`tube` is the default style, so Python's `add_plugin` warns as well. Drawing plugins in the tube's own
+pipelines (2D and GPU) is a follow-up (section 12).
 
 The caps are a decision, not a limit found by measurement. Measured while choosing them (not in the
 suite): the 2D painter was still interactive at about 7,700 lines (43 ms median JavaScript per
@@ -284,9 +294,11 @@ Two further per-stroke facts live in the same place. `noInk` is part of what a G
 group-1 mesh part is cached under `ribbonHashOf(face) ^ linesKeyOf(lines)`, and `linesKeyOf` mixes
 `noInk` and `plugin` (only when set, so a contact's hash is what it was); without them, flipping `ink`
 with unchanged geometry hands back the cached part with the old rim in it. And a plugin's triangles
-and balls are not in the visibility texture's coverage: a GPU face carries a residue id that the fill
-shader clamps, so they take the coverage of residue 0 (read in the shader, not measured), while plugin
-lines are edge instances with residue -1 and are immune.
+and balls belong to NO residue: they carry residue -1, and the fill shader skips the coverage texture
+for a negative residue, as the edge shader always has for plugin lines. That texture is per-residue
+OPACITY (`set_opacity`); before this, a GPU face clamped -1-less ids into it, so fading residue 0 out
+faded the plugin's ball with it on the GPU and not on the 2D painter. `tests/plugin_browser.py` fades
+residue 0 and requires the ball to stay, on both painters.
 
 ## 9. State
 
@@ -303,6 +315,13 @@ is kept **verbatim** and warned about once (one warning naming every unknown nam
 file is a document and loading it in a session that lacks a plugin must not destroy that plugin's
 data. In the page the payloads are `window.py2dmol_plugins['<id>']`, a sibling of `py2dmol_configs`,
 written only when the viewer has any.
+
+The website's session file carries the same top-level key, so a file opens on either side.
+`py2dmolPlugins.snapshot(renderer)` is what `buildViewerState` writes (null, and no key, for a viewer
+with none) and `py2dmolPlugins.restore(renderer, map, {replace, rename})` is what `loadViewerState`
+reads back: a replacing load replaces the payloads - a file with none leaves none - and an append adds
+the file's beside what is there, with a payload bound to an object following that object to the name
+the append gave it.
 
 ## 10. Costs
 
@@ -332,9 +351,9 @@ cell when the library is not shared, so the registry is paid there once per cell
 - **Several objects, and an alignment, in a browser.** The arithmetic is tested (`_modelToView` with an
   `alignTransform` against `_transformedFrame`), and `ctx.toView(p, objectName)` picks the object; no
   browser page drew a plugin over two aligned objects.
-- **The tube style** draws no plugin geometry (section 7).
-- **Visibility of GPU `tri` and `dot`**: residue 0's coverage applies to them (section 8, read in the
-  shader and not measured).
+- **The tube style** draws no plugin geometry; it says so on the viewer and in Python (section 7).
+- **The live path in a real Colab.** The update carries the plugin's source and the viewer runs it;
+  that was driven through the handler in a page, not through Colab's own iframes.
 - **A notebook with the library borrowed over a BroadcastChannel** (Colab). The plugin script does not
   care whether it runs before the library; the three orders are tested in a page, not through a real
   borrow.
@@ -347,10 +366,8 @@ cell when the library is not shared, so the registry is paid there once per cell
 |---|---|
 | Style-panel rows and a legend for a plugin | `rows()` / `legend()` in the definition and a mount in `parts/panel.js`, touching no DOM outside the viewer |
 | `cover` / translucency | a real blend pass in `paintgl.js` |
-| a reserved visibility slot for `tri` / `dot` | one extra texel in the visibility texture that no residue owns, and `res` pointing at it |
-| a live update channel | `_send_incremental_update` carries `plugins` (a `None` removes: see the set/unset trap in `CLAUDE.md`); `add_plugin` on a live viewer |
-| the web app's session path | `src/app/session.js` saves and restores a session without `plugins` |
-| the tube style | a seam in `_drawFrame`, or a refusal with a message |
+| removing a plugin on a live viewer | the live block sends changed entries only; a removal would travel as `None` (see the set/unset trap in `CLAUDE.md`) once there is a `remove_plugin` |
+| the tube style | a seam in `_drawFrame` and the GPU tube model; today it refuses, visibly |
 | a separate depth range for plugin geometry | only if the speckle in section 8 matters; it costs a second pass |
 | multi-object in a browser | a probe with two aligned objects |
 | `remove_plugin`, and what repeated `add_plugin` means | payloads accumulate today; decide replace, append or keyed |

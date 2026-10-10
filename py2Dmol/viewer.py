@@ -1345,6 +1345,12 @@ class view:
         # on an object: see the note above register_plugin. {} for a viewer that
         # uses none, and then nothing about plugins is written anywhere.
         self._plugins = {}
+        # ...and what of them the PAGE has: the payloads as last sent, and the
+        # plugins whose JavaScript is on it. The live path sends the difference,
+        # so an option changed after show() reaches the viewer without re-sending
+        # a payload that may be a whole isosurface.
+        self._sent_plugins = {}
+        self._sent_plugin_sources = set()
         # ...AND WHETHER THE PAYLOAD CARRIES SIDE-CHAIN ATOMS. Read by
         # _parse_model, the only thing that can collect them, and a VIEWER-wide
         # setting rather than a per-load one: the table is per FRAME with no
@@ -1861,6 +1867,10 @@ class view:
             viewer_block = viewer_block or {}
             viewer_block["orient"] = self._orient_request
             self._orient_request = None
+        plugin_block = self._plugin_delta()
+        if plugin_block:
+            viewer_block = viewer_block or {}
+            viewer_block["plugins"] = plugin_block
 
         # Skip update if nothing new to send
         if (not new_frames_by_object and not changed_metadata_by_object
@@ -1876,7 +1886,10 @@ class view:
             "viewer": viewer_block
         }
 
-        payload_json = json.dumps(payload, separators=(',', ':'))
+        # Every `<` escaped (valid inside a JSON string, the only place one can
+        # be): a plugin payload is the caller's text and may hold `</script>`,
+        # which would end the element this is inlined into.
+        payload_json = json.dumps(payload, separators=(',', ':')).replace('<', '\\u003c')
 
         update_js = (
             f'(function(){{'
@@ -2332,6 +2345,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 container_html = ('<script data-py2dmol-plugin="' + _pname + '">'
                                   + _PLUGIN_SOURCES[_pname][0] + '</script>\n'
                                   + container_html)
+        # the page now holds every payload and every source written above
+        self._sent_plugins = copy.deepcopy(self._plugins)
+        self._sent_plugin_sources = {n for n in self._plugins if n in _PLUGIN_SOURCES}
         # Only include library scripts if requested (grid optimization)
         if include_libs:
             # ONE BUNDLE, NOT FIFTEEN SCRIPTS.
@@ -2450,6 +2466,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._position_elements = None
         self._sidechain_atoms = None
         self._plugins = {}
+        self._sent_plugins = {}
+        self._sent_plugin_sources = set()
         self._is_live = False
 
         # Reset incremental update tracking
@@ -5062,12 +5080,16 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             raise ValueError("add_plugin(%r): the payload must be JSON (%s)" % (name, e)) from None
         except TypeError as e:
             raise TypeError("add_plugin(%r): the payload must be JSON (%s)" % (name, e)) from None
-        if self._is_live:
+        # THE DEFAULT STYLE DRAWS NO PLUGIN - the tube never reaches the cartoon
+        # geometry the plugins are collected in - so say so here, where the
+        # reader is, rather than only in a browser console a notebook hides.
+        if (self.config.get("rendering") or {}).get("style", "tube") == "tube":
             import warnings
             warnings.warn(
-                "add_plugin(%r) on a viewer that is already on the page: plugin"
-                " payloads are sent with show(), so this one appears when the"
-                " viewer is shown again" % (name,), stacklevel=2)
+                "add_plugin(%r): this viewer opens in the 'tube' style, which draws"
+                " no plugin geometry - use style='richardson', 'ribbon' or '3d'"
+                " (the viewer says the same until the style is changed)" % (name,),
+                stacklevel=2)
         p = self._plugins.setdefault(name, {
             "version": version, "apiVersion": api_version, "options": {}, "payloads": []})
         if version is not None:
@@ -5076,6 +5098,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             p["apiVersion"] = api_version
         p["payloads"].append({"object": object, "frame": frame, "payload": payload})
         p["options"].update(options)
+        if self._is_live:
+            self._send_incremental_update()
         return self
 
     def set_plugin_option(self, name, key, value):
@@ -5089,7 +5113,33 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             raise type(e)("set_plugin_option(%r, %r): the value must be JSON (%s)"
                           % (name, key, e)) from None
         self._plugins[name]["options"][key] = value
+        if self._is_live:
+            self._send_incremental_update()
         return self
+
+    def _plugin_delta(self):
+        """What the page does not have yet: {name: entry} for every plugin whose
+        payload changed since the last send. An entry whose payloads are what
+        the page holds carries no `payloads` key - the browser keeps its own -
+        so dragging an option does not re-send a mesh. The JavaScript of a
+        plugin the page has never seen travels as `source`, because in Colab
+        every output is its own iframe and a <script> beside the update would
+        run in the wrong document."""
+        out = {}
+        for name, cur in self._plugins.items():
+            sent = self._sent_plugins.get(name)
+            if sent == cur:
+                continue
+            entry = {"version": cur.get("version"), "apiVersion": cur.get("apiVersion"),
+                     "options": copy.deepcopy(cur.get("options") or {})}
+            if sent is None or sent.get("payloads") != cur.get("payloads"):
+                entry["payloads"] = copy.deepcopy(cur.get("payloads") or [])
+            if name not in self._sent_plugin_sources and name in _PLUGIN_SOURCES:
+                entry["source"] = _PLUGIN_SOURCES[name][0]
+                self._sent_plugin_sources.add(name)
+            out[name] = entry
+            self._sent_plugins[name] = copy.deepcopy(cur)
+        return out
 
     def save_state(self, filepath):
         """

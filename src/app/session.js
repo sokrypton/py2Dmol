@@ -445,6 +445,11 @@ function buildViewerState() {
             viewer_state: viewerState,
             selections_by_object: selectionsByObject
         };
+        // ...AND THE PLUGINS' PAYLOADS, at the top level where Python's save_state
+        // writes them, and only when there are any (parts/plugins.js).
+        const plugins = window.py2dmolPlugins && window.py2dmolPlugins.snapshot
+            ? window.py2dmolPlugins.snapshot(renderer) : null;
+        if (plugins) stateData.plugins = plugins;
 
         return stateData;
     } catch (e) {
@@ -821,6 +826,15 @@ async function loadViewerState(stateData, options = {}) {
                         return { ...c, a: end(c.a), b: end(c.b),
                                  from: end(c.from), to: end(c.to) };
                     });
+            }
+
+            // ...the PLUGINS' payloads, which are the viewer's: a replacing load
+            // replaces them (a file with none leaves none), an append adds the
+            // file's beside what is here, following any object it renamed.
+            if (window.py2dmolPlugins && window.py2dmolPlugins.restore
+                && (stateData.plugins || !append)) {
+                window.py2dmolPlugins.restore(renderer, stateData.plugins || null,
+                    { replace: !append, rename: renamed });
             }
 
             // Set current object first (before setting frame)

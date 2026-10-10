@@ -1156,7 +1156,9 @@ void main() {
   // the mesh changes for any value in between, because the geometry was
   // always there and was only ever being masked.
   vFade = 1.0;
-  if (show >= 0.5 && uVisW > 0.5) {
+  // A NEGATIVE RESIDUE BELONGS TO NO RESIDUE - a plugin's ball or triangle -
+  // and no residue's visibility hides it, as the edge shader already reads -1.
+  if (show >= 0.5 && uVisW > 0.5 && aRes >= 0.0) {
     // clamped: an out-of-range texelFetch returns 0, which reads as hidden, so
     // a stray index does not silently delete geometry
     int ri = clamp(int(aRes + 0.5), 0, int(uVisN) - 1);

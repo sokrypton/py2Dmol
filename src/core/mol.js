@@ -12765,8 +12765,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // An auto slab follows its selection through a rotation; everything
             // below reads the planes, so it is brought up to date first.
             this._refreshAutoClip();
-            // A plugin payload in a style that draws no plugin says so, once.
-            if (this.style !== 'cartoon' && typeof window !== 'undefined'
+            // A plugin payload in a style that draws no plugin says so on the
+            // viewer, and stops saying so when the style changes back.
+            if (typeof window !== 'undefined'
                 && window.py2dmolPlugins && window.py2dmolPlugins.styleNotice) {
                 window.py2dmolPlugins.styleNotice(this);
             }

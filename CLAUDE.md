@@ -4782,14 +4782,22 @@ than leaving the next session to find out the same way.
   is handed a new payload or has an option changed is invisible until the key moves: with the term
   out, the wireframe stays on screen after its option is switched off. It is in the shared key, not
   `signatureOf`, so the topological (trajectory) key carries it too.
-- 🔴 **PLUGIN STATE IS THE VIEWER'S, AND A PLUGIN'S TRIANGLES AND BALLS ARE RESIDUE 0'S TO HIDE.**
+- 🔴 **PLUGIN STATE IS THE VIEWER'S, AND A PLUGIN'S TRIANGLES AND BALLS BELONG TO NO RESIDUE.**
   `save_state` writes objects through a whitelist, so a per-object `plugins` key is gone after
   `load_state` (`tests/plugin_state.py` keeps that as a control): the payload is `state["plugins"]`,
-  written only when non-empty so a viewer with none writes the bytes it always did. On the GPU a
-  plugin `tri` or `dot` is a face with a residue id that the fill shader clamps into the visibility
-  texture, so hiding residue 0 should hide them (read in the shader, not measured); plugin lines are
-  edge instances with residue -1 and are immune. The tube style never reaches `geom.js`'s `render()`,
-  so it draws no plugin, and warns once per viewer.
+  written only when non-empty so a viewer with none writes the bytes it always did. The website's
+  session file writes the same key (`py2dmolPlugins.snapshot` / `restore`, from `app/session.js`) -
+  the fifth field-by-field builder, and it had to be told. On the GPU a plugin `tri` or `dot` carries
+  residue -1 and the fill shader skips the coverage texture for it, as the edge shader does for plugin
+  lines; that texture is per-residue OPACITY, so filed under residue 0 they faded with it, on the GPU
+  only. **Hiding a residue never reaches that texture** - it is a rebuild - so a probe that HIDES
+  residue 0 passes against the bug; `tests/plugin_browser.py` fades it.
+- 🔴 **A LIVE VIEWER IS SENT ITS PLUGINS, AND THE TUBE SAYS IT DRAWS NONE, ON THE VIEWER.**
+  `add_plugin` / `set_plugin_option` after `show()` go out under `viewer.plugins` (`_plugin_delta`,
+  `applyPluginBlock`): only what changed, without `payloads` when those are unchanged, and with the
+  plugin's `source` the first time the page needs it, because in Colab the update runs in another
+  iframe. `tube` is the DEFAULT style and never reaches `geom.js`'s `render()`, so a payload there
+  draws nothing: the badge says so while the style is up and Python's `add_plugin` warns.
 
 ## Tests
 

@@ -113,7 +113,7 @@ function viewerIdOf(r) {
 // the viewer is drawn; and `load` is init/setPayload/key/bounds, which no
 // painter asks. An export that overruns must not look like the viewer's own
 // failure - and never enters the GPU's cache key.
-const PAINTERS = ['2d', 'gpu', 'svg', 'load'];
+const PAINTERS = ['2d', 'gpu', 'svg', 'load', 'style'];
 
 // The state a viewer carries for plugins. Built lazily on the first question,
 // from what Python put on the page (window.py2dmol_plugins[viewerId]) and from
@@ -122,7 +122,8 @@ function stateFor(r) {
     let st = states.get(r);
     if (st) return st;
     st = { r, id: viewerIdOf(r), entries: new Map(), logged: new Set(), badge: null,
-        extKey: null, ext: 0, err: { '2d': new Map(), gpu: new Map(), svg: new Map(), load: new Map() } };
+        extKey: null, ext: 0, err: { '2d': new Map(), gpu: new Map(), svg: new Map(), load: new Map(),
+            style: new Map() } };
     states.set(r, st);
     core.live.push(hasWeakRef ? new WeakRef(r) : r);
     const all = (typeof window !== 'undefined' && window.py2dmol_plugins && st.id)
@@ -215,7 +216,7 @@ function fail(st, e, err, painter) {
 function paintBadge(st) {
     if (typeof document === 'undefined') return;
     const msgs = [];
-    for (const p of ['2d', 'gpu', 'load']) for (const m of st.err[p].values()) msgs.push(m);
+    for (const p of ['2d', 'gpu', 'load', 'style']) for (const m of st.err[p].values()) msgs.push(m);
     try {
         if (!msgs.length) {
             if (st.badge && st.badge.parentNode) st.badge.parentNode.removeChild(st.badge);
@@ -398,6 +399,14 @@ for (const def of P.pending.splice(0)) register(def);
 // one painter, and an SVG export that overran must not make the next GPU frame
 // look like a different mesh. Empty for a viewer with no plugin, which leaves
 // the signature as it was.
+// The options as a string, once per revision: every way an option changes
+// (setOption, setPayload, a late bind) bumps `rev`, and this is asked on every
+// frame - by the GPU's signature and again by the fit-to-view.
+function optionsKey(e) {
+    if (e.optRev !== e.rev) { e.optStr = JSON.stringify(e.data.options); e.optRev = e.rev; }
+    return e.optStr;
+}
+
 P.key = function (r) {
     if (!r) return '';
     const st = stateFor(r);
@@ -410,7 +419,7 @@ P.key = function (r) {
             try { own = String(e.def.key(ctxBase(st, e))); } catch (err) { fail(st, e, err, 'load'); }
         }
         s += e.name + '~' + (e.def.version || '') + '~' + e.rev + '~'
-            + JSON.stringify(e.data.options) + '~'
+            + optionsKey(e) + '~'
             + selectPayloads(st, e).map((x) => x.index).join(',') + '~' + own + ';';
     }
     return s ? s + 'cap' + P.caps.gpu : '';
@@ -487,7 +496,9 @@ P.collect = function (g) {
                 bump();
                 const rA = o.radius > 0 ? o.radius : 0.5;
                 out.push({ kind: 'dot', x1: A[0], y1: A[1], z: A[2], r: rA * g.scale * A[3], rA,
-                    c: rgbOf(o.color), pA: A, sel: false, noInk: !o.ink, plugin: true });
+                    c: rgbOf(o.color), pA: A, sel: false, noInk: !o.ink, plugin: true,
+                    // no residue owns it, so no residue's visibility hides it
+                    resId: -1 });
                 return true;
             },
             // an OPAQUE flat triangle, from the existing `joint` prim: one
@@ -511,7 +522,7 @@ P.collect = function (g) {
                 bump();
                 // ONLY `nl`: the GPU drops `unlit` on this kind of face
                 out.push({ kind: 'joint', q: [A, B, C], z: (A[2] + B[2] + C[2]) / 3,
-                    c: rgbOf(o.color), gs0: -1, resId: 0, sc: false, ci: undefined, half: 0,
+                    c: rgbOf(o.color), gs0: -1, resId: -1, sc: false, ci: undefined, half: 0,
                     nl: nx * g.light[0] + ny * g.light[1] + nz * g.light[2], two: true, face: 1,
                     noInk: true, plugin: true });
                 return true;
@@ -605,16 +616,30 @@ P.errors = function (r) {
 };
 
 // THE TUBE STYLE DRAWS NO PLUGIN: the tube never goes through cartoon/geom.js's
-// render(), which is where plugins are collected. Said once per viewer, by core/mol.js's
-// render(), so a payload that is silently not drawn is not silent.
+// render(), which is where plugins are collected. Asked by core/mol.js's render()
+// on every frame, so the notice follows the style both ways: ON the viewer, in
+// its badge, while a style that draws no plugin is up - a console line alone is
+// invisible in a notebook, and a payload that silently draws nothing is the
+// bug - and gone again once the style is one that does. A viewer with no
+// payload pays one WeakMap lookup.
 P.styleNotice = function (r) {
-    if (!r || r.style === 'cartoon' || r.style === undefined) return;
+    if (!r) return;
     const st = states.get(r) || stateFor(r);
     if (!st.entries.size) return;
+    const off = r.style !== 'cartoon' && r.style !== undefined;
+    if (!off) {
+        if (st.err.style.size) { st.err.style.clear(); paintBadge(st); }
+        return;
+    }
+    if (st.err.style.has(r.style)) return;
+    st.err.style.clear();
     const names = Array.from(st.entries.keys()).map((n) => '"' + n + '"').join(', ');
-    note(st, 'style:' + r.style, 'plugin' + (st.entries.size > 1 ? 's ' : ' ') + names
-        + ': this viewer is in the "' + r.style + '" style, which draws no plugin geometry'
-        + ' (plugins draw in the cartoon style only).', 'warn');
+    const msg = 'plugin' + (st.entries.size > 1 ? 's ' : ' ') + names
+        + ' not drawn: the "' + r.style + '" style draws no plugin geometry -'
+        + ' switch to a cartoon style (richardson, ribbon or 3d)';
+    st.err.style.set(r.style, msg);
+    note(st, 'style:' + r.style, msg, 'warn');
+    paintBadge(st);
 };
 
 // JS-side doors, for a host page that has no Python: hand a viewer a payload
@@ -634,6 +659,65 @@ P.setPayload = function (r, name, data) {
     if (def) bindDef(st, def);
     try { r.render('plugin payload'); } catch (err) { /* a viewer mid-load */ }
 };
+// A VIEWER'S PAYLOADS AS A SESSION FILE HOLDS THEM - the shape Python's
+// save_state writes under state["plugins"], so a file saved on either side opens
+// on the other. A copy, through JSON: the file must not alias live state. null
+// for a viewer with none, so a session without plugins writes no key at all.
+P.snapshot = function (r) {
+    const st = r && states.get(r);
+    if (!st || !st.entries.size) return null;
+    const out = {};
+    for (const e of st.entries.values()) {
+        out[e.name] = JSON.parse(JSON.stringify({ version: e.data.version,
+            apiVersion: e.data.apiVersion, options: e.data.options, payloads: e.data.payloads }));
+    }
+    return out;
+};
+
+// ...AND BACK. `replace` drops the payloads the viewer had (a session load that
+// replaces the scene); without it the file's entries are added beside them (an
+// append). `rename` is the object renaming an append applied, so a payload bound
+// to an object follows it to its new name. A plugin the page has never
+// registered is kept all the same and draws when it registers - the rule
+// load_state follows in Python.
+P.restore = function (r, map, opts) {
+    if (!r) return;
+    opts = opts || {};
+    const st = stateFor(r);
+    if (opts.replace) {
+        for (const e of st.entries.values()) {
+            if (e.def && typeof e.def.dispose === 'function') {
+                try { e.def.dispose({ instance: e.inst, host: hostOf(st) }); } catch (err) { /* gone */ }
+            }
+        }
+        st.entries.clear();
+        for (const p of PAINTERS) st.err[p].clear();
+        st.extKey = null;
+    }
+    if (map && typeof map === 'object') {
+        const rn = opts.rename;
+        for (const name of Object.keys(map)) {
+            const d = map[name];
+            if (!d || typeof d !== 'object') continue;
+            const payloads = (Array.isArray(d.payloads) ? d.payloads : []).map((p) => (
+                p && p.object != null && rn && rn.has(p.object)
+                    ? Object.assign({}, p, { object: rn.get(p.object) }) : p));
+            const prev = st.entries.get(name);
+            // an append adds payloads and layers the file's options over the
+            // viewer's, the way add_plugin merges options in Python
+            const keep = !opts.replace && prev;
+            const e = addEntry(st, name, Object.assign({}, d, {
+                payloads: keep ? prev.data.payloads.concat(payloads) : payloads,
+                options: keep ? Object.assign({}, prev.data.options, d.options || {}) : d.options }));
+            if (prev) e.rev = prev.rev + 1;
+            const def = P.list.find((x) => x.name === name);
+            if (def) bindDef(st, def);
+        }
+    }
+    paintBadge(st);
+    try { r.render('plugin restore'); } catch (err) { /* a viewer mid-load */ }
+};
+
 P.setOption = function (r, name, key, value) {
     const st = stateFor(r);
     const e = st.entries.get(name);

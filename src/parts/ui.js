@@ -1924,10 +1924,41 @@ const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject
     if (viewerBlock && 'slots' in viewerBlock && renderer._slots) {
         renderer.setSlots(viewerBlock.slots || null);
     }
+    // ...and the PLUGINS' payloads (parts/plugins.js): {name: entry}, only the
+    // ones that changed. An entry without `payloads` keeps what the viewer has
+    // - an option changed, and the mesh it applies to was not re-sent. A
+    // `source` is a plugin this page has never had: in Colab every output is
+    // its own iframe, so the update cannot carry it as a <script> of its own,
+    // and it is run here, in the viewer's document, before its payload binds.
+    if (viewerBlock && viewerBlock.plugins) {
+        applyPluginBlock(viewerBlock.plugins);
+    }
     if (viewerBlock && viewerBlock.orient) {
         applyOrientRequest(viewerBlock.orient);
     }
 };
+
+function applyPluginBlock(block) {
+    const P = window.py2dmolPlugins;
+    if (!P || !P.setPayload || !block || typeof block !== 'object') return;
+    for (const name of Object.keys(block)) {
+        const entry = block[name] || {};
+        const known = (P.list || []).some((d) => d.name === name);
+        if (entry.source && !known) {
+            try {
+                const el = document.createElement('script');
+                el.setAttribute('data-py2dmol-plugin', name);
+                el.textContent = entry.source;
+                document.head.appendChild(el);
+            } catch (err) {
+                console.error('py2Dmol: plugin "' + name + '" could not be loaded:', err);
+            }
+        }
+        const data = { options: entry.options || {}, version: entry.version };
+        if (Array.isArray(entry.payloads)) data.payloads = entry.payloads;
+        P.setPayload(renderer, name, data);
+    }
+}
 
 // 12c. Handle replace-frame updates (overwrite latest frame)
 /**

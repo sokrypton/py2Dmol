@@ -237,9 +237,9 @@ attach('schema');
     'line prim carries the REQUIRED fields (joints, flat, pA/pB, zBias 0, sel false)');
     ok(dot && hasAll(dot, ['x1', 'y1', 'z', 'r', 'rA', 'c', 'pA', 'sel']) && Math.abs(dot.rA - 0.7) < 1e-9,
         'dot prim carries x1,y1,z,r,rA,c,pA,sel and the caller\'s radius in Angstrom');
-    ok(tri && tri.q.length === 3 && tri.two === true && tri.gs0 === -1 && tri.resId === 0
+    ok(tri && tri.q.length === 3 && tri.two === true && tri.gs0 === -1 && tri.resId === -1
         && typeof tri.nl === 'number' && !('unlit' in tri),
-    'tri reuses the joint prim: q x3, two, gs0 -1, resId 0, nl, NO unlit');
+    'tri reuses the joint prim: q x3, two, gs0 -1, resId -1 (no residue hides it), nl, NO unlit');
     ok(pl.length === 3 && pl.every((g) => g.noInk === true), 'plugin prims are noInk by default');
     // the near-plane drop: ortho is ignored here, so force perspective and put a point behind the camera
     const p2 = mk({ viewerState: { extent: 30, zoom: 1, ortho: 0.1, focalLength: 50, rotation: I3, center: { x: 0, y: 0, z: 0 } } });
@@ -773,6 +773,11 @@ reset();
     logged.warn.length = 0;
     P.styleNotice(rc);
     ok(logged.warn.length === 0, 'tube: no warning in the cartoon style');
+    ok(P.errors(rt).some((x) => x.painter === 'style' && /"tb"/.test(x.message)),
+        'tube: the notice is ON THE VIEWER (errors(), the badge), not only in the console');
+    rt.style = 'cartoon';
+    P.styleNotice(rt);
+    ok(!P.errors(rt).some((x) => x.painter === 'style'), 'tube: ...and it goes when the style changes to one that draws plugins');
     delete global.window.py2dmol_plugins;
     const rn = mk({ style: 'tube', viewerId: 'nobody' }).r;
     P.styleNotice(rn);
