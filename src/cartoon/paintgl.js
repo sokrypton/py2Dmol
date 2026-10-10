@@ -3065,6 +3065,7 @@ function initGL(cv) {
     // No page to report to from a shipping module: the caller gets false and
     // decides what to say about it.
     if (!gl) return false;
+    shadowUniforms(gl);
     // 🔴 COMPILE EVERYTHING, THEN ASK. `getShaderParameter(COMPILE_STATUS)`
     // and `getProgramParameter(LINK_STATUS)` are the two calls that make a
     // driver finish the work before answering, so querying each shader as it
@@ -7918,6 +7919,56 @@ function clearResidentStations() {
  */
 function setStationDraw(on) { stationDraw = !!on; }
 
+// WHAT EACH PROGRAM'S UNIFORMS WERE LAST SET TO, kept on this side of the
+// context: program -> Map(name -> [setter, args]). Filled by the wrappers
+// shadowUniforms installs, read by mirrorUniforms.
+//
+// 🔴 gl.getUniform IS A ROUND TRIP TO THE GPU PROCESS IN CHROME, NOT A CHEAP
+// QUERY. mirrorUniforms read forty uniforms back that way on EVERY frame of a
+// trajectory whose mesh has anything beside the ribbon - a ligand, RNA base
+// plates, a plugin's ball - and the repaint went from 0.06 ms to 2.1 ms, 76%
+// of it in getUniform (_traj_3ptb, _traj_1ehz; a protein-only trajectory never
+// took the path). Every value it read was one this file had just written, so
+// the writes are recorded instead. getActiveUniform and getUniformLocation are
+// answered from Chrome's client-side copy of the program and cost nothing.
+const uniformShadow = new WeakMap();
+const UNIFORM_SETTERS = ['uniform1f', 'uniform2f', 'uniform3f', 'uniform4f',
+    'uniform1i', 'uniform2i', 'uniform3i', 'uniform4i',
+    'uniform1ui', 'uniform2ui', 'uniform3ui', 'uniform4ui',
+    'uniform1fv', 'uniform2fv', 'uniform3fv', 'uniform4fv',
+    'uniform1iv', 'uniform2iv', 'uniform3iv', 'uniform4iv',
+    'uniform1uiv', 'uniform2uiv', 'uniform3uiv', 'uniform4uiv',
+    'uniformMatrix2fv', 'uniformMatrix3fv', 'uniformMatrix4fv',
+    'uniformMatrix2x3fv', 'uniformMatrix2x4fv', 'uniformMatrix3x2fv',
+    'uniformMatrix3x4fv', 'uniformMatrix4x2fv', 'uniformMatrix4x3fv'];
+function shadowUniforms(g) {
+    if (g.__py2dmolShadow) return;
+    g.__py2dmolShadow = true;
+    // a location is a fresh object per lookup and does not say whose it is
+    const owner = new WeakMap();
+    const getLoc = g.getUniformLocation.bind(g);
+    g.getUniformLocation = (p, name) => {
+        const loc = getLoc(p, name);
+        if (loc) owner.set(loc, [p, String(name).replace(/\[0\]$/, '')]);
+        return loc;
+    };
+    for (const k of UNIFORM_SETTERS) {
+        const f = g[k];
+        if (typeof f !== 'function') continue;
+        g[k] = function (loc, ...args) {
+            f.apply(g, arguments);
+            const o = loc && owner.get(loc);
+            if (!o) return;
+            let m = uniformShadow.get(o[0]);
+            if (!m) uniformShadow.set(o[0], m = new Map());
+            // The array itself, not a copy: every array-valued write in this
+            // file builds a fresh one. A caller that reused a scratch array
+            // would have it read back later with whatever it then held.
+            m.set(o[1], [f, args]);
+        };
+    }
+}
+
 /**
  * EVERY UNIFORM OF ONE PROGRAM ONTO ANOTHER, BY ENUMERATION.
  *
@@ -7932,21 +7983,39 @@ function setStationDraw(on) { stationDraw = !!on; }
  * and default clip and paper - 7% of pixels moved by 8-32 levels, spread over
  * every face. Asking the program what uniforms it has cannot miss one.
  *
- * gl.getUniform reads driver-side state rather than the framebuffer, so this is
- * not a stall like readPixels; it is a few dozen cheap queries on a path that
- * only runs when a mesh has geometry outside the ribbon.
+ * The VALUES come from uniformShadow, never from gl.getUniform (see there). A
+ * uniform this file never wrote on `src` - the AO trio while occlusion is off -
+ * still holds what linking gave it, which is zero, so zero is what is copied.
+ * window.__mirrorReadback = true puts the readback back, for comparing the two
+ * within one page load.
  */
+const UNIFORM_ZERO = {
+    0x1406: 0, 0x8B50: new Float32Array(2), 0x8B51: new Float32Array(3),   // FLOAT, VEC2, VEC3
+    0x8B52: new Float32Array(4), 0x8B5B: new Float32Array(9),                // VEC4, MAT3
+    0x8B5C: new Float32Array(16), 0x1404: 0, 0x8B56: 0, 0x8B5E: 0, 0x8B60: 0, // MAT4, INT, BOOL, SAMPLER_2D/CUBE
+};
 function mirrorUniforms(src, dst) {
     const n = gl.getProgramParameter(src, gl.ACTIVE_UNIFORMS);
+    const shadow = (typeof window !== 'undefined' && window.__mirrorReadback)
+        ? null : uniformShadow.get(src);
     gl.useProgram(dst);
     for (let i = 0; i < n; i += 1) {
         const info = gl.getActiveUniform(src, i);
         if (!info) continue;
         const name = info.name.replace(/\[0\]$/, '');
-        const from = gl.getUniformLocation(src, name);
         const to = gl.getUniformLocation(dst, name);
-        if (!from || !to) continue;          // dst may not use it; that is fine
-        const v = gl.getUniform(src, from);
+        if (!to) continue;                   // dst may not use it; that is fine
+        let v;
+        if (shadow) {
+            const rec = shadow.get(name);
+            if (rec) { rec[0].call(gl, to, ...rec[1]); continue; }
+            v = UNIFORM_ZERO[info.type];
+            if (v === undefined) continue;
+        } else {
+            const from = gl.getUniformLocation(src, name);
+            if (!from) continue;
+            v = gl.getUniform(src, from);
+        }
         switch (info.type) {
         case gl.FLOAT: gl.uniform1f(to, v); break;
         case gl.FLOAT_VEC2: gl.uniform2fv(to, v); break;

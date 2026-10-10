@@ -224,6 +224,39 @@ JS = """
   out.restored = { frames: nF - 3, builds: (window.__faceBuilds || 0) - reBefore,
                    spans: G.partSpans ? G.partSpans() : null,
                    table: tableState() };
+
+  // ---- 7. A REPAINT READS NOTHING BACK FROM THE GPU ----
+  // 🔴 The station program draws the ribbon and the fill program draws the
+  // tail - here the ligand - and the second needs the first's uniforms.
+  // mirrorUniforms copied them with gl.getUniform, which in Chrome is a round
+  // trip to the GPU process: 2.1 ms a repaint against 0.06 without a tail,
+  // on every frame of any trajectory carrying a ligand, base plates or a
+  // plugin's ball. The copy comes from what this side wrote now, and must be
+  // the SAME copy - so the picture is compared against the readback, forced,
+  // within this one page load.
+  const proto = WebGL2RenderingContext.prototype;
+  const realGet = proto.getUniform;
+  let reads = 0;
+  proto.getUniform = function () { reads++; return realGet.apply(this, arguments); };
+  r.setFrame(4); r.render('mirror'); await settle(3);
+  const progUsed = window.__drawProgram;
+  reads = 0;
+  for (let k = 0; k < 20; k++) r.render('repaint');
+  const readsPerFrame = reads / 20;
+  const viaShadow = ink();
+  window.__mirrorReadback = true;
+  r.render('readback'); await settle(3);
+  const viaReadback = ink();
+  window.__mirrorReadback = false;
+  proto.getUniform = realGet;
+  let mDiff = 0, mInk = 0;
+  for (let i = 0; i < viaShadow.length; i += 4) {
+    if (viaShadow[i] < 245 || viaShadow[i + 1] < 245 || viaShadow[i + 2] < 245) mInk++;
+    if (viaShadow[i] !== viaReadback[i] || viaShadow[i + 1] !== viaReadback[i + 1]
+        || viaShadow[i + 2] !== viaReadback[i + 2]) mDiff++;
+  }
+  out.mirror = { program: progUsed, readsPerFrame, diff: mDiff, ink: mInk,
+                 spans: G.partSpans ? G.partSpans() : null };
 """
 JS = JS.replace('//HELPERS', HELPERS).replace('%TRAJ%', TRAJ)
 
@@ -334,6 +367,20 @@ elif (sc.get('builds') or 0) > 1:
                " ligand and side chains both on screen - the station-covered"
                " prefix is two parts in that order, not one")
 
+mr = R.get('mirror') or {}
+print(f"  mirror: program={mr.get('program')} getUniform/frame={mr.get('readsPerFrame')}"
+      f" differs from the readback in {mr.get('diff')} px (ink {mr.get('ink')})")
+if mr.get('program') != 'stations':
+    bad.append(f"the mirror leg drew with the {mr.get('program')} program, so the"
+               " tail's uniforms were never copied and it measured nothing")
+if not mr.get('ink'):
+    bad.append("the mirror leg's canvas is blank, so its comparison proves nothing")
+if mr.get('readsPerFrame'):
+    bad.append(f"a repaint calls gl.getUniform {mr.get('readsPerFrame')} times - a"
+               " synchronous round trip to the GPU process each, ~2 ms a frame")
+if mr.get('diff'):
+    bad.append(f"the uniforms copied from this side draw {mr.get('diff')} pixels"
+               " differently from the ones read back from the GPU")
 if bad:
     for b in bad: print('FAIL:', b)
     sys.exit(1)

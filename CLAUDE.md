@@ -2975,6 +2975,23 @@ public downloads is exercised on every run.
   forced palette recompute did not. Read the canvas twice with a frame between
   and keep the second; and when a reading is ambiguous, find the arm where it
   is not.
+- 🔴 **`gl.getUniform` IS A ROUND TRIP TO CHROME'S GPU PROCESS, AND IT WAS ON
+  EVERY FRAME OF A TRAJECTORY WITH ANYTHING BESIDE ITS RIBBON.** The station
+  program draws the ribbon and the fill program the tail, and `mirrorUniforms`
+  copied the forty-odd uniforms across by reading each one back - under a
+  comment calling that "a few dozen cheap queries", not a stall. Measured with
+  the CPU profiler: **2.1 ms a repaint against 0.06**, 76% of it `getUniform`,
+  on `_traj_3ptb` (a ligand), `_traj_1ehz` (base plates) and any trajectory
+  carrying a plugin's ball - found by asking whether plugins made anything
+  slow, and they only joined a case that was already there. `shadowUniforms`
+  wraps the context's uniform setters so each program's values are recorded as
+  they are written; a uniform never written is the zero linking gave it. Now
+  **0.15 ms**, and `tests/station_ligand.py` requires no `getUniform` in a
+  repaint and the SAME picture as the readback, forced with
+  `window.__mirrorReadback`, within one page load (0 of 119,223 inked pixels;
+  a missing matrix setter is 2,305). `getActiveUniform` and
+  `getUniformLocation` are answered from Chrome's client-side copy of the
+  program and stay.
 - 🔴 **PIXELS CANNOT BE COMPARED ACROSS PAGE LOADS ON THE GPU PATH.** Two runs
   of the SAME code differ in **110,800 of 357,604 pixels** on 4HHB - a fine
   speckle over every surface, max delta 40 - so a before/after image comparison
