@@ -248,14 +248,33 @@ JS = """
   r.render('readback'); await settle(3);
   const viaReadback = ink();
   window.__mirrorReadback = false;
+  const differ = (a, b) => {
+    let d = 0, k = 0;
+    for (let i = 0; i < a.length; i += 4) {
+      if (a[i] < 245 || a[i + 1] < 245 || a[i + 2] < 245) k++;
+      if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) d++;
+    }
+    return [d, k];
+  };
+  const [mDiff, mInk] = differ(viaShadow, viaReadback);
+  // ...AND WITH OCCLUSION ON, which is when the three uniforms that otherwise
+  // hold their link-time zero (uZOnly, uSizeF, uAOTex) are written and copied
+  r.cartoonAO = true;
+  r.render('ao'); await settle(3);
+  reads = 0;
+  r.render('ao repaint');
+  const aoReads = reads;
+  const aoShadow = ink();
+  window.__mirrorReadback = true;
+  r.render('ao readback'); await settle(3);
+  const aoReadback = ink();
+  window.__mirrorReadback = false;
+  r.cartoonAO = false;
   proto.getUniform = realGet;
-  let mDiff = 0, mInk = 0;
-  for (let i = 0; i < viaShadow.length; i += 4) {
-    if (viaShadow[i] < 245 || viaShadow[i + 1] < 245 || viaShadow[i + 2] < 245) mInk++;
-    if (viaShadow[i] !== viaReadback[i] || viaShadow[i + 1] !== viaReadback[i + 1]
-        || viaShadow[i + 2] !== viaReadback[i + 2]) mDiff++;
-  }
+  const [aoDiff, aoInk] = differ(aoShadow, aoReadback);
+  const [aoMoved] = differ(aoShadow, viaShadow);
   out.mirror = { program: progUsed, readsPerFrame, diff: mDiff, ink: mInk,
+                 ao: { reads: aoReads, diff: aoDiff, ink: aoInk, moved: aoMoved },
                  spans: G.partSpans ? G.partSpans() : null };
 """
 JS = JS.replace('//HELPERS', HELPERS).replace('%TRAJ%', TRAJ)
@@ -378,6 +397,16 @@ if not mr.get('ink'):
 if mr.get('readsPerFrame'):
     bad.append(f"a repaint calls gl.getUniform {mr.get('readsPerFrame')} times - a"
                " synchronous round trip to the GPU process each, ~2 ms a frame")
+ao = mr.get('ao') or {}
+print(f"  ...with occlusion: getUniform={ao.get('reads')} differs from the readback in"
+      f" {ao.get('diff')} px, and occlusion moved {ao.get('moved')} px")
+if not ao.get('moved'):
+    bad.append("occlusion changed no pixel, so the leg that copies its uniforms measured nothing")
+if ao.get('reads'):
+    bad.append(f"with occlusion on a repaint calls gl.getUniform {ao.get('reads')} times")
+if ao.get('diff'):
+    bad.append(f"with occlusion on, the copied uniforms draw {ao.get('diff')} pixels"
+               " differently from the ones read back")
 if mr.get('diff'):
     bad.append(f"the uniforms copied from this side draw {mr.get('diff')} pixels"
                " differently from the ones read back from the GPU")

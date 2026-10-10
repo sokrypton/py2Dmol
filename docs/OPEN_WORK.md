@@ -472,3 +472,29 @@ says which half to look at. Three things it cost:
     `#canvasContainer`'s box instead and lets `setupViewport`'s
     ResizeObserver do the rest. Measured at the default 598px box, every
     structure tried is a flat 60 fps and the report is invisible.
+
+## 14. A Colab reopen can lose a plugin payload that replays late
+
+**What is open.** On a notebook reopen in Colab every update cell posts again
+when the viewer announces itself, and the viewer holds what arrives inside an
+800 ms window and applies it in `seq` order (`parts/ui.js`, the replay
+window). Anything later goes straight to `handleIncrementalStateUpdate`, whose
+`seq` watermark DISCARDS an update older than one already applied. A live
+`add_plugin` sends only the payloads the page lacks (`payloads_from`, see
+`docs/PLUGINS.md`), so one discarded plugin cell is a permanent gap: the next
+tail lands after it, `setPayload` keeps what it has, draws the tail and warns
+"earlier payload(s) never reached this page". Before tails, every plugin
+update carried the whole list and the next one healed it.
+
+**Not new in kind.** A trajectory's `add()` frames have always been lost the
+same way past the window; plugins joined that case when the tails came in to
+stop a loop of `add_plugin` costing quadratic notebook bytes.
+
+**Not observed.** `tests/colab.py` drives three arrival orders, all inside
+the window. Nobody has measured how late an output iframe can load in a long
+Colab notebook.
+
+**The shape of a fix**, if it is ever seen: let a plugin block through the
+watermark and apply tails by POSITION (`payloads[k + i] = tail[i]`, holes
+skipped when drawing) so arrival order stops mattering; options would still
+need the watermark, since an older option must not overwrite a newer one.
