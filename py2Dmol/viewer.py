@@ -349,6 +349,17 @@ def _known_plugin_names():
 
 # --- Color System Constants ---
 
+# style= takes any of these names; each is a (draw path, cartoon preset) pair.
+# Module scope so py2Dmol.agent's vocabulary and spec validation read this one
+# table rather than a copy; view.__init__ is its other reader.
+STYLE_ALIASES = {
+    "tube": ("tube", None),
+    "cartoon": ("cartoon", "richardson"),
+    "richardson": ("cartoon", "richardson"),
+    "ribbon": ("cartoon", "ribbon"),
+    "3d": ("cartoon", "3d"),
+}
+
 VALID_COLOR_MODES = {"chain", "plddt", "rainbow", "auto", "entropy", "deepmind",
                      "ss", "hydrophobicity"}
 """Valid color modes for protein visualization.
@@ -1091,13 +1102,6 @@ class view:
         # that have to agree are two arguments that can disagree. So style= takes
         # any of the four names, and "cartoon" remains as a synonym for the
         # default one.
-        STYLE_ALIASES = {
-            "tube": ("tube", None),
-            "cartoon": ("cartoon", "richardson"),
-            "richardson": ("cartoon", "richardson"),
-            "ribbon": ("cartoon", "ribbon"),
-            "3d": ("cartoon", "3d"),
-        }
         if style not in STYLE_ALIASES:
             raise ValueError(
                 f'Invalid style "{style}" - expected one of '

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>py2Dmol embed</title>
+</head>
+<body>
+<!-- The viewer's element. show() replaces its children; put panel markup beside it, not inside. -->
+<div id="mol" style="width:480px;height:480px"></div>
+
+<script src="https://py2dmol.solab.org/py2Dmol/resources/bundles/py2Dmol.embed.min.js"></script>
+<script>
+  py2Dmol.fetch('4HHB').then((text) => {
+    const v = py2Dmol.show('mol', text, {style: 'richardson', color: 'chain', controls: true});
+    // The hemes and everything within 5 A of them, with their side chains.
+    const site = {near: {type: 'L'}};
+    v.showSidechains(site);
+    v.setSidechainColor('hydrophobicity');
+    v.orient({type: 'L'});
+  }).catch((err) => {
+    document.getElementById('mol').textContent = 'Could not load the structure: ' + err;
+  });
+</script>
+</body>
+</html>
