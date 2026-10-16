@@ -1,0 +1,5 @@
+{
+  "description": "Protein structure viewer for agents: inspect structures, validate view specs, render interactive HTML and PNG/SVG images, write draw plugins",
+  "name": "py2dmol",
+  "version": "2.0.0+4f245250"
+}
