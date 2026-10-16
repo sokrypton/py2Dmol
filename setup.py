@@ -50,6 +50,29 @@ setup(
             # them, and the omission only shows up in a release environment
             # where the setuptools-scm plugin is not there to cover for it.
             'resources/bundles/py2Dmol.notebook.min.js',
+            # The agent plugin bundle (skills, agents, MCP launch) that
+            # `py2dmol plugin install` installs from; written by
+            # `cisternal assets snapshot` from agent_assets/manifest.toml.
+            'agent/agent_plugin.json',
+        ],
+    },
+    # THE AGENT SURFACE IS AN EXTRA, never a dependency of `import py2Dmol`.
+    # cisternal needs Python 3.13 and brings fastmcp and cyclopts; the notebook
+    # package keeps its own floor. The marker keeps `pip install py2Dmol[agent]`
+    # from failing on an older Python - measured, it then installs NO
+    # cisternal, which is why the console scripts check and print the fix
+    # (py2Dmol/agent/_need.py) and why the plugin launches with --python 3.13.
+    extras_require={
+        'agent': ['cisternal>=0.1.2; python_version>="3.13"'],
+        'screenshot': [
+            'cisternal>=0.1.2; python_version>="3.13"',
+            'playwright>=1.48',
+        ],
+    },
+    entry_points={
+        'console_scripts': [
+            'py2dmol=py2Dmol.agent._entry:cli',
+            'py2dmol-mcp=py2Dmol.agent._entry:mcp',
         ],
     },
     license='BEER-WARE',

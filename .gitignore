@@ -15,6 +15,13 @@ implementation_plan.md
 *.cif
 .ipynb_checkpoints/
 *.json
+# ...except the agent plugin's, which are generated from agent_assets/manifest.toml
+# and must be committed: without them the plugin cannot be installed from GitHub
+# (marketplace.json, plugin.json, .mcp.json) or from the wheel (agent_plugin.json).
+!/.claude-plugin/marketplace.json
+!/plugin/.mcp.json
+!/plugin/.claude-plugin/*.json
+!/py2Dmol/agent/agent_plugin.json
 node_modules/
 *.egg-info/
 

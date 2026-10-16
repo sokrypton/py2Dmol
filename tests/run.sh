@@ -154,6 +154,15 @@ if [[ "$LANE" == "all" || "$LANE" == "node" ]]; then
     fail=1; print "NODE plugin_state:"; python3 tests/plugin_state.py 2>&1 | grep -E '^FAIL|^  -|Error' | head -3
   fi
 
+  # The agent surface's spec layer: import isolation, vocabulary parity, the
+  # JSON range translation. No cisternal, no browser. (tests/agent_tools.py,
+  # the CLI/MCP/render half, is in the gpu lane: it starts browsers.)
+  if python3 tests/agent_spec.py >/dev/null 2>&1; then
+    print "node agent_spec: ok"
+  else
+    fail=1; print "NODE agent_spec:"; python3 tests/agent_spec.py 2>&1 | grep '^FAIL' | head -3
+  fi
+
   # ...and every probe in tests/ is named in tests/README.md, with the lane
   # that runs it. Sixty-nine of about ninety were in it nowhere, which is how a
   # gate can sit outside run.sh for a session while three files measure the
@@ -214,6 +223,9 @@ CAP="${CAP:-60}"
 probe_cap () {
   case $1 in
     (embed) print 240 ;;
+    # 24 s warm, measured; cold it also builds a Python 3.13 uv env with
+    # cisternal and Playwright before the first check.
+    (agent_tools) print 180 ;;
     # both build a mesh per value of several controls, so they are long by
     # construction rather than by being slow
     (topology_survey) print 300 ;;
@@ -338,7 +350,7 @@ if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "gpu" ]]; then
-  for t in ss_every multi_step gpu_recolour gpu_mesh_reuse gpu_tube_reuse gpu_mixed_style gpu_stick_flat disulfides sequence_connectivity dev_rebuild_light colour_repaint station_shader station_corners station_pixels station_frames station_ligand station_foldcuts station_overlay station_sidechains plugin_browser topology_survey station_controls rebuild_actions rebuild_returns render_counts diffusion_connectivity pick_index halo_partial load_work station_unpinned panel_idle frame_share colour_cache ss_agree splice_window station_rows station_edges sheet_merge weld_open stick_topology outline_sync station_stick_faces panel_drag capture_once arrow_rebuilds ss_arrow_shape arrow_faces_2d ss_axis resize_reuse frame_revisit export_html opacity default_object python_opacity named_object gpu_direct; do
+  for t in ss_every multi_step gpu_recolour gpu_mesh_reuse gpu_tube_reuse gpu_mixed_style gpu_stick_flat disulfides sequence_connectivity dev_rebuild_light colour_repaint station_shader station_corners station_pixels station_frames station_ligand station_foldcuts station_overlay station_sidechains plugin_browser topology_survey station_controls rebuild_actions rebuild_returns render_counts diffusion_connectivity pick_index halo_partial load_work station_unpinned panel_idle frame_share colour_cache ss_agree splice_window station_rows station_edges sheet_merge weld_open stick_topology outline_sync station_stick_faces panel_drag capture_once arrow_rebuilds ss_arrow_shape arrow_faces_2d ss_axis resize_reuse frame_revisit export_html opacity default_object python_opacity named_object gpu_direct agent_tools; do
     run_probe $t || fail=1
   done
   # ...and the same file again with a TAIL in it: 1EHZ's nine ions are rebuilt

@@ -98,6 +98,8 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | Probe | Lane | What it answers |
 | --- | --- | --- |
 | `against_baseline.py` | tool | THIS TREE AGAINST origin/main, on the ordinary path: every frame rebuilds. |
+| `agent_spec.py` | node | THE AGENT SPEC TRANSLATES ONTO view, AND import py2Dmol NEVER PULLS IN cisternal. |
+| `agent_tools.py` | gpu | THE py2dmol CLI AND MCP SERVER: ONE TOOL SET, DOCUMENTED EXIT CODES, AND PICTURES THAT DRAW. |
 | `align.js` | node | TM-align, and the four decisions the viewer makes around it. |
 | `align_objects.py` | ui | Superposing one object onto another, in the browser. |
 | `anim_profile.py` | tool | A CPU profile of a trajectory being stepped, aggregated by function. |
