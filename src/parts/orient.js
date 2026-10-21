@@ -513,15 +513,27 @@ function orientToBestView(renderer, options) {
         // floor has to go into the span written, or the plugin is cropped from the
         // first frame. A SELECTION is not everything and gets the tight span it
         // asked for: a focus on one residue zooms closer than a shell around it.
-        // The radius is about the current view centre, so it is widened by how far
-        // that centre moves (a bound, not an exact fit). See parts/plugins.js.
+        // The radius is measured about where the camera LANDS, not where it is:
+        // padding the current one by how far the centre moves was a bound that,
+        // after an orient to a few residues, framed a plugin 2.5x too loosely.
+        // A flight lands on visibleCenter, or on the object's own centre when a
+        // flight home clears it (null), so both are asked and the larger kept.
+        // The two differ only when the object's all-frames centre is not this
+        // frame's - a drifting trajectory - which no probe builds: dropping the
+        // second question passes tests/plugin_browser.py, the padding does not.
         if (!selectedPositionIndices && window.py2dmolPlugins && window.py2dmolPlugins.extent) {
-            const pr = window.py2dmolPlugins.extent(renderer, object);
+            const vs = renderer.viewerState;
+            const was = vs.center;
+            const about = (c) => {
+                vs.center = c;
+                try { return window.py2dmolPlugins.extent(renderer, object); } finally { vs.center = was; }
+            };
+            const pr = Math.max(
+                about({ x: visibleCenter[0], y: visibleCenter[1], z: visibleCenter[2] }),
+                about(null));
+            renderer._computeViewCentre(object);   // _viewCenter back to the live centre
             if (pr > 0) {
-                const c0 = renderer._computeViewCentre(object) || { x: 0, y: 0, z: 0 };
-                const moved = Math.hypot(visibleCenter[0] - c0.x, visibleCenter[1] - c0.y,
-                    visibleCenter[2] - c0.z);
-                const floored = floorViewSpan(targetExtent, targetAspect, pr + moved);
+                const floored = floorViewSpan(targetExtent, targetAspect, pr);
                 targetExtent = floored.extent;
                 targetAspect = floored.aspect;
             }

@@ -4792,7 +4792,10 @@ than leaving the next session to find out the same way.
   a span orient, focus or the app has set (`viewerState.extent`) is left alone, or a focus on one
   residue could not zoom closer than a shell drawn around it. The span an orient-to-everything writes
   carries the floor itself (`parts/orient.js`), PER AXIS (`floorViewSpan`): flooring the extent alone
-  inflates the long axis of an elongated structure 19x. `multi.js`'s reframes drop the floor until
+  inflates the long axis of an elongated structure 19x. The radius is measured about where the
+  camera LANDS (the visible centre, or the object's own when a flight home clears it): it used to be
+  measured about the centre being LEFT and padded by the move, which after an orient to three
+  residues framed a shell at 112.5 A where 45 fits. `multi.js`'s reframes drop the floor until
   the next orient-to-all. `tests/plugin_browser.py` fails if the fold is removed.
   🔴 **AND A PAYLOAD THAT ARRIVES AFTER THAT ORIENT RE-FRAMES IT** - `py2Dmol.show()` orients before a
   host's `setPayload`, and a live `add_plugin()` comes after `show()`. The orient records that its
