@@ -8640,11 +8640,32 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const isPolymer = (type) => (type === 'P' || type === 'D' || type === 'R');
                 const isPolymerArr = this.positionTypes.map(isPolymer);
 
-                const getChainbreakDistSq = (type1, type2) => {
-                    if ((type1 === 'D' || type1 === 'R') && (type2 === 'D' || type2 === 'R')) {
-                        return nucleicChainbreakSq;
+                // HYSTERESIS: a pair that was joined breaks at 5.5 A, one that
+                // was broken joins at 4.5, so a structure breathing across 5.0
+                // does not cut and rejoin its ribbon - which is a new segment
+                // count and a full mesh rebuild - on every step. The memory is
+                // the OBJECT's (a reload is a new entry, and opens on the
+                // exact cutoff), not the segment cache's: the cache is dropped
+                // by a dozen things that do not move a position, and a
+                // recompute at the same frame without the memory broke a
+                // 5.4 A pair it had just held joined.
+                const hPad = cutoffs.chainbreak_hysteresis ?? 0.5;
+                const joinOwner = this.objectsData
+                    ? this.objectsData[this.currentObjectName] || null : null;
+                const prevJoined = (joinOwner && this._polymerJoinedOwner === joinOwner
+                    && this._polymerJoined && this._polymerJoined.length === n)
+                    ? this._polymerJoined : null;
+                const prevCyclic = prevJoined ? this._polymerCyclic : null;
+                const nextJoined = new Uint8Array(n);
+
+                const getChainbreakDistSq = (type1, type2, wasJoined) => {
+                    const base = ((type1 === 'D' || type1 === 'R') && (type2 === 'D' || type2 === 'R'))
+                        ? nucleicChainbreak : proteinChainbreak;
+                    if (wasJoined === undefined || wasJoined === null || !(hPad > 0)) {
+                        return base * base;
                     }
-                    return proteinChainbreakSq;
+                    const d = Math.max(0.1, base + (wasJoined ? hPad : -hPad));
+                    return d * d;
                 };
 
                 for (let i = 0; i < n; i++) {
@@ -8681,12 +8702,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                                     const start = this.coords[i];
                                     const end = this.coords[i + 1];
                                     const distSq = start.distanceToSq(end);
-                                    const chainbreakDistSq = getChainbreakDistSq(type1, type2);
+                                    const wasJoined = prevJoined ? prevJoined[i] === 1 : null;
+                                    const chainbreakDistSq = getChainbreakDistSq(type1, type2, wasJoined);
                                     const bySeq = bySequence ? consecutive(i, i + 1) : null;
                                     const joined = bySeq === null
                                         ? distSq < chainbreakDistSq : bySeq;
 
                                     if (joined) {
+                                        nextJoined[i] = 1;
                                         this.segmentIndices.push({
                                             idx1: i,
                                             idx2: i + 1,
@@ -8731,6 +8754,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         ligandIndicesByChain.get(chainId).push(i);
                     }
                 }
+                this._polymerJoined = nextJoined;
+                this._polymerJoinedOwner = joinOwner;
 
                 // Check for cyclic peptides (first-to-last bond) per chain
                 const cyclic = (typeof this.config.rendering?.cyclic === 'boolean') ? this.config.rendering.cyclic : true;
@@ -8753,7 +8778,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                                 const start = this.coords[firstIdx];
                                 const end = this.coords[lastIdx];
                                 const distSq = start.distanceToSq(end);
-                                const chainbreakDistSq = getChainbreakDistSq(type1, type2);
+                                const wasCyc = prevCyclic ? prevCyclic.has(chainId) : null;
+                                const chainbreakDistSq = getChainbreakDistSq(type1, type2, wasCyc);
 
                                 if (distSq < chainbreakDistSq) {
                                     // this chain is a ring - the rainbow ramp
@@ -8780,6 +8806,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         }
                     }
                 }
+
+                // only while rings are looked for: switched off, "no rings" is
+                // not a memory, and switching back on must close at 5.0
+                this._polymerCyclic = cyclic ? new Set(this.cyclicChains) : null;
 
                 // ONE SEGMENT PER BOND. The explicit list below and the ligand
                 // distance search further down routinely find the SAME pair -

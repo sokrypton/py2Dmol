@@ -180,14 +180,29 @@ One column (the source's own `group_PDB`) gives it 10 ligand positions and
 1HVR 46. `tests/station_ligand.py` legs 4, 5 and 6 are the gates, each
 asserting its own part spans first so it cannot pass by measuring nothing.
 
-## Problem 1e: two junction rules still ask the frame (OPEN, measured)
+## Problem 1e: two junction rules still ask the frame (cached, UNMEASURED)
 
 The mitre's corner pairing and a run station's shared section were both decided
 per frame and are now decided by rule (CLAUDE.md has the numbers). What is left
 is a four-leg centre's planarity test and the run walk itself - see
 `docs/OPEN_WORK.md` 11, which has the measurement and the shape of the fix.
 
-## Problem 3: the fast path draws the OUTLINE differently from a rebuild (OPEN)
+## Problem 3: the fast path draws the OUTLINE differently from a rebuild (FIXED)
+
+**THE CAUSE WAS THE SLOT ORDER AFTER ALL, ONE LEVEL UP FROM WHERE IT WAS
+LOOKED FOR.** `stationMeshOf` walked the prims in emission order - backbone
+ribs, then side-chain sticks and joints, then the nucleic base plates' ribs -
+and `makeResident` lays the mesh out by GROUP: every rib (backbone and plates)
+in the ribbon part, the side chains after it. So on 1EHZ every side-chain face
+read its station 336 faces along - 56 base plates of six faces, which is 56
+whole six-face stick boxes, so `faceSurf` still matched and the vocabulary
+check below passed against it. The faces drew right because their positions
+come through a different index; the outline (`refreshEdgesFromStations`) read
+the wrong stations. Two passes now, ribs then side chains: **6,494 -> 4 px on
+`_traj_1ehz.pdb`, 4,506 -> 37 on `_traj_1bna.pdb`**, and
+`tests/stick_topology.py` asserts the side-chains-shown difference (it only
+asserted the bare one, which is why this was invisible to it). What follows is
+the investigation as it stood, kept for its dead ends.
 
 🔴 **THE TITLE WAS WRONG AND SO WAS THE FIRST PARAGRAPH.** This said the fast
 path draws the side-chain STICKS differently and that "all of it is the

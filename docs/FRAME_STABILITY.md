@@ -84,7 +84,15 @@ Any stability work that makes the fast path run more often makes this worse.
 
 ## Where to start instead
 
-**Hysteresis on the connectivity threshold.** The flicker is a threshold with no
+**Hysteresis on the connectivity threshold - DONE.** A pair that was joined
+breaks at 5.5 A and one that was not joins at 4.5 (`cutoffs.chainbreak_hysteresis`,
+0.5), the memory is the object's, and a fresh object takes 5.0 exactly.
+`tests/chainbreak_hysteresis.py` steps `_traj_flicker.pdb` (59 segments on
+every frame, 59/58 alternating without it) and requires a same-frame recompute
+to keep the answer, which the first version did not. What follows is the
+argument as it was made.
+
+The flicker is a threshold with no
 memory: a pair at 4.99 Å is bonded and at 5.01 Å is not, and a breathing
 structure crosses it repeatedly. A bond that has to travel a little further to
 break than to form removes the flicker at its source. It needs no flag, no mode

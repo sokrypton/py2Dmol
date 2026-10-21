@@ -1336,7 +1336,14 @@ public downloads is exercised on every run.
   chains shown, a fast step now draws 6,612 of 357,604 pixels differently from
   a rebuild of the same frame on that trajectory - and ZERO with them hidden,
   so it is the sticks alone, with `refreshSticksFrom` reporting no refusal.
-  Open; see `docs/FASTPATH_ARTIFACTS.md`.
+  **Fixed**: `stationMeshOf` walked the prims in emission order, which puts
+  the side chains BETWEEN the backbone and the base plates, while the mesh is
+  ribbon part (backbone AND plates) then side chains - so every side-chain
+  face read stations 336 faces along on 1EHZ, a whole number of 6-face boxes,
+  which is why the face surfaces still matched. Two passes now, in the mesh's
+  order: 6,494 -> 4 px on 1EHZ, 4,506 -> 37 on 1BNA. `tests/stick_topology.py`
+  asserts it with side chains shown, which it did not before -
+  `docs/FASTPATH_ARTIFACTS.md` problem 3.
 - 🔴 **AND A WELD BETWEEN OPPOSITE SIDES OF THE RIBBON IS ONLY A WELD WHILE THE
   RIBBON IS COLLAPSED THERE.** The edge table is keyed by corner POSITION, so
   at a station with no thickness the top face's corner and the bottom face's
@@ -4809,8 +4816,14 @@ than leaving the next session to find out the same way.
 - 🔴 **THE REGISTRY'S KEY HAS TO BE IN `sharedGeometryKey`.** The GPU rebuilds its mesh only when the
   signature changes, and a plugin's prims are baked into that mesh, so a plugin that registers late,
   is handed a new payload or has an option changed is invisible until the key moves: with the term
-  out, the wireframe stays on screen after its option is switched off. It is in the shared key, not
-  `signatureOf`, so the topological (trajectory) key carries it too.
+  out, the wireframe stays on screen after its option is switched off. It is in the FULL signature
+  and **not the topological one**: a plugin keyed on the frame moved the topological key on every
+  step, so a trajectory with one rebuilt its whole mesh each frame (6 of 6). On the station path a
+  moved plugin is a TAIL refresh (`refreshSticksFrom`), and a plugin that changes its prim count fails
+  the station mapping and rebuilds by that route. 🔴 **AND THE TAIL IS REFRESHED FOR EDGES, NOT ONLY
+  FILL**: the gate was `tail > 0`, fill rows, and a plugin line or a contact is all edges - so on a
+  structure with no ligand they stayed where the mesh was built while the ribbon moved on. A ligand's
+  fill hides it, which is why `tests/station_tail.py` steps 1TIM and not 3PTB.
 - 🔴 **PLUGIN STATE IS THE VIEWER'S, AND A PLUGIN'S TRIANGLES AND BALLS BELONG TO NO RESIDUE.**
   `save_state` writes objects through a whitelist, so a per-object `plugins` key is gone after
   `load_state` (`tests/plugin_state.py` keeps that as a control): the payload is `state["plugins"]`,

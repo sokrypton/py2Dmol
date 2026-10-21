@@ -2629,6 +2629,7 @@ const meshCache = new Map();     // sig -> mesh, caches recent meshes across foc
 let progInk, bufInk, edgeCount = 0;
 // whether the resident edge buffer holds any contacts - see below
 let residentHasContacts = false;
+let residentPluginKey = '';
 let progTube, bufTube, tubeCount = 0;
 let tubeRange = [-1, 1];        // the depth range the capsules are mapped through
 let tubeSig = null;             // what the instance buffer was built from
@@ -3138,6 +3139,7 @@ function initGL(cv) {
     palTex = null; palW = 0; palH = 0;
     edgeCount = 0;
     residentHasContacts = false;
+    residentPluginKey = '';
     progTube = gl.createProgram();
     // EARLY-Z, IF THE DRIVER WILL ALLOW IT. The extension has to be enabled on
     // the context before a shader may #extension it; where it is missing the
@@ -5556,110 +5558,118 @@ function stationMeshOf(prims, trace, rot, centre, rich, liveCentre) {
     let lastSegId = -1;
     let segBaseStation = 0;
     let segPieceId = 0;
-    for (const p of prims) {
-        if (!p) continue;
-        if (p.kind === 'stickFace' && p.stA && p.stB) {
-            if (p.segId !== lastSegId) {
-                lastSegId = p.segId;
-                segBaseStation = so / 16;
-                segPieceId = po / 8;
-                room(so + 32);
-                pieceRoom(po + 8);
-                const S = scratch.stations;
-                const PP = scratch.pieces;
-                const mA = un(p.stA.mid);
-                const uA = un(p.stA.ub);
-                const wA = un(p.stA.wa);
-                const tA = un(p.stA.tv);
-                S[so] = mA[0] + dCx; S[so + 1] = mA[1] + dCy; S[so + 2] = mA[2] + dCz;
-                S[so + 3] = p.stA.hw;
-                S[so + 4] = uA[0]; S[so + 5] = uA[1]; S[so + 6] = uA[2];
-                S[so + 7] = p.stA.ht;
-                S[so + 8] = wA[0]; S[so + 9] = wA[1]; S[so + 10] = wA[2];
-                S[so + 11] = 0;
-                S[so + 12] = tA[0]; S[so + 13] = tA[1]; S[so + 14] = tA[2];
-                S[so + 15] = 0;
-                so += 16;
+    // TWO PASSES, IN THE ORDER makeResident CONCATENATES THE PARTS: all `rib`
+    // prims first (group 0: backbone and nucleic base plates, which geom.js
+    // emits after drawSticks), then side-chain `stickFace` and `joint` prims
+    // (group 2). Walking `prims` in a single pass interleaved the side chains
+    // between the backbone and the base plates, shifting every face index in
+    // `SM` by the base-plate face count (336 on 1EHZ, 56 whole 6-face stick
+    // boxes) relative to `groups[0].concat(groups[2])`.
+    for (let pass = 0; pass < 2; pass++) {
+        for (const p of prims) {
+            if (!p) continue;
+            if (pass === 1 && p.kind === 'stickFace' && p.stA && p.stB) {
+                if (p.segId !== lastSegId) {
+                    lastSegId = p.segId;
+                    segBaseStation = so / 16;
+                    segPieceId = po / 8;
+                    room(so + 32);
+                    pieceRoom(po + 8);
+                    const S = scratch.stations;
+                    const PP = scratch.pieces;
+                    const mA = un(p.stA.mid);
+                    const uA = un(p.stA.ub);
+                    const wA = un(p.stA.wa);
+                    const tA = un(p.stA.tv);
+                    S[so] = mA[0] + dCx; S[so + 1] = mA[1] + dCy; S[so + 2] = mA[2] + dCz;
+                    S[so + 3] = p.stA.hw;
+                    S[so + 4] = uA[0]; S[so + 5] = uA[1]; S[so + 6] = uA[2];
+                    S[so + 7] = p.stA.ht;
+                    S[so + 8] = wA[0]; S[so + 9] = wA[1]; S[so + 10] = wA[2];
+                    S[so + 11] = 0;
+                    S[so + 12] = tA[0]; S[so + 13] = tA[1]; S[so + 14] = tA[2];
+                    S[so + 15] = 0;
+                    so += 16;
 
-                const mB = un(p.stB.mid);
-                const uB = un(p.stB.ub);
-                const wB = un(p.stB.wa);
-                const tB = un(p.stB.tv);
-                S[so] = mB[0] + dCx; S[so + 1] = mB[1] + dCy; S[so + 2] = mB[2] + dCz;
-                S[so + 3] = p.stB.hw;
-                S[so + 4] = uB[0]; S[so + 5] = uB[1]; S[so + 6] = uB[2];
-                S[so + 7] = p.stB.ht;
-                S[so + 8] = wB[0]; S[so + 9] = wB[1]; S[so + 10] = wB[2];
-                S[so + 11] = 0;
-                S[so + 12] = tB[0]; S[so + 13] = tB[1]; S[so + 14] = tB[2];
-                S[so + 15] = 0;
-                so += 16;
+                    const mB = un(p.stB.mid);
+                    const uB = un(p.stB.ub);
+                    const wB = un(p.stB.wa);
+                    const tB = un(p.stB.tv);
+                    S[so] = mB[0] + dCx; S[so + 1] = mB[1] + dCy; S[so + 2] = mB[2] + dCz;
+                    S[so + 3] = p.stB.hw;
+                    S[so + 4] = uB[0]; S[so + 5] = uB[1]; S[so + 6] = uB[2];
+                    S[so + 7] = p.stB.ht;
+                    S[so + 8] = wB[0]; S[so + 9] = wB[1]; S[so + 10] = wB[2];
+                    S[so + 11] = 0;
+                    S[so + 12] = tB[0]; S[so + 13] = tB[1]; S[so + 14] = tB[2];
+                    S[so + 15] = 0;
+                    so += 16;
 
-                const nmx = (uA[0] + uB[0]) * 0.5;
-                const nmy = (uA[1] + uB[1]) * 0.5;
-                const nmz = (uA[2] + uB[2]) * 0.5;
-                const nl = Math.hypot(nmx, nmy, nmz) || 1;
-                const wmx = -(wA[0] + wB[0]) * 0.5;
-                const wmy = -(wA[1] + wB[1]) * 0.5;
-                const wmz = -(wA[2] + wB[2]) * 0.5;
-                const wl = Math.hypot(wmx, wmy, wmz) || 1;
-                PP[po] = nmx / nl; PP[po + 1] = nmy / nl; PP[po + 2] = nmz / nl;
-                PP[po + 3] = 0;
-                PP[po + 4] = wmx / wl; PP[po + 5] = wmy / wl; PP[po + 6] = wmz / wl;
-                PP[po + 7] = 0;
-                po += 8;
-            }
-            faceRoom(fo + 1);
-            scratch.faceStation[fo] = (p.surf === 5) ? segBaseStation + 1 : segBaseStation;
-            scratch.faceSurf[fo] = p.surf;
-            scratch.facePiece[fo] = segPieceId;
-            fo += 1;
-            continue;
-        }
-        if (p.kind === 'joint' && p.pts && p.pts.length >= 3) {
-            const pts = p.pts;
-            const p0 = un(pts[0]);
-            p0[0] += dCx; p0[1] += dCy; p0[2] += dCz;
-            for (let k = 1; k + 1 < pts.length; k++) {
-                const pk = un(pts[k]);
-                pk[0] += dCx; pk[1] += dCy; pk[2] += dCz;
-                const pk1 = un(pts[k + 1]);
-                pk1[0] += dCx; pk1[1] += dCy; pk1[2] += dCz;
-
-                const jStation = so / 16;
-                const jPiece = po / 8;
-                room(so + 16);
-                pieceRoom(po + 8);
-                const S = scratch.stations;
-                const PP = scratch.pieces;
-
-                S[so] = p0[0]; S[so + 1] = p0[1]; S[so + 2] = p0[2]; S[so + 3] = 0;
-                S[so + 4] = pk[0]; S[so + 5] = pk[1]; S[so + 6] = pk[2]; S[so + 7] = 0;
-                S[so + 8] = pk1[0]; S[so + 9] = pk1[1]; S[so + 10] = pk1[2]; S[so + 11] = 0;
-                S[so + 12] = p0[0]; S[so + 13] = p0[1]; S[so + 14] = p0[2]; S[so + 15] = 0;
-                so += 16;
-
-                const v1x = pk[0] - p0[0]; const v1y = pk[1] - p0[1]; const v1z = pk[2] - p0[2];
-                const v2x = pk1[0] - p0[0]; const v2y = pk1[1] - p0[1]; const v2z = pk1[2] - p0[2];
-                const nx = v1y * v2z - v1z * v2y;
-                const ny = v1z * v2x - v1x * v2z;
-                const nz = v1x * v2y - v1y * v2x;
-                const nl = Math.hypot(nx, ny, nz) || 1;
-                PP[po] = nx / nl; PP[po + 1] = ny / nl; PP[po + 2] = nz / nl;
-                PP[po + 3] = 0;
-                PP[po + 4] = 0; PP[po + 5] = 0; PP[po + 6] = 0;
-                PP[po + 7] = 0;
-                po += 8;
-
+                    const nmx = (uA[0] + uB[0]) * 0.5;
+                    const nmy = (uA[1] + uB[1]) * 0.5;
+                    const nmz = (uA[2] + uB[2]) * 0.5;
+                    const nl = Math.hypot(nmx, nmy, nmz) || 1;
+                    const wmx = -(wA[0] + wB[0]) * 0.5;
+                    const wmy = -(wA[1] + wB[1]) * 0.5;
+                    const wmz = -(wA[2] + wB[2]) * 0.5;
+                    const wl = Math.hypot(wmx, wmy, wmz) || 1;
+                    PP[po] = nmx / nl; PP[po + 1] = nmy / nl; PP[po + 2] = nmz / nl;
+                    PP[po + 3] = 0;
+                    PP[po + 4] = wmx / wl; PP[po + 5] = wmy / wl; PP[po + 6] = wmz / wl;
+                    PP[po + 7] = 0;
+                    po += 8;
+                }
                 faceRoom(fo + 1);
-                scratch.faceStation[fo] = jStation;
-                scratch.faceSurf[fo] = 6;
-                scratch.facePiece[fo] = jPiece;
+                scratch.faceStation[fo] = (p.surf === 5) ? segBaseStation + 1 : segBaseStation;
+                scratch.faceSurf[fo] = p.surf;
+                scratch.facePiece[fo] = segPieceId;
                 fo += 1;
+                continue;
             }
-            continue;
-        }
-        if (p.kind !== 'rib' || !p.Lp) continue;
+            if (pass === 1 && p.kind === 'joint' && p.pts && p.pts.length >= 3) {
+                const pts = p.pts;
+                const p0 = un(pts[0]);
+                p0[0] += dCx; p0[1] += dCy; p0[2] += dCz;
+                for (let k = 1; k + 1 < pts.length; k++) {
+                    const pk = un(pts[k]);
+                    pk[0] += dCx; pk[1] += dCy; pk[2] += dCz;
+                    const pk1 = un(pts[k + 1]);
+                    pk1[0] += dCx; pk1[1] += dCy; pk1[2] += dCz;
+
+                    const jStation = so / 16;
+                    const jPiece = po / 8;
+                    room(so + 16);
+                    pieceRoom(po + 8);
+                    const S = scratch.stations;
+                    const PP = scratch.pieces;
+
+                    S[so] = p0[0]; S[so + 1] = p0[1]; S[so + 2] = p0[2]; S[so + 3] = 0;
+                    S[so + 4] = pk[0]; S[so + 5] = pk[1]; S[so + 6] = pk[2]; S[so + 7] = 0;
+                    S[so + 8] = pk1[0]; S[so + 9] = pk1[1]; S[so + 10] = pk1[2]; S[so + 11] = 0;
+                    S[so + 12] = p0[0]; S[so + 13] = p0[1]; S[so + 14] = p0[2]; S[so + 15] = 0;
+                    so += 16;
+
+                    const v1x = pk[0] - p0[0]; const v1y = pk[1] - p0[1]; const v1z = pk[2] - p0[2];
+                    const v2x = pk1[0] - p0[0]; const v2y = pk1[1] - p0[1]; const v2z = pk1[2] - p0[2];
+                    const nx = v1y * v2z - v1z * v2y;
+                    const ny = v1z * v2x - v1x * v2z;
+                    const nz = v1x * v2y - v1y * v2x;
+                    const nl = Math.hypot(nx, ny, nz) || 1;
+                    PP[po] = nx / nl; PP[po + 1] = ny / nl; PP[po + 2] = nz / nl;
+                    PP[po + 3] = 0;
+                    PP[po + 4] = 0; PP[po + 5] = 0; PP[po + 6] = 0;
+                    PP[po + 7] = 0;
+                    po += 8;
+
+                    faceRoom(fo + 1);
+                    scratch.faceStation[fo] = jStation;
+                    scratch.faceSurf[fo] = 6;
+                    scratch.facePiece[fo] = jPiece;
+                    fo += 1;
+                }
+                continue;
+            }
+            if (pass !== 0 || p.kind !== 'rib' || !p.Lp) continue;
         if (!p.ub || !p.wa || !p.tv || !p.half) {
             missing += 1; why.noFrame += 1; continue;
         }
@@ -5823,6 +5833,7 @@ function stationMeshOf(prims, trace, rot, centre, rich, liveCentre) {
             for (let si = 0; si < 4; si++) {
                 FS[fo] = base + k; FU[fo] = si; FP[fo] = pid; fo += 1;
             }
+        }
         }
     }
     if (!fo) return null;
@@ -7896,6 +7907,7 @@ function refreshSticksFrom(prims, scale, prm) {
             lastStickRefresh.edges += part.edges.length / ED_FLOATS;
         }
     }
+    residentHasContacts = made.some(({ part }) => part.hasContacts);
     lastStickRefresh.rad = rad;
     return true;
 }
@@ -8639,6 +8651,11 @@ function contactKeyOf(renderer) {
  * the CURRENT object alone and would not have noticed a second merged object's
  * backbone being hidden.
  */
+function pluginKeyOf(r) {
+    return (typeof window !== 'undefined' && window.py2dmolPlugins
+        && window.py2dmolPlugins.key) ? window.py2dmolPlugins.key(r) : '';
+}
+
 function sharedGeometryKey(r, topological) {
     const o = (r.objectsData || {})[r.currentObjectName];
     const bb = r.backboneHiddenSet ? r.backboneHiddenSet()
@@ -8710,10 +8727,10 @@ function sharedGeometryKey(r, topological) {
         // its plugins would emit moves. Without this term a plugin that
         // registers, changes an option or is handed a new payload never
         // appears - the signature is the only thing that asks for a rebuild.
-        // Here rather than in signatureOf so the topological key carries it too.
-        // '' when no plugin is loaded, which leaves the signature as it was.
-        (typeof window !== 'undefined' && window.py2dmolPlugins
-            && window.py2dmolPlugins.key) ? window.py2dmolPlugins.key(r) : '',
+        // Excluded from the topological key so per-frame plugins and live
+        // plugin updates can rewrite the `other` span via refreshSticksFrom
+        // on the station fast path without forcing a full mesh rebuild.
+        ...(topological ? [] : [pluginKeyOf(r)]),
         // 🔴 THE STRAND SET IS NOT IN HERE, and it was for an hour. The
         // outline's edge set is baked per strand face, so a residue that stops
         // being a strand keeps its creases until something rebuilds - and
@@ -9173,6 +9190,7 @@ function captureMesh(sig) {
         // a SNAPSHOT: the arrays without the GL handles - see stationsSnapshot
         residentStations: stationsSnapshot(residentStations),
         hasContacts: residentHasContacts,
+        pluginKey: residentPluginKey,
         bytes: lastFill.byteLength + (lastEdges ? lastEdges.byteLength : 0),
     };
 }
@@ -9197,6 +9215,7 @@ function activateMesh(m) {
     // place beside it - and assigned it by reference, handles and all.
     activateStations(m.residentStations);
     residentHasContacts = !!m.hasContacts;
+    residentPluginKey = m.pluginKey || '';
     resident = m.resident;
     appPalComplete = m.pal;
     appPos = m.pos;
@@ -9788,6 +9807,21 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
         // until those get a table of their own.
         const tail = resident ? resident.count - (residentStations
             ? residentStations.count : 0) : 0;
+        // 🔴 A CONTACT OR A PLUGIN LINE IS ALL EDGES AND NO FILL, so on a
+        // structure with no ligand `tail` is 0 and the tail was never rebuilt:
+        // every contact and plugin line stayed where the mesh was built while
+        // the ribbon moved on (tests/station_tail.py, 1,890 and 4,316 px).
+        // A plugin whose key moved needs no term of its own here - anything it
+        // drew is already fill or edges, and one that starts drawing changes
+        // the prim count, which fails the station mapping and rebuilds.
+        const tailEdges = (residentPartSpans && residentPartSpans.length >= 3)
+            ? (residentStationedSide
+                ? residentPartSpans[2].edgeLen
+                : residentPartSpans[1].edgeLen + residentPartSpans[2].edgeLen)
+            : 0;
+        const pluginNow = pluginKeyOf(renderer);
+        const pluginMoved = pluginNow !== residentPluginKey;
+        const hasTail = tail > 0 || tailEdges > 0;
         // 🔴 EVERY WAY PAST THIS BRANCH HAS TO HAVE A NAME. The four conditions
         // below are each a decline, and two of them - no resident mesh, no
         // station table - were not named by anything above: a frame that
@@ -9839,13 +9873,13 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
         // recorded by captureFrom rather than inferred here.
         const canvasMoved = !!resident && resident.capW !== undefined
             && (resident.capW !== displayWidth || resident.capH !== displayHeight);
-        if (stationDraw && canvasMoved && tail && !stationDecline) {
+        if (stationDraw && canvasMoved && hasTail && !stationDecline) {
             stationDecline = `the canvas moved to ${displayWidth}x${displayHeight}`
-                + ` and ${tail} rows are a tail, which is rebuilt by unprojecting`
+                + ` and ${tail} rows (${tailEdges / ED_FLOATS} edges) are a tail, which is rebuilt by unprojecting`
                 + " this frame's capture at the MESH's scale and cannot follow";
         }
         if (sig !== appSig && resident && residentStations && stationDraw
-            && topoSig === appTopoSig && !(canvasMoved && tail)) {
+            && topoSig === appTopoSig && !(canvasMoved && hasTail)) {
             const mesh = stationMeshNow(renderer, displayWidth, displayHeight, colors);
             stationMeshThisFrame = mesh;
             // 🔴 AND THE TAIL IS REBUILT BEFORE THE RIBBON IS TOUCHED. The
@@ -9889,10 +9923,10 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
             // against a rebuild of the same frame at zoom 3, 14,111 at 3.5,
             // 51 at zoom 1. The model space the rows land in is the same
             // either way; only the number that gets them there was wrong.
-            const tailOk = !matched || tail <= 0
+            const tailOk = !matched || !hasTail
                 || refreshSticksFrom(mesh.prims, mesh.capScale || resident.scale, prm);
             if (!tailOk) {
-                stationRefusal = `${tail} of ${resident.count} rows are not`
+                stationRefusal = `${tail} of ${resident.count} rows (${tailEdges / ED_FLOATS} edges) are not`
                     + ' described by stations, and rebuilding them failed: '
                     + (lastStickRefresh ? lastStickRefresh.why : 'no mesh');
                 stationDecline = stationRefusal;
@@ -9904,6 +9938,7 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
                 const np = modelPositions(mesh.pos);
                 if (np) { appPos = np; window.__gpuPosCount = mesh.pos.length; }
                 appSig = sig;
+                residentPluginKey = pluginNow;
                 appColors = colors;
                 // 🔴 AND THE COLOURS ARE UPLOADED, NOT MERELY RECORDED. This
                 // assigned `appColourKey = colourKeyOf(colors)` and stopped,
@@ -9984,9 +10019,10 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
         // MATCHED is the one piece of evidence this counter has; resetting on
         // it would leave the path being offered forever to a structure it
         // cannot follow.
-        if (stationAuto && stationDraw && !stationFast && !stationEverFast
+        if (stationAuto && renderer._autoStationTable !== false
+            && stationDraw && !stationFast && !stationEverFast
             && sig !== appSig) {
-            if (topoSig !== appTopoSig) stationTries = 0;
+            if (topoSig !== appTopoSig || pluginMoved) stationTries = 0;
             else stationTries += 1;
             if (stationTries >= STATION_TRY_LIMIT) {
                 stationGaveUpFor = renderer.currentObjectName;
@@ -10197,6 +10233,7 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors, compose) 
             window.__gpuPosCount = pos ? pos.length : 0;
             appPos = modelPositions(pos);
             appSig = sig;
+            residentPluginKey = pluginNow;
             // ...and what the mesh's TOPOLOGY was, which is what the trajectory
             // fast path above compares against. Recorded here and nowhere else:
             // this is the only place a mesh is actually built.

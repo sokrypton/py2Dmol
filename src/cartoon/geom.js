@@ -3885,6 +3885,13 @@ function mergeBondRuns(S) {
     // which atoms the mitre actually solved: the run pass below may
     // carry a path THROUGH any junction it did not
     const mitredAtoms = new Set();
+    const jTopoKey = typeof renderer._topologyKey === 'function'
+        ? renderer._topologyKey() : null;
+    if (!renderer._junctionTopo || renderer._junctionTopoKey !== jTopoKey) {
+        renderer._junctionTopo = jTopoKey ? new Map() : null;
+        renderer._junctionTopoKey = jTopoKey;
+    }
+    const jTopo = renderer._junctionTopo;
     for (const [atom, arr] of inc) {
         // A WALK, NOT A `filter`: this runs for every atom that carries a
         // bond, and the predicate is two property reads.
@@ -3937,7 +3944,34 @@ function mergeBondRuns(S) {
         // every planar centre and distorted the iron. The collar is for
         // centres with NO plane.
         let hasPlane = false;
-        if (legs.length === 4) {
+        const cachedJ = (legs.length === 4 && jTopo) ? jTopo.get(atom) : null;
+        if (cachedJ) {
+            if (cachedJ.mode === 'none') continue;
+            if (cachedJ.mode === 'planar') {
+                hasPlane = true;
+            } else if (cachedJ.mode === 'collar') {
+                let k = -1;
+                for (let i2 = 0; i2 < 4; i2++) {
+                    const far = (legs[i2].a === atom) ? legs[i2].b : legs[i2].a;
+                    if (far === cachedJ.far) { k = i2; break; }
+                }
+                if (k >= 0) {
+                    let sx = 0; let sy = 0; let sz = 0;
+                    for (let i2 = 0; i2 < 4; i2++) {
+                        if (i2 === k) continue;
+                        sx += dirAll[i2][0]; sy += dirAll[i2][1]; sz += dirAll[i2][2];
+                    }
+                    const sl = len3(sx, sy, sz);
+                    if (sl > 1e-6) {
+                        collarBd = legs[k];
+                        collarDir = dirAll[k];
+                        legs = legs.filter((_, i2) => i2 !== k);
+                        dir = dirAll.filter((_, i2) => i2 !== k);
+                        forcedAx = [sx / sl, sy / sl, sz / sl];
+                    }
+                }
+            }
+        } else if (legs.length === 4) {
             let px = 0; let py = 0; let pz = 0;
             for (let i2 = 0; i2 < dirAll.length; i2++) {
                 for (let j2 = i2 + 1; j2 < dirAll.length; j2++) {
@@ -3958,7 +3992,7 @@ function mergeBondRuns(S) {
                 if (tilt < 0.50) hasPlane = true;
             }
         }
-        if (legs.length === 4 && !hasPlane) {
+        if (legs.length === 4 && !hasPlane && !collarBd) {
             // WHICH LEG TO LEAVE OUT IS A PROPERTY OF THE MOLECULE, and
             // has to be decided like one. An IDEAL tetrahedron ties all
             // four triples at exactly 1, and this runs on ROTATED
@@ -3983,7 +4017,7 @@ function mergeBondRuns(S) {
                 const far = (legs[k].a === atom) ? legs[k].b : legs[k].a;
                 cand.push({ k, dt, a3, far });
             }
-            let bestK = -1; let bestDot = -2; let bestAx = null;
+            let bestK = -1; let bestDot = -2; let bestAx = null; let bestFar = -1;
             if (cand.length) {
                 let top = -2;
                 for (const c of cand) if (c.dt > top) top = c.dt;
@@ -3992,7 +4026,7 @@ function mergeBondRuns(S) {
                     if (c.dt < top - 1e-3) continue;
                     if (!pick || c.far < pick.far) pick = c;
                 }
-                bestK = pick.k; bestDot = top; bestAx = pick.a3;
+                bestK = pick.k; bestDot = top; bestAx = pick.a3; bestFar = pick.far;
             }
             // cos 40 deg: past that the leg is not leaving down the hole
             // and the collar would have to double back on itself
@@ -4002,7 +4036,12 @@ function mergeBondRuns(S) {
                 legs = legs.filter((_, i2) => i2 !== bestK);
                 dir = dirAll.filter((_, i2) => i2 !== bestK);
                 forcedAx = bestAx;
+                if (jTopo) jTopo.set(atom, { mode: 'collar', far: bestFar });
+            } else if (jTopo) {
+                jTopo.set(atom, { mode: 'none' });
             }
+        } else if (legs.length === 4 && hasPlane && jTopo && !cachedJ) {
+            jTopo.set(atom, { mode: 'planar' });
         }
         // THE LEGS STOP WHERE THEY MEET, AND A POLYGON FILLS THE REST.
         // Each leg is cut by the BISECTOR plane it shares with every
@@ -4059,7 +4098,7 @@ function mergeBondRuns(S) {
                     tilt = Math.max(tilt, Math.abs(d[0] * n3[0]
                         + d[1] * n3[1] + d[2] * n3[2]));
                 }
-                if (tilt < 0.50) ax = n3;        // they share a plane
+                if (hasPlane || tilt < 0.50) ax = n3; // they share a plane
             }
             if (!ax) {                            // no plane: the apex
                 let sx = 0; let sy = 0; let sz = 0;
@@ -4071,7 +4110,7 @@ function mergeBondRuns(S) {
         }
         // four or more legs must stand around that axis for the ring
         // below to walk them in order; a tetrahedral centre does not
-        if (!collarBd && legs.length > 3) {
+        if (!collarBd && legs.length > 3 && !hasPlane) {
             let tilt = 0;
             for (const d of dir) {
                 tilt = Math.max(tilt, Math.abs(d[0] * ax[0] + d[1] * ax[1]
@@ -4367,7 +4406,8 @@ function mergeBondRuns(S) {
                 }
                 const q4 = (collarBd.a === atom) ? collarBd.vb : collarBd.va;
                 const len4 = len3(q4.x - pA.x, q4.y - pA.y, q4.z - pA.z);
-                if (t4 <= 0.35 * len4) {
+                if (t4 > 0.35 * len4) t4 = 0.35 * len4;
+                {
                     const sec4 = sig4.map(([su, sv]) => [
                         pA.x + d4[0] * t4 + u4[0] * su * stickHT
                             + v4[0] * sv * stickHW,

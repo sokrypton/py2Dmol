@@ -283,6 +283,9 @@ for row in out:
     elif row["diffBare"] > row["total"] * 0.01:
         bad.append(f"{name}: the fast step draws {row['diffBare']} of {row['total']} px"
                    " differently from a rebuild of the same frame")
+    elif row["diff"] > row["total"] * 0.001:
+        bad.append(f"{name}: the fast step with side chains shown draws {row['diff']} of"
+                   f" {row['total']} px differently from a rebuild of the same frame")
 
 for b in bad:
     print("FAIL: " + b)

@@ -218,7 +218,9 @@ away.
 **`key()`** is how the GPU finds out a plugin moved. The registry's combined key folds, per plugin:
 its name and version, a revision counter, the viewer's options, which payloads apply to this frame,
 and the plugin's own `key(ctx)`; and the GPU primitive cap. It goes into `sharedGeometryKey` in
-`paintgl.js`, so into both the full and the topological signature. It does **not** contain error
+`paintgl.js` for the FULL signature only: in the topological one a plugin keyed on the frame would
+rebuild a trajectory's whole mesh every step, so on the station fast path a moved plugin rewrites the
+mesh's tail instead (`tests/station_tail.py`). It does **not** contain error
 states: those are a fact about one painter, and an SVG export that overran must not make the next GPU
 frame look like a different mesh.
 
@@ -233,8 +235,8 @@ it.
 target through `setViewSpan` (`viewerState.extent`). Flooring that at the plugin's radius would stop a
 focus on one residue from zooming closer than a shell drawn around it. So `_viewHalfSpan` applies the
 floor only while `viewerState.extent` is unset, and the span an **orient to everything** writes
-(`parts/orient.js`; the opening orient of every viewer is one) carries the floor itself, widened by how
-far the centre moves. A selection is not everything and gets the tight span it asked for; "orient to
+(`parts/orient.js`; the opening orient of every viewer is one) carries the floor itself, measured
+about where the camera lands. A selection is not everything and gets the tight span it asked for; "orient to
 all" frames the plugin again.
 
 **The floor is per axis** (`floorViewSpan` in `orient.js`). A span is stored as `(extent, aspect)`:
@@ -244,8 +246,10 @@ for an elongated structure (aspect 0.053 : 1) a 45 A floor on the short axis wou
 to 852 A, 19x what is needed. So each half-span is raised to the floor and written back as (larger,
 ratio); the representation is unchanged, and a span that already holds the floor is returned as it was.
 
-Consequences. A plugin that arrives after the opening orient is framed at the next orient to
-everything, not at once. `parts/multi.js` reframes without the floor (`setViewSpan(..., maxExtent)` on
+Consequences. A plugin that arrives after the opening orient is framed at once: the orient records
+that its span is the whole scene and what the structure alone needed, and a payload, an option, a
+restore or a late registration re-floors from that (`widenForPlugins`), growing the span or giving it
+back. Once per event, never per frame. `parts/multi.js` reframes without the floor (`setViewSpan(..., maxExtent)` on
 an object switch, on leaving multi and on a merge), which drops the plugin floor until the next orient
 to everything.
 

@@ -10347,5 +10347,26 @@ t('pLDDT selection signature changes when non-first selected residues change', (
     }
 });
 
+t('stationMeshOf orders rib prims before side-chain stickFace and joint prims', () => {
+    const gpu = L.read('src/cartoon/paintgl.js');
+    const at = gpu.indexOf('function stationMeshOf(');
+    if (at < 0) throw new Error('stationMeshOf not found in cartoon/paintgl.js');
+    const body = gpu.slice(at, gpu.indexOf('\nfunction ', at + 1));
+    if (!/for\s*\(\s*let\s+pass\s*=\s*0;\s*pass\s*<\s*2;\s*pass\+\+\s*\)/.test(body)
+        || !/if\s*\(\s*pass\s*!==\s*0\s*\|\|\s*p\.kind\s*!==\s*'rib'/.test(body)) {
+        throw new Error('stationMeshOf must emit all rib prims in pass 0 before stickFace/joint prims in pass 1');
+    }
+});
+
+t('4-leg ligand junctions cache topology per _topologyKey and clamp collar setback t4', () => {
+    const geom = L.read('src/cartoon/geom.js');
+    if (!/renderer\._junctionTopo/.test(geom) || !/renderer\._junctionTopoKey/.test(geom)) {
+        throw new Error('geom.js must cache 4-leg junction topology on renderer._junctionTopo');
+    }
+    if (!/if\s*\(\s*t4\s*>\s*0\.35\s*\*\s*len4\s*\)\s*t4\s*=\s*0\.35\s*\*\s*len4/.test(geom)) {
+        throw new Error('geom.js must clamp collar setback t4 to 0.35 * len4 instead of abandoning the collar');
+    }
+});
+
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');
 process.exit(fail?1:0);

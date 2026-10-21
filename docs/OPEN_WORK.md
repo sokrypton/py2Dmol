@@ -265,7 +265,19 @@ compute it once and cache it on the object and its position count, never on the
 coordinates. What that costs is the same thing it costs there - a ligand that
 genuinely changes hybridisation mid-trajectory keeps the answer it was given -
 and it is not obviously worth 2 rebuilds in 24 on a trajectory whose early
-frames are noise. Measured, not fixed.
+frames are noise.
+
+**The planarity half is now CACHED THAT WAY, AND ITS BENEFIT IS UNMEASURED.**
+`mergeBondRuns` files each four-leg centre's answer - planar, collared (and
+which leg), or neither - in `renderer._junctionTopo`, keyed by
+`_topologyKey()`, and the collar's setback is clamped at 0.35 of the leg rather
+than the collar being abandoned past it (the three-leg mitre's own clamp). On a
+FRESH build it is a no-op: mesh digests identical to the code before it on
+4HHB, 3PTB, 1HVR, 1EHZ and 1BNA, side chains out, three cameras each. What it
+saves on a trajectory has no fixture: removing the cache, or the clamp, changes
+no test, because no tracked trajectory has a four-leg centre near either gate.
+The fixture paragraph above is still the way to get one. The run walk
+(`throughPair`) is untouched.
 
 ---
 
