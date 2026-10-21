@@ -269,6 +269,8 @@ function halfSpanOf(extent, aspect, zoom) {
 }
 
 function setViewSpan(viewerState, half) {
+    viewerState._wholeSceneSpan = false;
+    viewerState._baseHalf = null;
     if (!half || !(half.x > 0) || !(half.y > 0)) {
         viewerState.extent = null;
         viewerState.extentAspect = null;
@@ -3732,6 +3734,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     focalLength: this.viewerState.focalLength,
                     center: this.viewerState.center ? { ...this.viewerState.center } : null,
                     extent: this.viewerState.extent,
+                    extentAspect: this.viewerState.extentAspect ? { ...this.viewerState.extentAspect } : null,
+                    _wholeSceneSpan: !!this.viewerState._wholeSceneSpan,
+                    _baseHalf: this.viewerState._baseHalf ? { ...this.viewerState._baseHalf } : null,
                     currentFrame: this.currentFrame,
                     // THE CLIP TRAVELS WITH THE OBJECT. A slab is Angstrom along
                     // the camera's depth, and objects differ in size by orders
@@ -3922,6 +3927,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 focalLength: saved.focalLength,
                 center: saved.center ? { ...saved.center } : null,
                 extent: saved.extent,
+                extentAspect: saved.extentAspect ? { ...saved.extentAspect } : null,
+                _wholeSceneSpan: !!saved._wholeSceneSpan,
+                _baseHalf: saved._baseHalf ? { ...saved._baseHalf } : null,
                 // 🔴 THE LIVE POSITION WHERE THIS IS NOT A SWITCH. Asking for
                 // the object already shown restored its SAVED frame over the
                 // one on screen, so a reader who had scrubbed to the middle

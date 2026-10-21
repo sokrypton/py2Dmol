@@ -4794,6 +4794,15 @@ than leaving the next session to find out the same way.
   carries the floor itself (`parts/orient.js`), PER AXIS (`floorViewSpan`): flooring the extent alone
   inflates the long axis of an elongated structure 19x. `multi.js`'s reframes drop the floor until
   the next orient-to-all. `tests/plugin_browser.py` fails if the fold is removed.
+  🔴 **AND A PAYLOAD THAT ARRIVES AFTER THAT ORIENT RE-FRAMES IT** - `py2Dmol.show()` orients before a
+  host's `setPayload`, and a live `add_plugin()` comes after `show()`. The orient records that its
+  span is the whole scene (`_wholeSceneSpan`) and the structure's own half-span (`_baseHalf`);
+  `widenForPlugins` re-floors from those on every payload, option, restore and late registration,
+  so the span grows AND comes back. Any other `setViewSpan` clears both, which is what keeps a focus
+  tight. **Once per plugin event, never per frame**: a second copy of the floor in `_viewHalfSpan`
+  gated on the flag was written beside it, measured as redundant (removing either one changed no
+  test), and taken out, because a payload bounded to some frames would make it breathe as a
+  trajectory played.
 - 🔴 **THE REGISTRY'S KEY HAS TO BE IN `sharedGeometryKey`.** The GPU rebuilds its mesh only when the
   signature changes, and a plugin's prims are baked into that mesh, so a plugin that registers late,
   is handed a new payload or has an option changed is invisible until the key moves: with the term

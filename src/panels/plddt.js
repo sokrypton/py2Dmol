@@ -492,6 +492,17 @@ class PlddtGraph {
     }
 }
 
+function selKey(sel) {
+    if (!sel || !sel.size) return '0';
+    let a = sel.size >>> 0;
+    let b = 0;
+    for (const i of sel) {
+        a = (a + Math.imul(i | 0, 2654435761)) >>> 0;
+        b = (Math.imul(b ^ (i | 0), 16777619)) >>> 0;
+    }
+    return sel.size + ':' + a.toString(36) + ':' + b.toString(36);
+}
+
 window.Plddt = {
     PlddtGraph: PlddtGraph,
 
@@ -582,12 +593,7 @@ window.Plddt = {
         const sel = renderer.residueSelection;
         const resized = p.measure();
         const sig = [renderer.currentObjectName, renderer.currentFrame, n,
-                     p.w, p.h, sel ? sel.size : 0,
-                     // size alone cannot see a selection that MOVED: a drag
-                     // from 10-20 to 30-40 is the same count. O(1) on a Set,
-                     // where a min/max would be O(size) and "select all" is
-                     // every residue.
-                     sel ? sel.values().next().value : -1].join('\u0000');
+                     p.w, p.h, selKey(sel)].join('\u0000');
         if (!resized && sig === p._sig) return;
         p._sig = sig;
         p.setData(renderer.plddts, renderer.chains, n, renderer.residueNumbers);

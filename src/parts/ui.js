@@ -2052,9 +2052,14 @@ const processMailbox = () => {
     if (seq <= mailboxSeq) return;
     mailboxSeq = seq;
 
+    if (payload.frame && !payload.frames) {
+        handleReplaceFrame(payload.frame, payload.meta || {}, payload.object || null, seq);
+        return;
+    }
+
     const frames = payload.frames || payload.new_frames || {};
     const meta = payload.meta || payload.changed_meta || {};
-    handleIncrementalStateUpdate(frames, meta, seq);
+    handleIncrementalStateUpdate(frames, meta, seq, payload.viewer || null);
 };
 
 const mailboxObserver = new MutationObserver(() => processMailbox());

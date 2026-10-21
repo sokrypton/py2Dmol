@@ -696,6 +696,22 @@ def main():
             ev(ws, SETTLE)
             home = ev(ws, SPAN, False)
             ok(home >= 26 * math.sqrt(3) - 0.5, '[%s] orienting to everything frames the shell again (half-span %.1f)' % (tag, home))
+            # ...and a payload handed over AFTER the orient re-frames a whole-scene view: py2Dmol.show() orients
+            # before a host's setPayload, and a live add_plugin() arrives after show(). Grows, then shrinks back.
+            RESIZE = ("(() => { const P = window.py2dmolPlugins, r = Object.values(window.py2dmol_viewers)[0].renderer;"
+                      " const d = P.snapshot(r).wire; d.payloads[0].payload.half = %s; P.setPayload(r, 'wire', d); })()")
+            ev(ws, RESIZE % 80, False)
+            ev(ws, SETTLE)
+            grown = ev(ws, SPAN, False)
+            ok(grown >= 80 * math.sqrt(3) - 0.5, '[%s] a bigger payload after the orient widens the whole-scene span (half-span %.1f, shell %.1f)'
+               % (tag, grown, 80 * math.sqrt(3)))
+            ev(ws, RESIZE % 26, False)
+            ev(ws, SETTLE)
+            shrunk = ev(ws, SPAN, False)
+            # against the OPENING span, not `home`: that orient measured the shell about the centre it was
+            # leaving and widened by how far the centre moved (a bound - parts/orient.js), which after a
+            # tight orient is loose; the payload's own re-frame measures about where the view now is
+            ok(abs(shrunk - full) < 0.5, '[%s] ...and the original payload puts it back to the opening span (half-span %.1f against %.1f)' % (tag, shrunk, full))
 
             # ---------------------------------------------- one cap per painter: 10,008 strokes
             # The GPU draws what the 2D painter may not (caps 60,000 and 8,000), and an SVG export is

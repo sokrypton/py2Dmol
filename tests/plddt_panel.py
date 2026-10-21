@@ -112,6 +112,18 @@ window.addEventListener('load', () => {
       r.clearResidueSelection();
       await settle(2);
 
+      // THE BAND FOLLOWS A SELECTION THAT KEPT ITS SIZE AND ITS FIRST MEMBER.
+      // The redraw is gated on a signature of the selection, and {10, 20} and
+      // {10, 30} agree on both - which is what the signature used to be.
+      const bands = () => Array.from(p.gSel.querySelectorAll('rect'))
+        .map((e) => e.getAttribute('x')).join(',');
+      r.setResidueSelection(new Set([10, 20])); await settle(3);
+      const bandA = bands();
+      r.setResidueSelection(new Set([10, 30])); await settle(3);
+      out.selBands = [bandA, bands()];
+      r.clearResidueSelection();
+      await settle(2);
+
       // 🔴 A VIEW NO SLOT SHOWS GOES TO THE PARK. Drop to one box and the
       // graph has to LEAVE its slot - a box left out of the park sweep just
       // stays where it was put, so the slot goes on showing the trace while
@@ -307,7 +319,7 @@ if NB_OFF.get('mounted'):
     bad.append("a notebook viewer that did not ask for the trace mounted it anyway")
 for k in ('flatHasData', 'variedHasData', 'mountedUnasked', 'hasBox', 'mounted', 'tabs', 'drew',
           'canvas', 'selLo', 'selHi', 'selN', 'tabOnPaddedFrame', 'paddedFlat', 'dataAfterClear', 'plddtsSurviveClear', 'parkedParent',
-          'parkedVisible', 'backParent', 'backPoints', 'frameLines'):
+          'parkedVisible', 'backParent', 'backPoints', 'frameLines', 'selBands'):
     print(f"  {k:14s} {R.get(k)}")
 
 if R.get('flatHasData') is not False:
@@ -345,6 +357,14 @@ elif abs(lo - want_lo) > 2 or abs(hi - want_hi) > 2:
     bad.append(f"the drag covered residues {lo}..{hi} where the middle third"
                f" of the plot is {want_lo}..{want_hi} - the residue/pixel"
                f" crossing is off")
+
+sb = R.get('selBands')
+if not isinstance(sb, list) or len(sb) != 2 or not sb[0]:
+    bad.append(f"no selection band was drawn for {{10, 20}}: {sb}")
+elif sb[0] == sb[1]:
+    bad.append(f"moving the selection {{10, 20}} -> {{10, 30}} left the band where"
+               f" it was ({sb[0]}) - the redraw signature sees only the size and"
+               f" the first member")
 
 if 'park' not in str(R.get('parkedParent')):
     bad.append(f"dropping to one slot left the trace in {R.get('parkedParent')!r}"

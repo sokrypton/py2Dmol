@@ -625,11 +625,49 @@ reset();
     ok(newer.pending.length === 1 && newer.list.length === 1 && newer.rejected === undefined && newer.caps === undefined,
         'older-than-page: ...and nothing of this file ran (pending not consumed, no caps or rejected added)');
     delete global.window.py2dmolPlugins;
-    const older = global.window.py2dmolPlugins = { list: [], pending: [], __impl: 1, register: sentinel };
+    let upgradedInits = 0;
+    const preDef = { name: 'pre', version: '1', apiVersion: 1, init() { upgradedInits++; return {}; }, prims() {} };
+    const rPre = mk({ viewerId: 'v1' }).r;
+    global.window.py2dmol_plugins = { v1: payloadsFor('pre') };
+    const older = global.window.py2dmolPlugins = { list: [preDef], pending: [], __impl: 1, register: sentinel, __core: { live: [rPre] } };
     load(PLUGINS_JS);
     ok(older.__impl === 2 && older.register !== sentinel && typeof older.collect === 'function',
         'older-than-page: an OLDER registry (impl 1) IS taken over by this one');
+    ok(older.list.length === 1 && older.list[0] === preDef && upgradedInits === 1 && rPre._renders === 1,
+        'older-than-page: plugins and live viewers from the older registry are re-bound and redrawn on upgrade');
     reset();
+}
+
+// ---- setPayload / setOption AFTER the opening orient widens and shrinks the span via bounds() -------
+reset();
+{
+    const P = global.window.py2dmolPlugins;
+    const setViewSpan = new Function('return ' + L.topFunction('setViewSpan'))();
+    P.register({ name: 'lateBox', version: '1', apiVersion: 1, prims() {}, bounds(ctx) {
+        const z = (ctx.options && ctx.options.z) || 40;
+        return { min: [-3, -3, -3], max: [3, 3, z] };
+    } });
+    const want = Math.sqrt(3 * 3 + 3 * 3 + 40 * 40);
+    // Simulate py2Dmol.show() running orientToBestView on the whole scene BEFORE setPayload
+    const r = mk({ objectsData: { obj: { maxExtent: 10 } } }).r;
+    setViewSpan(r.viewerState, { x: 10, y: 8 });
+    r.viewerState._wholeSceneSpan = true;
+    r.viewerState._baseHalf = { x: 10, y: 8 };
+    P.setPayload(r, 'lateBox', { version: '1', apiVersion: 1, options: { z: 40 }, payloads: [{ payload: {} }] });
+    const hs = r._viewHalfSpan(r.objectsData.obj);
+    ok(Math.abs(hs.x - want) < 1e-9 && Math.abs(hs.y - want) < 1e-9,
+        'setPayload after opening orient: whole-scene span widens to bounds() (' + hs.x.toFixed(2) + ' vs ' + want.toFixed(2) + ')');
+    // Shrinking bounds() via setOption restores the structure's _baseHalf
+    P.setOption(r, 'lateBox', 'z', 1);
+    const shrunk = r._viewHalfSpan(r.objectsData.obj);
+    ok(shrunk.x === 10 && shrunk.y === 8,
+        'setOption shrinking bounds(): whole-scene span returns to _baseHalf (' + shrunk.x + ', ' + shrunk.y + ')');
+    // A tight span set by focus / selection orient clears _wholeSceneSpan and is NOT widened
+    setViewSpan(r.viewerState, { x: 4, y: 4 });
+    P.setPayload(r, 'lateBox', { version: '1', apiVersion: 1, options: { z: 40 }, payloads: [{ payload: {} }] });
+    const tight = r._viewHalfSpan(r.objectsData.obj);
+    ok(tight.x === 4 && tight.y === 4,
+        'setPayload after selection/focus span: tight span is preserved (' + tight.x + ')');
 }
 
 // ---- NEAR is clamped for a plugin's faces and balls -----------------------------------------------
@@ -841,6 +879,9 @@ reset();
     ok(linesKeyOf([ln({ noInk: true, plugin: true })]) !== linesKeyOf([ln({ noInk: false, plugin: true })]),
         'linesKeyOf: a plugin stroke with and without its border are DIFFERENT parts (else the cached part keeps a stale rim)');
     ok(linesKeyOf([ln({ noInk: false, plugin: true })]) !== plain, 'linesKeyOf: a plugin stroke is not a contact of the same shape');
+    const invA = text.indexOf('function invalidate() {');
+    const invB = text.indexOf('\n}\n', invA);
+    ok(/tubeTriKey\s*=\s*null/.test(text.slice(invA, invB)), 'invalidate(): resets tubeTriKey so the GPU tube is not stuck declining after invalidation');
 }
 
 process.exit(bad ? 1 : 0);

@@ -76,6 +76,8 @@ if (P.__impl >= IMPL) return;
 P.__impl = IMPL;
 if (!P.list) P.list = [];
 if (!P.pending) P.pending = [];
+const priorDefs = P.list.splice(0).concat(P.pending.splice(0));
+const priorLive = (P.__core && Array.isArray(P.__core.live)) ? P.__core.live.slice() : [];
 P.rejected = P.rejected || [];
 P.apiVersion = PLUGIN_API_VERSION;
 P.caps = P.caps || Object.assign({}, DEFAULT_CAPS);
@@ -400,7 +402,7 @@ function register(def) {
     // that has not drawn yet needs nothing - it binds on its first frame.
     const still = [];
     for (const ref of core.live) {
-        const r = hasWeakRef ? ref.deref() : ref;
+        const r = (hasWeakRef && ref && typeof ref.deref === 'function') ? ref.deref() : ref;
         if (!r) continue;
         still.push(ref);
         const st = states.get(r);
@@ -408,6 +410,7 @@ function register(def) {
         const e = st.entries.get(def.name);
         if (!e) continue;
         bindDef(st, def);
+        widenForPlugins(r);
         try { r.render('plugin registered'); } catch (err) { /* a viewer mid-load */ }
     }
     core.live = still;
@@ -415,9 +418,6 @@ function register(def) {
 }
 
 P.register = register;
-
-// A plugin registered before this file ran, on the stub.
-for (const def of P.pending.splice(0)) register(def);
 
 // WHAT THE PLUGINS OF ONE VIEWER CONTRIBUTE TO ITS GEOMETRY KEY: a short
 // string that moves whenever anything a plugin would draw moves - its payload,
@@ -703,8 +703,8 @@ P.extent = function (r, object) {
     if (!st || !st.entries.size) return 0;
     let any = false;
     for (const e of st.entries.values()) if (e.def && typeof e.def.bounds === 'function') any = true;
-    if (!any) return 0;
-    const c = r._computeViewCentre(object) || { x: 0, y: 0, z: 0 };
+    if (!any || typeof r._rotationCtx !== 'function' || typeof r._modelToView !== 'function') return 0;
+    const c = (typeof r._computeViewCentre === 'function' && r._computeViewCentre(object)) || { x: 0, y: 0, z: 0 };
     const k = P.key(r) + '@' + c.x + ',' + c.y + ',' + c.z;
     if (st.extKey === k) return st.ext;
     const toView = viewMapper(r, object, c);
@@ -761,6 +761,35 @@ P.errors = function (r) {
 // replays the same delta onto a page that already has it, and gets the same
 // list. A page holding FEWER than k (a delta it never saw) keeps what it has
 // and says so: the tail is still drawn.
+function widenForPlugins(r) {
+    if (!r || !r.viewerState || !r.viewerState._wholeSceneSpan || !(r.viewerState.extent > 0)) return;
+    const vs = r.viewerState;
+    if (!vs._baseHalf) {
+        const e0 = vs.extent;
+        const a0 = vs.extentAspect;
+        vs._baseHalf = {
+            x: e0 * ((a0 && a0.x > 0) ? a0.x : 1),
+            y: e0 * ((a0 && a0.y > 0) ? a0.y : 1),
+        };
+    }
+    const obj = r.objectsData && r.objectsData[r.currentObjectName];
+    const pr = P.extent(r, obj);
+    const nx = Math.max(vs._baseHalf.x, pr > 0 ? pr : 0);
+    const ny = Math.max(vs._baseHalf.y, pr > 0 ? pr : 0);
+    const ne = Math.max(nx, ny);
+    if (ne > 0) {
+        const ax = nx / ne;
+        const ay = ny / ne;
+        const changed = vs.extent !== ne || !vs.extentAspect
+            || vs.extentAspect.x !== ax || vs.extentAspect.y !== ay;
+        vs.extent = ne;
+        vs.extentAspect = { x: ax, y: ay };
+        if (changed && typeof r._invalidateScreenProjection === 'function') {
+            r._invalidateScreenProjection();
+        }
+    }
+}
+
 P.setPayload = function (r, name, data) {
     const st = stateFor(r);
     let e = st.entries.get(name);
@@ -785,6 +814,7 @@ P.setPayload = function (r, name, data) {
     st.extKey = null;
     const def = P.list.find((x) => x.name === name);
     if (def) bindDef(st, def);
+    widenForPlugins(r);
     try { r.render('plugin payload'); } catch (err) { /* a viewer mid-load */ }
 };
 // A VIEWER'S PAYLOADS AS A SESSION FILE HOLDS THEM - the shape Python's
@@ -846,6 +876,7 @@ P.restore = function (r, map, opts) {
         }
     }
     paintBadge(st);
+    widenForPlugins(r);
     try { r.render('plugin restore'); } catch (err) { /* a viewer mid-load */ }
 };
 
@@ -856,6 +887,19 @@ P.setOption = function (r, name, key, value) {
     e.data.options[key] = value;
     e.rev++;
     st.extKey = null;
+    widenForPlugins(r);
     try { r.render('plugin option'); } catch (err) { /* a viewer mid-load */ }
 };
+
+// A plugin registered before this file ran, on the stub or an older registry.
+for (const def of priorDefs) register(def);
+for (const ref of priorLive) {
+    const r = (hasWeakRef && ref && typeof ref.deref === 'function') ? ref.deref() : ref;
+    if (!r || states.has(r)) continue;
+    const st = stateFor(r);
+    if (st.entries.size) {
+        widenForPlugins(r);
+        try { r.render('plugin registered'); } catch (err) { /* a viewer mid-load */ }
+    }
+}
 })();

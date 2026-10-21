@@ -1688,6 +1688,60 @@ class view:
                 return obj
         return None
 
+    def _object_metadata(self, obj: Dict[str, Any]) -> Dict[str, Any]:
+        """Collect per-object metadata fields for incremental tracking and diffing."""
+        frames = obj.get("frames", [])
+        current_metadata = {}
+        if obj.get("color") is not None:
+            current_metadata["color"] = obj["color"]
+        if obj.get("contacts") is not None:
+            current_metadata["contacts"] = obj["contacts"]
+        if obj.get("bonds") is not None:
+            current_metadata["bonds"] = obj["bonds"]
+        # set_sse() writes this and then asks for a broadcast, so it has to
+        # travel with the other per-object metadata or the call did nothing
+        # in live mode. Keys are stringified for JSON, as in the static path.
+        if obj.get("sse"):
+            current_metadata["sse"] = {
+                str(k): v for k, v in obj["sse"].items()
+            }
+        if obj.get("pairs"):
+            current_metadata["pairs"] = {
+                str(k): v for k, v in obj["pairs"].items()
+            }
+        # ...and the ghosting, which is the same kind of thing by the same
+        # argument: a map keyed by position index, set by set_opacity, and
+        # useless anywhere but against this object.
+        if obj.get("opacity"):
+            current_metadata["opacity"] = {
+                str(k): v for k, v in obj["opacity"].items()
+            }
+        # ...and each FRAME's own colour, which set_color(frame=N) writes.
+        # A frame is delivered once and once only - _sent_frame_count sees
+        # to that - so a colour set on a frame the viewer already has could
+        # not travel by any route, and the call was silently lost on a live
+        # viewer while working perfectly through show(). Compared as a whole
+        # map by the change detection below, like every other field here.
+        frame_colors = {
+            str(i): f["color"] for i, f in enumerate(frames)
+            if isinstance(f, dict) and f.get("color") is not None
+        }
+        if frame_colors:
+            current_metadata["frame_colors"] = frame_colors
+        # ...and what this object does when the timeline runs past its
+        # last frame (set_frame_policy). It decides which FRAME of this
+        # object a timeline position resolves to, so it has to travel with
+        # the rest or the call did nothing in live mode.
+        if obj.get("frame_policy") is not None:
+            current_metadata["frame_policy"] = obj["frame_policy"]
+        if obj.get("scatter_config") is not None:
+            current_metadata["scatter_config"] = obj["scatter_config"]
+        if obj.get("rotation_matrix") is not None:
+            current_metadata["rotation_matrix"] = obj["rotation_matrix"]
+        if obj.get("center") is not None:
+            current_metadata["center"] = obj["center"]
+        return current_metadata
+
     def _send_incremental_update(self) -> None:
         """
         Send incremental state update to viewer (for add() operations).
@@ -1759,55 +1813,7 @@ class view:
                 self._sent_frame_count[obj_name] = total_frame_count
 
             # Collect current metadata for this object
-            current_metadata = {}
-            if obj.get("color") is not None:
-                current_metadata["color"] = obj["color"]
-            if obj.get("contacts") is not None:
-                current_metadata["contacts"] = obj["contacts"]
-            if obj.get("bonds") is not None:
-                current_metadata["bonds"] = obj["bonds"]
-            # set_sse() writes this and then asks for a broadcast, so it has to
-            # travel with the other per-object metadata or the call did nothing
-            # in live mode. Keys are stringified for JSON, as in the static path.
-            if obj.get("sse"):
-                current_metadata["sse"] = {
-                    str(k): v for k, v in obj["sse"].items()
-                }
-            if obj.get("pairs"):
-                current_metadata["pairs"] = {
-                    str(k): v for k, v in obj["pairs"].items()
-                }
-            # ...and the ghosting, which is the same kind of thing by the same
-            # argument: a map keyed by position index, set by set_opacity, and
-            # useless anywhere but against this object.
-            if obj.get("opacity"):
-                current_metadata["opacity"] = {
-                    str(k): v for k, v in obj["opacity"].items()
-                }
-            # ...and each FRAME's own colour, which set_color(frame=N) writes.
-            # A frame is delivered once and once only - _sent_frame_count sees
-            # to that - so a colour set on a frame the viewer already has could
-            # not travel by any route, and the call was silently lost on a live
-            # viewer while working perfectly through show(). Compared as a whole
-            # map by the change detection below, like every other field here.
-            frame_colors = {
-                str(i): f["color"] for i, f in enumerate(frames)
-                if isinstance(f, dict) and f.get("color") is not None
-            }
-            if frame_colors:
-                current_metadata["frame_colors"] = frame_colors
-            # ...and what this object does when the timeline runs past its
-            # last frame (set_frame_policy). It decides which FRAME of this
-            # object a timeline position resolves to, so it has to travel with
-            # the rest or the call did nothing in live mode.
-            if obj.get("frame_policy") is not None:
-                current_metadata["frame_policy"] = obj["frame_policy"]
-            if obj.get("scatter_config") is not None:
-                current_metadata["scatter_config"] = obj["scatter_config"]
-            if obj.get("rotation_matrix") is not None:
-                current_metadata["rotation_matrix"] = obj["rotation_matrix"]
-            if obj.get("center") is not None:
-                current_metadata["center"] = obj["center"]
+            current_metadata = self._object_metadata(obj)
 
             # Determine which metadata fields have changed.
             #
@@ -1976,7 +1982,7 @@ class view:
             "object": object_name
         }
 
-        payload_json = json.dumps(payload, separators=(',', ':'))
+        payload_json = json.dumps(payload, separators=(',', ':')).replace('<', '\\u003c')
 
         update_js = (
             f'(function(){{'
@@ -4957,17 +4963,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             if not obj_name:
                 continue
             self._sent_frame_count[obj_name] = len(obj.get("frames", []))
-            current_metadata = {}
-            if obj.get("color") is not None:
-                current_metadata["color"] = obj["color"]
-            if obj.get("contacts") is not None:
-                current_metadata["contacts"] = obj["contacts"]
-            if obj.get("bonds") is not None:
-                current_metadata["bonds"] = obj["bonds"]
-            if obj.get("rotation_matrix") is not None:
-                current_metadata["rotation_matrix"] = obj["rotation_matrix"]
-            if obj.get("center") is not None:
-                current_metadata["center"] = obj["center"]
+            current_metadata = self._object_metadata(obj)
             if current_metadata:
                 self._sent_metadata[obj_name] = copy.deepcopy(current_metadata)
 

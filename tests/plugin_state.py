@@ -378,6 +378,24 @@ with warnings.catch_warnings(record=True) as w:
     tv.add_plugin('volume', {'a': 1})
 ok(not any('tube' in str(x.message) for x in w), "add_plugin on a 'tube' viewer does not warn - the tube draws plugins")
 
+# ---- 4d. _mark_published snapshots all metadata fields so clearing after show() sends None ----------
+mv = fresh(tmp)
+mv.set_sse('H', chain='A')
+mv.set_opacity(0.3, chain='A')
+mv.set_frame_policy('loop')
+mv._mark_published()
+mv._emit_to_output = _cap
+ok('sse' in mv._sent_metadata.get('crn', {})
+   and 'opacity' in mv._sent_metadata.get('crn', {})
+   and mv._sent_metadata['crn'].get('frame_policy') == 'loop',
+   '_mark_published records sse, opacity and frame_policy in _sent_metadata')
+mv.set_sse(None, chain='A')
+mv.set_opacity(1, chain='A')
+last_payload = json.loads(sent[-1])
+meta_crn = (last_payload.get('meta') or {}).get('crn') or {}
+ok('opacity' in meta_crn and meta_crn['opacity'] is None,
+   'clearing opacity after show() sends explicit None in meta (%s)' % meta_crn)
+
 # ---- 5. controls: the existing whitelist is why the payload is viewer-level ---------------------------
 e = fresh(tmp)
 e.objects[0]['plugins'] = {'volume': MESH}            # hung on the OBJECT, like every other per-object field

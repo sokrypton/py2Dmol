@@ -10322,5 +10322,30 @@ t('CONECT partners are read from the columns the format puts them in', () => {
     }
 });
 
+t('processMailbox forwards viewer block and routes single-frame replace payloads', () => {
+    const ui = L.read('src/parts/ui.js');
+    const at = ui.indexOf('const processMailbox = () => {');
+    if (at < 0) throw new Error('processMailbox not found in parts/ui.js');
+    const body = ui.slice(at, ui.indexOf('\n};', at) + 3);
+    if (!/handleIncrementalStateUpdate\(frames,\s*meta,\s*seq,\s*payload\.viewer\s*\|\|\s*null\)/.test(body)) {
+        throw new Error('processMailbox drops payload.viewer when calling handleIncrementalStateUpdate');
+    }
+    if (!/handleReplaceFrame\(payload\.frame/.test(body)) {
+        throw new Error('processMailbox does not route replace payloads to handleReplaceFrame');
+    }
+});
+
+t('pLDDT selection signature changes when non-first selected residues change', () => {
+    const plddt = L.read('src/panels/plddt.js');
+    const at = plddt.indexOf('function selKey(');
+    if (at < 0) throw new Error('selKey not found in panels/plddt.js');
+    const selKey = new Function('return ' + plddt.slice(at, plddt.indexOf('\n}\n', at) + 2))();
+    const k1 = selKey(new Set([10, 20]));
+    const k2 = selKey(new Set([10, 30]));
+    if (k1 === k2) {
+        throw new Error('selKey([10, 20]) === selKey([10, 30]): ' + k1);
+    }
+});
+
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');
 process.exit(fail?1:0);

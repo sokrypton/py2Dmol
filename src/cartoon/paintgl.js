@@ -9283,7 +9283,7 @@ function restoreMesh(sig) {
 }
 
 function invalidate() {
-    appSig = null; appColourKey = ''; appPalComplete = true; tubeSig = null;
+    appSig = null; appColourKey = ''; appPalComplete = true; tubeSig = null; tubeTriKey = null;
     // ...AND THE SPARE WITH IT. invalidate() means the geometry is no longer
     // what any mesh was built for - a structure edited, a frame replaced - so
     // a mesh kept under a signature that happens to come round again would be

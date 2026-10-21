@@ -491,6 +491,7 @@ function orientToBestView(renderer, options) {
     let targetCenter = null;
     let targetExtent = null;
     let targetZoom = renderer.viewerState.zoom;
+    let baseHalf = null;
 
     // Get canvas dimensions for zoom calculation (already retrieved above, but keep for clarity)
     // canvasWidth and canvasHeight are already available from above
@@ -503,6 +504,9 @@ function orientToBestView(renderer, options) {
         // Use center and extent calculated from selected positions
         targetCenter = visibleCenter;
         targetExtent = visibleExtent;
+        if (!selectedPositionIndices) {
+            baseHalf = halfSpanOf(targetExtent, targetAspect);
+        }
         // ...AND WHEN THE TARGET IS EVERYTHING, EVERYTHING INCLUDES A PLUGIN'S
         // GEOMETRY. _viewHalfSpan frames a plugin only while no span is set, and
         // this sets one - the opening orient of every viewer lands here - so the
@@ -591,6 +595,8 @@ function orientToBestView(renderer, options) {
                 setViewSpanFrom(renderer, null, null);
             }
         }
+        renderer.viewerState._wholeSceneSpan = !selectedPositionIndices;
+        renderer.viewerState._baseHalf = !selectedPositionIndices ? baseHalf : null;
 
         // Set zoom directly
         renderer.viewerState.zoom = targetZoom;
@@ -605,6 +611,8 @@ function orientToBestView(renderer, options) {
     // Set up animation
     // ...the stepper runs on its own rAF and needs the renderer back
     rotationAnimation.api = { renderer };
+    rotationAnimation.wholeScene = !selectedPositionIndices;
+    rotationAnimation.baseHalf = !selectedPositionIndices ? baseHalf : null;
     rotationAnimation.startMatrix = Rcur.map(row => [...row]);
     rotationAnimation.targetMatrix = Rtarget.map(row => [...row]);
     rotationAnimation.duration = duration;
@@ -767,6 +775,8 @@ function animateRotation(rotationAnimation) {
                 setViewSpan(renderer.viewerState, null);
             }
         }
+        renderer.viewerState._wholeSceneSpan = !!rotationAnimation.wholeScene;
+        renderer.viewerState._baseHalf = rotationAnimation.wholeScene ? rotationAnimation.baseHalf : null;
 
 
         // Clear orient animation flag before rendering
@@ -863,6 +873,8 @@ function animateRotation(rotationAnimation) {
             setViewSpan(renderer.viewerState,
                 { x: A.targetHalf.x * z, y: A.targetHalf.y * z });
         }
+        renderer.viewerState._wholeSceneSpan = !!A.wholeScene;
+        renderer.viewerState._baseHalf = A.wholeScene ? A.baseHalf : null;
     }
     // A FLIGHT BACK TO EVERYTHING ENDS WITH NO TEMPORARY VIEW SPAN AT ALL. The
     // centre and the span go back to null so the viewer uses the object's own,
@@ -872,6 +884,8 @@ function animateRotation(rotationAnimation) {
         if (!A.targetHalf) {
             setViewSpan(renderer.viewerState, null);
         }
+        renderer.viewerState._wholeSceneSpan = !!A.wholeScene;
+        renderer.viewerState._baseHalf = A.wholeScene ? A.baseHalf : null;
     }
 
     renderer.render();

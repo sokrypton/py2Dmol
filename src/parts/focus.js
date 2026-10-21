@@ -58,6 +58,9 @@
                     ? Object.assign({}, this.viewerState.center) : null,
                 extent: this.viewerState.extent,
                 extentAspect: this.viewerState.extentAspect,
+                _wholeSceneSpan: !!this.viewerState._wholeSceneSpan,
+                _baseHalf: this.viewerState._baseHalf
+                    ? Object.assign({}, this.viewerState._baseHalf) : null,
                 zoom: this.viewerState.zoom,
                 // ...AND WHICH OBJECTS IT WAS MEASURED ON: a camera is only
                 // meaningful against a picture. See _focusRestore.
@@ -160,12 +163,20 @@
             // ...and the extent goes back to EXACTLY what was there, null
             // included: the tween needs a number to move to, and null means
             // "the object's own", which is not the same thing.
-            if (snap.extent === null || snap.extent === undefined) {
+            if (snap.extent === null || snap.extent === undefined
+                || (sameShown && snap._wholeSceneSpan)) {
                 const settle = () => {
                     if (this._focusAnim) { requestAnimationFrame(settle); return; }
-                    setViewSpan(this.viewerState,
-                        halfSpanOf(snap.extent, snap.extentAspect));
-                    this.viewerState.center = snap.center;
+                    if (snap.extent === null || snap.extent === undefined) {
+                        setViewSpan(this.viewerState,
+                            halfSpanOf(snap.extent, snap.extentAspect));
+                        this.viewerState.center = snap.center;
+                    }
+                    if (sameShown && snap._wholeSceneSpan) {
+                        this.viewerState._wholeSceneSpan = true;
+                        this.viewerState._baseHalf = snap._baseHalf
+                            ? Object.assign({}, snap._baseHalf) : null;
+                    }
                     this._invalidateScreenProjection();
                     this.render('focusRestore');
                 };
