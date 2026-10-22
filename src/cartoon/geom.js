@@ -1967,6 +1967,7 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
     };
     // amide hydrogens
     const H = new Float64Array(n * 3);
+    const hasH = new Uint8Array(n);
     for (let i = 1; i < n; i++) {
         if (!isProtein(i) || !has(i, 6) || !has(i - 1, 0)) continue;
         if (!adj(i, i - 1)) continue;
@@ -1983,6 +1984,7 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
         H[q] = bb[o + 6] + hx / lh * HB_NH_LENGTH;
         H[q + 1] = bb[o + 7] + hy / lh * HB_NH_LENGTH;
         H[q + 2] = bb[o + 8] + hz / lh * HB_NH_LENGTH;
+        hasH[i] = 1;
     }
     // --- phi/psi per residue, from the rebuilt backbone ---
     // phi: C(i-1) N(i) CA(i) C(i);  psi: N(i) CA(i) C(i) N(i+1)
@@ -2139,6 +2141,8 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
                 const by = Math.min(ny - 1, (p.y - mny) * inv | 0);
                 const bz = Math.min(nz - 1, (p.z - mnz) * inv | 0);
                 const o = i * 9;
+                const ocx = bb[o], ocy = bb[o + 1], ocz = bb[o + 2];
+                const oox = bb[o + 3], ooy = bb[o + 4], ooz = bb[o + 5];
                 const z0 = bz > 0 ? bz - 1 : 0;
                 const z1 = bz + 1 < nz ? bz + 1 : nz - 1;
                 const y0 = by > 0 ? by - 1 : 0;
@@ -2158,14 +2162,11 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
                             const d = i - j;
                             if (d < 3 && d > -3) continue;
                             if (groups && groups[i] !== groups[j]) continue;
-                            // ...`has(j, 6)` and the amide test, inlined: both
-                            // are three array reads, and this is the innermost
-                            // loop of the pass that is nine tenths of the
-                            // assignment.
+                            // ...`has(j, 6)` and the amide test, inlined: hasH[j]
+                            // already implies has(j, 6) and a valid amide H.
+                            if (!hasH[j]) continue;
                             const jo = j * 9;
-                            if (bb[jo + 6] === 0 && bb[jo + 7] === 0 && bb[jo + 8] === 0) continue;
                             const hq = j * 3;
-                            if (H[hq] === 0 && H[hq + 1] === 0 && H[hq + 2] === 0) continue;
                             // 🔴 THE FIRST TEST REJECTS ALMOST EVERY CANDIDATE,
                             // SO IT MUST NOT TAKE A SQUARE ROOT. The overwhelming
                             // majority of pairs reaching here fail this line, and
@@ -2173,15 +2174,17 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
                             // squared comparison is the same test (both sides are
                             // non-negative) and the root is taken only for the
                             // pairs that survive, which need the distance itself.
-                            const ox = bb[o + 3] - bb[jo + 6];
-                            const oy = bb[o + 4] - bb[jo + 7];
-                            const oz = bb[o + 5] - bb[jo + 8];
+                            const jnx = bb[jo + 6], jny = bb[jo + 7], jnz = bb[jo + 8];
+                            const ox = oox - jnx;
+                            const oy = ooy - jny;
+                            const oz = ooz - jnz;
                             const dON2 = ox * ox + oy * oy + oz * oz;
                             if (dON2 > 30.25) continue;      // 5.5 * 5.5
                             const dON = Math.sqrt(dON2);
-                            const dCH = len3(bb[o] - H[hq], bb[o + 1] - H[hq + 1], bb[o + 2] - H[hq + 2]);
-                            const dOH = len3(bb[o + 3] - H[hq], bb[o + 4] - H[hq + 1], bb[o + 5] - H[hq + 2]);
-                            const dCN = len3(bb[o] - bb[jo + 6], bb[o + 1] - bb[jo + 7], bb[o + 2] - bb[jo + 8]);
+                            const hjx = H[hq], hjy = H[hq + 1], hjz = H[hq + 2];
+                            const dCH = len3(ocx - hjx, ocy - hjy, ocz - hjz);
+                            const dOH = len3(oox - hjx, ooy - hjy, ooz - hjz);
+                            const dCN = len3(ocx - jnx, ocy - jny, ocz - jnz);
                             if (dON < 0.5 || dCH < 0.5 || dOH < 0.5 || dCN < 0.5) continue;
                             const e = HB_COUPLING * (1 / dON + 1 / dCH - 1 / dOH - 1 / dCN);
                             if (e < cutoff) {
@@ -2237,19 +2240,28 @@ function assignSecondaryOpen(coords, n, positionTypes, opts) {
     __mk('helix');
     const strand = new Uint8Array(n);
     const seen = new Set();
-    const candidates = new Set();
+    const candStamp = new Int32Array(n);
+    const candList = new Int32Array(n);
     for (let i = 1; i < n - 1; i++) {
         if (!isProtein(i)) continue;
-        candidates.clear();
+        let candLen = 0;
         for (let d = -1; d <= 1; d++) {
             const arr = nbr.get(i + d);
             if (!arr) continue;
-            for (const j of arr) {
-                for (let e = -1; e <= 1; e++) candidates.add(j + e);
+            for (let a = 0; a < arr.length; a++) {
+                const j = arr[a];
+                for (let e = -1; e <= 1; e++) {
+                    const je = j + e;
+                    if (je > i + 2 && je < n - 1 && candStamp[je] !== i) {
+                        candStamp[je] = i;
+                        candList[candLen++] = je;
+                    }
+                }
             }
         }
-        for (const j of candidates) {
-            if (j <= i + 2 || j >= n - 1 || j < 1 || !isProtein(j)) continue;
+        for (let c = 0; c < candLen; c++) {
+            const j = candList[c];
+            if (!isProtein(j)) continue;
             const parallel = (bonded(i - 1, j) && bonded(j, i + 1))
                 || (bonded(j - 1, i) && bonded(i, j + 1));
             const anti = (bonded(i, j) && bonded(j, i))
@@ -5511,6 +5523,12 @@ function render(renderer, ctx, displayWidth, displayHeight, colors) {
 // (fullOutline = rich && ss === 'E'); the other presets keep their
 // interiors clean. Passing `squareLoop || !rich` here is what makes the two
 // renderers agree about that.
+const _hx = new Float64Array(8);
+const _hy = new Float64Array(8);
+const _idx8 = [0, 1, 2, 3, 4, 5, 6, 7];
+const _hull = [];
+const _v0 = new Float64Array(4);
+const _v1 = new Float64Array(4);
 const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
     outerOnly, isBackbone) => {
                     const nsF = Lp.length;
@@ -5526,10 +5544,11 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
                     // wraps around the piece; the hull cannot. Interior
                     // crease corners are never on the hull, so no inner
                     // line.
-                    const hx = new Array(8);
-                    const hy = new Array(8);
+                    const hx = _hx;
+                    const hy = _hy;
                     const cross = (ox, oy, ax, ay, bx, by) =>
                         (ax - ox) * (by - oy) - (ay - oy) * (bx - ox);
+                    const TOL2 = (1.5 * pxScale) * (1.5 * pxScale);
                     for (let s = 0; s + 1 < nsF; s++) {
                         for (let c = 0; c < 4; c++) {
                             hx[c * 2] = curves[c][s][0];
@@ -5539,10 +5558,28 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
                             visC[c].push(false);
                         }
                         // monotone chain on 8 points (indices sorted)
-                        const idx = [0, 1, 2, 3, 4, 5, 6, 7];
-                        idx.sort((a, b) => (hx[a] - hx[b]) || (hy[a] - hy[b]));
-                        const hull = [];
-                        for (const iP of idx) {
+                        const idx = _idx8;
+                        for (let i = 1; i < 8; i++) {
+                            const key = idx[i];
+                            const kx = hx[key];
+                            const ky = hy[key];
+                            let j = i - 1;
+                            while (j >= 0) {
+                                const ik = idx[j];
+                                const dx = hx[ik] - kx;
+                                if (dx > 0 || (dx === 0 && hy[ik] > ky)) {
+                                    idx[j + 1] = ik;
+                                    j--;
+                                } else {
+                                    break;
+                                }
+                            }
+                            idx[j + 1] = key;
+                        }
+                        const hull = _hull;
+                        hull.length = 0;
+                        for (let ii = 0; ii < 8; ii++) {
+                            const iP = idx[ii];
                             while (hull.length >= 2 && cross(
                                 hx[hull[hull.length - 2]], hy[hull[hull.length - 2]],
                                 hx[hull[hull.length - 1]], hy[hull[hull.length - 1]],
@@ -5550,7 +5587,7 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
                             hull.push(iP);
                         }
                         const lower = hull.length + 1;
-                        for (let k = idx.length - 2; k >= 0; k--) {
+                        for (let k = 6; k >= 0; k--) {
                             const iP = idx[k];
                             while (hull.length >= lower && cross(
                                 hx[hull[hull.length - 2]], hy[hull[hull.length - 2]],
@@ -5559,15 +5596,15 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
                             hull.push(iP);
                         }
                         hull.pop();
+                        const hLen = hull.length;
                         // mark corners whose points are on or near the
                         // hull boundary (near-tie: coincident twins)
-                        const TOL2 = (1.5 * pxScale) * (1.5 * pxScale);
                         for (let c8 = 0; c8 < 8; c8++) {
                             let on = false;
-                            for (let h = 0; h < hull.length && !on; h++) {
+                            for (let h = 0; h < hLen && !on; h++) {
                                 const a = hull[h];
                                 if (a === c8) { on = true; break; }
-                                const b = hull[(h + 1) % hull.length];
+                                const b = hull[(h + 1) % hLen];
                                 const abx = hx[b] - hx[a];
                                 const aby = hy[b] - hy[a];
                                 const L2 = abx * abx + aby * aby;
@@ -5648,8 +5685,8 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
                             // is undefined, so leave the hull's answer -
                             // which needs no chain direction - in place.
                             if (perpX * perpX + perpY * perpY > 1e-4) {
-                                const v0 = new Array(4);   // offset at s
-                                const v1 = new Array(4);   // offset at s+1
+                                const v0 = _v0;   // offset at s
+                                const v1 = _v1;   // offset at s+1
                                 let hi0 = -Infinity; let lo0 = Infinity;
                                 let hi1 = -Infinity; let lo1 = Infinity;
                                 for (let c = 0; c < 4; c++) {
@@ -5751,7 +5788,7 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
     const naHalfT = (() => {
         const t = renderer.cartoonThickness;
         if (thicknessIsChosen(renderer) && t !== undefined) return t / 2;
-        if (t === 0) return 0;                // a preset that wants it flat
+        if (thicknessAsked(renderer) === 0) return (t || 0) / 2;                // a preset that wants it flat
         return NA_THICK_DEFAULT / 2;
     })();
     // TONE is the facing ramp: it pales grazing surfaces toward the paper.
@@ -8822,6 +8859,25 @@ function drawRun(runIdx, ctx) {
                             ? renderer.cartoonThickness / 2
                             : RIBBON_TH_A));
                 const ht = htFlat;
+                const Lp = [];
+                const Lm = [];
+                const Rp = [];
+                const Rm = [];
+                const oN = [];
+                const oB = [];
+                const oT = [];
+                const oK = [];
+                const oLb = [];
+                const oLn = [];
+                const oLt = [];
+                const centres = traceProbe ? [] : null;
+                // model-space frame per station, only when asked for
+                const mUb = [];
+                const mWa = [];
+                const mT = [];
+                const mHalf = [];      // [halfW, halfT] a station
+                let ok = true;
+                let zSum = 0;
                 const evalSlab = (u, afterSeam, atRim) => {
                     hermiteV(pa, pb, mA, mB, u, q0);
                     const t2 = u * u;
@@ -8954,13 +9010,11 @@ function drawRun(runIdx, ctx) {
                     const wx = nx * hwU;
                     const wy = ny * hwU;
                     const wz = nz * hwU;
-                    const cnr = [
-                        project(q0[0] + wx + bx, q0[1] + wy + by, q0[2] + wz + bz),
-                        project(q0[0] + wx - bx, q0[1] + wy - by, q0[2] + wz - bz),
-                        project(q0[0] - wx + bx, q0[1] - wy + by, q0[2] - wz + bz),
-                        project(q0[0] - wx - bx, q0[1] - wy - by, q0[2] - wz - bz),
-                    ];
-                    if (!cnr[0] || !cnr[1] || !cnr[2] || !cnr[3]) return null;
+                    const c0 = project(q0[0] + wx + bx, q0[1] + wy + by, q0[2] + wz + bz);
+                    const c1 = project(q0[0] + wx - bx, q0[1] + wy - by, q0[2] + wz - bz);
+                    const c2 = project(q0[0] - wx + bx, q0[1] - wy + by, q0[2] - wz + bz);
+                    const c3 = project(q0[0] - wx - bx, q0[1] - wy - by, q0[2] - wz - bz);
+                    if (!c0 || !c1 || !c2 || !c3) return false;
                     // Orientation of the frame vectors AGAINST THE EYE
                     // RAY at this station, not against the world z axis:
                     // under perspective the eye rays diverge, and a face
@@ -8981,19 +9035,21 @@ function drawRun(runIdx, ctx) {
                         vx /= vm; vy /= vm; vz /= vm;
                     }
                     const tm = len3(tx, ty, tz) || 1;
-                    cnr.push(
-                        nx * vx + ny * vy + nz * vz,
-                        ubx * vx + uby * vy + ubz * vz,
-                        (tx * vx + ty * vy + tz * vz) / tm,
-                        // inner-ness of the +b face: how much it points
-                        // into the local concavity (weighted unit k)
-                        ubx * kvx + uby * kvy + ubz * kvz,
-                        // lighting dots: face normal . L, width normal
-                        // . L, tangent . L (for cross-section caps)
-                        ubx * LIGHT[0] + uby * LIGHT[1] + ubz * LIGHT[2],
-                        nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2],
-                        (tx * LIGHT[0] + ty * LIGHT[1] + tz * LIGHT[2]) / tm,
-                    );
+                    Lp.push(c0);
+                    Lm.push(c1);
+                    Rp.push(c2);
+                    Rm.push(c3);
+                    oN.push(nx * vx + ny * vy + nz * vz);
+                    oB.push(ubx * vx + uby * vy + ubz * vz);
+                    oT.push((tx * vx + ty * vy + tz * vz) / tm);
+                    // inner-ness of the +b face: how much it points
+                    // into the local concavity (weighted unit k)
+                    oK.push(ubx * kvx + uby * kvy + ubz * kvz);
+                    // lighting dots: face normal . L, width normal
+                    // . L, tangent . L (for cross-section caps)
+                    oLb.push(ubx * LIGHT[0] + uby * LIGHT[1] + ubz * LIGHT[2]);
+                    oLn.push(nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2]);
+                    oLt.push((tx * LIGHT[0] + ty * LIGHT[1] + tz * LIGHT[2]) / tm);
                     // THE FRAME ITSELF, IN MODEL SPACE, for a consumer that
                     // re-uses the geometry at other views. Everything above
                     // is this frame already dotted with the eye or the
@@ -9007,51 +9063,31 @@ function drawRun(runIdx, ctx) {
                     if (frameProbe) {
                         // ub is the FACE normal, n the WIDTH normal (it is
                         // what oN above is built from), t the tangent
-                        cnr.push([ubx, uby, ubz],
-                            [nx, ny, nz],
-                            [tx / tm, ty / tm, tz / tm],
-                            // 🔴 ...AND THE TWO SCALARS, which make this a
-                            // STATION rather than just a frame. A consumer
-                            // placing the corners needs
-                            //     Lp = mid + n*halfW + ub*halfT
-                            // and had no way to ask for halfW and halfT: they
-                            // are computed here, used three lines up, and were
-                            // thrown away. tests/cartoon_station.js FITS them
-                            // out of the projected corners for want of them,
-                            // which is a regression test doing arithmetic that
-                            // the renderer already did.
-                            [hwU, htU, 0]);
+                        mUb.push([ubx, uby, ubz]);
+                        mWa.push([nx, ny, nz]);
+                        mT.push([tx / tm, ty / tm, tz / tm]);
+                        // 🔴 ...AND THE TWO SCALARS, which make this a
+                        // STATION rather than just a frame. A consumer
+                        // placing the corners needs
+                        //     Lp = mid + n*halfW + ub*halfT
+                        // and had no way to ask for halfW and halfT: they
+                        // are computed here, used three lines up, and were
+                        // thrown away. tests/cartoon_station.js FITS them
+                        // out of the projected corners for want of them,
+                        // which is a regression test doing arithmetic that
+                        // the renderer already did.
+                        mHalf.push([hwU, htU, 0]);
                     }
                     // THE CENTRE, IN THE SPACE THE CURVE WAS EVALUATED IN.
                     // Not derivable from the corners above: those are
                     // PROJECTED - paintgl unprojects them to build its mesh -
                     // and averaging four projected corners gives a screen
                     // point, which is a different thing from the centre line
-                    // in space. A property rather than another slot, so the
-                    // eleven indices this array is read by elsewhere do not
-                    // move.
-                    if (traceProbe) cnr.mid = [q0[0], q0[1], q0[2]];
-                    return cnr; // [L+, L-, R+, R-, n.v, b.v, t.v, b.k, ...]
+                    // in space.
+                    if (traceProbe) centres.push([q0[0], q0[1], q0[2]]);
+                    zSum += (c0[2] + c1[2] + c2[2] + c3[2]) * 0.25;
+                    return true;
                 };
-                const Lp = [];
-                const Lm = [];
-                const Rp = [];
-                const Rm = [];
-                const oN = [];
-                const oB = [];
-                const oT = [];
-                const oK = [];
-                const oLb = [];
-                const oLn = [];
-                const oLt = [];
-                const centres = traceProbe ? [] : null;
-                // model-space frame per station, only when asked for
-                const mUb = [];
-                const mWa = [];
-                const mT = [];
-                const mHalf = [];      // [halfW, halfT] a station
-                let ok = true;
-                let zSum = 0;
                 // Station parameters. Uniform normally; an arrowhead needs
                 // the seam sampled TWICE - once at shaft width, once at
                 // full barb width - so the step across the barbs is exactly
@@ -9176,28 +9212,10 @@ function drawRun(runIdx, ctx) {
                 }
                 nsub = us.length - 1;   // everything below indexes stations
                 for (let k = 0; k <= nsub; k++) {
-                    const st = evalSlab(us[k], arrowHead && k > seamIdx,
-                        rimIdx >= 0 && k === rimIdx);
-                    if (!st) { ok = false; break; }
-                    Lp.push(st[0]);
-                    Lm.push(st[1]);
-                    Rp.push(st[2]);
-                    Rm.push(st[3]);
-                    oN.push(st[4]);
-                    oB.push(st[5]);
-                    oT.push(st[6]);
-                    oK.push(st[7]);
-                    oLb.push(st[8]);
-                    oLn.push(st[9]);
-                    oLt.push(st[10]);
-                    if (frameProbe) {
-                        mUb.push(st[11]); mWa.push(st[12]); mT.push(st[13]);
-                        mHalf.push(st[14]);
+                    if (!evalSlab(us[k], arrowHead && k > seamIdx,
+                        rimIdx >= 0 && k === rimIdx)) {
+                        ok = false; break;
                     }
-                    // ...and the centre line of the drawn ribbon at this
-                    // station, which evalSlab hands back on `mid`.
-                    if (traceProbe && st.mid) centres.push(st.mid);
-                    zSum += (st[0][2] + st[1][2] + st[2][2] + st[3][2]) / 4;
                 }
                 // keyed by the residue the interval STARTS at, which is how
                 // the consumer walks a run: residue i to i+1 is traceProbe[i]

@@ -9,6 +9,33 @@
 // ============================================================================
 (function () {
 'use strict';
+
+let _shCap = 0;
+let _shX = null;
+let _shY = null;
+let _shZ = null;
+let _shEffLen = null;
+let _shRefLen = null;
+let _shMult = null;
+let _shFlags = null;
+let _shGx = null;
+let _shGy = null;
+const _shGridCells = [];
+
+function _ensureShadowScratch(n) {
+    if (n <= _shCap) return;
+    _shCap = Math.max(n, (_shCap * 2) || 1024);
+    _shX = new Float64Array(_shCap);
+    _shY = new Float64Array(_shCap);
+    _shZ = new Float64Array(_shCap);
+    _shEffLen = new Float64Array(_shCap);
+    _shRefLen = new Float64Array(_shCap);
+    _shMult = new Float64Array(_shCap);
+    _shFlags = new Uint8Array(_shCap);
+    _shGx = new Int16Array(_shCap);
+    _shGy = new Int16Array(_shCap);
+}
+
 (window.py2dmolMolParts = window.py2dmolMolParts || []).push({
     name: 'shadow',
     proto: {
@@ -40,12 +67,13 @@
          * Was duplicated at both call sites; one copy so the two cannot drift.
          */
         _shadowPairExcluded(recv, cast) {
-            const isMolecule = (t) => t === 'P' || t === 'D' || t === 'R';
-            if ((recv.type === 'C' && isMolecule(cast.type))
-                || (isMolecule(recv.type) && cast.type === 'C')) return true;
+            const rType = recv.type;
+            const cType = cast.type;
+            const rMol = rType === 'P' || rType === 'D' || rType === 'R';
+            const cMol = cType === 'P' || cType === 'D' || cType === 'R';
+            if ((rType === 'C' && cMol) || (rMol && cType === 'C')) return true;
             const sc = this.sidechainMap;
-            if (sc && sc.size && isMolecule(recv.type)
-                && (sc.has(cast.idx1) || sc.has(cast.idx2))) return true;
+            if (sc && sc.size && rMol && (sc.has(cast.idx1) || sc.has(cast.idx2))) return true;
             return false;
         },
 
@@ -172,29 +200,99 @@
 
         // Slow mode: exhaustive O(n²) shadow calculation for small frames
         _calculateShadowsExhaustive(segmentList, segments, segData, shadows, tints) {
+            const n = segmentList.length;
+            if (n === 0) return;
+            _ensureShadowScratch(n);
+            const sc = this.sidechainMap;
+            const hasSc = !!(sc && sc.size);
+            const proteinRefLength = REF_LENGTHS['P'];
+            const dnaStrength = REF_LENGTHS['D'] / proteinRefLength;
+            const ligStrength = REF_LENGTHS['L'] / proteinRefLength;
+            const userShadowStrength = this.shadowStrength;
+            const shadowIntensity = this.shadowIntensity;
+
+            for (let k = 0; k < n; k++) {
+                const segIdx = segmentList[k];
+                const s = segData[segIdx];
+                const segInfo = segments[segIdx];
+                const type = segInfo.type;
+                const rMol = type === 'P' || type === 'D' || type === 'R';
+                const isC = type === 'C';
+                const inSc = hasSc && (sc.has(segInfo.idx1) || sc.has(segInfo.idx2));
+                const isPos = segInfo.idx1 === segInfo.idx2;
+                const refLen = REF_LENGTHS[type] ?? proteinRefLength;
+                const effLen = isPos ? refLen : s.len;
+                let mult = 1.0;
+                if (type === 'D' || type === 'R') {
+                    mult = dnaStrength;
+                } else if (type === 'L') {
+                    mult = ligStrength;
+                }
+                if (isPos) {
+                    mult *= 0.5;
+                }
+                mult *= userShadowStrength;
+                _shX[k] = s.x;
+                _shY[k] = s.y;
+                _shZ[k] = s.z;
+                _shEffLen[k] = effLen;
+                _shRefLen[k] = refLen;
+                _shMult[k] = mult;
+                _shFlags[k] = (rMol ? 1 : 0) | (isC ? 2 : 0) | (inSc ? 4 : 0);
+            }
+
             // Process segments back-to-front (already sorted by z-depth)
-            for (let i_idx = segmentList.length - 1; i_idx >= 0; i_idx--) {
+            for (let i_idx = n - 1; i_idx >= 0; i_idx--) {
                 const i = segmentList[i_idx];
                 let shadowSum = 0;
                 let maxTint = 0;
-                const s1 = segData[i];
-                const segInfoI = segments[i];
+                const flags1 = _shFlags[i_idx];
+                const skipMask = (flags1 & 1) ? 6 : ((flags1 & 2) ? 1 : 0);
+                const refLen1 = _shRefLen[i_idx];
+                const effectiveLen1 = _shEffLen[i_idx];
+                const shadow_offset = refLen1 * SHADOW_OFFSET_MULTIPLIER;
+                const tint_offset = refLen1 * TINT_OFFSET_MULTIPLIER;
+                const s1x = _shX[i_idx];
+                const s1y = _shY[i_idx];
+                const s1z = _shZ[i_idx];
 
                 // Check against all segments in front
-                for (let j_idx = i_idx + 1; j_idx < segmentList.length; j_idx++) {
-                    const j = segmentList[j_idx];
+                for (let j_idx = i_idx + 1; j_idx < n; j_idx++) {
                     if (shadowSum >= MAX_SHADOW_SUM) break;
+                    if (_shFlags[j_idx] & skipMask) continue;
 
-                    const s2 = segData[j];
-                    const segInfo2 = segments[j];
-                    if (this._shadowPairExcluded(segInfoI, segInfo2)) continue;
+                    const dx_dist = s1x - _shX[j_idx];
+                    const dy_dist = s1y - _shY[j_idx];
+                    const dist2D_sq = dx_dist * dx_dist + dy_dist * dy_dist;
+                    const avgLen = (effectiveLen1 + _shEffLen[j_idx]) * 0.5;
+                    const shadow_cutoff = avgLen * SHADOW_CUTOFF_MULTIPLIER;
+                    const max_cutoff = shadow_cutoff + shadow_offset;
+                    const max_cutoff_sq = max_cutoff * max_cutoff;
+                    if (dist2D_sq > max_cutoff_sq) continue;
 
-                    const { shadow, tint } = this._calculateShadowTint(s1, s2, segInfoI, segInfo2);
-                    shadowSum = Math.min(shadowSum + shadow, MAX_SHADOW_SUM);
-                    maxTint = Math.max(maxTint, tint);
+                    let shadow = 0;
+                    let tint = 0;
+                    const dz = s1z - _shZ[j_idx];
+                    const dist3D_sq = dist2D_sq + dz * dz;
+                    if (dist3D_sq < max_cutoff_sq) {
+                        const shadow_cutoff_sq = shadow_cutoff * shadow_cutoff;
+                        shadow = shadow_cutoff_sq / (shadow_cutoff_sq + dist3D_sq * 2.0);
+                    }
+
+                    const tint_cutoff = avgLen * TINT_CUTOFF_MULTIPLIER;
+                    const tint_max_cutoff = tint_cutoff + tint_offset;
+                    if (dist2D_sq < tint_max_cutoff * tint_max_cutoff) {
+                        const tint_cutoff_sq = tint_cutoff * tint_cutoff;
+                        tint = tint_cutoff_sq / (tint_cutoff_sq + dist2D_sq * 2.0);
+                    }
+
+                    const strengthMultiplier = _shMult[j_idx];
+                    shadowSum = Math.min(shadowSum + shadow * strengthMultiplier, MAX_SHADOW_SUM);
+                    const tVal = tint * strengthMultiplier;
+                    if (tVal > maxTint) maxTint = tVal;
                 }
 
-                shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
+                shadows[i] = Math.pow(shadowIntensity, shadowSum);
                 tints[i] = 1 - maxTint;
             }
         },
@@ -202,12 +300,18 @@
         // Fast mode: grid-based spatial optimization for large frames
         _calculateShadowsWithGrid(segmentList, segments, segData, maxExtent, shadows, tints) {
             const numVisibleSegments = segmentList.length;
+            if (numVisibleSegments === 0) return;
+            _ensureShadowScratch(numVisibleSegments);
 
             // Grid setup
             let GRID_DIM = Math.ceil(Math.sqrt(numVisibleSegments / 5));
             GRID_DIM = Math.max(20, Math.min(150, GRID_DIM));
             const gridSize = GRID_DIM * GRID_DIM;
-            const grid = Array.from({ length: gridSize }, () => []);
+            const grid = _shGridCells;
+            for (let c = 0; c < gridSize; c++) {
+                if (grid[c]) grid[c].length = 0;
+                else grid[c] = [];
+            }
 
             const gridMin = -maxExtent - 1.0;
             const gridRange = (maxExtent + 1.0) * 2;
@@ -222,30 +326,59 @@
             }
 
             const invCellSize = 1.0 / gridCellSize;
+            const sc = this.sidechainMap;
+            const hasSc = !!(sc && sc.size);
+            const proteinRefLength = REF_LENGTHS['P'];
+            const dnaStrength = REF_LENGTHS['D'] / proteinRefLength;
+            const ligStrength = REF_LENGTHS['L'] / proteinRefLength;
+            const userShadowStrength = this.shadowStrength;
+            const shadowIntensity = this.shadowIntensity;
 
-            // Assign grid coordinates
-            for (let i = 0; i < segmentList.length; i++) {
+            // Pre-pack segment properties and assign grid coordinates
+            for (let i = 0; i < numVisibleSegments; i++) {
                 const segIdx = segmentList[i];
                 const s = segData[segIdx];
+                const segInfo = segments[segIdx];
+                const type = segInfo.type;
+                const rMol = type === 'P' || type === 'D' || type === 'R';
+                const isC = type === 'C';
+                const inSc = hasSc && (sc.has(segInfo.idx1) || sc.has(segInfo.idx2));
+                const isPos = segInfo.idx1 === segInfo.idx2;
+                const refLen = REF_LENGTHS[type] ?? proteinRefLength;
+                const effLen = isPos ? refLen : s.len;
+                let mult = 1.0;
+                if (type === 'D' || type === 'R') {
+                    mult = dnaStrength;
+                } else if (type === 'L') {
+                    mult = ligStrength;
+                }
+                if (isPos) {
+                    mult *= 0.5;
+                }
+                mult *= userShadowStrength;
+
+                _shX[i] = s.x;
+                _shY[i] = s.y;
+                _shZ[i] = s.z;
+                _shEffLen[i] = effLen;
+                _shRefLen[i] = refLen;
+                _shMult[i] = mult;
+                _shFlags[i] = (rMol ? 1 : 0) | (isC ? 2 : 0) | (inSc ? 4 : 0);
+
                 const gx = Math.floor((s.x - gridMin) * invCellSize);
                 const gy = Math.floor((s.y - gridMin) * invCellSize);
 
                 if (gx >= 0 && gx < GRID_DIM && gy >= 0 && gy < GRID_DIM) {
                     s.gx = gx;
                     s.gy = gy;
+                    _shGx[i] = gx;
+                    _shGy[i] = gy;
+                    grid[gx + gy * GRID_DIM].push(i);
                 } else {
                     s.gx = -1;
                     s.gy = -1;
-                }
-            }
-
-            // Populate grid
-            for (let i = 0; i < segmentList.length; i++) {
-                const segIdx = segmentList[i];
-                const s = segData[segIdx];
-                if (s.gx >= 0 && s.gy >= 0) {
-                    const gridIndex = s.gx + s.gy * GRID_DIM;
-                    grid[gridIndex].push(segIdx);
+                    _shGx[i] = -1;
+                    _shGy[i] = -1;
                 }
             }
 
@@ -257,9 +390,9 @@
                         cell.length = MAX_SEGMENTS_PER_CELL;
                     }
                     if (cell.length > 2) {
-                        cell.sort((a, b) => segData[b].z - segData[a].z);
+                        cell.sort((a, b) => _shZ[b] - _shZ[a]);
                     } else if (cell.length === 2) {
-                        if (segData[cell[0]].z < segData[cell[1]].z) {
+                        if (_shZ[cell[0]] < _shZ[cell[1]]) {
                             const temp = cell[0];
                             cell[0] = cell[1];
                             cell[1] = temp;
@@ -269,20 +402,28 @@
             }
 
             // Calculate shadows using 3x3 grid neighborhood
-            for (let i_idx = segmentList.length - 1; i_idx >= 0; i_idx--) {
+            for (let i_idx = numVisibleSegments - 1; i_idx >= 0; i_idx--) {
                 const i = segmentList[i_idx];
                 let shadowSum = 0;
                 let maxTint = 0;
-                const s1 = segData[i];
-                const gx1 = s1.gx;
-                const gy1 = s1.gy;
-                const segInfoI = segments[i];
+                const gx1 = _shGx[i_idx];
+                const gy1 = _shGy[i_idx];
 
                 if (gx1 < 0) {
                     shadows[i] = 1.0;
                     tints[i] = 1.0;
                     continue;
                 }
+
+                const flags1 = _shFlags[i_idx];
+                const skipMask = (flags1 & 1) ? 6 : ((flags1 & 2) ? 1 : 0);
+                const refLen1 = _shRefLen[i_idx];
+                const effectiveLen1 = _shEffLen[i_idx];
+                const shadow_offset = refLen1 * SHADOW_OFFSET_MULTIPLIER;
+                const tint_offset = refLen1 * TINT_OFFSET_MULTIPLIER;
+                const s1x = _shX[i_idx];
+                const s1y = _shY[i_idx];
+                const s1z = _shZ[i_idx];
 
                 // Check 3x3 neighborhood
                 for (let dy = -1; dy <= 1; dy++) {
@@ -300,24 +441,48 @@
                         const cellLen = cell.length;
 
                         for (let k = 0; k < cellLen; k++) {
-                            const j = cell[k];
+                            const j_idx = cell[k];
                             if (shadowSum >= MAX_SHADOW_SUM && maxTint >= 1.0) break;
+                            if (_shFlags[j_idx] & skipMask) continue;
 
-                            const s2 = segData[j];
-                            const segInfoJ = segments[j];
-                            if (this._shadowPairExcluded(segInfoI, segInfoJ)) continue;
-
-                            if (s2.z <= s1.z) break;
+                            const s2z = _shZ[j_idx];
+                            if (s2z <= s1z) break;
                             if (shadowSum >= MAX_SHADOW_SUM) break;
 
-                            const { shadow, tint } = this._calculateShadowTint(s1, s2, segInfoI, segInfoJ);
-                            shadowSum = Math.min(shadowSum + shadow, MAX_SHADOW_SUM);
-                            maxTint = Math.max(maxTint, tint);
+                            const dx_dist = s1x - _shX[j_idx];
+                            const dy_dist = s1y - _shY[j_idx];
+                            const dist2D_sq = dx_dist * dx_dist + dy_dist * dy_dist;
+                            const avgLen = (effectiveLen1 + _shEffLen[j_idx]) * 0.5;
+                            const shadow_cutoff = avgLen * SHADOW_CUTOFF_MULTIPLIER;
+                            const max_cutoff = shadow_cutoff + shadow_offset;
+                            const max_cutoff_sq = max_cutoff * max_cutoff;
+                            if (dist2D_sq > max_cutoff_sq) continue;
+
+                            let shadow = 0;
+                            let tint = 0;
+                            const dz = s1z - s2z;
+                            const dist3D_sq = dist2D_sq + dz * dz;
+                            if (dist3D_sq < max_cutoff_sq) {
+                                const shadow_cutoff_sq = shadow_cutoff * shadow_cutoff;
+                                shadow = shadow_cutoff_sq / (shadow_cutoff_sq + dist3D_sq * 2.0);
+                            }
+
+                            const tint_cutoff = avgLen * TINT_CUTOFF_MULTIPLIER;
+                            const tint_max_cutoff = tint_cutoff + tint_offset;
+                            if (dist2D_sq < tint_max_cutoff * tint_max_cutoff) {
+                                const tint_cutoff_sq = tint_cutoff * tint_cutoff;
+                                tint = tint_cutoff_sq / (tint_cutoff_sq + dist2D_sq * 2.0);
+                            }
+
+                            const strengthMultiplier = _shMult[j_idx];
+                            shadowSum = Math.min(shadowSum + shadow * strengthMultiplier, MAX_SHADOW_SUM);
+                            const tVal = tint * strengthMultiplier;
+                            if (tVal > maxTint) maxTint = tVal;
                         }
                     }
                 }
 
-                shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
+                shadows[i] = Math.pow(shadowIntensity, shadowSum);
                 tints[i] = 1 - maxTint;
             }
         },

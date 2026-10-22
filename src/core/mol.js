@@ -13131,51 +13131,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         // Simplified loop - visibleOrder is already culled
         // Only iterate over visible segments - no need for visibility check inside loop
+        const perspOn = isPerspective(this.viewerState);
+        const focalLen = this.viewerState.focalLength;
+        const outlineOn = this.outlineMode !== 'none';
+        const fullOutlineOn = this.outlineMode === 'full';
+        let lastFillStyle = null;
         for (let i = 0; i < numRendered; i++) {
             const idx = visibleOrder[i];
-            if (pp) while (pi < pp.length && pp[pi].z <= zValues[idx]) paintPlugin(pp[pi++]);
+            if (pp) while (pi < pp.length && pp[pi].z <= zValues[idx]) {
+                paintPlugin(pp[pi++]);
+                lastFillStyle = null;
+            }
             // ...except by the clip, which is applied here rather than to
             // the order, so that what it cuts is still projected
             if (clipCull && !this.clipAccepts(zValues[idx])) continue;
 
-            // Calculate opacity based on position in visibleOrder
-            // i=0 is furthest (start of sliced array), i=numRendered-1 is closest
-            // Distance from front: numRendered - 1 - i
-            // NO IN-GEOMETRY SELECTION INK. This used to recolour the
-            // style's own outline pass, which put the selection into the
-            // depth sort: a selected residue behind anything was hidden by
-            // it. _paintSelectionHalo draws over the finished frame
-            // instead and cannot be occluded.
-            //
-            // Kept as a null rather than torn out, matching selInk in
-            // cartoon/geom.js - both go when the ink path does.
-            const selSet = null;
-            const isSel = !!(selSet
-                && (selSet.has(segments[idx].idx1) || selSet.has(segments[idx].idx2)));
-
-            let opacity = 1.0;
-
-            // --- 1. COMMON CALCULATIONS (Do these ONCE) ---
             const segInfo = segments[idx];
-
-            // Color Calculation
-            let { r, g, b } = colors[idx];
-            r /= 255; g /= 255; b /= 255;
-
-            // Skip shadows/tints/depth for contact segments - keep them bright and flat
-            if (segInfo.type !== 'C') {
-                // Cache zNorm value
-
-                if (renderShadows) {
-                    const tintFactor = (0.50 * tints[idx]) / 3;
-                    r = r + (1 - r) * tintFactor;
-                    g = g + (1 - g) * tintFactor;
-                    b = b + (1 - b) * tintFactor;
-                    const shadowFactor = (0.20 + 0.80 * shadows[idx]);
-                    r *= shadowFactor; g *= shadowFactor; b *= shadowFactor;
-                }
-            }
-
             // Projection (Use pre-computed SoA values)
             const idx1 = segInfo.idx1;
             const idx2 = segInfo.idx2;
@@ -13190,6 +13161,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const x2 = screenX[idx2];
             const y2 = screenY[idx2];
 
+            // Width Calculation: unified approach using helper (computed once for cull + draw)
+            const s = segData[idx];
+            const widthMultiplier = this._calculateSegmentWidthMultiplier(s, segInfo);
+            let currentLineWidth = baseLineWidthPixels * widthMultiplier;
+
             // OFF-SCREEN CULL. "Visible" above means the user has not hidden
             // it; nothing until now asked whether it is actually on the
             // canvas. Zoomed in, most of a structure is outside the viewport
@@ -13198,9 +13174,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // half-width plus its outline, so a segment whose centreline is
             // just outside still draws the part that reaches back in.
             {
-                const m = (baseLineWidthPixels
-                    * this._calculateSegmentWidthMultiplier(segData[idx], segInfo)
-                    + outlineWidthPx) / 2 + 2;
+                const m = (currentLineWidth + outlineWidthPx) * 0.5 + 2;
                 if ((x1 < -m && x2 < -m)
                     || (x1 > displayWidth + m && x2 > displayWidth + m)
                     || (y1 < -m && y2 < -m)
@@ -13209,30 +13183,40 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
-
-            // Width Calculation: unified approach using helper
-            const s = segData[idx];
-            const widthMultiplier = this._calculateSegmentWidthMultiplier(s, segInfo);
-            let currentLineWidth = baseLineWidthPixels * widthMultiplier;
-
-            if (isPerspective(this.viewerState)) {
+            if (perspOn) {
                 // Apply perspective scaling to the segment width
                 // Calculate the average perspective scale for this segment
                 // based on the Z-coordinates of its endpoints
                 const vec1 = rotated[idx1];
                 const vec2 = rotated[idx2];
-                const z1 = this.viewerState.focalLength - vec1.z;
-                const z2 = this.viewerState.focalLength - vec2.z;
+                const z1 = focalLen - vec1.z;
+                const z2 = focalLen - vec2.z;
                 if (z1 <= 0.1 || z2 <= 0.1) continue;
 
                 // Average perspective scale for the segment
-                const avgPerspectiveScale = (this.viewerState.focalLength / z1 + this.viewerState.focalLength / z2) / 2;
+                const avgPerspectiveScale = (focalLen / z1 + focalLen / z2) * 0.5;
 
                 // Apply perspective scale to the base width (which already includes widthMultiplier)
                 currentLineWidth *= avgPerspectiveScale;
             }
 
             currentLineWidth = Math.max(0.5, currentLineWidth);
+
+            // Color Calculation
+            const cObj = colors[idx];
+            let r = cObj.r / 255;
+            let g = cObj.g / 255;
+            let b = cObj.b / 255;
+
+            // Skip shadows/tints/depth for contact segments - keep them bright and flat
+            if (segInfo.type !== 'C' && renderShadows) {
+                const tintFactor = (0.50 * tints[idx]) / 3;
+                r = r + (1 - r) * tintFactor;
+                g = g + (1 - g) * tintFactor;
+                b = b + (1 - b) * tintFactor;
+                const shadowFactor = (0.20 + 0.80 * shadows[idx]);
+                r *= shadowFactor; g *= shadowFactor; b *= shadowFactor;
+            }
 
             // --- 2. CONDITIONAL DRAWING ---
             const r_int = r * 255 | 0;
@@ -13242,31 +13226,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Use rgb for opacity
             const color = `rgb(${r_int},${g_int},${b_int})`;
 
-            // For gap filler (outline), also apply opacity
-            // Note: Gap filler is usually darker/lighter, here we just darken
-            const gapR = r_int * 0.7 | 0;
-            const gapG = g_int * 0.7 | 0;
-            const gapB = b_int * 0.7 | 0;
-            const gapFillerColor = `rgb(${gapR},${gapG},${gapB})`;
-
-            // Get pre-computed endpoint rounding flags (Uint8Array)
-            const flags = segmentEndpointFlags[idx];
-            const hasOuterStart = (flags & 1) !== 0;
-            const hasOuterEnd = (flags & 2) !== 0;
-
-            const outlineCol = isSel ? SELECTION_INK_CSS : gapFillerColor;
-            if (this.outlineMode !== 'none' || isSel) {
-                // --- 2-STEP DRAW (Outline) ---
-                const totalOutlineWidth = currentLineWidth + (isSel
-                    ? Math.max(outlineWidthPx, SELECTION_INK_EXTRA * pxScale)
-                    : outlineWidthPx);
+            if (outlineOn) {
+                // For gap filler (outline), also apply opacity
+                // Note: Gap filler is usually darker/lighter, here we just darken
+                const gapR = r_int * 0.7 | 0;
+                const gapG = g_int * 0.7 | 0;
+                const gapB = b_int * 0.7 | 0;
+                const outlineCol = `rgb(${gapR},${gapG},${gapB})`;
+                const totalOutlineWidth = currentLineWidth + outlineWidthPx;
 
                 // For zero-length segments, draw single outline circle
-                if (segInfo.idx1 === segInfo.idx2) {
-                    const outlineRadius = totalOutlineWidth / 2;
+                if (idx1 === idx2) {
+                    const outlineRadius = totalOutlineWidth * 0.5;
                     ctx.beginPath();
                     ctx.arc(x1, y1, outlineRadius, 0, Math.PI * 2);
-                    ctx.fillStyle = outlineCol;
+                    if (outlineCol !== lastFillStyle) {
+                        ctx.fillStyle = outlineCol;
+                        lastFillStyle = outlineCol;
+                    }
                     ctx.fill();
                 } else {
                     // Pass 1: Gap filler outline (butt caps)
@@ -13277,19 +13254,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     ctx.stroke();
 
                     // Add rounded caps at outer endpoints if full outline mode
-                    if (this.outlineMode === 'full' || isSel) {
-                        const outlineRadius = totalOutlineWidth / 2;
-                        if (hasOuterStart) {
-                            ctx.beginPath();
-                            ctx.arc(x1, y1, outlineRadius, 0, Math.PI * 2);
-                            ctx.fillStyle = outlineCol;
-                            ctx.fill();
-                        }
-                        if (hasOuterEnd) {
-                            ctx.beginPath();
-                            ctx.arc(x2, y2, outlineRadius, 0, Math.PI * 2);
-                            ctx.fillStyle = outlineCol;
-                            ctx.fill();
+                    if (fullOutlineOn) {
+                        const flags = segmentEndpointFlags[idx];
+                        if (flags !== 0) {
+                            const outlineRadius = totalOutlineWidth * 0.5;
+                            if (outlineCol !== lastFillStyle) {
+                                ctx.fillStyle = outlineCol;
+                                lastFillStyle = outlineCol;
+                            }
+                            if ((flags & 1) !== 0) {
+                                ctx.beginPath();
+                                ctx.arc(x1, y1, outlineRadius, 0, Math.PI * 2);
+                                ctx.fill();
+                            }
+                            if ((flags & 2) !== 0) {
+                                ctx.beginPath();
+                                ctx.arc(x2, y2, outlineRadius, 0, Math.PI * 2);
+                                ctx.fill();
+                            }
                         }
                     }
                 }
@@ -13298,11 +13280,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // --- MAIN DRAW (Always) ---
             // Pass 2: Main colored line (always round caps)
             // For zero-length segments, draw explicit circle instead of relying on stroke caps
-            if (segInfo.idx1 === segInfo.idx2) {
-                const radius = currentLineWidth / 2;
+            if (idx1 === idx2) {
+                const radius = currentLineWidth * 0.5;
                 ctx.beginPath();
                 ctx.arc(x1, y1, radius, 0, Math.PI * 2);
-                ctx.fillStyle = color;
+                if (color !== lastFillStyle) {
+                    ctx.fillStyle = color;
+                    lastFillStyle = color;
+                }
                 ctx.fill();
             } else {
                 ctx.beginPath();

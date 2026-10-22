@@ -730,7 +730,19 @@ function paintPrims(S) {
                     }
                 }
                 const canGrad2 = !!ctx.createLinearGradient;
+                const et = edgeTone();
+                const isPosSide = outward > 0;
+                let prevL = outward
+                    ? faceLum(g.oLn ? g.oLn[0] : g.oN[0], 0,
+                        isPosSide, isPosSide ? g.oN[0] : -g.oN[0], g.oT[0])
+                    : sideLumAt(0);
                 for (let s = 0; s + 1 < ns; s++) {
+                    const l0v = prevL;
+                    const l1v = outward
+                        ? faceLum(g.oLn ? g.oLn[s + 1] : g.oN[s + 1], 0,
+                            isPosSide, isPosSide ? g.oN[s + 1] : -g.oN[s + 1], g.oT[s + 1])
+                        : sideLumAt(s + 1);
+                    prevL = l1v;
                     // 🔴 AN ARROWHEAD'S SIDE STRIPS ARE CULLED QUAD BY QUAD.
                     // oN describes a strip as a whole, which is right for a
                     // plain slab whose two sides are parallel to n. A head is
@@ -766,36 +778,28 @@ function paintPrims(S) {
                         const t2 = (cx2 - ax) * (dy2 - ay) - (dx2 - ax) * (cy2 - ay);
                         if (t1 * outward >= 0 && t2 * outward >= 0) continue;
                     }
-                    let l0v = sideLumAt(s);
-                    let l1v = sideLumAt(s + 1);
-                    if (outward) {
-                        const isPos = outward > 0;
-                        const d0 = faceLum(g.oLn ? g.oLn[s] : g.oN[s], 0,
-                            isPos, isPos ? g.oN[s] : -g.oN[s], g.oT[s]);
-                        const d1 = faceLum(g.oLn ? g.oLn[s + 1] : g.oN[s + 1], 0,
-                            isPos, isPos ? g.oN[s + 1] : -g.oN[s + 1], g.oT[s + 1]);
-                        l0v = d0;
-                        l1v = d1;
-                    }
                     // NOT constant-lum: `outward` is set at both call
                     // sites, so l0v/l1v above came from faceLum on the
                     // band's own direction and genuinely vary along the
                     // piece. This gradient is the smooth path doing its
                     // job; the flat one is the cel branch at the top.
-                    let style = shade(gc, nearS, 1, edgeTone(), (l0v + l1v) / 2);
-                    if (canGrad2 && Math.abs(l0v - l1v) * edgeTone() * 255 > 3) {
-                        const x0 = (A[s][0] + B[s][0]) / 2;
-                        const y0 = (A[s][1] + B[s][1]) / 2;
-                        const x1 = (A[s + 1][0] + B[s + 1][0]) / 2;
-                        const y1 = (A[s + 1][1] + B[s + 1][1]) / 2;
-                        if (Math.hypot(x1 - x0, y1 - y0) >= 1) {
+                    let style = null;
+                    if (canGrad2 && Math.abs(l0v - l1v) * et * 255 > 3) {
+                        const x0 = (A[s][0] + B[s][0]) * 0.5;
+                        const y0 = (A[s][1] + B[s][1]) * 0.5;
+                        const x1 = (A[s + 1][0] + B[s + 1][0]) * 0.5;
+                        const y1 = (A[s + 1][1] + B[s + 1][1]) * 0.5;
+                        if ((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0) >= 1) {
                             try {
                                 const gr = ctx.createLinearGradient(x0, y0, x1, y1);
-                                gr.addColorStop(0, shade(gc, nearS, 1, edgeTone(), l0v));
-                                gr.addColorStop(1, shade(gc, nearS, 1, edgeTone(), l1v));
+                                gr.addColorStop(0, shade(gc, nearS, 1, et, l0v));
+                                gr.addColorStop(1, shade(gc, nearS, 1, et, l1v));
                                 style = gr;
                             } catch (err) { /* solid fallback */ }
                         }
+                    }
+                    if (!style) {
+                        style = shade(gc, nearS, 1, et, (l0v + l1v) * 0.5);
                     }
                     ctx.fillStyle = style;
                     ctx.strokeStyle = style;
@@ -814,12 +818,15 @@ function paintPrims(S) {
             // e.g. every face when looking straight down the helix axis)
             // from flickering marginal edges on and off - the silhouette
             // there is carried by the clearly-visible side bands.
-            const bMid = [];
-            const nMid = [];
+            let bAvg = 0;
+            let nAvg = 0;
+            const nSub = Math.max(1, ns - 1);
             for (let s = 0; s + 1 < ns; s++) {
-                bMid.push((g.oB[s] + g.oB[s + 1]) / 2);
-                nMid.push((g.oN[s] + g.oN[s + 1]) / 2);
+                bAvg += (g.oB[s] + g.oB[s + 1]) * 0.5;
+                nAvg += (g.oN[s] + g.oN[s + 1]) * 0.5;
             }
+            bAvg /= nSub;
+            nAvg /= nSub;
             const quad = (a, b, c2, d) => {
                 ctx.beginPath();
                 ctx.moveTo(a[0], a[1]);
@@ -888,15 +895,15 @@ function paintPrims(S) {
             // bands and both caps have no area at all, so drawing them is
             // one fill painted twice over and four more that cover nothing.
             // Flat means flat: one face, no sides, no caps.
-            const flatSlab = (() => {
-                for (let s2 = 0; s2 < ns; s2++) {
-                    const a2 = Lp[s2]; const b2 = Lm[s2];
-                    if (Math.hypot(a2[0] - b2[0], a2[1] - b2[1]) > 0.25) {
-                        return false;                     // a quarter pixel
-                    }
+            let flatSlab = true;
+            for (let s2 = 0; s2 < ns; s2++) {
+                const a2 = Lp[s2]; const b2 = Lm[s2];
+                const dx2 = a2[0] - b2[0]; const dy2 = a2[1] - b2[1];
+                if (dx2 * dx2 + dy2 * dy2 > 0.0625) {
+                    flatSlab = false;             // a quarter pixel
+                    break;
                 }
-                return true;
-            })();
+            }
             if (flatSlab) {
                 // The two bands have no area, and the two faces are the SAME
                 // quad - so exactly one is drawn, and WHICH one is not a free
@@ -1008,12 +1015,6 @@ function paintPrims(S) {
                 ctx.fillStyle = capCol;
                 quad(Lp[ns - 1], Lm[ns - 1], Rm[ns - 1], Rp[ns - 1]);
             }
-            let bAvg = 0;
-            for (let s = 0; s < bMid.length; s++) bAvg += bMid[s];
-            bAvg /= Math.max(1, bMid.length);
-            let nAvg = 0;
-            for (let s = 0; s < nMid.length; s++) nAvg += nMid[s];
-            nAvg /= Math.max(1, nMid.length);
             // Face shade varies CONTINUOUSLY within the piece via a
             // linear gradient with stops from the per-station orientation.
             // A single per-piece tone makes each flank piece (mean
@@ -1276,28 +1277,33 @@ function paintPrims(S) {
                     // degenerate axis (piece seen end-on): sub-quads below
                 }
                 const canGrad = !!ctx.createLinearGradient;
+                ctx.lineWidth = 1;
+                ctx.lineJoin = 'round';
+                let prevT = faceTone(g.oB[0], g.oK[0], isTop);
+                let prevLum = faceLum(g.oLb[0], g.oK[0], isTop,
+                    isTop ? g.oB[0] : -g.oB[0], g.oT[0], iMul);
                 for (let s = 0; s + 1 < ns; s++) {
-                    const t0v = faceTone(g.oB[s], g.oK[s], isTop);
-                    const l0v = faceLum(g.oLb[s], g.oK[s], isTop,
-                        isTop ? g.oB[s] : -g.oB[s], g.oT[s], iMul);
+                    const t0v = prevT;
+                    const l0v = prevLum;
                     const t1v = faceTone(g.oB[s + 1], g.oK[s + 1], isTop);
                     const l1v = faceLum(g.oLb[s + 1], g.oK[s + 1], isTop,
                         isTop ? g.oB[s + 1] : -g.oB[s + 1], g.oT[s + 1], iMul);
+                    prevT = t1v;
+                    prevLum = l1v;
                     // solid MIDPOINT colour by default (continuous
                     // limit; adjacent sub-quads share stations so no
                     // banding accumulates). Gradient objects are
                     // expensive - build one only when the endpoints
                     // differ VISIBLY (> ~3 RGB units over the ~5px
                     // sub-quad).
-                    let style = shade(fc, nearS, 1,
-                        (t0v + t1v) / 2, (l0v + l1v) / 2);
+                    let style = null;
                     if (canGrad
                         && Math.abs(t0v * l0v - t1v * l1v) * 255 > 3) {
-                        const x0 = (A[s][0] + B[s][0]) / 2;
-                        const y0 = (A[s][1] + B[s][1]) / 2;
-                        const x1 = (A[s + 1][0] + B[s + 1][0]) / 2;
-                        const y1 = (A[s + 1][1] + B[s + 1][1]) / 2;
-                        if (Math.hypot(x1 - x0, y1 - y0) >= 1) {
+                        const x0 = (A[s][0] + B[s][0]) * 0.5;
+                        const y0 = (A[s][1] + B[s][1]) * 0.5;
+                        const x1 = (A[s + 1][0] + B[s + 1][0]) * 0.5;
+                        const y1 = (A[s + 1][1] + B[s + 1][1]) * 0.5;
+                        if ((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0) >= 1) {
                             try {
                                 const gr = ctx.createLinearGradient(x0, y0, x1, y1);
                                 gr.addColorStop(0, shade(fc, nearS, 1, t0v, l0v));
@@ -1306,10 +1312,12 @@ function paintPrims(S) {
                             } catch (err) { /* solid fallback */ }
                         }
                     }
+                    if (!style) {
+                        style = shade(fc, nearS, 1,
+                            (t0v + t1v) * 0.5, (l0v + l1v) * 0.5);
+                    }
                     ctx.fillStyle = style;
                     ctx.strokeStyle = style;
-                    ctx.lineWidth = 1;
-                    ctx.lineJoin = 'round';
                     fillQuadSafe(A[s][0], A[s][1], A[s + 1][0], A[s + 1][1],
                         B[s + 1][0], B[s + 1][1], B[s][0], B[s][1]);
                 }
@@ -1635,7 +1643,28 @@ function paintPrims(S) {
         }
         const gw = Math.max(1, Math.ceil(displayWidth / CELL));
         const gh = Math.max(1, Math.ceil(displayHeight / CELL));
-        const grid = useZBuf ? null : new Array(gw * gh);
+        const gridLen = gw * gh;
+        let grid = null;
+        if (!useZBuf) {
+            grid = renderer._occGrid || (renderer._occGrid = []);
+            for (let k = 0; k < gridLen; k++) {
+                if (grid[k]) grid[k].length = 0;
+            }
+        }
+        const occPool = renderer._occPool || (renderer._occPool = []);
+        let occPoolUsed = 0;
+        const allocOcc = () => {
+            let o = occPool[occPoolUsed++];
+            if (!o) {
+                o = {
+                    isSeg: false,
+                    q0: null, q1: null, q2: null, q3: null,
+                    r: 0, x0: 0, y0: 0, x1: 0, y1: 0, zM: 0,
+                };
+                occPool[occPoolUsed - 1] = o;
+            }
+            return o;
+        };
 
         // ---- depth buffer ------------------------------------------------
         // Stores the DEPTH ATTRIBUTE d (= pe under perspective, z under
@@ -1761,40 +1790,56 @@ function paintPrims(S) {
                 }
             }
         };
+        const invCell = 1 / CELL;
         const addToGrid = (o, x0, y0, x1, y1) => {
-            const c0 = Math.max(0, Math.floor(x0 / CELL));
-            const r0 = Math.max(0, Math.floor(y0 / CELL));
-            const c1 = Math.min(gw - 1, Math.floor(x1 / CELL));
-            const r1 = Math.min(gh - 1, Math.floor(y1 / CELL));
+            const c0 = Math.max(0, Math.floor(x0 * invCell));
+            const r0 = Math.max(0, Math.floor(y0 * invCell));
+            const c1 = Math.min(gw - 1, Math.floor(x1 * invCell));
+            const r1 = Math.min(gh - 1, Math.floor(y1 * invCell));
             for (let r = r0; r <= r1; r++) {
+                const rowOff = r * gw;
                 for (let c = c0; c <= c1; c++) {
-                    const k = r * gw + c;
+                    const k = rowOff + c;
                     (grid[k] || (grid[k] = [])).push(o);
                 }
             }
         };
         // Occluders carry their bbox and max depth so a query can
         // reject almost every candidate with one comparison.
-        const addQuad = (q, gs) => {
+        const addQuad4 = (q0, q1, q2, q3) => {
             if (useZBuf) {
-                for (let k2 = 1; k2 + 1 < q.length; k2++) {
-                    rasterTri(q[0], q[k2], q[k2 + 1]);
-                }
+                rasterTri(q0, q1, q2);
+                if (q3 !== q0) rasterTri(q0, q2, q3);
                 return;
             }
-            let x0 = Infinity;
-            let y0 = Infinity;
-            let x1 = -Infinity;
-            let y1 = -Infinity;
-            let zM = -Infinity;
-            for (const pq of q) {
-                if (pq[0] < x0) x0 = pq[0];
-                if (pq[0] > x1) x1 = pq[0];
-                if (pq[1] < y0) y0 = pq[1];
-                if (pq[1] > y1) y1 = pq[1];
-                if (pq[2] > zM) zM = pq[2];
+            const q0x = q0[0]; const q0y = q0[1]; const q0z = q0[2];
+            const q1x = q1[0]; const q1y = q1[1]; const q1z = q1[2];
+            const q2x = q2[0]; const q2y = q2[1]; const q2z = q2[2];
+            let x0 = q0x < q1x ? q0x : q1x; if (q2x < x0) x0 = q2x;
+            let x1 = q0x > q1x ? q0x : q1x; if (q2x > x1) x1 = q2x;
+            let y0 = q0y < q1y ? q0y : q1y; if (q2y < y0) y0 = q2y;
+            let y1 = q0y > q1y ? q0y : q1y; if (q2y > y1) y1 = q2y;
+            let zM = q0z > q1z ? q0z : q1z; if (q2z > zM) zM = q2z;
+            if (q3 !== q0) {
+                const q3x = q3[0]; const q3y = q3[1]; const q3z = q3[2];
+                if (q3x < x0) x0 = q3x; else if (q3x > x1) x1 = q3x;
+                if (q3y < y0) y0 = q3y; else if (q3y > y1) y1 = q3y;
+                if (q3z > zM) zM = q3z;
             }
-            addToGrid({ q, x0, y0, x1, y1, zM, gs }, x0, y0, x1, y1);
+            const o = allocOcc();
+            o.isSeg = false;
+            o.q0 = q0; o.q1 = q1; o.q2 = q2; o.q3 = q3;
+            o.x0 = x0; o.y0 = y0; o.x1 = x1; o.y1 = y1; o.zM = zM;
+            addToGrid(o, x0, y0, x1, y1);
+        };
+        const addQuad = (q) => {
+            if (q.length === 4) {
+                addQuad4(q[0], q[1], q[2], q[3]);
+                return;
+            }
+            for (let k2 = 1; k2 + 1 < q.length; k2++) {
+                addQuad4(q[0], q[k2], q[k2 + 1], q[0]);
+            }
         };
         // One round-capped thick segment, into whichever backend is active.
         const addCapsule = (a, b, rr) => {
@@ -1804,8 +1849,12 @@ function paintPrims(S) {
             const y0 = Math.min(a[1], b[1]) - rr;
             const x1 = Math.max(a[0], b[0]) + rr;
             const y1 = Math.max(a[1], b[1]) + rr;
-            addToGrid({ seg: [a, b], r: rr, x0, y0, x1, y1,
-                zM: Math.max(a[2], b[2]) }, x0, y0, x1, y1);
+            const o = allocOcc();
+            o.isSeg = true;
+            o.q0 = a; o.q1 = b; o.r = rr;
+            o.x0 = x0; o.y0 = y0; o.x1 = x1; o.y1 = y1;
+            o.zM = Math.max(a[2], b[2]);
+            addToGrid(o, x0, y0, x1, y1);
         };
         for (const g of prims) {
             // Only what the drawing has REACHED can hide anything - ink
@@ -1824,19 +1873,17 @@ function paintPrims(S) {
                 const nsO = g.Lp.length;
                 // terminal caps occlude too
                 if (g.capStart) {
-                    addQuad([g.Lp[0], g.Lm[0], g.Rm[0], g.Rp[0]], g.gs0);
+                    addQuad4(g.Lp[0], g.Lm[0], g.Rm[0], g.Rp[0]);
                 }
                 if (g.capEnd) {
-                    addQuad([g.Lp[nsO - 1], g.Lm[nsO - 1],
-                        g.Rm[nsO - 1], g.Rp[nsO - 1]],
-                    g.gs0 + (nsO - 1) * g.gsStep);
+                    addQuad4(g.Lp[nsO - 1], g.Lm[nsO - 1],
+                        g.Rm[nsO - 1], g.Rp[nsO - 1]);
                 }
                 for (const st of strips) {
                     const A = st[0];
                     const B = st[1];
                     for (let s = 0; s + 1 < nsO; s++) {
-                        addQuad([A[s], A[s + 1], B[s + 1], B[s]],
-                            g.gs0 + (s + 0.5) * g.gsStep);
+                        addQuad4(A[s], A[s + 1], B[s + 1], B[s]);
                     }
                 }
             } else if (g.kind === 'tube') {
@@ -1867,13 +1914,13 @@ function paintPrims(S) {
                 }
             } else if (g.kind === 'joint') {
                 for (let k2 = 1; k2 + 1 < g.q.length; k2++) {
-                    addQuad([g.q[0], g.q[k2], g.q[k2 + 1], g.q[0]], g.gs0);
+                    addQuad4(g.q[0], g.q[k2], g.q[k2 + 1], g.q[0]);
                 }
             } else if (g.kind === 'stickFace') {
                 // every face, turned away or not: a box's back faces and
                 // its caps at a shared atom are what hide the neighbouring
                 // box's buried edges
-                addQuad(g.q, g.gs0);
+                addQuad(g.q);
             } else if (g.kind === 'dot' && g.pA) {
                 // lone-position dot: a capsule of zero length is a disc
                 addCapsule(g.pA, g.pA, g.r + (g.noInk ? 0 : outlineW / 2) - 1);
@@ -1887,9 +1934,25 @@ function paintPrims(S) {
         // first one that is not.
         if (_ph) _ph.inkGrid = _pt();
         if (!useZBuf) {
-            for (let k = 0; k < grid.length; k++) {
-                if (grid[k] && grid[k].length > 1) {
-                    grid[k].sort((a, b) => b.zM - a.zM);
+            const cmpOcc = (a, b) => b.zM - a.zM;
+            for (let k = 0; k < gridLen; k++) {
+                const cell = grid[k];
+                if (!cell) continue;
+                const len = cell.length;
+                if (len <= 1) continue;
+                if (len <= 16) {
+                    for (let i = 1; i < len; i++) {
+                        const cur = cell[i];
+                        const curZ = cur.zM;
+                        let j = i - 1;
+                        while (j >= 0 && cell[j].zM < curZ) {
+                            cell[j + 1] = cell[j];
+                            j--;
+                        }
+                        cell[j + 1] = cur;
+                    }
+                } else {
+                    cell.sort(cmpOcc);
                 }
             }
         }
@@ -1897,8 +1960,8 @@ function paintPrims(S) {
             _ph.inkSorted = _pt();
             let cells = 0; let occs = 0;
             if (grid) {
-                for (let k = 0; k < grid.length; k++) {
-                    if (grid[k]) { cells++; occs += grid[k].length; }
+                for (let k = 0; k < gridLen; k++) {
+                    if (grid[k] && grid[k].length) { cells++; occs += grid[k].length; }
                 }
             }
             _ph.inkCell = CELL; _ph.inkCells = cells; _ph.inkOccRefs = occs;
@@ -1914,41 +1977,50 @@ function paintPrims(S) {
         const dAt = (pt) => (persp ? pt[3] : pt[2]);
         const zOf = (D) => (persp ? fl - fl / D : D);
         const triHides = (p0, p1, p2, x, y, z, eps) => {
-            const d = (p1[1] - p2[1]) * (p0[0] - p2[0])
-                + (p2[0] - p1[0]) * (p0[1] - p2[1]);
+            const p0x = p0[0]; const p0y = p0[1];
+            const p1x = p1[0]; const p1y = p1[1];
+            const p2x = p2[0]; const p2y = p2[1];
+            const dy12 = p1y - p2y;
+            const dx21 = p2x - p1x;
+            const d = dy12 * (p0x - p2x) + dx21 * (p0y - p2y);
             if (d > -1e-9 && d < 1e-9) return false;
-            const w0 = ((p1[1] - p2[1]) * (x - p2[0])
-                + (p2[0] - p1[0]) * (y - p2[1])) / d;
-            if (w0 < 0) return false;
-            const w1 = ((p2[1] - p0[1]) * (x - p2[0])
-                + (p0[0] - p2[0]) * (y - p2[1])) / d;
+            const dx = x - p2x;
+            const dy = y - p2y;
+            const invD = 1 / d;
+            const w0 = (dy12 * dx + dx21 * dy) * invD;
+            if (w0 < 0 || w0 > 1) return false;
+            const w1 = ((p2y - p0y) * dx + (p0x - p2x) * dy) * invD;
             if (w1 < 0 || w0 + w1 > 1) return false;
             const w2 = 1 - w0 - w1;
-            const zo = zOf(w0 * dAt(p0) + w1 * dAt(p1) + w2 * dAt(p2));
+            const zo = persp
+                ? fl - fl / (w0 * p0[3] + w1 * p1[3] + w2 * p2[3])
+                : w0 * p0[2] + w1 * p1[2] + w2 * p2[2];
             return zo > z + eps;
         };
         let _nq = 0; let _nscan = 0;
         const hiddenGrid = (x, y, z, gs) => {
             _nq++;
-            const c = Math.floor(x / CELL);
-            const r = Math.floor(y / CELL);
+            const c = Math.floor(x * invCell);
+            const r = Math.floor(y * invCell);
             if (c < 0 || r < 0 || c >= gw || r >= gh) return false;
             const list = grid[r * gw + c];
             if (!list) return false;
             const zCut = z + EPS_OCC;
-            for (const o of list) {
+            const nList = list.length;
+            for (let i = 0; i < nList; i++) {
+                const o = list[i];
                 if (o.zM <= zCut) break; // sorted: nothing nearer remains
                 _nscan++;
                 if (x < o.x0 || x > o.x1 || y < o.y0 || y > o.y1) continue;
-                const eps = EPS_OCC;
-                if (o.q) {
-                    for (let k2 = 1; k2 + 1 < o.q.length; k2++) {
-                        if (triHides(o.q[0], o.q[k2], o.q[k2 + 1],
-                            x, y, z, eps)) return true;
-                    }
+                if (!o.isSeg) {
+                    const q0 = o.q0;
+                    const q2 = o.q2;
+                    if (triHides(q0, o.q1, q2, x, y, z, EPS_OCC)) return true;
+                    const q3 = o.q3;
+                    if (q3 !== q0 && triHides(q0, q2, q3, x, y, z, EPS_OCC)) return true;
                 } else {
-                    const a = o.seg[0];
-                    const b = o.seg[1];
+                    const a = o.q0;
+                    const b = o.q1;
                     const dx = b[0] - a[0];
                     const dy = b[1] - a[1];
                     const L2 = dx * dx + dy * dy;
@@ -1960,7 +2032,7 @@ function paintPrims(S) {
                     const ey = a[1] + t * dy - y;
                     if (ex * ex + ey * ey < o.r * o.r) {
                         const zo = zOf(dAt(a) + t * (dAt(b) - dAt(a)));
-                        if (zo > z + eps) return true;
+                        if (zo > zCut) return true;
                     }
                 }
             }
@@ -2085,6 +2157,7 @@ function paintPrims(S) {
         //
         // The selection indicator is exempt - it is an indicator, not ink,
         // and has to stay legible whatever the drawing is doing.
+        let _midsScratch = new Uint8Array(256);
         for (const [inkCss, group] of inkGroups) {
         const isSel = inkCss === selKey;
         // Collected for the pencil only: this group exists because the
@@ -2108,16 +2181,22 @@ function paintPrims(S) {
             // 3-sample rule wherever the outcome can differ, for about
             // a third of the queries.
             const nSeg = vis.length;
-            const mids = new Array(nSeg).fill(false);
+            if (_midsScratch.length < nSeg) {
+                _midsScratch = new Uint8Array(Math.max(nSeg, _midsScratch.length * 2));
+            }
+            const mids = _midsScratch;
             for (let s = 0; s < nSeg; s++) {
-                if (!vis[s]) continue;
-                const mx = (pts[s][0] + pts[s + 1][0]) / 2;
-                const my = (pts[s][1] + pts[s + 1][1]) / 2;
+                if (!vis[s]) {
+                    mids[s] = 0;
+                    continue;
+                }
+                const mx = (pts[s][0] + pts[s + 1][0]) * 0.5;
+                const my = (pts[s][1] + pts[s + 1][1]) * 0.5;
                 // z at the SCREEN midpoint: pe interpolates linearly
                 // there, raw z does not (perspective)
-                const mz = zOf((dAt(pts[s]) + dAt(pts[s + 1])) / 2);
+                const mz = zOf((dAt(pts[s]) + dAt(pts[s + 1])) * 0.5);
                 mids[s] = hidden(mx, my, mz,
-                    cv.gs0 + (s + 0.5) * cv.gsStep);
+                    cv.gs0 + (s + 0.5) * cv.gsStep) ? 1 : 0;
             }
             const okAt = (s) => vis[s] && !mids[s];
             // OFF-CANVAS segments never draw. The occlusion grid treats
@@ -2291,13 +2370,16 @@ function paintPrims(S) {
         const dw = offCv.width;
         const dh = offCv.height;
         let tile = paperTile(renderer);
-        const gc = tile && (renderer._pencilGrain
-            && renderer._pencilGrain.width === dw
-            && renderer._pencilGrain.height === dh
-            ? renderer._pencilGrain
-            : (renderer._pencilGrain = document.createElement('canvas')));
-        if (tile && gc) {
-            gc.width = dw; gc.height = dh;
+        let gc = renderer._pencilGrain;
+        if (tile) {
+            if (!gc) {
+                gc = document.createElement('canvas');
+                renderer._pencilGrain = gc;
+            }
+            if (gc.width !== dw || gc.height !== dh) {
+                gc.width = dw;
+                gc.height = dh;
+            }
             const g2 = gc.getContext('2d');
             const oc = offCv.getContext('2d');
             if (g2 && oc) {
@@ -2306,43 +2388,53 @@ function paintPrims(S) {
                 g2.globalCompositeOperation = 'source-over';
                 g2.globalAlpha = 1;
                 g2.clearRect(0, 0, dw, dh);
-                const pat = g2.createPattern(tile, 'repeat');
-                if (pat) {
-                    // THE GRAIN DOES NOT ZOOM. The paper is the MEDIUM, not
-                    // part of the subject: a drawing is made on one sheet at
-                    // one tooth, and moving closer to it does not coarsen the
-                    // tooth. So the tile is pinned to the canvas and stays
-                    // fine at every zoom.
-                    //
-                    // It used to scale with the view, on the argument that a
-                    // fixed speckle over a shrinking drawing reads as the
-                    // noise coarsening rather than the drawing shrinking.
-                    // That is true of the zoomed-OUT end and wrong at the
-                    // other: following the zoom up multiplied the tile by as
-                    // much as 3, and grain that coarse stops being paper and
-                    // becomes a visible texture laid over the picture, which
-                    // is the more damaging of the two. It also meant the same
-                    // structure never looked like the same sheet twice.
-                    //
-                    // GRAIN_SCALE shrinks the whole texture, all three
-                    // octaves together. Done here rather than by raising the
-                    // octave grid counts because the finest octave already
-                    // sits near one cell per 1.3 px on a 128 px tile - push
-                    // that further and it degenerates into the per-pixel
-                    // film static the octave construction exists to avoid.
-                    // Minifying a texture is filtered by the browser, so it
-                    // softens rather than aliases.
-                    const zoomK = GRAIN_SCALE;
-                    if (pat.setTransform && typeof DOMMatrix !== 'undefined') {
-                        try {
-                            const cx = dw / 2;
-                            const cy = dh / 2;
-                            pat.setTransform(new DOMMatrix([
-                                zoomK, 0, 0, zoomK,
-                                cx - zoomK * cx, cy - zoomK * cy,
-                            ]));
-                        } catch (err) { /* unscaled grain is still fine */ }
+                let pat = renderer._pencilPat;
+                if (!pat || renderer._pencilPatTile !== tile
+                    || renderer._pencilPatW !== dw || renderer._pencilPatH !== dh) {
+                    pat = g2.createPattern(tile, 'repeat');
+                    if (pat) {
+                        // THE GRAIN DOES NOT ZOOM. The paper is the MEDIUM, not
+                        // part of the subject: a drawing is made on one sheet at
+                        // one tooth, and moving closer to it does not coarsen the
+                        // tooth. So the tile is pinned to the canvas and stays
+                        // fine at every zoom.
+                        //
+                        // It used to scale with the view, on the argument that a
+                        // fixed speckle over a shrinking drawing reads as the
+                        // noise coarsening rather than the drawing shrinking.
+                        // That is true of the zoomed-OUT end and wrong at the
+                        // other: following the zoom up multiplied the tile by as
+                        // much as 3, and grain that coarse stops being paper and
+                        // becomes a visible texture laid over the picture, which
+                        // is the more damaging of the two. It also meant the same
+                        // structure never looked like the same sheet twice.
+                        //
+                        // GRAIN_SCALE shrinks the whole texture, all three
+                        // octaves together. Done here rather than by raising the
+                        // octave grid counts because the finest octave already
+                        // sits near one cell per 1.3 px on a 128 px tile - push
+                        // that further and it degenerates into the per-pixel
+                        // film static the octave construction exists to avoid.
+                        // Minifying a texture is filtered by the browser, so it
+                        // softens rather than aliases.
+                        const zoomK = GRAIN_SCALE;
+                        if (pat.setTransform && typeof DOMMatrix !== 'undefined') {
+                            try {
+                                const cx = dw / 2;
+                                const cy = dh / 2;
+                                pat.setTransform(new DOMMatrix([
+                                    zoomK, 0, 0, zoomK,
+                                    cx - zoomK * cx, cy - zoomK * cy,
+                                ]));
+                            } catch (err) { /* unscaled grain is still fine */ }
+                        }
+                        renderer._pencilPat = pat;
+                        renderer._pencilPatTile = tile;
+                        renderer._pencilPatW = dw;
+                        renderer._pencilPatH = dh;
                     }
+                }
+                if (pat) {
                     g2.fillStyle = pat;
                     g2.fillRect(0, 0, dw, dh);
                     g2.globalCompositeOperation = 'destination-in';

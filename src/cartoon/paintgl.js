@@ -127,6 +127,15 @@ function facesOf(prims, prm, consume) {
     const faces = [];
     let skipped = 0;
     let pieces = 0;
+    const mean = (a) => {
+        let t = 0;
+        for (let i = 0; i < a.length; i++) t += a[i];
+        return t / a.length;
+    };
+    const tintWhite = (c, fr) => ({ r: c.r + (255 - c.r) * fr,
+        g: c.g + (255 - c.g) * fr, b: c.b + (255 - c.b) * fr });
+    const WHITE_EDGE_COL = { r: 244, g: 246, b: 240 };
+    const DEF_RIB_COL = { r: 140, g: 160, b: 200 };
     for (let pi = 0; pi < prims.length; pi++) {
         const p = prims[pi];
         if (consume) prims[pi] = null;
@@ -137,7 +146,6 @@ function facesOf(prims, prm, consume) {
             // scalar rather than being rebuilt from geometry.
             let kAvg = 0;
             if (p.oK) { for (let i = 0; i < p.oK.length; i++) kAvg += p.oK[i]; kAvg /= p.oK.length; }
-            const mean = (a) => { let t = 0; for (let i = 0; i < a.length; i++) t += a[i]; return t / a.length; };
             const bAvg = p.oB ? mean(p.oB) : 0;
             const lbAvg = p.oLb ? mean(p.oLb) : 0;
             const tAvg = p.oT ? mean(p.oT) : 0;
@@ -147,7 +155,7 @@ function facesOf(prims, prm, consume) {
             // control that exists to separate "port wrong" from "capture
             // imprecise" quietly wrong itself on a quarter of the surfaces.
             const nAvg = p.oN ? mean(p.oN) : 0;
-            const lnAvg = p.oLn ? mean(p.oLn) : (p.oN ? mean(p.oN) : 0);
+            const lnAvg = p.oLn ? mean(p.oLn) : nAvg;
             // IS THIS PIECE A FLAT SHEET? Richardson gives a helix zero
             // thickness (RICH_TH_REL H: 0), so its +b and -b faces are the
             // SAME surface. Emitting both puts two coincident quads in the
@@ -169,10 +177,12 @@ function facesOf(prims, prm, consume) {
             //
             // A QUAD spans two stations, so it is coincident when BOTH of its
             // ends are - which is the flag the shader actually wants.
-            const thinAt = [];
+            const thinAt = new Uint8Array(ns);
             for (let k = 0; k < ns; k++) {
-                thinAt.push(len3(p.Lp[k][0] - p.Lm[k][0], p.Lp[k][1] - p.Lm[k][1],
-                    p.Lp[k][2] - p.Lm[k][2]) <= 0.02);
+                const dx = p.Lp[k][0] - p.Lm[k][0];
+                const dy = p.Lp[k][1] - p.Lm[k][1];
+                const dz = p.Lp[k][2] - p.Lm[k][2];
+                thinAt[k] = (dx * dx + dy * dy + dz * dz <= 0.0004) ? 1 : 0;
             }
             // BOTH SURFACES, ALWAYS. A sheet has two sides and they carry
             // different colours - the outer keeps the element's, the inner is
@@ -195,12 +205,10 @@ function facesOf(prims, prm, consume) {
             // 73% was. Faces are tagged with their piece so the mean frame can
             // be computed once the geometry is in model space.
             const rich = P0.rich;
-            const tintWhite = (c, fr) => ({ r: c.r + (255 - c.r) * fr,
-                g: c.g + (255 - c.g) * fr, b: c.b + (255 - c.b) * fr });
             // CAPS: the flat rim at a piece end. Missing entirely until now,
             // so every end was reference-only pixels.
             const capC = (rich && (p.ss === 'E' || p.naRung))
-                ? { r: 244, g: 246, b: 240 } : (p.c || { r: 140, g: 160, b: 200 });
+                ? WHITE_EDGE_COL : (p.c || DEF_RIB_COL);
             // The outward normal of a start cap is -T and of an end cap +T,
             // which is what the renderer's oT test is checking. Carrying the
             // captured facing lets the mesh orient them once and cull per view.
@@ -262,7 +270,7 @@ function facesOf(prims, prm, consume) {
                     // not by which label the face carries. The inner shadow is
                     // then eased on exactly those faces, or the two would say
                     // the same thing twice and drag the pale face back to mud.
-                    const base = p.c || { r: 140, g: 160, b: 200 };
+                    const base = p.c || DEF_RIB_COL;
                     const isSide = si >= 2;
                     const canTint = rich && p.ss === 'H' && !p.co;
                     // SHEET EDGES ARE WHITE in the Richardson convention: an
@@ -305,7 +313,7 @@ function facesOf(prims, prm, consume) {
                         // fallback for a face whose palette slot the renderer
                         // could not report, and tinting here as well would
                         // apply 0.68 toward white twice.
-                        c: edgeWhite ? { r: 244, g: 246, b: 240 }
+                        c: edgeWhite ? WHITE_EDGE_COL
                             : ((twoTone && !twoCand) ? tintWhite(base, 0.68) : base),
                         // a sheet carries BOTH colours and picks at draw time
                         cIn: canTint ? tintWhite(base, 0.68) : base,
@@ -1022,6 +1030,11 @@ void main() {
   // single per-face normal - which for a width band is the PIECE mean,
   // because that is what the reference quantises.
   vec3 nSrc = uCel > 0.5 ? aFlatShade : aNormal;
+  if (aPlate > 0.5 && aSide < 0.5 && aCap < 0.5) {
+    vec3 fnA = normalize(cross(aTA, aC0 - aC1));
+    vec3 fnB = normalize(cross(aTB, aC3 - aC2));
+    nSrc = uCel > 0.5 ? (fnA + fnB) * 0.5 : ((corner == 0 || corner == 1) ? fnA : fnB);
+  }
   vec3 ub = normalize(uRot * nSrc);
   // The per-station frame, interpolated. The SHADING reads it; the cull does
   // not - see the piece mean at the aSheet test below.
@@ -1062,7 +1075,7 @@ void main() {
     // with no inner shadow and a constant edge tone - it is the white card the
     // coloured face is mounted on, not part of the modelled surface.
     tone = soft(FLAT_TONE);
-    lum = faceLum(oLb, 0.0, 1.0, oB, oT, 1.0, 0.0);
+    lum = faceLum(oLb, 0.0, 1.0, oB, oT, 1.0, aPlate);
     // ...and it BANDS with everything else. This quantisation was missing, so
     // in cel mode the bands stayed continuous while every other surface
     // stepped - the same hole the 2D renderer had in paintSide, in the same
@@ -1124,8 +1137,11 @@ void main() {
   }
   else if (aColMode > 1.5) base = vec3(244.0, 246.0, 240.0);
   else if (aColMode > 0.5) base = base + (vec3(255.0) - base) * 0.68;
-  // straight through: no light, no depth blend, no cel banding
-  vCol = aUnlit > 0.5 ? base / 255.0 : shadeCol(base, tShade, tone, lum);
+  // straight through: no light, no depth blend, no cel banding (except a
+  // lone-atom disc, which takes depth blend here and 2D band shading in FS)
+  vCol = aUnlit > 0.5
+      ? (aDisc > 0.5 ? shadeCol(base, tShade, 1.0, 1.0) : base / 255.0)
+      : shadeCol(base, tShade, tone, lum);
   // A CAP IS CULLED THE SAME WAY, and for the same reason the stick faces
   // were: the renderer only draws one when its outward normal (the chain
   // tangent) faces the eye, and that is a per-VIEW decision. Emitting caps
@@ -2495,6 +2511,7 @@ in vec2 vDisc; in float vIsDisc;
 // buried each pixel is, so the cartoon needs no shader of its own, only its own
 // constants (see drawResident).
 uniform float uZOnly, uUseAO;
+uniform float uShadeAmt, uHiGain, uCel;
 // THE OUTLINE CONTROL, in device pixels, for the one thing this pass outlines
 // itself: a lone atom's disc (the ink pass cannot - the circle is not in the
 // mesh, only the square around it). Zero means the drawing has no outlines,
@@ -2519,18 +2536,38 @@ void main() {
   //
   // Solved here rather than tessellated, and shaded the way the 2D pass shades
   // one - concentric bands stepping toward a centre offset along the light,
-  // which is the flat read of a highlight sitting off-centre on a ball. Two
-  // steps: this is a drawing, and a smooth gradient reads as a different one.
+  // which is the flat read of a highlight sitting off-centre on a ball.
   // Cut BEFORE the depth prepass returns, or the shadow pass sees the square.
-  float discTone = 1.0;
+  float discQ = 1.0;
+  bool discRim = false;
   if (vIsDisc > 0.5) {
     float r = length(vDisc);
     if (r > 1.0) discard;
-    // the light, as the 2D pass sees it on the page: view-space x and y, with
-    // y up because that is the direction this quad's corners were placed in
-    vec2 ls = normalize(vec2(-0.45, 0.6));
-    float d = length(vDisc - ls * 0.42);
-    discTone = d < 0.62 ? 1.0 : 0.82;
+    float px = max(fwidth(vDisc.x), fwidth(vDisc.y));
+    float wG = clamp((2.0 / max(1e-4, px) - 2.0) / 3.0, 0.0, 1.0);
+    float gn = 0.35 * wG;
+    if (uShadeAmt > 0.001 && gn >= 0.02) {
+      // the light, as the 2D pass sees it on the page: view-space x and y, with
+      // y up because that is the direction this quad's corners were placed in
+      vec2 ls = normalize(vec2(-0.45, 0.6));
+      int bands = uCel > 0.5 ? 8 : 4;
+      for (int k = 0; k < 8; k++) {
+        if (k >= bands) break;
+        float t2 = float(k) / float(bands - 1);
+        float rk = 1.0 - 0.75 * gn * t2;
+        float offk = (1.0 - rk) * t2;
+        if (length(vDisc - ls * offk) <= rk) {
+          float q = 0.72 + 0.28 * gn * t2
+              + ((uHiGain > 0.0 && k == bands - 1) ? 0.22 * uHiGain * gn : 0.0);
+          if (uCel > 0.5) {
+            float lo = 0.72, hi = 0.72 + (0.28 + 0.22 * uHiGain) * gn;
+            float qt = clamp((q - lo) / max(1e-9, hi - lo), 0.0, 1.0);
+            q = lo + (floor(qt * 7.0 + 0.5) / 7.0) * (hi - lo);
+          }
+          discQ = q;
+        }
+      }
+    }
     // ...and its RIM, which the 2D pass strokes as ink. Nothing else can draw
     // it: the square's own edges are vetoed in the mesh, because they are not
     // where the circle is. THIN AND ONLY HALF DARK - the 2D stroke is one
@@ -2548,12 +2585,12 @@ void main() {
     // radius k pixels in from the edge. Clamped because a disc smaller than
     // the pen is all pen otherwise, and one filling the screen would get a
     // hairline that aliases away.
-    float px = max(fwidth(vDisc.x), fwidth(vDisc.y));
     float pen = clamp(uDiscInk * px, 0.0, 0.3);
-    if (pen > 0.004 && r > 1.0 - pen) discTone = 0.55;
+    if (pen > 0.004 && r > 1.0 - pen) discRim = true;
   }
   if (uZOnly > 0.5) { fragColor = vec4(vZv, 0.0, 0.0, 1.0); return; }
-  vec3 col = vCol * discTone;
+  vec3 col = discRim ? (vCol * 0.55)
+      : (discQ < 1.0 ? vCol * discQ : vCol + (vec3(1.0) - vCol) * min(1.0, discQ - 1.0));
   if (uUseAO > 0.5) {
     // THE SHADOW TERM ONLY. The tube applies two: it whitens by how EXPOSED a
     // pixel is and then darkens by how much lies in front of it, because that
@@ -3937,16 +3974,22 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused, smOffset) {
      * side chains out. The arithmetic is the two functions' bodies in their
      * own order, so it is bit-identical; what goes is the garbage.
      */
+    const fl0 = focalLength();
+    const persp0 = isPersp();
+    const w2 = capW * 0.5;
+    const h2 = capH * 0.5;
+    const invScale = 1 / scale;
+    const i00 = inv[0][0]; const i01 = inv[0][1]; const i02 = inv[0][2];
+    const i10 = inv[1][0]; const i11 = inv[1][1]; const i12 = inv[1][2];
+    const i20 = inv[2][0]; const i21 = inv[2][1]; const i22 = inv[2][2];
     const unprojInto = (out, p) => {
         const z = p[2];
-        const fl = focalLength();
-        const pe = isPersp() ? fl / Math.max(0.1, fl - z) : 1;
-        const k = scale * pe;
-        const x = (p[0] - capW / 2) / k;
-        const y = (capH / 2 - p[1]) / k;
-        out[0] = inv[0][0] * x + inv[0][1] * y + inv[0][2] * z + dMx;
-        out[1] = inv[1][0] * x + inv[1][1] * y + inv[1][2] * z + dMy;
-        out[2] = inv[2][0] * x + inv[2][1] * y + inv[2][2] * z + dMz;
+        const invK = persp0 ? Math.max(0.1, fl0 - z) / (scale * fl0) : invScale;
+        const x = (p[0] - w2) * invK;
+        const y = (h2 - p[1]) * invK;
+        out[0] = i00 * x + i01 * y + i02 * z + dMx;
+        out[1] = i10 * x + i11 * y + i12 * z + dMy;
+        out[2] = i20 * x + i21 * y + i22 * z + dMz;
     };
     // ...and the same, landing in the flat store as well as in the scratch.
     const cornersInto = (fi, q) => {
@@ -3979,7 +4022,7 @@ function buildMeshPart(faces, scale, prm, lines, rowsUnused, smOffset) {
     mark('unprojectFrames');
     const pieceFrame = new Map();
     const pieceRails = new Map();
-    for (let fi = 0; fi < faces.length; fi++) {
+    for (let fi = 0; !SM && fi < faces.length; fi++) {
         const f = faces[fi];
         if (f.pieceId === undefined || f.surf !== 0) continue;
         // KEPT FOR THE NORMALS PASS BELOW, which wants the same four corners in
@@ -5407,6 +5450,9 @@ function ribbonHashOf(faces, scale, prm) {
     }
     const VR = currentRot();
     const inv = matT(VR);
+    const i00 = inv[0][0]; const i01 = inv[0][1]; const i02 = inv[0][2];
+    const i10 = inv[1][0]; const i11 = inv[1][1]; const i12 = inv[1][2];
+    const i20 = inv[2][0]; const i21 = inv[2][1]; const i22 = inv[2][2];
     const dMx = currentCapCentre[0] - currentModelCenter[0];
     const dMy = currentCapCentre[1] - currentModelCenter[1];
     const dMz = currentCapCentre[2] - currentModelCenter[2];
@@ -5426,17 +5472,17 @@ function ribbonHashOf(faces, scale, prm) {
         const k0 = scale * pe0;
         const x0 = (p0[0] - w2) / k0;
         const y0 = (h2 - p0[1]) / k0;
-        const m0x = inv[0][0] * x0 + inv[0][1] * y0 + inv[0][2] * z0 + dMx;
-        const m0y = inv[1][0] * x0 + inv[1][1] * y0 + inv[1][2] * z0 + dMy;
-        const m0z = inv[2][0] * x0 + inv[2][1] * y0 + inv[2][2] * z0 + dMz;
+        const m0x = i00 * x0 + i01 * y0 + i02 * z0 + dMx;
+        const m0y = i10 * x0 + i11 * y0 + i12 * z0 + dMy;
+        const m0z = i20 * x0 + i21 * y0 + i22 * z0 + dMz;
 
         const z2 = p2[2];
         const pe2 = persp ? fl / Math.max(0.1, fl - z2) : 1;
         const k2 = scale * pe2;
         const x2 = (p2[0] - w2) / k2;
         const y2 = (h2 - p2[1]) / k2;
-        const m2x = inv[0][0] * x2 + inv[0][1] * y2 + inv[0][2] * z2 + dMx;
-        const m2y = inv[1][0] * x2 + inv[1][1] * y2 + inv[1][2] * z2 + dMy;
+        const m2x = i00 * x2 + i01 * y2 + i02 * z2 + dMx;
+        const m2y = i10 * x2 + i11 * y2 + i12 * z2 + dMy;
 
         h = (Math.imul(h, 31) + ((m0x * 64) | 0)) | 0;
         h = (Math.imul(h, 31) + ((m0y * 64) | 0)) | 0;
@@ -5550,11 +5596,18 @@ function stationMeshOf(prims, trace, rot, centre, rich, liveCentre) {
     const dCy = Ly - Cy;
     const dCz = Lz - Cz;
     const R = rot || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-    const un = (v) => [
-        R[0][0] * v[0] + R[1][0] * v[1] + R[2][0] * v[2],
-        R[0][1] * v[0] + R[1][1] * v[1] + R[2][1] * v[2],
-        R[0][2] * v[0] + R[1][2] * v[1] + R[2][2] * v[2],
-    ];
+    const r00 = R[0][0]; const r10 = R[1][0]; const r20 = R[2][0];
+    const r01 = R[0][1]; const r11 = R[1][1]; const r21 = R[2][1];
+    const r02 = R[0][2]; const r12 = R[1][2]; const r22 = R[2][2];
+    const unTo = (v, out, off) => {
+        const vx = v[0]; const vy = v[1]; const vz = v[2];
+        out[off] = r00 * vx + r10 * vy + r20 * vz;
+        out[off + 1] = r01 * vx + r11 * vy + r21 * vz;
+        out[off + 2] = r02 * vx + r12 * vy + r22 * vz;
+    };
+    const _j0 = [0, 0, 0];
+    const _jk = [0, 0, 0];
+    const _jk1 = [0, 0, 0];
     let lastSegId = -1;
     let segBaseStation = 0;
     let segPieceId = 0;
@@ -5577,42 +5630,38 @@ function stationMeshOf(prims, trace, rot, centre, rich, liveCentre) {
                     pieceRoom(po + 8);
                     const S = scratch.stations;
                     const PP = scratch.pieces;
-                    const mA = un(p.stA.mid);
-                    const uA = un(p.stA.ub);
-                    const wA = un(p.stA.wa);
-                    const tA = un(p.stA.tv);
-                    S[so] = mA[0] + dCx; S[so + 1] = mA[1] + dCy; S[so + 2] = mA[2] + dCz;
-                    S[so + 3] = p.stA.hw;
-                    S[so + 4] = uA[0]; S[so + 5] = uA[1]; S[so + 6] = uA[2];
-                    S[so + 7] = p.stA.ht;
-                    S[so + 8] = wA[0]; S[so + 9] = wA[1]; S[so + 10] = wA[2];
-                    S[so + 11] = 0;
-                    S[so + 12] = tA[0]; S[so + 13] = tA[1]; S[so + 14] = tA[2];
-                    S[so + 15] = 0;
+                    const soA = so;
+                    unTo(p.stA.mid, S, soA);
+                    S[soA] += dCx; S[soA + 1] += dCy; S[soA + 2] += dCz;
+                    S[soA + 3] = p.stA.hw;
+                    unTo(p.stA.ub, S, soA + 4);
+                    S[soA + 7] = p.stA.ht;
+                    unTo(p.stA.wa, S, soA + 8);
+                    S[soA + 11] = 0;
+                    unTo(p.stA.tv, S, soA + 12);
+                    S[soA + 15] = 0;
                     so += 16;
 
-                    const mB = un(p.stB.mid);
-                    const uB = un(p.stB.ub);
-                    const wB = un(p.stB.wa);
-                    const tB = un(p.stB.tv);
-                    S[so] = mB[0] + dCx; S[so + 1] = mB[1] + dCy; S[so + 2] = mB[2] + dCz;
-                    S[so + 3] = p.stB.hw;
-                    S[so + 4] = uB[0]; S[so + 5] = uB[1]; S[so + 6] = uB[2];
-                    S[so + 7] = p.stB.ht;
-                    S[so + 8] = wB[0]; S[so + 9] = wB[1]; S[so + 10] = wB[2];
-                    S[so + 11] = 0;
-                    S[so + 12] = tB[0]; S[so + 13] = tB[1]; S[so + 14] = tB[2];
-                    S[so + 15] = 0;
+                    const soB = so;
+                    unTo(p.stB.mid, S, soB);
+                    S[soB] += dCx; S[soB + 1] += dCy; S[soB + 2] += dCz;
+                    S[soB + 3] = p.stB.hw;
+                    unTo(p.stB.ub, S, soB + 4);
+                    S[soB + 7] = p.stB.ht;
+                    unTo(p.stB.wa, S, soB + 8);
+                    S[soB + 11] = 0;
+                    unTo(p.stB.tv, S, soB + 12);
+                    S[soB + 15] = 0;
                     so += 16;
 
-                    const nmx = (uA[0] + uB[0]) * 0.5;
-                    const nmy = (uA[1] + uB[1]) * 0.5;
-                    const nmz = (uA[2] + uB[2]) * 0.5;
-                    const nl = Math.hypot(nmx, nmy, nmz) || 1;
-                    const wmx = -(wA[0] + wB[0]) * 0.5;
-                    const wmy = -(wA[1] + wB[1]) * 0.5;
-                    const wmz = -(wA[2] + wB[2]) * 0.5;
-                    const wl = Math.hypot(wmx, wmy, wmz) || 1;
+                    const nmx = (S[soA + 4] + S[soB + 4]) * 0.5;
+                    const nmy = (S[soA + 5] + S[soB + 5]) * 0.5;
+                    const nmz = (S[soA + 6] + S[soB + 6]) * 0.5;
+                    const nl = len3(nmx, nmy, nmz) || 1;
+                    const wmx = -(S[soA + 8] + S[soB + 8]) * 0.5;
+                    const wmy = -(S[soA + 9] + S[soB + 9]) * 0.5;
+                    const wmz = -(S[soA + 10] + S[soB + 10]) * 0.5;
+                    const wl = len3(wmx, wmy, wmz) || 1;
                     PP[po] = nmx / nl; PP[po + 1] = nmy / nl; PP[po + 2] = nmz / nl;
                     PP[po + 3] = 0;
                     PP[po + 4] = wmx / wl; PP[po + 5] = wmy / wl; PP[po + 6] = wmz / wl;
@@ -5628,13 +5677,13 @@ function stationMeshOf(prims, trace, rot, centre, rich, liveCentre) {
             }
             if (pass === 1 && p.kind === 'joint' && p.pts && p.pts.length >= 3) {
                 const pts = p.pts;
-                const p0 = un(pts[0]);
-                p0[0] += dCx; p0[1] += dCy; p0[2] += dCz;
+                unTo(pts[0], _j0, 0);
+                _j0[0] += dCx; _j0[1] += dCy; _j0[2] += dCz;
                 for (let k = 1; k + 1 < pts.length; k++) {
-                    const pk = un(pts[k]);
-                    pk[0] += dCx; pk[1] += dCy; pk[2] += dCz;
-                    const pk1 = un(pts[k + 1]);
-                    pk1[0] += dCx; pk1[1] += dCy; pk1[2] += dCz;
+                    unTo(pts[k], _jk, 0);
+                    _jk[0] += dCx; _jk[1] += dCy; _jk[2] += dCz;
+                    unTo(pts[k + 1], _jk1, 0);
+                    _jk1[0] += dCx; _jk1[1] += dCy; _jk1[2] += dCz;
 
                     const jStation = so / 16;
                     const jPiece = po / 8;
@@ -5643,18 +5692,18 @@ function stationMeshOf(prims, trace, rot, centre, rich, liveCentre) {
                     const S = scratch.stations;
                     const PP = scratch.pieces;
 
-                    S[so] = p0[0]; S[so + 1] = p0[1]; S[so + 2] = p0[2]; S[so + 3] = 0;
-                    S[so + 4] = pk[0]; S[so + 5] = pk[1]; S[so + 6] = pk[2]; S[so + 7] = 0;
-                    S[so + 8] = pk1[0]; S[so + 9] = pk1[1]; S[so + 10] = pk1[2]; S[so + 11] = 0;
-                    S[so + 12] = p0[0]; S[so + 13] = p0[1]; S[so + 14] = p0[2]; S[so + 15] = 0;
+                    S[so] = _j0[0]; S[so + 1] = _j0[1]; S[so + 2] = _j0[2]; S[so + 3] = 0;
+                    S[so + 4] = _jk[0]; S[so + 5] = _jk[1]; S[so + 6] = _jk[2]; S[so + 7] = 0;
+                    S[so + 8] = _jk1[0]; S[so + 9] = _jk1[1]; S[so + 10] = _jk1[2]; S[so + 11] = 0;
+                    S[so + 12] = _j0[0]; S[so + 13] = _j0[1]; S[so + 14] = _j0[2]; S[so + 15] = 0;
                     so += 16;
 
-                    const v1x = pk[0] - p0[0]; const v1y = pk[1] - p0[1]; const v1z = pk[2] - p0[2];
-                    const v2x = pk1[0] - p0[0]; const v2y = pk1[1] - p0[1]; const v2z = pk1[2] - p0[2];
+                    const v1x = _jk[0] - _j0[0]; const v1y = _jk[1] - _j0[1]; const v1z = _jk[2] - _j0[2];
+                    const v2x = _jk1[0] - _j0[0]; const v2y = _jk1[1] - _j0[1]; const v2z = _jk1[2] - _j0[2];
                     const nx = v1y * v2z - v1z * v2y;
                     const ny = v1z * v2x - v1x * v2z;
                     const nz = v1x * v2y - v1y * v2x;
-                    const nl = Math.hypot(nx, ny, nz) || 1;
+                    const nl = len3(nx, ny, nz) || 1;
                     PP[po] = nx / nl; PP[po + 1] = ny / nl; PP[po + 2] = nz / nl;
                     PP[po + 3] = 0;
                     PP[po + 4] = 0; PP[po + 5] = 0; PP[po + 6] = 0;
@@ -5697,30 +5746,30 @@ function stationMeshOf(prims, trace, rot, centre, rich, liveCentre) {
         if (!cs || !cs.length) { missing += 1; why.noCentre += 1; continue; }
         const base = so / 16;
         let ok = true;
+        room(so + ns * 16);
+        const S = scratch.stations;
         for (let k = 0; k < ns; k++) {
             const mi = (a0 + k) * 3;
             const ub = p.ub[k]; const wa = p.wa[k]; const tv = p.tv[k];
             const hf = p.half[k];
             const haveMid = ownMid ? !!ownMid[k] : (mi + 2 < cs.length);
             if (!haveMid || !ub || !wa || !tv || !hf) { ok = false; break; }
-            const u = un(ub); const w = un(wa); const t = un(tv);
-            room(so + 16);
-            const S = scratch.stations;
             // The trace is model space with the view centre added back, so
             // subtracting C leaves un(rotated) relative to C. A prim's own
             // midpoints are un(rotated) relative to the live view centre (Lx,Ly,Lz);
             // adding dC = L - C places them into (coords - C) space, exactly
             // agreeing with the backbone stations when L !== C.
             if (ownMid) {
-                const m = un(ownMid[k]);
-                S[so] = m[0] + dCx; S[so + 1] = m[1] + dCy; S[so + 2] = m[2] + dCz;
+                unTo(ownMid[k], S, so);
+                S[so] += dCx; S[so + 1] += dCy; S[so + 2] += dCz;
             } else {
                 S[so] = cs[mi] - Cx; S[so + 1] = cs[mi + 1] - Cy;
                 S[so + 2] = cs[mi + 2] - Cz;
             }
             S[so + 3] = hf[0];
-            S[so + 4] = u[0]; S[so + 5] = u[1]; S[so + 6] = u[2]; S[so + 7] = hf[1];
-            S[so + 8] = w[0]; S[so + 9] = w[1]; S[so + 10] = w[2];
+            unTo(ub, S, so + 4);
+            S[so + 7] = hf[1];
+            unTo(wa, S, so + 8);
             // 🔴 THE CONCAVITY, WHICH IS GEOMETRY AND WAS BEING FROZEN. oK is
             // ub . k - how far the +b face points into the local bend - and its
             // piece mean is what decides whether a Richardson helix face is the
@@ -5728,7 +5777,8 @@ function stationMeshOf(prims, trace, rot, centre, rich, liveCentre) {
             // was the install frame's while every normal beside it was this
             // frame's. Slot 11 was spare.
             S[so + 11] = (p.oK && p.oK[k] !== undefined) ? p.oK[k] : 0;
-            S[so + 12] = t[0]; S[so + 13] = t[1]; S[so + 14] = t[2]; S[so + 15] = 0;
+            unTo(tv, S, so + 12);
+            S[so + 15] = 0;
             so += 16;
         }
         if (!ok) { so = base * 16; missing += 1; why.badStation += 1; continue; }
@@ -6886,6 +6936,11 @@ for (const [sf, off, sgn] of [[4, 12, -1], [5, 12, 1], [7, 4, 1],
  * call a JS function, and that one duplication is the same one every line of
  * that shader already lives with.
  */
+let _stationCornersScratch = new Float32Array(0);
+let _stationCornersCount = 0;
+let _stationCornersMesh = null;
+let _edgeFaceStrandScratch = new Uint8Array(0);
+
 function stickFaceNormalInto(mesh, face, surf, out) {
     const aoff = (surf >= 0 && surf < CORNER_SURFS) ? STICK_AXIS_OFF[surf] : -1;
     if (aoff < 0) return false;
@@ -6894,17 +6949,45 @@ function stickFaceNormalInto(mesh, face, surf, out) {
     const o = mesh.faceStation[face] * 16 + aoff;
     const axx = st[o] * sgn; const axy = st[o + 1] * sgn; const axz = st[o + 2] * sgn;
     let nx = 0; let ny = 0; let nz = 0;
-    for (let i = 0; i < 4; i += 1) {
-        stationCornerInto(mesh, face, i, i === 0 ? STK_A : STK_B);
-        if (i === 0) { STK_C[0] = STK_A[0]; STK_C[1] = STK_A[1]; STK_C[2] = STK_A[2]; continue; }
-        nx += (STK_A[1] - STK_B[1]) * (STK_A[2] + STK_B[2]);
-        ny += (STK_A[2] - STK_B[2]) * (STK_A[0] + STK_B[0]);
-        nz += (STK_A[0] - STK_B[0]) * (STK_A[1] + STK_B[1]);
-        STK_A[0] = STK_B[0]; STK_A[1] = STK_B[1]; STK_A[2] = STK_B[2];
+    if (mesh === _stationCornersMesh && face >= 0 && face < _stationCornersCount) {
+        const cb = face * 12;
+        const c0x = _stationCornersScratch[cb];
+        const c0y = _stationCornersScratch[cb + 1];
+        const c0z = _stationCornersScratch[cb + 2];
+        const c1x = _stationCornersScratch[cb + 3];
+        const c1y = _stationCornersScratch[cb + 4];
+        const c1z = _stationCornersScratch[cb + 5];
+        const c2x = _stationCornersScratch[cb + 6];
+        const c2y = _stationCornersScratch[cb + 7];
+        const c2z = _stationCornersScratch[cb + 8];
+        const c3x = _stationCornersScratch[cb + 9];
+        const c3y = _stationCornersScratch[cb + 10];
+        const c3z = _stationCornersScratch[cb + 11];
+        nx = (c0y - c1y) * (c0z + c1z)
+            + (c1y - c2y) * (c1z + c2z)
+            + (c2y - c3y) * (c2z + c3z)
+            + (c3y - c0y) * (c3z + c0z);
+        ny = (c0z - c1z) * (c0x + c1x)
+            + (c1z - c2z) * (c1x + c2x)
+            + (c2z - c3z) * (c2x + c3x)
+            + (c3z - c0z) * (c3x + c0x);
+        nz = (c0x - c1x) * (c0y + c1y)
+            + (c1x - c2x) * (c1y + c2y)
+            + (c2x - c3x) * (c2y + c3y)
+            + (c3x - c0x) * (c3y + c0y);
+    } else {
+        for (let i = 0; i < 4; i += 1) {
+            stationCornerInto(mesh, face, i, i === 0 ? STK_A : STK_B);
+            if (i === 0) { STK_C[0] = STK_A[0]; STK_C[1] = STK_A[1]; STK_C[2] = STK_A[2]; continue; }
+            nx += (STK_A[1] - STK_B[1]) * (STK_A[2] + STK_B[2]);
+            ny += (STK_A[2] - STK_B[2]) * (STK_A[0] + STK_B[0]);
+            nz += (STK_A[0] - STK_B[0]) * (STK_A[1] + STK_B[1]);
+            STK_A[0] = STK_B[0]; STK_A[1] = STK_B[1]; STK_A[2] = STK_B[2];
+        }
+        nx += (STK_A[1] - STK_C[1]) * (STK_A[2] + STK_C[2]);
+        ny += (STK_A[2] - STK_C[2]) * (STK_A[0] + STK_C[0]);
+        nz += (STK_A[0] - STK_C[0]) * (STK_A[1] + STK_C[1]);
     }
-    nx += (STK_A[1] - STK_C[1]) * (STK_A[2] + STK_C[2]);
-    ny += (STK_A[2] - STK_C[2]) * (STK_A[0] + STK_C[0]);
-    nz += (STK_A[0] - STK_C[0]) * (STK_A[1] + STK_C[1]);
     let nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
     // A DEGENERATE QUAD KEEPS THE AXIS, rather than normalising to NaN - which
     // would make the face's silhouette verdict meaningless at every angle
@@ -7027,27 +7110,42 @@ function refreshEdgesFromStations(mesh) {
     }
     // The four corner curves, as signs on the width and thickness axes, in the
     // order facesOf pushes them: q = [A[k], B[k], B[k+1], A[k+1]].
-    const cornerOf = (face, idx, out) => stationCornerInto(mesh, face, idx, out);
-    // ...and every face's OUTWARD normal, in one pass, before the rows that
-    // read them.
-    //
-    // 🔴 OUTWARD, WHICH IS NOT THE SHADING NORMAL. A broad face's two sides
-    // share one ub and are told apart by the `top` flag - the fill shader does
-    // exactly this, and an edge carries f._outN, which is the same vector. Left
-    // unflipped, half the surface edges hand the silhouette test a normal
-    // pointing into the solid: the rule reproduces every POSITION to 3.7e-06 A
-    // and still draws the wrong outline, which is why the self-check had to
-    // cover the normals too.
     const faceCount = Math.min(residentStations.count,
         mesh.faceSurf.length, mesh.faceStation.length);
     const stationN = residentStations.stationCount || 0;
+    const haveCachedCorners = mesh === _stationCornersMesh && _stationCornersCount >= faceCount;
+    const cornerOf = haveCachedCorners
+        ? (face, idx, out) => {
+            const cb = face * 12 + idx * 3;
+            out[0] = _stationCornersScratch[cb];
+            out[1] = _stationCornersScratch[cb + 1];
+            out[2] = _stationCornersScratch[cb + 2];
+        }
+        : (face, idx, out) => stationCornerInto(mesh, face, idx, out);
     if (!edgeNormals || edgeNormalOk.length < faceCount) {
         edgeNormals = new Float32Array(faceCount * 3);
         edgeNormalOk = new Uint8Array(faceCount);
     }
+    const hasPieces = !!(mesh && mesh.facePiece && mesh.pieces);
+    const facePieceArr = hasPieces ? mesh.facePiece : null;
+    const piecesArr = hasPieces ? mesh.pieces : null;
+    const piecesLen = piecesArr ? piecesArr.length : 0;
+    const facePieceLen = facePieceArr ? facePieceArr.length : 0;
+    let edgeFaceStrand = _edgeFaceStrandScratch;
+    if (edgeFaceStrand.length < faceCount) {
+        edgeFaceStrand = new Uint8Array(faceCount);
+        _edgeFaceStrandScratch = edgeFaceStrand;
+    }
     {
         const srows = residentStations.rows;
         for (let f = 0; f < faceCount; f += 1) {
+            if (f < facePieceLen) {
+                const pid = facePieceArr[f];
+                const at = pid * 8 + 7;
+                edgeFaceStrand[f] = (pid >= 0 && at < piecesLen && (Math.round(piecesArr[at]) & 4) !== 0) ? 1 : 0;
+            } else {
+                edgeFaceStrand[f] = 0;
+            }
             const surf = mesh.faceSurf[f];
             const o = mesh.faceStation[f] * 16;
             const b = f * 3;
@@ -7071,7 +7169,7 @@ function refreshEdgesFromStations(mesh) {
                 const nx = v1y * v2z - v1z * v2y;
                 const ny = v1z * v2x - v1x * v2z;
                 const nz = v1x * v2y - v1y * v2x;
-                const nl = Math.hypot(nx, ny, nz) || 1;
+                const nl = len3(nx, ny, nz) || 1;
                 edgeNormals[b] = nx / nl;
                 edgeNormals[b + 1] = ny / nl;
                 edgeNormals[b + 2] = nz / nl;
@@ -7116,19 +7214,32 @@ function refreshEdgesFromStations(mesh) {
     let alwaysMoved = 0;
     const selfCheck = (typeof window !== 'undefined') && !!window.__edgeSelfCheck;
     for (let r = 0; r < rows; r += 1) {
-        const oa = edSrc[r * ED_SRC];
+        const srcBase = r * ED_SRC;
+        const oa = edSrc[srcBase];
         if (oa < 0) continue;                       // a contact, not a surface edge
-        const ob = edSrc[r * ED_SRC + 1];
-        const fa = edSrc[r * ED_SRC + 2];
-        const fb = edSrc[r * ED_SRC + 3];
-        const nCount = edSrc[r * ED_SRC + 4];
-        const cCosM = edSrc[r * ED_SRC + 5];
-        const byLetter = edSrc[r * ED_SRC + 6] > 0;
+        const ob = edSrc[srcBase + 1];
+        const fa = edSrc[srcBase + 2];
+        const fb = edSrc[srcBase + 3];
+        const nCount = edSrc[srcBase + 4];
+        const cCosM = edSrc[srcBase + 5];
+        const byLetter = edSrc[srcBase + 6] > 0;
         const faceA = (oa / 12) | 0;
         const faceB = (ob / 12) | 0;
         if (faceA >= faceCount || faceB >= faceCount) continue;
-        cornerOf(faceA, ((oa % 12) / 3) | 0, pa);
-        cornerOf(faceB, ((ob % 12) / 3) | 0, pb);
+        let pax, pay, paz, pbx, pby, pbz;
+        if (haveCachedCorners) {
+            pax = _stationCornersScratch[oa];
+            pay = _stationCornersScratch[oa + 1];
+            paz = _stationCornersScratch[oa + 2];
+            pbx = _stationCornersScratch[ob];
+            pby = _stationCornersScratch[ob + 1];
+            pbz = _stationCornersScratch[ob + 2];
+        } else {
+            cornerOf(faceA, ((oa % 12) / 3) | 0, pa);
+            cornerOf(faceB, ((ob % 12) / 3) | 0, pb);
+            pax = pa[0]; pay = pa[1]; paz = pa[2];
+            pbx = pb[0]; pby = pb[1]; pbz = pb[2];
+        }
         const base = r * ED_FLOATS;
         // 🔴 THE SELF-CHECK IS OFF UNLESS ASKED FOR. `worstMoved` is how far
         // this rule moved what the edge pass had written, and it is only
@@ -7139,6 +7250,8 @@ function refreshEdgesFromStations(mesh) {
         // 1TIM, for a number nothing reads unless a probe asks. `window
         // .__edgeSelfCheck = 1` turns it back on.
         if (selfCheck) {
+            pa[0] = pax; pa[1] = pay; pa[2] = paz;
+            pb[0] = pbx; pb[1] = pby; pb[2] = pbz;
             for (let a = 0; a < 3; a += 1) {
                 const d0 = Math.abs(ed[base + a] - pa[a]);
                 const d1 = Math.abs(ed[base + 3 + a] - pb[a]);
@@ -7146,8 +7259,8 @@ function refreshEdgesFromStations(mesh) {
                 if (d1 > worstMoved) worstMoved = d1;
             }
         }
-        ed[base] = pa[0]; ed[base + 1] = pa[1]; ed[base + 2] = pa[2];
-        ed[base + 3] = pb[0]; ed[base + 4] = pb[1]; ed[base + 5] = pb[2];
+        ed[base] = pax; ed[base + 1] = pay; ed[base + 2] = paz;
+        ed[base + 3] = pbx; ed[base + 4] = pby; ed[base + 5] = pbz;
         if (fa >= 0 && fa < faceCount && edgeNormalOk[fa]) {
             const b = fa * 3;
             if (selfCheck) {
@@ -7188,8 +7301,9 @@ function refreshEdgesFromStations(mesh) {
         // be. Which rule applies is therefore a question about the letter, and
         // the letter moves - so it is asked here rather than baked. `cCosM` is
         // the look's plain threshold, or -1 where the plain rule is off.
-        const richNow = edgeRichPreset
-            && ((fa >= 0 && pieceIsStrand(mesh, fa)) || (fb >= 0 && pieceIsStrand(mesh, fb)));
+        const isStrandEdge = (fa >= 0 && fa < faceCount && edgeFaceStrand[fa] !== 0)
+            || (fb >= 0 && fb < faceCount && edgeFaceStrand[fb] !== 0);
+        const richNow = edgeRichPreset && isStrandEdge;
         const cM = richNow ? RICH_CREASE_M : cCosM;
         // 🔴 AND "NO RULE" IS A VERDICT, NOT A REASON TO KEEP THE OLD ONE.
         // This was gated on `cCosM >= 0`, so an edge whose crease rule is off
@@ -7219,10 +7333,8 @@ function refreshEdgesFromStations(mesh) {
         // was OR'd across them at build - a cross edge between a strand's last
         // face and the loop's first belongs to the strand.
         if (byLetter) {
-            const strand = (fa >= 0 && pieceIsStrand(mesh, fa))
-                || (fb >= 0 && pieceIsStrand(mesh, fb));
             const was2 = ed[base + 12];
-            const now2 = strand ? (ed[base + 12] < 0 ? 2 : ed[base + 12]) : -1;
+            const now2 = isStrandEdge ? (ed[base + 12] < 0 ? 2 : ed[base + 12]) : -1;
             if (was2 !== now2) alwaysMoved += 1;
             ed[base + 12] = now2;
             // ...and the one-sided ones are looked at again below, once every
@@ -7572,7 +7684,13 @@ function updateStations(mesh) {
     // its own edges. See refreshEdgesFromStations for what it can and cannot
     // redo.
     refreshEdgesFromStations(mesh);
-    residentStations.stations = new Float32Array(mesh.stations);
+    _stationCornersCount = 0;
+    _stationCornersMesh = null;
+    if (residentStations.stations && residentStations.stations.length === mesh.stations.length) {
+        residentStations.stations.set(mesh.stations);
+    } else {
+        residentStations.stations = new Float32Array(mesh.stations);
+    }
     if (window.__edgeTopology) window.__edgeTopologyResult = edgeTopology(mesh);
     residentStations.stale = false;
     return true;
@@ -7599,22 +7717,39 @@ function stationBoundsInto(mesh, cen, count) {
     {
         const st = mesh.stations;
         let rad = 0;
+        const needCorners = count * 12;
+        if (_stationCornersScratch.length < needCorners) {
+            _stationCornersScratch = new Float32Array(Math.max(needCorners, _stationCornersScratch.length * 2));
+        }
+        const sc = _stationCornersScratch;
+        _stationCornersCount = count;
+        _stationCornersMesh = mesh;
         for (let f = 0; f < count; f += 1) {
             const k = mesh.faceStation[f];
             const surf = mesh.faceSurf[f];
             const o0 = k * 16;
+            const cb = f * 12;
+            const ci = f * 3;
             if (surf === 6) {
-                const c0 = [st[o0], st[o0 + 1], st[o0 + 2]];
-                const c1 = [st[o0 + 4], st[o0 + 5], st[o0 + 6]];
-                const c2 = [st[o0 + 8], st[o0 + 9], st[o0 + 10]];
-                const c3 = [st[o0 + 12], st[o0 + 13], st[o0 + 14]];
-                for (let a = 0; a < 3; a += 1) {
-                    cen[f * 3 + a] = (c0[a] + c1[a] + c2[a] + c3[a]) * 0.25;
-                }
-                for (const c of [c0, c1, c2, c3]) {
-                    const d = c[0] * c[0] + c[1] * c[1] + c[2] * c[2];
-                    if (d > rad) rad = d;
-                }
+                const c0x = st[o0]; const c0y = st[o0 + 1]; const c0z = st[o0 + 2];
+                const c1x = st[o0 + 4]; const c1y = st[o0 + 5]; const c1z = st[o0 + 6];
+                const c2x = st[o0 + 8]; const c2y = st[o0 + 9]; const c2z = st[o0 + 10];
+                const c3x = st[o0 + 12]; const c3y = st[o0 + 13]; const c3z = st[o0 + 14];
+                sc[cb] = c0x; sc[cb + 1] = c0y; sc[cb + 2] = c0z;
+                sc[cb + 3] = c1x; sc[cb + 4] = c1y; sc[cb + 5] = c1z;
+                sc[cb + 6] = c2x; sc[cb + 7] = c2y; sc[cb + 8] = c2z;
+                sc[cb + 9] = c3x; sc[cb + 10] = c3y; sc[cb + 11] = c3z;
+                cen[ci] = (c0x + c1x + c2x + c3x) * 0.25;
+                cen[ci + 1] = (c0y + c1y + c2y + c3y) * 0.25;
+                cen[ci + 2] = (c0z + c1z + c2z + c3z) * 0.25;
+                const d0 = c0x * c0x + c0y * c0y + c0z * c0z;
+                const d1 = c1x * c1x + c1y * c1y + c1z * c1z;
+                const d2 = c2x * c2x + c2y * c2y + c2z * c2z;
+                const d3 = c3x * c3x + c3y * c3y + c3z * c3z;
+                if (d0 > rad) rad = d0;
+                if (d1 > rad) rad = d1;
+                if (d2 > rad) rad = d2;
+                if (d3 > rad) rad = d3;
                 continue;
             }
             const cap = surf === 4 || surf === 5;
@@ -7638,21 +7773,66 @@ function stationBoundsInto(mesh, cen, count) {
             // scale. Worth 0.06% of the pixels with outlines on.
             const hwA = st[o0 + 3]; const htA = st[o0 + 7];
             const hwB = st[o1 + 3]; const htB = st[o1 + 7];
-            const c0 = [0, 0, 0]; const c1 = [0, 0, 0];
-            const c2 = [0, 0, 0]; const c3 = [0, 0, 0];
-            for (let a = 0; a < 3; a += 1) {
-                const mA = st[o0 + a]; const uA = st[o0 + 4 + a]; const wA = st[o0 + 8 + a];
-                const mB = st[o1 + a]; const uB = st[o1 + 4 + a]; const wB = st[o1 + 8 + a];
-                c0[a] = mA + wA * hwA * sA0 + uA * htA * sA1;
-                c1[a] = mA + wA * hwA * sB0 + uA * htA * sB1;
-                c2[a] = mB + wB * hwB * sB0 + uB * htB * sB1;
-                c3[a] = mB + wB * hwB * sA0 + uB * htB * sA1;
-                cen[f * 3 + a] = (c0[a] + c1[a] + c2[a] + c3[a]) * 0.25;
+            const hwAsA0 = hwA * sA0; const htAsA1 = htA * sA1;
+            const hwAsB0 = hwA * sB0; const htAsB1 = htA * sB1;
+            const hwBsB0 = hwB * sB0; const htBsB1 = htB * sB1;
+            const hwBsA0 = hwB * sA0; const htBsA1 = htB * sA1;
+
+            const mAx = st[o0]; const uAx = st[o0 + 4]; const wAx = st[o0 + 8];
+            const mBx = st[o1]; const uBx = st[o1 + 4]; const wBx = st[o1 + 8];
+            const c0x = mAx + wAx * hwAsA0 + uAx * htAsA1;
+            const c1x = mAx + wAx * hwAsB0 + uAx * htAsB1;
+            const c2x = mBx + wBx * hwBsB0 + uBx * htBsB1;
+            const c3x = mBx + wBx * hwBsA0 + uBx * htBsA1;
+
+            const mAy = st[o0 + 1]; const uAy = st[o0 + 5]; const wAy = st[o0 + 9];
+            const mBy = st[o1 + 1]; const uBy = st[o1 + 5]; const wBy = st[o1 + 9];
+            const c0y = mAy + wAy * hwAsA0 + uAy * htAsA1;
+            const c1y = mAy + wAy * hwAsB0 + uAy * htAsB1;
+            const c2y = mBy + wBy * hwBsB0 + uBy * htBsB1;
+            const c3y = mBy + wBy * hwBsA0 + uBy * htBsA1;
+
+            const mAz = st[o0 + 2]; const uAz = st[o0 + 6]; const wAz = st[o0 + 10];
+            const mBz = st[o1 + 2]; const uBz = st[o1 + 6]; const wBz = st[o1 + 10];
+            const c0z = mAz + wAz * hwAsA0 + uAz * htAsA1;
+            const c1z = mAz + wAz * hwAsB0 + uAz * htAsB1;
+            const c2z = mBz + wBz * hwBsB0 + uBz * htBsB1;
+            const c3z = mBz + wBz * hwBsA0 + uBz * htBsA1;
+
+            sc[cb] = c0x; sc[cb + 1] = c0y; sc[cb + 2] = c0z;
+            if (cap) {
+                const pmx = mAx + wAx * hwA - uAx * htA;
+                const pmy = mAy + wAy * hwA - uAy * htA;
+                const pmz = mAz + wAz * hwA - uAz * htA;
+                const mpx = mAx - wAx * hwA + uAx * htA;
+                const mpy = mAy - wAy * hwA + uAy * htA;
+                const mpz = mAz - wAz * hwA + uAz * htA;
+                if (surf === 4) {
+                    sc[cb + 3] = pmx; sc[cb + 4] = pmy; sc[cb + 5] = pmz;
+                    sc[cb + 9] = mpx; sc[cb + 10] = mpy; sc[cb + 11] = mpz;
+                } else {
+                    sc[cb + 3] = mpx; sc[cb + 4] = mpy; sc[cb + 5] = mpz;
+                    sc[cb + 9] = pmx; sc[cb + 10] = pmy; sc[cb + 11] = pmz;
+                }
+                sc[cb + 6] = c1x; sc[cb + 7] = c1y; sc[cb + 8] = c1z;
+            } else {
+                sc[cb + 3] = c1x; sc[cb + 4] = c1y; sc[cb + 5] = c1z;
+                sc[cb + 6] = c2x; sc[cb + 7] = c2y; sc[cb + 8] = c2z;
+                sc[cb + 9] = c3x; sc[cb + 10] = c3y; sc[cb + 11] = c3z;
             }
-            for (const c of [c0, c1, c2, c3]) {
-                const d = c[0] * c[0] + c[1] * c[1] + c[2] * c[2];
-                if (d > rad) rad = d;
-            }
+
+            cen[ci] = (c0x + c1x + c2x + c3x) * 0.25;
+            cen[ci + 1] = (c0y + c1y + c2y + c3y) * 0.25;
+            cen[ci + 2] = (c0z + c1z + c2z + c3z) * 0.25;
+
+            const d0 = c0x * c0x + c0y * c0y + c0z * c0z;
+            const d1 = c1x * c1x + c1y * c1y + c1z * c1z;
+            const d2 = c2x * c2x + c2y * c2y + c2z * c2z;
+            const d3 = c3x * c3x + c3y * c3y + c3z * c3z;
+            if (d0 > rad) rad = d0;
+            if (d1 > rad) rad = d1;
+            if (d2 > rad) rad = d2;
+            if (d3 > rad) rad = d3;
         }
         return Math.sqrt(rad);
     }
