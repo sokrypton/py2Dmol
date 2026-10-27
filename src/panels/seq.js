@@ -152,6 +152,54 @@ function endPreviewOnRenderer() {
     if (wasShowing) renderer.render('selection preview end');
 }
 
+// ============================================================================
+// A RESIDUE WHOSE LETTER CHANGED FLASHES.
+//
+// A designed sequence changes frame by frame - a hunt's cycles, a trajectory
+// of mutations - and the strip used to swap the letters in silence, so the
+// one thing worth seeing (which residues moved) had to be found by reading
+// two rows against each other. Every build remembers each residue's letter by
+// object, chain and number; the next build's differences light up and fade
+// over FLASH_MS. Keyed on the residue and not the position index, because an
+// index is the renderer's and shifts when anything before it does.
+//
+// The first build after clear() remembers and flashes nothing: clear() means
+// the structure under the strip is a different one, and every letter of a new
+// structure is not a change.
+// ============================================================================
+const FLASH_MS = 1500;
+let lastLetters = null;              // residue key -> letter, as last built
+const flashStarted = new Map();      // residue key -> performance.now() at the change
+const residueKey = (rd) => rd.object + '\u0000' + rd.chain + '\u0000' + rd.resSeq;
+
+function noteLetterChanges(allResidueData) {
+    const now = performance.now();
+    const letters = new Map();
+    for (const rd of allResidueData) {
+        if (!(rd.positionIndex >= 0) || rd.isLigandToken) continue;
+        const key = residueKey(rd);
+        letters.set(key, rd.letter);
+        if (lastLetters !== null && lastLetters.has(key) && lastLetters.get(key) !== rd.letter) {
+            flashStarted.set(key, now);
+        }
+    }
+    lastLetters = letters;
+}
+
+/** How lit a residue still is, 1 at the change down to 0; 0 for one that never changed. */
+function flashLevel(rd, now) {
+    const at = flashStarted.get(residueKey(rd));
+    if (at === undefined) return 0;
+    return Math.max(0, 1 - (now - at) / FLASH_MS);
+}
+
+function drawFlash(ctx, letter, x, y, width, height, level) {
+    ctx.fillStyle = `rgba(255, 196, 0, ${0.9 * level})`;
+    ctx.fillRect(x, y, width, height);
+    ctx.fillStyle = '#000000';
+    ctx.fillText(letter, x + width / 2, y + height / 2);
+}
+
 // Schedule render using requestAnimationFrame to throttle
 function scheduleRender() {
     if (renderScheduled) return;
@@ -738,6 +786,9 @@ function renderSequenceCanvas() {
         const hasGetAtomColor = renderer?.getAtomColor;
         // Cache effective color mode to avoid redundant lookups in the loop
         const effectiveColorMode = renderer?._getEffectiveColorMode?.() || 'auto';
+        const flashNow = performance.now();
+        // expired ones go here, not when drawn: a cell scrolled out of view is never drawn
+        for (const [key, at] of flashStarted) if (flashNow - at >= FLASH_MS) flashStarted.delete(key);
 
         for (let ri = visFrom; ri < RP.length; ri++) {
             const pos = RP[ri];
@@ -815,8 +866,14 @@ function renderSequenceCanvas() {
                     isSelected,
                     dimFactor
                 );
+                const level = flashStarted.size ? flashLevel(residueData, flashNow) : 0;
+                if (level > 0) {
+                    drawFlash(ctx, residueData.letter, pos.x, yOffset, pos.width, pos.height, level);
+                }
             }
         }
+        // ...and while anything is still lit, the next frame of the fade
+        if (flashStarted.size) scheduleRender();
 
         // STYLE TARGET OUTLINE. Drawn as a box around each contiguous run
         // rather than per residue, so a targeted stretch reads as one
@@ -2271,6 +2328,7 @@ function buildSequenceViewInner() {
         layout,
         mode: sequenceViewMode
     };
+    noteLetterChanges(allResidueData);
 
     // Setup canvas event handlers
     setupCanvasSequenceEvents();
@@ -3062,6 +3120,8 @@ window.SEQ = {
     // Clear state
     clear: function () {
         sequenceCanvasData = null;
+        lastLetters = null;
+        flashStarted.clear();
         lastSequenceFrameIndex = -1;
         lastSequenceUpdateHash = null;
         // 🔴 ...AND EVERY SET OF POSITION INDICES THIS MODULE IS HOLDING.

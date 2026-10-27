@@ -257,6 +257,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `station_unpinned.py` | gpu | A TRAJECTORY TAKES THE STATION PATH WITHOUT BEING ASKED, AND DRAWS THE SAME. |
 | `stick_topology.py` | gpu | WHAT IS DRAWN IS THE GRAPH'S TO DECIDE, SO A TRAJECTORY STEPS WITHOUT A |
 | `strip_host.py` | ui | THE SEQUENCE STRIP'S BUTTONS WORK ON A HOST'S PAGE, NOT ONLY ON THE WEBSITE. |
+| `strip_flash.py` | ui | A RESIDUE WHOSE LETTER CHANGED FLASHES ON THE SEQUENCE STRIP. |
 | `style_per_object.py` | ui | The style belongs to the object, and its settings belong to the style. |
 | `test_absolute_focus.py` | tool | ABSOLUTE FOCUS TEST: Compares renders before entering focus mode directly against |
 | `topology_survey.py` | gpu | WHICH CONTROLS ACTUALLY CHANGE THE MESH'S TOPOLOGY, and which only move it. |
