@@ -467,9 +467,14 @@ function installFullscreen(containerElement, host) {
     btn.className = 'py2dmol-fs-btn';
     btn.title = 'Full screen (Esc to leave)';
     btn.setAttribute('aria-label', 'Full screen');
-    // A glyph, not an icon font: index.html loads Font Awesome and the notebook
-    // does not, and a button whose label is an empty <i> is an invisible button.
-    btn.textContent = '\u26F6';
+    // AN INLINE SVG, NOT AN ICON FONT AND NOT A GLYPH. index.html loads Font
+    // Awesome and the notebook does not, and a button whose label is an empty
+    // <i> is an invisible button. The glyph that replaced it (U+26F6) is in too
+    // few system fonts: on a Linux box with the usual ones it drew as an empty
+    // box, a button that says nothing. Four corner brackets need no font.
+    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"'
+        + ' stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">'
+        + '<path d="M1 5V1h4M9 1h4v4M13 9v4H9M5 13H1V9"/></svg>';
     // ...on the SLOT'S BODY when there is one, not on the canvas box: full
     // screen is for whatever is in the box, and a structure moved to another
     // slot or parked took the only way in with it.

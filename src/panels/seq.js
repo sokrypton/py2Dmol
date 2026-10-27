@@ -1353,6 +1353,83 @@ function showEmptyStrip(sequenceViewEl) {
     setStripEnabled(false);
 }
 
+// ============================================================================
+// 🔴 THE STRIP'S OWN BUTTONS ARE WIRED HERE, NOT BY THE APP.
+//
+// Select all, Unselect and Invert sit in the strip's header (#selectAllResidues,
+// #clearAllResidues, #invertSelection) and this file enables and disables them,
+// but their listeners were in src/app/main.js's initializeApp - so a host that
+// mounts the strip itself (the markup beside its own viewer, the renderer
+// through setCallbacks) got three buttons that greyed and un-greyed correctly
+// and did nothing when pressed, and had to write the same three handlers out
+// again. They act on the renderer `getRenderer` names, through the selection
+// setters, so a host's viewer and the website's are the same case.
+//
+// Wired once per element (a build is frequent and a second listener is a second
+// selection change), at the first build - the earliest moment a renderer can
+// exist - and on load for a page whose buttons are there before any structure.
+// ============================================================================
+function wireStripTools() {
+    if (typeof document === 'undefined') return;
+    const wire = (id, act) => {
+        const el = document.getElementById(id);
+        if (!el || el.dataset.seqWired) return;
+        el.dataset.seqWired = '1';
+        el.addEventListener('click', (e) => {
+            e.preventDefault();
+            const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
+            if (!renderer || !renderer.coords) return;
+            act(renderer);
+            if (window.SEQ?.updateColors) window.SEQ.updateColors();
+        });
+    };
+    // Select all / Unselect act on the SELECTION, not on visibility. Visibility
+    // is still reachable - Select all then Show - but it is not a separate pair
+    // of controls, which kept implying that selecting and showing were the same
+    // act. THROUGH THE SETTER: it stores and dispatches, and being the one
+    // funnel is what lets Focus hang off a selection however it was made.
+    wire('selectAllResidues', (renderer) => {
+        const all = new Set();
+        for (let i = 0; i < renderer.coords.length; i++) all.add(i);
+        renderer.setResidueSelection(all);
+        renderer.render('select all');
+    });
+    wire('clearAllResidues', (renderer) => {
+        renderer.clearResidueSelection();
+        renderer.render('unselect');
+    });
+    // INVERT: everything that is not selected now - over what is on screen, not
+    // over every position the object holds. A residue the clip has cut away or
+    // a chain that is hidden is not something the viewer is offering, and
+    // sweeping it into the selection by pressing a button is how a selection
+    // comes to contain things nobody can see. With nothing selected this is
+    // Select all, which is the sensible reading of "invert nothing".
+    wire('invertSelection', (renderer) => {
+        const cur = renderer.residueSelection;
+        const visible = renderer.visiblePositions;
+        const next = new Set();
+        for (let i = 0; i < renderer.coords.length; i++) {
+            if (cur && cur.has(i)) continue;
+            if (visible && !visible.has(i)) continue;
+            if (renderer._pickable && !renderer._pickable(i)) continue;
+            next.add(i);
+        }
+        renderer.setResidueSelection(next);
+        renderer.render('invert selection');
+    });
+    // ...and the header row that holds them, hidden by the stylesheet until a
+    // shell shows it. Shown here because the buttons are this panel's now.
+    const actions = document.querySelector('#sequence-viewer-container .sequence-actions');
+    if (actions && document.getElementById('sequenceView')) actions.style.display = 'flex';
+}
+if (typeof document !== 'undefined') {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', wireStripTools, { once: true });
+    } else {
+        wireStripTools();
+    }
+}
+
 /** The strip's own controls, dead while there is nothing to act on. */
 function setStripEnabled(on) {
     const box = document.getElementById('sequence-viewer-container');
@@ -1515,6 +1592,7 @@ function buildSequenceViewInner() {
     }
     const sequenceViewEl = document.getElementById('sequenceView');
     if (!sequenceViewEl) return;
+    wireStripTools();
 
     // 🔴 NOTHING IS THROWN AWAY UNTIL THE STRIP IS KNOWN TO HAVE CHANGED.
     // These four lines used to run HERE, above the "is this the same strip?"

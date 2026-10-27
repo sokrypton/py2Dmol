@@ -653,8 +653,6 @@ function setupEventListeners() {
 
     // Attach sequence controls
     const sequenceView = document.getElementById('sequenceView');
-    const selectAllBtn = document.getElementById('selectAllResidues'); // Button ID kept for compatibility, but shows "Show all"
-    const clearAllBtn = document.getElementById('clearAllResidues'); // Button ID kept for compatibility, but shows "Hide all"
     const sequenceActions = document.querySelector('.sequence-actions');
 
     // Sequence panel is always visible now
@@ -773,57 +771,9 @@ function setupEventListeners() {
 
 
 
-    // Select all / Unselect act on the SELECTION, not on visibility. Visibility
-    // is still reachable - Select all then Show - but it is no longer a
-    // separate pair of controls, which kept implying that selecting and showing
-    // were the same act.
-    const setWholeSelection = (all) => {
-        const renderer = viewerApi?.renderer;
-        if (!renderer || !renderer.coords) return;
-        // THROUGH THE SETTER - see the note in panels/seq.js. It stores and
-        // dispatches exactly as these lines did, and being the one funnel is
-        // what lets Focus hang off a selection however it was made.
-        if (all) {
-            const s = new Set();
-            for (let i = 0; i < renderer.coords.length; i++) s.add(i);
-            renderer.setResidueSelection(s);
-        } else {
-            renderer.clearResidueSelection();
-        }
-        if (window.SEQ?.updateColors) window.SEQ.updateColors();
-        renderer.render(all ? 'select all' : 'unselect');
-    };
-    if (selectAllBtn) selectAllBtn.addEventListener('click', (e) => { e.preventDefault(); setWholeSelection(true); });
-    if (clearAllBtn) clearAllBtn.addEventListener('click', (e) => { e.preventDefault(); setWholeSelection(false); });
-
-    // INVERT: everything that is not selected now.
-    //
-    // Over what is on screen, not over every position the object holds - a
-    // residue the clip has cut away or a chain that is hidden is not something
-    // the viewer is offering, and sweeping it into the selection by pressing a
-    // button is how a selection comes to contain things nobody can see. With
-    // nothing selected this is Select all, which is the sensible reading of
-    // "invert nothing".
-    const invertBtn = document.getElementById('invertSelection');
-    if (invertBtn) {
-        invertBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            const renderer = viewerApi?.renderer;
-            if (!renderer || !renderer.coords) return;
-            const cur = renderer.residueSelection;
-            const visible = renderer.visiblePositions;
-            const next = new Set();
-            for (let i = 0; i < renderer.coords.length; i++) {
-                if (cur && cur.has(i)) continue;
-                if (visible && !visible.has(i)) continue;
-                if (renderer._pickable && !renderer._pickable(i)) continue;
-                next.add(i);
-            }
-            renderer.setResidueSelection(next);
-            if (window.SEQ?.updateColors) window.SEQ.updateColors();
-            renderer.render('invert selection');
-        });
-    }
+    // Select all / Unselect / Invert are wired by panels/seq.js now - they are
+    // the strip's buttons, and a host that mounts the strip without this app
+    // needs them to work too. See wireStripTools there.
 
     // Update copy selection button state when selection changes
     // Copy's enabled state is handled with the rest of the selection tools
