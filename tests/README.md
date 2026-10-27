@@ -224,6 +224,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `sheet_bench.py` | tool | Fit the peptide table the cartoon rebuilds backbones with, and score the frames. |
 | `sheet_merge.py` | gpu | A GAP IN A SHEET CLOSING MUST NOT LEAVE A LINE ACROSS IT. |
 | `short_peptide.js` | node | A PEPTIDE TOO SHORT TO HAVE A SHAPE IS DRAWN AS WHAT IT IS: A LIGAND. |
+| `chain_order.js` | node | A FILE'S CHAINS ARE DRAWN IN THE FILE'S ORDER. |
 | `sidechain_chain.js` | node | Side chains, end to end through the WEB APP's own chain: |
 | `sidechain_toggle.py` | ui | Side chains survive the eyes: toggling one object must not strip another's. |
 | `slots.py` | ui | N slots, every view, and nothing paid twice. |

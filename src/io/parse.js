@@ -744,6 +744,24 @@ const STANDARD_NUCLEIC_ACIDS = new Set([
 // The index is cached on the array itself. Both callers build the list, sort
 // it and then only read it, so it cannot go stale underneath us; the length
 // check catches the case where someone starts.
+// ====================================================================
+// RESIDUES GROUPED BY CHAIN, THE CHAINS IN THE ORDER THE FILE GIVES THEM
+//
+// 🔴 THIS LIST IS THE FRAME'S POSITION ORDER, NOT ONLY A NEIGHBOUR LIST. It
+// used to sort chains by `localeCompare`, for the neighbour checks - and the
+// loop that builds the frame walks the same array, so a file written B then A
+// was drawn A then B. A page that counts positions in its own file's order and
+// colours by them then lands on the wrong chain. The neighbour checks need
+// nothing from the order (residuesByChainSeq looks neighbours up by chain and
+// number), so the chains keep the file's order: each at its first appearance.
+// Within a chain residues stay sorted by number, as they always were.
+function inFileChainOrder(residues) {
+    const first = new Map();
+    residues.forEach((r, at) => { if (!first.has(r.chain)) first.set(r.chain, at); });
+    return residues.sort((a, b) => a.chain !== b.chain
+        ? first.get(a.chain) - first.get(b.chain) : a.resSeq - b.resSeq);
+}
+
 function residuesByChainSeq(allResidues) {
     const cached = allResidues.__neighborIndex;
     if (cached && cached.n === allResidues.length) return cached.map;
@@ -1587,13 +1605,7 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
     // Convert residueMap to array for connectivity checks
     const allResidues = Array.from(residueMap.values());
 
-    // Sort residues by chain and resSeq for proper neighbor checking
-    allResidues.sort((a, b) => {
-        if (a.chain !== b.chain) {
-            return a.chain.localeCompare(b.chain);
-        }
-        return a.resSeq - b.resSeq;
-    });
+    inFileChainOrder(allResidues);
 
     yield 0.4;
     // One DNA/RNA answer per chain - see resolveChainNucleicTypes.
