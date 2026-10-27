@@ -50,6 +50,21 @@ SimpleCanvas2SVG.prototype.createLinearGradient = function (x0, y0, x1, y1) {
     return new SVGLinearGradient(x0, y0, x1, y1);
 };
 
+/**
+ * A GROUP DRAWN AT ONE OPACITY, as a whole - SVG's `<g opacity>`, which
+ * composites its contents once rather than fading each shape. That is what a
+ * faded selection needs (core/mol.js's _renderGhosted draws a whole second
+ * frame inside one), because shapes faded one by one show every overlap
+ * between them. Not the canvas's own beginLayer, which is a different
+ * signature on a context this is not.
+ */
+SimpleCanvas2SVG.prototype.beginGroup = function (alpha) {
+    this.operations.push({ type: 'group', alpha: Number(alpha) });
+};
+SimpleCanvas2SVG.prototype.endGroup = function () {
+    this.operations.push({ type: 'groupEnd' });
+};
+
 // Path operations
 SimpleCanvas2SVG.prototype.beginPath = function () {
     this.currentPath = [];
@@ -240,6 +255,10 @@ SimpleCanvas2SVG.prototype.getSerializedSvg = function () {
         const op = this.operations[i];
         if (op.type === 'comment') {
             body += '  <!-- ' + op.text + ' -->\n';
+        } else if (op.type === 'group') {
+            body += '  <g opacity="' + Math.max(0, Math.min(1, op.alpha)).toFixed(3) + '">\n';
+        } else if (op.type === 'groupEnd') {
+            body += '  </g>\n';
         } else if (op.type === 'rect') {
             body += '  <rect x="' + op.x + '" y="' + op.y + '" width="' + op.width
                 + '" height="' + op.height + '" fill="'

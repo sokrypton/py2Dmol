@@ -15,7 +15,10 @@ to hold, on such a page with the full bundle:
     none is everything, and Unselect clears - through the renderer's setters,
     so `residueSelection` is what changes;
   * the header row that holds them is shown, and each button is wired once,
-    however many times the strip is built.
+    however many times the strip is built;
+  * a chain the host's `listsChain` leaves out is not in the strip, and Select
+    all and Invert do not reach it - and setting the callback back to null puts
+    it back.
 """
 import json, os, sys, shutil, http.server, socketserver, threading
 
@@ -68,6 +71,23 @@ window.addEventListener('load', () => {
       out.invertNone = await press('invertSelection');
       v.setResidueSelection(new Set([0, 1, 2]));
       out.cleared = await press('clearAllResidues');
+      // ...AND A CHAIN THE HOST LEAVES OUT: gone from the strip, and from what
+      // its buttons select, which act on what the strip lists
+      const cells = () => (window.SEQ.layout()?.residuePositions || []).length;
+      out.cellsAll = cells();
+      window.SEQ.setCallbacks({ listsChain: (name, chain) => chain !== 'B' });
+      window.SEQ.buildView();
+      await settle(2);
+      out.cellsListed = cells();
+      out.allListed = await press('selectAllResidues');
+      out.allListedChains = [...new Set([...v.residueSelection].map((i) => v.chains[i]))];
+      await press('clearAllResidues');
+      out.invertListed = await press('invertSelection');
+      await press('clearAllResidues');
+      window.SEQ.setCallbacks({ listsChain: null });
+      window.SEQ.buildView();
+      await settle(2);
+      out.cellsBack = cells();
       out.errors = window.__errors;
       return out;
     } catch (e) { return { error: String((e && e.stack) || e) }; }
@@ -76,7 +96,7 @@ window.addEventListener('load', () => {
 });
 </script></body></html>"""
 open(PROBE, "w").write(PAGE.replace("//HELPERS", HELPERS))
-def helix(n=24):
+def helix(n=24, chain="A", shift=0.0, first=1):
     """An ideal alpha-helix backbone of n alanines, written here so the probe needs no fixture."""
     import math
     lines = []
@@ -84,13 +104,15 @@ def helix(n=24):
         for k, (name, r, dz, dphi) in enumerate([("N", 1.55, -0.85, -28), ("CA", 2.3, 0.0, 0),
                                                   ("C", 1.65, 0.85, 28), ("O", 1.9, 1.95, 30)]):
             a = math.radians(100 * i + dphi)
-            x, y, z = r * math.cos(a), r * math.sin(a), 1.5 * i + dz
-            lines.append(f"ATOM  {4 * i + k + 1:5d}  {name:<3s} ALA A{i + 1:4d}    "
+            x, y, z = r * math.cos(a) + shift, r * math.sin(a), 1.5 * i + dz
+            lines.append(f"ATOM  {first + 4 * i + k:5d}  {name:<3s} ALA {chain}{i + 1:4d}    "
                          f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           {name[0]}")
-    return "\n".join(lines + ["END"]) + "\n"
+    return lines
 
 
-TEXT = helix()
+# two chains, so one can be left out of the strip and the other kept
+TEXT = "\n".join(helix() + ["TER"] + helix(12, "B", 12.0, 97) + ["END"]) + "\n"
+LISTED = 24
 
 
 class H(http.server.SimpleHTTPRequestHandler):
@@ -136,6 +158,16 @@ if res["cleared"] != 0:
 if res["changesForOnePress"] != 1:
     bad.append(f"one press of Select all changed the selection {res['changesForOnePress']} times,"
                " not once - unwired at 0, wired twice at 2")
+print(f"  chain B left out: strip {res['cellsAll']} -> {res['cellsListed']} cells (back to"
+      f" {res['cellsBack']}); select all {res['allListed']} of chains {res['allListedChains']},"
+      f" invert of none {res['invertListed']}")
+if res["cellsListed"] != LISTED or res["cellsAll"] != n or res["cellsBack"] != n:
+    bad.append(f"leaving chain B out showed {res['cellsListed']} of {LISTED} cells"
+               f" ({res['cellsAll']} before, {res['cellsBack']} after)")
+if res["allListed"] != LISTED or res["allListedChains"] != ["A"] or res["invertListed"] != LISTED:
+    bad.append(f"with chain B left out, Select all took {res['allListed']} of chains"
+               f" {res['allListedChains']} and Invert {res['invertListed']} - the buttons"
+               " act beyond what the strip lists")
 if res["errors"]:
     bad.append("page errors: " + "; ".join(res["errors"])[:300])
 print()
