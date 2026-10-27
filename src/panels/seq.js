@@ -51,8 +51,33 @@ let callbacks = {
     getObjectSelect: null,        // () => objectSelect element
     // no highlight callbacks: hover goes straight to renderer.setHover,
     // which paints it with the frame
-    applyResidueSelection: null          // (previewPositions) => void
+    applyResidueSelection: null,         // (previewPositions) => void
+    // (objectName, chain) => boolean. False leaves that chain out of the strip
+    // - and out of its Select all and Invert, which act on what the strip
+    // lists. For a host that draws something that is not a sequence: a
+    // placeholder trace standing in for residues not designed yet would
+    // otherwise show as a row of whatever residue name it was built from.
+    // Asked at each build; a host whose answers change calls setCallbacks
+    // again (or SEQ.clear()), which is what makes the next build ask again.
+    listsChain: null
 };
+// Bumped whenever listsChain is set, so the strip's key - which is
+// otherwise a function of the frame arrays alone - sees a new filter.
+let listsChainGen = 0;
+
+/** Does the strip list this chain of this object? */
+function stripLists(name, chain) {
+    return !callbacks.listsChain || callbacks.listsChain(name, chain) !== false;
+}
+
+/** ...and this renderer position, which is what the strip's buttons act on. */
+function stripListsPosition(renderer, i) {
+    if (!callbacks.listsChain) return true;
+    const owner = renderer.ownerOf ? renderer.ownerOf(i) : null;
+    const name = owner ? owner.name : renderer.currentObjectName;
+    const chain = (renderer.chains && renderer.chains[i]) || 'A';
+    return stripLists(name, chain);
+}
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -1182,6 +1207,7 @@ function sectionKeyOf(renderer, name) {
     mix(idOf(src.positionNames)); mix(idOf(src.residueNumbers));
     mix(idOf(src.chains)); mix(idOf(src.positionTypes));
     mix(src.seqOffset | 0);
+    mix(listsChainGen);
     mix(ownGroups.size || 0);
     if (ownGroups.forEach) {
         ownGroups.forEach((v, k) => {
@@ -1211,16 +1237,23 @@ function buildObjectSection(renderer, name) {
         positionTypes, n, seqOffset } = src;
 
     const entries = [];
+    const listed = new Map();
     for (let i = 0; i < n; i++) {
+        const chain = (chains && chains.length > i && chains[i]) ? chains[i] : 'A';
+        if (!listed.has(chain)) listed.set(chain, stripLists(name, chain));
+        if (!listed.get(chain)) continue;
         entries.push({
             object: name,
-            chain: (chains && chains.length > i && chains[i]) ? chains[i] : 'A',
+            chain,
             resName: (positionNames && positionNames.length > i && positionNames[i]) ? positionNames[i] : 'UNK',
             resSeq: (residueNumbers && residueNumbers.length > i && residueNumbers[i] != null) ? residueNumbers[i] : (i + 1),
             positionIndex: i + seqOffset, // renderer index, not the object's own
             positionType: (positionTypes && positionTypes.length > i && positionTypes[i]) ? positionTypes[i] : 'P'
         });
     }
+
+    // every chain left out: there is nothing of this object to show
+    if (!entries.length) return null;
 
     // HOW MANY ENTRIES THE PANEL HAS MATERIALISED, which is one object per
     // position per build - the number that made the double build visible.
@@ -1390,7 +1423,9 @@ function wireStripTools() {
     // funnel is what lets Focus hang off a selection however it was made.
     wire('selectAllResidues', (renderer) => {
         const all = new Set();
-        for (let i = 0; i < renderer.coords.length; i++) all.add(i);
+        for (let i = 0; i < renderer.coords.length; i++) {
+            if (stripListsPosition(renderer, i)) all.add(i);
+        }
         renderer.setResidueSelection(all);
         renderer.render('select all');
     });
@@ -1412,6 +1447,7 @@ function wireStripTools() {
             if (cur && cur.has(i)) continue;
             if (visible && !visible.has(i)) continue;
             if (renderer._pickable && !renderer._pickable(i)) continue;
+            if (!stripListsPosition(renderer, i)) continue;
             next.add(i);
         }
         renderer.setResidueSelection(next);
@@ -2982,6 +3018,7 @@ window.SEQ = {
     // Initialize callbacks
     setCallbacks: function (cb) {
         callbacks = Object.assign({}, callbacks, cb);
+        if (cb && 'listsChain' in cb) listsChainGen += 1;
     },
 
     // WHAT THE STRIP LAID OUT, for tests: the sections, the chain rows and

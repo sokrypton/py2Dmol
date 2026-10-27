@@ -75,6 +75,23 @@ class WS:
                 return m.get("result", {})
 
 
+def chrome_binary():
+    """The Chrome this machine has: the macOS app, else one on PATH.
+
+    The path used to be the macOS app's, written into launch(), so every probe
+    died on Linux with FileNotFoundError before it opened a page.
+    """
+    mac = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    if os.path.exists(mac):
+        return mac
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+        found = shutil.which(name)
+        if found:
+            return found
+    raise RuntimeError("no Chrome found: not the macOS app, and none of"
+                       " google-chrome, chromium on PATH")
+
+
 def launch(port, profile):
     # 🔴 AN ORPHAN CHROME FROM A CRASHED RUN SQUATS THE DEBUGGING PORT, AND
     # WHAT IT SERVES YOU IS ITS OWN WARM CACHE.
@@ -95,7 +112,7 @@ def launch(port, profile):
     subprocess.run(["pkill", "-9", "-f", "user-data-dir=" + profile],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     shutil.rmtree(profile, ignore_errors=True)
-    p = subprocess.Popen(["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    p = subprocess.Popen([chrome_binary(),
         "--headless=new", "--user-data-dir=" + profile, "--no-first-run",
         "--hide-scrollbars", "--remote-debugging-port=%d" % port, "about:blank"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
