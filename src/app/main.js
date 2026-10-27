@@ -1704,13 +1704,8 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
         // Convert residueMap to array for connectivity checks
         const allResidues = Array.from(residueMap.values());
 
-        // Sort positions by chain and residue_numbers for proper neighbor checking
-        allResidues.sort((a, b) => {
-            if (a.chain !== b.chain) {
-                return a.chain.localeCompare(b.chain);
-            }
-            return a.resSeq - b.resSeq;
-        });
+        // Grouped by chain in file order - see inFileChainOrder
+        inFileChainOrder(allResidues);
 
         // Use the same classification logic as convertParsedToFrameData
         // to ensure consistency (with connectivity checks)
@@ -1797,12 +1792,7 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
 
             // Convert to array for connectivity checks
             const originalAllResidues = Array.from(originalResidueMap.values());
-            originalAllResidues.sort((a, b) => {
-                if (a.chain !== b.chain) {
-                    return a.chain.localeCompare(b.chain);
-                }
-                return a.resSeq - b.resSeq;
-            });
+            inFileChainOrder(originalAllResidues);
 
             // Map each position in originalFrameData to its corresponding position and check if it's a ligand
             
