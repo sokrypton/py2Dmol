@@ -446,6 +446,13 @@ function fsStyleOnce() {
  * the viewer instance goes on its own, which is the whole of what is there.
  */
 function fsTargetOf(viewer) {
+    // 🔴 A HOST CAN NAME WHAT GOES FULL SCREEN, and then it is the host's whole
+    // layout: nothing is hidden and none of the rules below apply (`own`), since
+    // they are written for a viewer and a strip alone and would lay out the
+    // host's page as one. LocalFold's design page names its two columns, so its
+    // steps stay beside the viewer instead of vanishing with the rest.
+    const named = viewer && viewer.closest ? viewer.closest('[data-py2dmol-fullscreen]') : null;
+    if (named) return { target: named, hide: [], own: true };
     const parent = viewer && viewer.parentElement;
     if (!parent) return { target: viewer, hide: [] };
     const strip = parent.querySelector(':scope > .sequence-section-container');
@@ -486,13 +493,15 @@ function installFullscreen(containerElement, host) {
     let hidden = [];
 
     const enter = () => {
-        const { target, hide } = fsTargetOf(viewer || containerElement);
+        const { target, hide, own } = fsTargetOf(viewer || containerElement);
         if (!target) return;
         hidden = hide.map((el) => ({ el, was: el.style.display }));
         for (const h of hidden) h.el.style.display = 'none';
-        // ...and THIS slot is the one that grows.
-        if (slot) slot.classList.add('py2dmol-slot-fs');
-        target.classList.add(FS_CLASS);
+        // ...and THIS slot is the one that grows - unless the host lays it out
+        if (!own) {
+            if (slot) slot.classList.add('py2dmol-slot-fs');
+            target.classList.add(FS_CLASS);
+        }
         const req = target.requestFullscreen || target.webkitRequestFullscreen;
         if (req) {
             const p = req.call(target);
