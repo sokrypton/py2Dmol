@@ -716,7 +716,12 @@ const STANDARD_NUCLEIC_ACIDS = new Set([
     "DA", "DC", "DG", "DT", "T",  // T is DNA-specific (thymine)
     // Additional common codes
     "I",   // Inosine (can be RNA or DNA, but more common in RNA)
-    "DI"   // Deoxyinosine (DNA)
+    "DI",  // Deoxyinosine (DNA)
+    // 🔴 THE DICTIONARY'S UNKNOWN NUCLEOTIDES: DN (any DNA nucleotide) and N (any). AlphaFold 3
+    // writes an unknown base this way, and a sketch of a strand still to be designed is nothing
+    // else - one C4' a residue, with no ring for the structural fallback below to find. Unnamed
+    // here, such a strand was not a polymer at all. DN votes DNA by its D; a bare N asks the sugar.
+    "DN", "N"
 ]);
 
 // NUCLEOTIDE_LIGANDS set removed - no longer needed with simplified classification
