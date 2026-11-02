@@ -73,6 +73,26 @@ function parsePDB(text) {
             }
         }
 
+        // ...and LINK, which is the PDB's _struct_conn covale: a covalent bond
+        // between two residues - a crosslinker to the lysines it joined, a
+        // covalent inhibitor to its cysteine. CONECT cannot say it, because a
+        // protein residue's side chain is not a position until it is shown;
+        // this reaches the same covale branch the CIF rows do, which keeps it
+        // by residue and atom name. Columns: name1 13-16, chainID1 22, seqNum1
+        // 23-26, name2 43-46, chainID2 52, seqNum2 53-56.
+        if (line.startsWith('LINK  ')) {
+            const atom1 = line.substring(12, 16).trim();
+            const chain1 = line.substring(21, 22).trim();
+            const seq1 = parseInt(line.substring(22, 26).trim(), 10);
+            const atom2 = line.substring(42, 46).trim();
+            const chain2 = line.substring(51, 52).trim();
+            const seq2 = parseInt(line.substring(52, 56).trim(), 10);
+            if (atom1 && atom2 && chain1 && chain2
+                && Number.isFinite(seq1) && Number.isFinite(seq2)) {
+                structConn.push({ chain1, seq1, atom1, chain2, seq2, atom2, type: 'covale' });
+            }
+        }
+
         if (line.startsWith('CONECT')) {
             // CONECT is fixed-width: the record name in columns 1-6, this
             // atom's serial in 7-11, and up to FOUR partners in 12-16, 17-21,

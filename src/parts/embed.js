@@ -907,7 +907,8 @@ function framesFromText(text, opts) {
     }
     return models.map((model) => convertParsedToFrameData(
         model, p.modresMap, isCIF ? p.chemCompMap : null, false,
-        p.conectMap, isCIF ? p.structConn : null,
+        // (a PDB's SSBOND and LINK are its struct_conn, read by the same rule)
+        p.conectMap, p.structConn ?? null,
         isCIF ? p.chemCompBondMap : null));
 }
 
