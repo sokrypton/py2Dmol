@@ -48,7 +48,9 @@ a refusal; it never throws.
 so the default view and every "orient to everything" frame the plugin. A span set by orient
 to a selection, focus, or the app is not floored, so focusing one residue can still zoom
 inside a shell drawn around it. A plugin that arrives after the opening orient is framed at
-the next orient to everything.
+once: a payload, an option, a restore or a late registration re-floors a whole-scene span
+(`widenForPlugins`), once per event. Switching objects, leaving multi or a merge
+(`parts/multi.js`) reframes without the floor until the next orient to everything.
 
 ## GPU depth range
 

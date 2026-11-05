@@ -55,7 +55,7 @@ except ImportError:
         sys.exit(1)
     os.environ[ENV_FLAG] = "1"
     os.execvp("uv", ["uv", "run", "--no-project", "--python", "3.13",
-                     "--with", "cisternal>=0.1.2", "--with", "numpy", "--with", "ipython",
+                     "--with", "cisternal>=0.1.6", "--with", "numpy", "--with", "ipython",
                      "--with", "gemmi", "--with", "playwright", "python", str(Path(__file__).resolve())])
 
 sys.path.insert(0, str(ROOT))

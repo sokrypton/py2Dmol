@@ -80,6 +80,10 @@ In a view spec (the agent surface) the same thing is
 - **Names** match `[A-Za-z0-9][A-Za-z0-9_.-]{0,63}`.
 - **A payload lives on the viewer, not an object**; `object=` / `frame=` only choose where it
   applies. A plugin draws in a viewer only where that viewer has a payload for it.
+- **On a live viewer, `add_plugin` and `set_plugin_option` send only what changed.**
+  Payloads accumulate (there is no `remove_plugin` yet); an option change re-sends no mesh.
+  New code from `register_plugin` reaches a viewer already on the page only with that
+  plugin's next `add_plugin` or `set_plugin_option`.
 - **Re-registering the same name** with new code or a new version replaces it (`dispose` is
   called on the old one). Do not rely on `dispose` for per-viewer cleanup.
 - **No sandbox.** Plugin JavaScript is inline script in the page, like the core.

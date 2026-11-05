@@ -63,9 +63,9 @@ setup(
     # cisternal, which is why the console scripts check and print the fix
     # (py2Dmol/agent/_need.py) and why the plugin launches with --python 3.13.
     extras_require={
-        'agent': ['cisternal>=0.1.2; python_version>="3.13"'],
+        'agent': ['cisternal>=0.1.6; python_version>="3.13"'],
         'screenshot': [
-            'cisternal>=0.1.2; python_version>="3.13"',
+            'cisternal>=0.1.6; python_version>="3.13"',
             'playwright>=1.48',
         ],
     },
