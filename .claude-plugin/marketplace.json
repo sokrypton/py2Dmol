@@ -1,0 +1,15 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "py2dmol",
+  "description": "Protein structure viewer for agents: inspect structures, validate view specs, render interactive HTML and PNG/SVG images, write draw plugins",
+  "owner": {
+    "name": "py2dmol"
+  },
+  "plugins": [
+    {
+      "name": "py2dmol",
+      "source": "./plugin",
+      "description": "Protein structure viewer for agents: inspect structures, validate view specs, render interactive HTML and PNG/SVG images, write draw plugins"
+    }
+  ]
+}
