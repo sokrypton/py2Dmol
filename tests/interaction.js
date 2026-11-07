@@ -10322,6 +10322,38 @@ t('CONECT partners are read from the columns the format puts them in', () => {
     }
 });
 
+// 🔴 A CIF TEXT FIELD IS ONE VALUE, FROM A `;` IN COLUMN ZERO TO THE NEXT.
+// The metadata loop reader tokenised it as words, so 4YBB's assembly 1 began
+// with chain ";A" - which matched nothing, and the 16S rRNA was dropped from
+// the biological assembly - while the closing `;` fell into the NEXT row and
+// read assembly 2's id as ";". Both rows are checked: the second is what a
+// fix that only stripped a leading `;` would still get wrong.
+t('a CIF text field in an assembly loop is one value', () => {
+    const ctx = vm.createContext({ console });
+    ctx.window = ctx; ctx.self = ctx;
+    vm.runInContext(L.utils, ctx, { filename: 'utils' });
+    const read = vm.runInContext('parseMinimalCIF_light', ctx);
+    const ops = vm.runInContext('extractCIFBiounitOperations', ctx);
+    const cif = [
+        'data_TEST', '#', 'loop_',
+        '_pdbx_struct_assembly_gen.assembly_id',
+        '_pdbx_struct_assembly_gen.oper_expression',
+        '_pdbx_struct_assembly_gen.asym_id_list',
+        '1 1 ', ';A,B,', 'C', ';',
+        '2 1 ', ';V,W', ';',
+        '# ',
+        '_pdbx_struct_oper_list.id                   1 ',
+        '_pdbx_struct_oper_list.matrix[1][1]         1.0 ',
+        '#', ''].join('\n');
+    const [, rows] = read(cif, ['_pdbx_struct_assembly_gen.'])[0];
+    const got = rows.map((r) => r.join('|').replace(/\n/g, '/')).join(' ; ');
+    if (got !== '1|1|A,B,/C ; 2|1|V,W') {
+        throw new Error('assembly rows read as "' + got + '"');
+    }
+    const chains = (ops(cif) || [{ chains: [] }])[0].chains.join(',');
+    if (chains !== 'A,B,C') throw new Error('assembly 1 chains read as ' + chains);
+});
+
 t('processMailbox forwards viewer block and routes single-frame replace payloads', () => {
     const ui = L.read('src/parts/ui.js');
     const at = ui.indexOf('const processMailbox = () => {');

@@ -2541,6 +2541,7 @@ const CC_QUOTE = 39;      // '
 const CC_DQUOTE = 34;     // "
 const CC_DOT = 46;        // .
 const CC_QMARK = 63;      // ?
+const CC_SEMI = 59;       // ; - in column zero, a text field
 
 function readCIFCols(s, from, n, wantMask, out, dropAfter, dropTest) {
     const maxCol = wantMask.length;
@@ -2728,6 +2729,30 @@ function parseMinimalCIF_light(text, keepPrefixes) {
         // the old rule, kept: a loop is read on the strength of its FIRST column
         if (unread(cols[0])) continue;
 
+        // 🔴 A LINE STARTING WITH `;` IN COLUMN ZERO OPENS A TEXT FIELD, and
+        // the field is ONE value running to the next line that starts with
+        // `;`. Tokenised as words instead, the opening `;` stuck to the first
+        // word and the closing `;` became a value of the next row. A long
+        // _pdbx_struct_assembly_gen.asym_id_list is written exactly this way,
+        // so the assembly's first chain came out as ";A" and matched nothing:
+        // 4YBB's biological assembly lost chain A, the 16S rRNA - reported as
+        // some of the ribosome's RNA missing.
+        // Reads the current line (ls/le), leaves `i` at the line after it.
+        const lineVals = () => {
+            if (le > ls && text.charCodeAt(ls) === CC_SEMI) {
+                const parts = [text.slice(ls + 1, le)];
+                i = next;
+                while (i < n) {
+                    takeLine();
+                    i = next;
+                    if (le > ls && text.charCodeAt(ls) === CC_SEMI) break;
+                    parts.push(text.slice(ls, le));
+                }
+                return [parts.join('\n').trim()];
+            }
+            i = next;
+            return tokenizeCIFLine_light(text.slice(ls, le));
+        };
         const rows = [];
         // i is already at the first row: takeLine above left ls/le on it
         for (;;) {
@@ -2739,13 +2764,11 @@ function parseMinimalCIF_light(text, keepPrefixes) {
             if (c0 === CC_HASH || c0 === CC_UNDERSCORE
                     || startsWordAt(r, 'loop_') || startsWordAt(r, 'data_')) break;
 
-            let vals = tokenizeCIFLine_light(text.slice(ls, le));
-            i = next;
+            let vals = lineVals();
             // a row shorter than its header continues onto the next line
             while (vals.length < cols.length && i < n) {
                 takeLine();
-                vals = vals.concat(tokenizeCIFLine_light(text.slice(ls, le)));
-                i = next;
+                vals = vals.concat(lineVals());
             }
 
             if (vals.length >= cols.length) {
