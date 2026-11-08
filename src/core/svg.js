@@ -167,8 +167,11 @@ SimpleCanvas2SVG.prototype.clearRect = function () {
 // XML 1.0 forbids C0 controls (but tab, LF, CR), U+FFFE / U+FFFF and an unpaired surrogate: one of them in
 // a message (a plugin's error text can carry anything the plugin was handed) would make the whole file
 // unreadable, so they are dropped from every text this context writes.
-const XML_BAD = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
-function xmlSafe(text) { return String(text).replace(XML_BAD, ''); }
+// NO LOOKBEHIND: Safari before 16.4 cannot PARSE one, and a regex literal is parsed with the whole bundle, so
+// `(?<!...)` here took the entire viewer down on those browsers. A valid pair is matched as its own
+// alternative and kept; alternation tries it first, so only an unpaired surrogate reaches the last one.
+const XML_BAD = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]|[\ud800-\udbff][\udc00-\udfff]|[\ud800-\udfff]/g;
+function xmlSafe(text) { return String(text).replace(XML_BAD, m => (m.length === 2 ? m : '')); }
 
 /**
  * A COMMENT IN THE FILE. An export that could not draw something - a plugin over
