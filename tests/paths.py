@@ -44,7 +44,9 @@ TEXT = ('.md', '.py', '.js', '.mjs', '.sh', '.html', '.css', '.yml', '.yaml',
 # still said "ok" - a check that passes by finding nothing, which is the shape
 # half the bugs in this repo have had. The floor below is what catches that.
 PATH = re.compile(r'(?<![\w.$/-])((?:py2Dmol|src|tests|tools)/[\w./-]*'
-                  r'[\w-]\.(?:js|py|html|css|md|sh))')
+                  r'[\w-]\.(?:js|py|html|css|md|sh))(?!\w)')
+# (?!\w): without it `py2Dmol/agent/agent_plugin.json` was read as a pointer to
+# `agent_plugin.js`, a file that never existed.
 
 ALLOWED = {
     # ...a file whose ABSENCE is the assertion
