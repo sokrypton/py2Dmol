@@ -114,6 +114,9 @@ const fireWindow = (type, ev) => {
 global.document = {
     getElementById: (id) => (id === 'sequenceView' ? sequenceViewEl : null),
     createElement: (tag) => mkEl(tag),
+    // The strip wires its own header buttons as it loads (wireStripTools),
+    // and looks their row up by selector; this page has no such row.
+    querySelector: () => null,
     addEventListener: () => {},
     removeEventListener: () => {},
     dispatchEvent: () => {},

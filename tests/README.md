@@ -108,6 +108,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `bundles.js` | node | WHAT EACH SHIPPED BUNDLE PUTS ON THE PAGE, AND WHAT IT MUST NOT. |
 | `capture_once.py` | gpu | ONE 2D GEOMETRY PASS PER FRAME, rebuild or not. |
 | `cartoon_station.js` | node | WHAT A RIBBON STATION IS, pinned as an invariant. |
+| `chain_order.js` | node | A FILE'S CHAINS ARE DRAWN IN THE FILE'S ORDER. |
 | `chainbreak_hysteresis.py` | gpu | A pair breathing across the chain-break distance does not cut the ribbon. |
 | `colab.py` | ui | COLAB PUTS EVERY CELL OUTPUT IN ITS OWN IFRAME, and that is the whole test. |
 | `colour_cache.py` | gpu | THE SEGMENT COLOURS DO NOT READ A COORDINATE, SO A FRAME STEP NEED NOT |
@@ -139,6 +140,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `frame_policy.py` | ui | Two objects of DIFFERENT LENGTH share one timeline, and the policy is what |
 | `frame_revisit.py` | gpu | A FRAME DRAWN AGAIN IS THE SAME FRAME - including the outline. |
 | `frame_share.py` | gpu | A TRAJECTORY'S FRAMES DESCRIBE ONE MOLECULE, AND ONLY ITS COORDINATES MOVE. |
+| `fullscreen_host.py` | ui | A HOST CAN NAME WHAT GOES FULL SCREEN. |
 | `gpu3d_core.js` | tool | The GPU cartoon MEASUREMENT HARNESS, shared by gpu3d_lab.html (the numbers) |
 | `gpu_bench.py` | tool | Per-pass GPU timings for the tube path, on the real GPU, from the shell. |
 | `gpu_direct.py` | gpu | THE GL CANVAS ON THE PAGE, not copied into the viewer's. |
@@ -225,8 +227,6 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `sheet_bench.py` | tool | Fit the peptide table the cartoon rebuilds backbones with, and score the frames. |
 | `sheet_merge.py` | gpu | A GAP IN A SHEET CLOSING MUST NOT LEAVE A LINE ACROSS IT. |
 | `short_peptide.js` | node | A PEPTIDE TOO SHORT TO HAVE A SHAPE IS DRAWN AS WHAT IT IS: A LIGAND. |
-| `chain_order.js` | node | A FILE'S CHAINS ARE DRAWN IN THE FILE'S ORDER. |
-| `unknown_nucleotides.js` | node | THE DICTIONARY'S UNKNOWN NUCLEOTIDES, DN AND N, ARE NUCLEIC. |
 | `sidechain_chain.js` | node | Side chains, end to end through the WEB APP's own chain: |
 | `sidechain_toggle.py` | ui | Side chains survive the eyes: toggling one object must not strip another's. |
 | `slots.py` | ui | N slots, every view, and nothing paid twice. |
@@ -258,12 +258,12 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `station_tail.py` | gpu | A trajectory's contacts and plugin lines follow it on the station fast path. |
 | `station_unpinned.py` | gpu | A TRAJECTORY TAKES THE STATION PATH WITHOUT BEING ASKED, AND DRAWS THE SAME. |
 | `stick_topology.py` | gpu | WHAT IS DRAWN IS THE GRAPH'S TO DECIDE, SO A TRAJECTORY STEPS WITHOUT A |
-| `strip_host.py` | ui | THE SEQUENCE STRIP'S BUTTONS WORK ON A HOST'S PAGE, NOT ONLY ON THE WEBSITE. |
 | `strip_flash.py` | ui | A RESIDUE WHOSE LETTER CHANGED FLASHES ON THE SEQUENCE STRIP. |
-| `fullscreen_host.py` | ui | A HOST CAN NAME WHAT GOES FULL SCREEN. |
+| `strip_host.py` | ui | THE SEQUENCE STRIP'S BUTTONS WORK ON A HOST'S PAGE, NOT ONLY ON THE WEBSITE. |
 | `style_per_object.py` | ui | The style belongs to the object, and its settings belong to the style. |
 | `test_absolute_focus.py` | tool | ABSOLUTE FOCUS TEST: Compares renders before entering focus mode directly against |
 | `topology_survey.py` | gpu | WHICH CONTROLS ACTUALLY CHANGE THE MESH'S TOPOLOGY, and which only move it. |
+| `unknown_nucleotides.js` | node | THE DICTIONARY'S UNKNOWN NUCLEOTIDES, DN AND N, ARE NUCLEIC. |
 | `weld_open.py` | gpu | A WELD ACROSS A COLLAPSED STATION MUST NOT OUTLIVE THE COLLAPSE. |
 
 <!-- END INDEX -->

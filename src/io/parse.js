@@ -11,6 +11,30 @@
 // PDB/CIF PARSING UTILITIES
 // ============================================================================
 
+// Metal elements, for telling a LINK that is coordination from one that is a
+// covalent bond. A PDB atom name says its element by ALIGNMENT: a two-letter
+// element starts in column 13 (`CA  ` is calcium, `FE  ` iron), a one-letter
+// one in column 14 (` CA ` is an alpha carbon). So the 4-character field is
+// read as written, never trimmed.
+const LINK_METALS_2 = new Set([
+    'LI', 'NA', 'MG', 'AL', 'CA', 'SC', 'TI', 'CR', 'MN', 'FE', 'CO', 'NI',
+    'CU', 'ZN', 'GA', 'RB', 'SR', 'MO', 'RU', 'RH', 'PD', 'AG', 'CD', 'IN',
+    'CS', 'BA', 'LA', 'GD', 'TB', 'YB', 'LU', 'HF', 'RE', 'OS', 'IR', 'PT',
+    'AU', 'HG', 'TL', 'PB', 'SB', 'BI', 'SM', 'EU', 'CE', 'PR', 'ND', 'HO', 'ER',
+]);
+const LINK_METALS_1 = new Set(['K', 'V', 'W', 'U', 'Y']);
+function linkAtomIsMetal(field) {
+    const f = String(field || '').toUpperCase().padEnd(4, ' ');
+    if (f[0] !== ' ') {
+        // Two-letter element at column 13, then a space or a cluster index
+        // (`ZN  `, `FE1 `). A letter there is an organic name pushed left
+        // (`CAB `), and `HG` + digits is a hydrogen (`HG21`), not mercury.
+        return LINK_METALS_2.has(f.substring(0, 2)) && /[ 0-9]/.test(f[2])
+            && !/^HG\d/.test(f);
+    }
+    return LINK_METALS_1.has(f[1]) && !/[A-Z]/.test(f[2]);
+}
+
 /**
  * Parse PDB file into models and MODRES records
  * @param {string} text - PDB file content
@@ -80,7 +104,14 @@ function parsePDB(text) {
         // this reaches the same covale branch the CIF rows do, which keeps it
         // by residue and atom name. Columns: name1 13-16, chainID1 22, seqNum1
         // 23-26, name2 43-46, chainID2 52, seqNum2 53-56.
-        if (line.startsWith('LINK  ')) {
+        // A LINK naming a METAL is skipped: the record covers coordination
+        // as well as covalent bonds (`ZN ZN A 301 NE2 HIS`, a heme FE to its
+        // histidine), and coordination is mmCIF's `metalc`, which is left out
+        // for the reason CLAUDE.md gives - drawn as sticks it closes rings
+        // that are not there.
+        if (line.startsWith('LINK  ')
+            && !linkAtomIsMetal(line.substring(12, 16))
+            && !linkAtomIsMetal(line.substring(42, 46))) {
             const atom1 = line.substring(12, 16).trim();
             const chain1 = line.substring(21, 22).trim();
             const seq1 = parseInt(line.substring(22, 26).trim(), 10);

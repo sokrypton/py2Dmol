@@ -319,5 +319,30 @@ if ((pdbFrame(pdbOf(false)).covalentLinks || []).length) {
     fail('a PDB with no LINK record came back with a link');
 } else pass('a PDB with no LINK record declares none');
 
+// ------------------------------------- 5. a LINK to a METAL is coordination
+// LINK covers metal coordination as well as covalent bonds, and coordination is
+// mmCIF's `metalc`, which is not drawn as a stick. The element is in the name's
+// ALIGNMENT: `CA  ` from column 13 is calcium, ` CA ` from 14 an alpha carbon.
+{
+    const link = (n1, r1, c1, s1, n2, r2, c2, s2) => 'LINK        '
+        + n1 + ' ' + r1 + ' ' + c1 + String(s1).padStart(4) + '                '
+        + n2 + ' ' + r2 + ' ' + c2 + String(s2).padStart(4) + '     1555   1555  2.10';
+    const rows = [
+        link('ZN  ', ' ZN', 'A', 301, ' NE2', 'HIS', 'A', 96),   // zinc ion
+        link('FE  ', 'HEM', 'A', 142, ' NE2', 'HIS', 'A', 87),   // heme iron
+        link(' SG ', 'CYS', 'A', 12, 'FE1 ', 'SF4', 'A', 401),   // Fe-S cluster
+        link('CA  ', ' CA', 'A', 500, ' OD1', 'ASP', 'A', 40),   // calcium
+        link(' NZ ', 'LYS', 'A', 7, ' C1 ', 'RET', 'A', 300),    // covalent: kept
+        link(' CA ', 'GLY', 'A', 5, ' C2 ', 'LIG', 'A', 301),    // alpha carbon: kept
+        link('CAB ', 'HEC', 'A', 120, ' SG ', 'CYS', 'A', 14),   // a name pushed left: kept
+    ];
+    const got = (sb.parsePDB(rows.join('\n') + '\nEND\n').structConn || [])
+        .map((r) => r.atom1 + '-' + r.atom2);
+    const want = ['NZ-C1', 'CA-C2', 'CAB-SG'];
+    if (JSON.stringify(got) !== JSON.stringify(want)) {
+        fail(`LINK rows kept ${JSON.stringify(got)}; expected only the covalent ${JSON.stringify(want)}`);
+    } else pass('a LINK to a metal is coordination and is not kept; covalent LINKs are');
+}
+
 console.log('covalent links: ' + (bad ? `FAILED (${bad})` : 'ok'));
 process.exit(bad ? 1 : 0);
