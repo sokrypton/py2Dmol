@@ -191,6 +191,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `paint_order_audit.js` | tool | Paint-order audit, written once and plainly. |
 | `paint_order_bench.js` | tool | Comprehensive benchmark and regression tester for ribbon and side-chain paint ordering. |
 | `paint_trace.js` | node | WHAT THE PAINTER ACTUALLY DREW, as a hash you can diff. |
+| `pair_append.py` | ui | A DUPLEX STREAMED IN FRAME BY FRAME PAIRS LIKE THE SAME DUPLEX LOADED WHOLE. |
 | `panel.py` | ui | The built Style panel renders at a usable size, on the page's own skin. |
 | `panel_drag.py` | gpu | DRAGGING A STYLE CONTROL COSTS ONE BUILD, NOT ONE PER STEP. |
 | `panel_idle.py` | gpu | A PANEL WITH NOTHING NEW TO SHOW DOES NOTHING PER FRAME. |

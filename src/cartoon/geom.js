@@ -6156,7 +6156,24 @@ const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
     const topoKey = typeof renderer._topologyKey === 'function'
         ? renderer._topologyKey()
         : (renderer.currentObjectName || '') + '|' + n;
-    const pairKey = topoKey + '|' + forcedSig;
+    // 🔴 ...AND EACH DRAWN OBJECT'S FRAME COUNT, because a trajectory still
+    // ARRIVING is not one the fold holds still for. LocalFold builds the viewer
+    // on a diffusion's first frame - noise, no base near its partner - and
+    // appends the rest; keyed without this, the pairing was the noise's (none)
+    // for good, and a protein + DNA fold drew its duplex with no plates while
+    // the same file reloaded drew them. An appended frame is new data and is
+    // asked again, from the frame being drawn; stepping through frames that
+    // are already there moves nothing, which is the fast-path half of the rule
+    // above. replaceFrame keeps the count and so keeps the pairing - the "a
+    // step of the same molecule" rule. tests/pair_append.py.
+    let framesSig = '';
+    if (typeof renderer.drawnObjects === 'function' && renderer.objectsData) {
+        for (const nm of renderer.drawnObjects()) {
+            const o = renderer.objectsData[nm];
+            framesSig += ',' + (o && o.frames ? o.frames.length : 0);
+        }
+    }
+    const pairKey = topoKey + '|' + forcedSig + '|f' + framesSig;
     let pairOf = renderer._cartoonPair;
     if (!pairOf || renderer._cartoonPairKey !== pairKey) {
         if (renderer._cartoonPairKey !== pairKey) cacheRebuilt = true;
