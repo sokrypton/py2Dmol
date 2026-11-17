@@ -4911,7 +4911,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             name = uniprot_id.upper()
 
         # --- Download structure and (maybe) PAE ---
-        struct_filepath, pae_filepath = self._get_filepath_from_afdb_id(uniprot_id, download_pae=self.config["pae"]["enabled"])
+        struct_filepath, pae_filepath = self._get_filepath_from_afdb_id(uniprot_id, download_pae=self.config["heatmap"]["enabled"])
 
         if not struct_filepath:
              print(f"Could not load structure for '{uniprot_id}'.")

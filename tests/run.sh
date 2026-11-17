@@ -123,6 +123,15 @@ if [[ "$LANE" == "all" || "$LANE" == "node" ]]; then
     fail=1; print "NODE grid:"; python3 tests/grid.py 2>&1 | grep -E '^FAIL|^  -' | head -3
   fi
 
+  # ...and every self.config["..."] path viewer.py subscripts exists. The
+  # pae -> heatmap rename left from_afdb asking for config["pae"], a KeyError
+  # on the one path that needs the network, so no test ever ran that line.
+  if python3 tests/config_reads.py >/dev/null 2>&1; then
+    print "node config_reads: ok"
+  else
+    fail=1; print "NODE config_reads:"; python3 tests/config_reads.py 2>&1 | grep '^FAIL' | head -3
+  fi
+
   # ...and a ribose-bearing cofactor is a LIGAND, not a nucleotide. SAM, ATP
   # and NAD all carry one, and the structural test that keeps 1EHZ's modified
   # bases in its chain collapsed them onto a single position - twenty-seven
