@@ -14,7 +14,8 @@ setup(
     author='sokrypton',
     author_email='so3@mit.edu',
     description='A Python library for visualizing protein structures in 2D.',
-    long_description='A Python library for visualizing protein structures in 2D.',
+    # The PyPI page. Every link in it is absolute, so it renders off GitHub.
+    long_description=Path(__file__).parent.joinpath('README.md').read_text(encoding='utf-8'),
     long_description_content_type='text/markdown',
     url='https://github.com/sokrypton/py2Dmol',
     packages=find_packages(),
