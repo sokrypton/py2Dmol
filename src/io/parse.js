@@ -73,6 +73,26 @@ function parsePDB(text) {
             }
         }
 
+        // ...and LINK, which is the PDB's _struct_conn covale: a covalent bond
+        // between two residues - a crosslinker to the lysines it joined, a
+        // covalent inhibitor to its cysteine. CONECT cannot say it, because a
+        // protein residue's side chain is not a position until it is shown;
+        // this reaches the same covale branch the CIF rows do, which keeps it
+        // by residue and atom name. Columns: name1 13-16, chainID1 22, seqNum1
+        // 23-26, name2 43-46, chainID2 52, seqNum2 53-56.
+        if (line.startsWith('LINK  ')) {
+            const atom1 = line.substring(12, 16).trim();
+            const chain1 = line.substring(21, 22).trim();
+            const seq1 = parseInt(line.substring(22, 26).trim(), 10);
+            const atom2 = line.substring(42, 46).trim();
+            const chain2 = line.substring(51, 52).trim();
+            const seq2 = parseInt(line.substring(52, 56).trim(), 10);
+            if (atom1 && atom2 && chain1 && chain2
+                && Number.isFinite(seq1) && Number.isFinite(seq2)) {
+                structConn.push({ chain1, seq1, atom1, chain2, seq2, atom2, type: 'covale' });
+            }
+        }
+
         if (line.startsWith('CONECT')) {
             // CONECT is fixed-width: the record name in columns 1-6, this
             // atom's serial in 7-11, and up to FOUR partners in 12-16, 17-21,
@@ -716,7 +736,12 @@ const STANDARD_NUCLEIC_ACIDS = new Set([
     "DA", "DC", "DG", "DT", "T",  // T is DNA-specific (thymine)
     // Additional common codes
     "I",   // Inosine (can be RNA or DNA, but more common in RNA)
-    "DI"   // Deoxyinosine (DNA)
+    "DI",  // Deoxyinosine (DNA)
+    // 🔴 THE DICTIONARY'S UNKNOWN NUCLEOTIDES: DN (any DNA nucleotide) and N (any). AlphaFold 3
+    // writes an unknown base this way, and a sketch of a strand still to be designed is nothing
+    // else - one C4' a residue, with no ring for the structural fallback below to find. Unnamed
+    // here, such a strand was not a polymer at all. DN votes DNA by its D; a bare N asks the sugar.
+    "DN", "N"
 ]);
 
 // NUCLEOTIDE_LIGANDS set removed - no longer needed with simplified classification
@@ -744,6 +769,24 @@ const STANDARD_NUCLEIC_ACIDS = new Set([
 // The index is cached on the array itself. Both callers build the list, sort
 // it and then only read it, so it cannot go stale underneath us; the length
 // check catches the case where someone starts.
+// ====================================================================
+// RESIDUES GROUPED BY CHAIN, THE CHAINS IN THE ORDER THE FILE GIVES THEM
+//
+// 🔴 THIS LIST IS THE FRAME'S POSITION ORDER, NOT ONLY A NEIGHBOUR LIST. It
+// used to sort chains by `localeCompare`, for the neighbour checks - and the
+// loop that builds the frame walks the same array, so a file written B then A
+// was drawn A then B. A page that counts positions in its own file's order and
+// colours by them then lands on the wrong chain. The neighbour checks need
+// nothing from the order (residuesByChainSeq looks neighbours up by chain and
+// number), so the chains keep the file's order: each at its first appearance.
+// Within a chain residues stay sorted by number, as they always were.
+function inFileChainOrder(residues) {
+    const first = new Map();
+    residues.forEach((r, at) => { if (!first.has(r.chain)) first.set(r.chain, at); });
+    return residues.sort((a, b) => a.chain !== b.chain
+        ? first.get(a.chain) - first.get(b.chain) : a.resSeq - b.resSeq);
+}
+
 function residuesByChainSeq(allResidues) {
     const cached = allResidues.__neighborIndex;
     if (cached && cached.n === allResidues.length) return cached.map;
@@ -1587,13 +1630,7 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
     // Convert residueMap to array for connectivity checks
     const allResidues = Array.from(residueMap.values());
 
-    // Sort residues by chain and resSeq for proper neighbor checking
-    allResidues.sort((a, b) => {
-        if (a.chain !== b.chain) {
-            return a.chain.localeCompare(b.chain);
-        }
-        return a.resSeq - b.resSeq;
-    });
+    inFileChainOrder(allResidues);
 
     yield 0.4;
     // One DNA/RNA answer per chain - see resolveChainNucleicTypes.

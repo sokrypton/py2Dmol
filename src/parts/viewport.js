@@ -446,6 +446,13 @@ function fsStyleOnce() {
  * the viewer instance goes on its own, which is the whole of what is there.
  */
 function fsTargetOf(viewer) {
+    // 🔴 A HOST CAN NAME WHAT GOES FULL SCREEN, and then it is the host's whole
+    // layout: nothing is hidden and none of the rules below apply (`own`), since
+    // they are written for a viewer and a strip alone and would lay out the
+    // host's page as one. LocalFold's design page names its two columns, so its
+    // steps stay beside the viewer instead of vanishing with the rest.
+    const named = viewer && viewer.closest ? viewer.closest('[data-py2dmol-fullscreen]') : null;
+    if (named) return { target: named, hide: [], own: true };
     const parent = viewer && viewer.parentElement;
     if (!parent) return { target: viewer, hide: [] };
     const strip = parent.querySelector(':scope > .sequence-section-container');
@@ -467,9 +474,14 @@ function installFullscreen(containerElement, host) {
     btn.className = 'py2dmol-fs-btn';
     btn.title = 'Full screen (Esc to leave)';
     btn.setAttribute('aria-label', 'Full screen');
-    // A glyph, not an icon font: index.html loads Font Awesome and the notebook
-    // does not, and a button whose label is an empty <i> is an invisible button.
-    btn.textContent = '\u26F6';
+    // AN INLINE SVG, NOT AN ICON FONT AND NOT A GLYPH. index.html loads Font
+    // Awesome and the notebook does not, and a button whose label is an empty
+    // <i> is an invisible button. The glyph that replaced it (U+26F6) is in too
+    // few system fonts: on a Linux box with the usual ones it drew as an empty
+    // box, a button that says nothing. Four corner brackets need no font.
+    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"'
+        + ' stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">'
+        + '<path d="M1 5V1h4M9 1h4v4M13 9v4H9M5 13H1V9"/></svg>';
     // ...on the SLOT'S BODY when there is one, not on the canvas box: full
     // screen is for whatever is in the box, and a structure moved to another
     // slot or parked took the only way in with it.
@@ -481,13 +493,15 @@ function installFullscreen(containerElement, host) {
     let hidden = [];
 
     const enter = () => {
-        const { target, hide } = fsTargetOf(viewer || containerElement);
+        const { target, hide, own } = fsTargetOf(viewer || containerElement);
         if (!target) return;
         hidden = hide.map((el) => ({ el, was: el.style.display }));
         for (const h of hidden) h.el.style.display = 'none';
-        // ...and THIS slot is the one that grows.
-        if (slot) slot.classList.add('py2dmol-slot-fs');
-        target.classList.add(FS_CLASS);
+        // ...and THIS slot is the one that grows - unless the host lays it out
+        if (!own) {
+            if (slot) slot.classList.add('py2dmol-slot-fs');
+            target.classList.add(FS_CLASS);
+        }
         const req = target.requestFullscreen || target.webkitRequestFullscreen;
         if (req) {
             const p = req.call(target);

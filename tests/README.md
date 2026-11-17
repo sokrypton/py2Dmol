@@ -183,6 +183,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `nucleic_multi.py` | ui | A nucleic object keeps its atoms when the viewer drops out of Multi. |
 | `object_reload.py` | ui | Loading another file must not disturb the objects already loaded. |
 | `opacity.py` | gpu | Ghosting a selection: it must change the picture and rebuild nothing. |
+| `opacity_2d.py` | ui | Ghosting a selection on the 2D PAINTER: a crossfade of two whole frames. |
 | `outline_sync.py` | gpu | DOES THE OUTLINE MOVE WITH THE SURFACE, FRAME BY FRAME THROUGH A PLAY? |
 | `packaging.py` | node | Every resource viewer.py opens must be in the wheel. |
 | `paint_order_audit.js` | tool | Paint-order audit, written once and plainly. |
@@ -224,6 +225,8 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `sheet_bench.py` | tool | Fit the peptide table the cartoon rebuilds backbones with, and score the frames. |
 | `sheet_merge.py` | gpu | A GAP IN A SHEET CLOSING MUST NOT LEAVE A LINE ACROSS IT. |
 | `short_peptide.js` | node | A PEPTIDE TOO SHORT TO HAVE A SHAPE IS DRAWN AS WHAT IT IS: A LIGAND. |
+| `chain_order.js` | node | A FILE'S CHAINS ARE DRAWN IN THE FILE'S ORDER. |
+| `unknown_nucleotides.js` | node | THE DICTIONARY'S UNKNOWN NUCLEOTIDES, DN AND N, ARE NUCLEIC. |
 | `sidechain_chain.js` | node | Side chains, end to end through the WEB APP's own chain: |
 | `sidechain_toggle.py` | ui | Side chains survive the eyes: toggling one object must not strip another's. |
 | `slots.py` | ui | N slots, every view, and nothing paid twice. |
@@ -255,6 +258,9 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `station_tail.py` | gpu | A trajectory's contacts and plugin lines follow it on the station fast path. |
 | `station_unpinned.py` | gpu | A TRAJECTORY TAKES THE STATION PATH WITHOUT BEING ASKED, AND DRAWS THE SAME. |
 | `stick_topology.py` | gpu | WHAT IS DRAWN IS THE GRAPH'S TO DECIDE, SO A TRAJECTORY STEPS WITHOUT A |
+| `strip_host.py` | ui | THE SEQUENCE STRIP'S BUTTONS WORK ON A HOST'S PAGE, NOT ONLY ON THE WEBSITE. |
+| `strip_flash.py` | ui | A RESIDUE WHOSE LETTER CHANGED FLASHES ON THE SEQUENCE STRIP. |
+| `fullscreen_host.py` | ui | A HOST CAN NAME WHAT GOES FULL SCREEN. |
 | `style_per_object.py` | ui | The style belongs to the object, and its settings belong to the style. |
 | `test_absolute_focus.py` | tool | ABSOLUTE FOCUS TEST: Compares renders before entering focus mode directly against |
 | `topology_survey.py` | gpu | WHICH CONTROLS ACTUALLY CHANGE THE MESH'S TOPOLOGY, and which only move it. |

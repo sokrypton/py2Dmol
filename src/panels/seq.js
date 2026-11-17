@@ -51,8 +51,33 @@ let callbacks = {
     getObjectSelect: null,        // () => objectSelect element
     // no highlight callbacks: hover goes straight to renderer.setHover,
     // which paints it with the frame
-    applyResidueSelection: null          // (previewPositions) => void
+    applyResidueSelection: null,         // (previewPositions) => void
+    // (objectName, chain) => boolean. False leaves that chain out of the strip
+    // - and out of its Select all and Invert, which act on what the strip
+    // lists. For a host that draws something that is not a sequence: a
+    // placeholder trace standing in for residues not designed yet would
+    // otherwise show as a row of whatever residue name it was built from.
+    // Asked at each build; a host whose answers change calls setCallbacks
+    // again (or SEQ.clear()), which is what makes the next build ask again.
+    listsChain: null
 };
+// Bumped whenever listsChain is set, so the strip's key - which is
+// otherwise a function of the frame arrays alone - sees a new filter.
+let listsChainGen = 0;
+
+/** Does the strip list this chain of this object? */
+function stripLists(name, chain) {
+    return !callbacks.listsChain || callbacks.listsChain(name, chain) !== false;
+}
+
+/** ...and this renderer position, which is what the strip's buttons act on. */
+function stripListsPosition(renderer, i) {
+    if (!callbacks.listsChain) return true;
+    const owner = renderer.ownerOf ? renderer.ownerOf(i) : null;
+    const name = owner ? owner.name : renderer.currentObjectName;
+    const chain = (renderer.chains && renderer.chains[i]) || 'A';
+    return stripLists(name, chain);
+}
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -125,6 +150,54 @@ function endPreviewOnRenderer() {
     const wasShowing = !!renderer._selectionPreview;
     renderer.endSelectionPreview();
     if (wasShowing) renderer.render('selection preview end');
+}
+
+// ============================================================================
+// A RESIDUE WHOSE LETTER CHANGED FLASHES.
+//
+// A designed sequence changes frame by frame - a hunt's cycles, a trajectory
+// of mutations - and the strip used to swap the letters in silence, so the
+// one thing worth seeing (which residues moved) had to be found by reading
+// two rows against each other. Every build remembers each residue's letter by
+// object, chain and number; the next build's differences light up and fade
+// over FLASH_MS. Keyed on the residue and not the position index, because an
+// index is the renderer's and shifts when anything before it does.
+//
+// The first build after clear() remembers and flashes nothing: clear() means
+// the structure under the strip is a different one, and every letter of a new
+// structure is not a change.
+// ============================================================================
+const FLASH_MS = 1500;
+let lastLetters = null;              // residue key -> letter, as last built
+const flashStarted = new Map();      // residue key -> performance.now() at the change
+const residueKey = (rd) => rd.object + '\u0000' + rd.chain + '\u0000' + rd.resSeq;
+
+function noteLetterChanges(allResidueData) {
+    const now = performance.now();
+    const letters = new Map();
+    for (const rd of allResidueData) {
+        if (!(rd.positionIndex >= 0) || rd.isLigandToken) continue;
+        const key = residueKey(rd);
+        letters.set(key, rd.letter);
+        if (lastLetters !== null && lastLetters.has(key) && lastLetters.get(key) !== rd.letter) {
+            flashStarted.set(key, now);
+        }
+    }
+    lastLetters = letters;
+}
+
+/** How lit a residue still is, 1 at the change down to 0; 0 for one that never changed. */
+function flashLevel(rd, now) {
+    const at = flashStarted.get(residueKey(rd));
+    if (at === undefined) return 0;
+    return Math.max(0, 1 - (now - at) / FLASH_MS);
+}
+
+function drawFlash(ctx, letter, x, y, width, height, level) {
+    ctx.fillStyle = `rgba(255, 196, 0, ${0.9 * level})`;
+    ctx.fillRect(x, y, width, height);
+    ctx.fillStyle = '#000000';
+    ctx.fillText(letter, x + width / 2, y + height / 2);
 }
 
 // Schedule render using requestAnimationFrame to throttle
@@ -713,6 +786,9 @@ function renderSequenceCanvas() {
         const hasGetAtomColor = renderer?.getAtomColor;
         // Cache effective color mode to avoid redundant lookups in the loop
         const effectiveColorMode = renderer?._getEffectiveColorMode?.() || 'auto';
+        const flashNow = performance.now();
+        // expired ones go here, not when drawn: a cell scrolled out of view is never drawn
+        for (const [key, at] of flashStarted) if (flashNow - at >= FLASH_MS) flashStarted.delete(key);
 
         for (let ri = visFrom; ri < RP.length; ri++) {
             const pos = RP[ri];
@@ -790,8 +866,14 @@ function renderSequenceCanvas() {
                     isSelected,
                     dimFactor
                 );
+                const level = flashStarted.size ? flashLevel(residueData, flashNow) : 0;
+                if (level > 0) {
+                    drawFlash(ctx, residueData.letter, pos.x, yOffset, pos.width, pos.height, level);
+                }
             }
         }
+        // ...and while anything is still lit, the next frame of the fade
+        if (flashStarted.size) scheduleRender();
 
         // STYLE TARGET OUTLINE. Drawn as a box around each contiguous run
         // rather than per residue, so a targeted stretch reads as one
@@ -1182,6 +1264,7 @@ function sectionKeyOf(renderer, name) {
     mix(idOf(src.positionNames)); mix(idOf(src.residueNumbers));
     mix(idOf(src.chains)); mix(idOf(src.positionTypes));
     mix(src.seqOffset | 0);
+    mix(listsChainGen);
     mix(ownGroups.size || 0);
     if (ownGroups.forEach) {
         ownGroups.forEach((v, k) => {
@@ -1211,16 +1294,23 @@ function buildObjectSection(renderer, name) {
         positionTypes, n, seqOffset } = src;
 
     const entries = [];
+    const listed = new Map();
     for (let i = 0; i < n; i++) {
+        const chain = (chains && chains.length > i && chains[i]) ? chains[i] : 'A';
+        if (!listed.has(chain)) listed.set(chain, stripLists(name, chain));
+        if (!listed.get(chain)) continue;
         entries.push({
             object: name,
-            chain: (chains && chains.length > i && chains[i]) ? chains[i] : 'A',
+            chain,
             resName: (positionNames && positionNames.length > i && positionNames[i]) ? positionNames[i] : 'UNK',
             resSeq: (residueNumbers && residueNumbers.length > i && residueNumbers[i] != null) ? residueNumbers[i] : (i + 1),
             positionIndex: i + seqOffset, // renderer index, not the object's own
             positionType: (positionTypes && positionTypes.length > i && positionTypes[i]) ? positionTypes[i] : 'P'
         });
     }
+
+    // every chain left out: there is nothing of this object to show
+    if (!entries.length) return null;
 
     // HOW MANY ENTRIES THE PANEL HAS MATERIALISED, which is one object per
     // position per build - the number that made the double build visible.
@@ -1351,6 +1441,86 @@ function showEmptyStrip(sequenceViewEl) {
         sequenceViewEl.appendChild(note);
     }
     setStripEnabled(false);
+}
+
+// ============================================================================
+// 🔴 THE STRIP'S OWN BUTTONS ARE WIRED HERE, NOT BY THE APP.
+//
+// Select all, Unselect and Invert sit in the strip's header (#selectAllResidues,
+// #clearAllResidues, #invertSelection) and this file enables and disables them,
+// but their listeners were in src/app/main.js's initializeApp - so a host that
+// mounts the strip itself (the markup beside its own viewer, the renderer
+// through setCallbacks) got three buttons that greyed and un-greyed correctly
+// and did nothing when pressed, and had to write the same three handlers out
+// again. They act on the renderer `getRenderer` names, through the selection
+// setters, so a host's viewer and the website's are the same case.
+//
+// Wired once per element (a build is frequent and a second listener is a second
+// selection change), at the first build - the earliest moment a renderer can
+// exist - and on load for a page whose buttons are there before any structure.
+// ============================================================================
+function wireStripTools() {
+    if (typeof document === 'undefined') return;
+    const wire = (id, act) => {
+        const el = document.getElementById(id);
+        if (!el || el.dataset.seqWired) return;
+        el.dataset.seqWired = '1';
+        el.addEventListener('click', (e) => {
+            e.preventDefault();
+            const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
+            if (!renderer || !renderer.coords) return;
+            act(renderer);
+            if (window.SEQ?.updateColors) window.SEQ.updateColors();
+        });
+    };
+    // Select all / Unselect act on the SELECTION, not on visibility. Visibility
+    // is still reachable - Select all then Show - but it is not a separate pair
+    // of controls, which kept implying that selecting and showing were the same
+    // act. THROUGH THE SETTER: it stores and dispatches, and being the one
+    // funnel is what lets Focus hang off a selection however it was made.
+    wire('selectAllResidues', (renderer) => {
+        const all = new Set();
+        for (let i = 0; i < renderer.coords.length; i++) {
+            if (stripListsPosition(renderer, i)) all.add(i);
+        }
+        renderer.setResidueSelection(all);
+        renderer.render('select all');
+    });
+    wire('clearAllResidues', (renderer) => {
+        renderer.clearResidueSelection();
+        renderer.render('unselect');
+    });
+    // INVERT: everything that is not selected now - over what is on screen, not
+    // over every position the object holds. A residue the clip has cut away or
+    // a chain that is hidden is not something the viewer is offering, and
+    // sweeping it into the selection by pressing a button is how a selection
+    // comes to contain things nobody can see. With nothing selected this is
+    // Select all, which is the sensible reading of "invert nothing".
+    wire('invertSelection', (renderer) => {
+        const cur = renderer.residueSelection;
+        const visible = renderer.visiblePositions;
+        const next = new Set();
+        for (let i = 0; i < renderer.coords.length; i++) {
+            if (cur && cur.has(i)) continue;
+            if (visible && !visible.has(i)) continue;
+            if (renderer._pickable && !renderer._pickable(i)) continue;
+            if (!stripListsPosition(renderer, i)) continue;
+            next.add(i);
+        }
+        renderer.setResidueSelection(next);
+        renderer.render('invert selection');
+    });
+    // ...and the header row that holds them, hidden by the stylesheet until a
+    // shell shows it. Shown here because the buttons are this panel's now.
+    const actions = document.querySelector('#sequence-viewer-container .sequence-actions');
+    if (actions && document.getElementById('sequenceView')) actions.style.display = 'flex';
+}
+if (typeof document !== 'undefined') {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', wireStripTools, { once: true });
+    } else {
+        wireStripTools();
+    }
 }
 
 /** The strip's own controls, dead while there is nothing to act on. */
@@ -1515,6 +1685,7 @@ function buildSequenceViewInner() {
     }
     const sequenceViewEl = document.getElementById('sequenceView');
     if (!sequenceViewEl) return;
+    wireStripTools();
 
     // 🔴 NOTHING IS THROWN AWAY UNTIL THE STRIP IS KNOWN TO HAVE CHANGED.
     // These four lines used to run HERE, above the "is this the same strip?"
@@ -2157,6 +2328,7 @@ function buildSequenceViewInner() {
         layout,
         mode: sequenceViewMode
     };
+    noteLetterChanges(allResidueData);
 
     // Setup canvas event handlers
     setupCanvasSequenceEvents();
@@ -2904,6 +3076,7 @@ window.SEQ = {
     // Initialize callbacks
     setCallbacks: function (cb) {
         callbacks = Object.assign({}, callbacks, cb);
+        if (cb && 'listsChain' in cb) listsChainGen += 1;
     },
 
     // WHAT THE STRIP LAID OUT, for tests: the sections, the chain rows and
@@ -2947,6 +3120,8 @@ window.SEQ = {
     // Clear state
     clear: function () {
         sequenceCanvasData = null;
+        lastLetters = null;
+        flashStarted.clear();
         lastSequenceFrameIndex = -1;
         lastSequenceUpdateHash = null;
         // 🔴 ...AND EVERY SET OF POSITION INDICES THIS MODULE IS HOLDING.

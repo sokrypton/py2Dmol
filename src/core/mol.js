@@ -12841,15 +12841,121 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const screen = ctx === this.ctx && !!G && typeof G.screenFrame === 'function';
             if (screen) G.screenFrame(this, 'begin');
             try {
-                this._renderStyled(ctx, displayWidth, displayHeight);
+                this._renderGhosted(ctx, displayWidth, displayHeight);
             } finally {
                 if (screen) G.screenFrame(this, 'end');
             }
         }
-        _renderStyled(ctx, displayWidth, displayHeight) {
+
+        /**
+         * A GHOSTED SELECTION, ON THE 2D PAINTER: two frames and a crossfade.
+         *
+         * paintgl.js fades a residue through one texel and an ordered dither,
+         * and the 2D painter had nothing - a setOpacity drew at full strength,
+         * and a 0 that hides on the GPU drew solid here. It cannot be a
+         * globalAlpha per primitive: cartoon/paint2d.js says why at "PAINT GOES
+         * DOWN OPAQUE" - a ribbon is quads overlapping along their seams, and
+         * at any alpha below 1 every overlap doubles up and the tessellation
+         * shows through as a mesh.
+         *
+         * So the frame is drawn TWICE, whole, and blended. The first pass hides
+         * every faded position; the second, on a canvas of its own, draws them
+         * as well; the second goes over the first at the fade's alpha. Where
+         * nothing faded is in view the two frames are the same pixels and the
+         * blend changes nothing; where a faded piece lies in front, the reader
+         * sees through it to what the first pass drew behind; where it lies
+         * behind something solid it is covered in both. That is translucency
+         * with the painter's own depth order and no mask - and the faded
+         * piece's outlines fade with it, as they do on the GPU.
+         *
+         * One pass more per distinct alpha (in practice one), and none at all
+         * when nothing is faded or the GPU will take the frame, which fades by
+         * itself. An SVG export draws the second pass into the same file inside
+         * a group carrying the opacity (core/svg.js's beginGroup).
+         */
+        _renderGhosted(ctx, displayWidth, displayHeight) {
+            const fade = (typeof this.drawnOpacity === 'function') ? this.drawnOpacity() : null;
+            if (!fade || !fade.size || this._gpuWillTake(ctx, this._drawStyle())) {
+                this._renderStyled(ctx, displayWidth, displayHeight);
+                return;
+            }
+            const svg = typeof ctx.getSerializedSvg === 'function';
+            if (svg ? typeof ctx.beginGroup !== 'function'
+                : !(ctx.canvas && ctx.drawImage && typeof document !== 'undefined')) {
+                throw new Error('py2dmol: a faded selection needs a canvas or the SVG '
+                    + 'context to draw on, and this context is neither');
+            }
+            const keep = this.visiblePositions;
+            const passes = this._ghostMasks(fade, keep);
+            try {
+                this.visiblePositions = passes.solid;
+                this._renderStyled(ctx, displayWidth, displayHeight, false);
+                for (const { alpha, mask } of passes.levels) {
+                    this.visiblePositions = mask;
+                    if (svg) {
+                        ctx.beginGroup(alpha);
+                        try { this._renderStyled(ctx, displayWidth, displayHeight, false); }
+                        finally { ctx.endGroup(); }
+                        continue;
+                    }
+                    const cv = this._ghostCanvas || (this._ghostCanvas = document.createElement('canvas'));
+                    if (cv.width !== ctx.canvas.width) cv.width = ctx.canvas.width;
+                    if (cv.height !== ctx.canvas.height) cv.height = ctx.canvas.height;
+                    const g = cv.getContext('2d');
+                    g.setTransform(ctx.getTransform());
+                    this._renderStyled(g, displayWidth, displayHeight, false);
+                    ctx.save();
+                    ctx.setTransform(1, 0, 0, 1, 0, 0);
+                    ctx.globalAlpha = alpha;
+                    ctx.drawImage(cv, 0, 0);
+                    ctx.restore();
+                }
+            } finally {
+                this.visiblePositions = keep;
+            }
+            // ...and the band and the hover marks once, over the blend
+            this._invalidateSelectionPreview();
+            this._paintOverlays(ctx, this._exportPxScale || 1, true);
+        }
+
+        /**
+         * The visibility each pass of _renderGhosted draws with: `solid`
+         * without any faded position, and one mask per distinct alpha with that
+         * alpha's positions added back. A 0 is in neither - it hides, as it
+         * does on the GPU. Kept between frames on the fade's version and the
+         * mask it was cut from, because a turn of the model changes neither
+         * and a position Set the size of the structure is not free.
+         */
+        _ghostMasks(fade, keep) {
+            const n = this.coords ? this.coords.length : 0;
+            const key = ((this._opacityVersion || 0) + '|' + n + '|'
+                + (this.drawnObjects ? this.drawnObjects().join(',') : ''));
+            const c = this._ghostMaskCache;
+            if (c && c.key === key && c.keep === keep) return c.passes;
+            const solid = new Set();
+            for (let i = 0; i < n; i++) {
+                if ((!keep || keep.has(i)) && !fade.has(i)) solid.add(i);
+            }
+            const byAlpha = new Map();
+            for (const [i, a] of fade) {
+                if (!(a > 0) || i >= n || (keep && !keep.has(i))) continue;
+                if (!byAlpha.has(a)) byAlpha.set(a, []);
+                byAlpha.get(a).push(i);
+            }
+            const levels = [...byAlpha.keys()].sort((x, y) => y - x).map((alpha) => {
+                const mask = new Set(solid);
+                for (const i of byAlpha.get(alpha)) mask.add(i);
+                return { alpha, mask };
+            });
+            const passes = { solid, levels };
+            this._ghostMaskCache = { key, keep, passes };
+            return passes;
+        }
+
+        _renderStyled(ctx, displayWidth, displayHeight, overlays = true) {
             const drawStyle = this._drawStyle();
             if (drawStyle === this.style) {
-                this._drawFrame(ctx, displayWidth, displayHeight);
+                this._drawFrame(ctx, displayWidth, displayHeight, overlays);
                 return;
             }
             const styleWas = this.style;
@@ -12867,7 +12973,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     richardson: this.cartoonRichardson };
             }
             try {
-                this._drawFrame(ctx, displayWidth, displayHeight);
+                this._drawFrame(ctx, displayWidth, displayHeight, overlays);
             } finally {
                 this.style = styleWas;
                 this._restoreStyleProfile(profileWas);
@@ -13039,7 +13145,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const { ctx, colors, segments, segData, visibleOrder, numRendered,
                     shadows, tints, zValues, displayWidth, displayHeight, isPerspective,
                     clipCull, pxScale, baseLineWidthPixels, outlineWidthPx,
-                    renderShadows, SELECTION_INK_EXTRA, pluginPrims } = S;
+                    renderShadows, SELECTION_INK_EXTRA, pluginPrims, overlays } = S;
             // ...and the five read straight off the instance
             const currentScreenFrameId = this.screenFrameId;
             // ...written by _markOuterEndpoints, which took its own alias with
@@ -13316,10 +13422,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         // A real frame supersedes any snapshot taken from an older one.
         this._invalidateSelectionPreview();
         // over the finished drawing, so it is never occluded
-        this._paintOverlays(ctx, this._exportPxScale || 1, true);
+        if (overlays) this._paintOverlays(ctx, this._exportPxScale || 1, true);
         }
 
-        _drawFrame(ctx, displayWidth, displayHeight) {
+        /**
+         * @param {boolean} [overlays] paint the selection band and the hover
+         *   marks on top. False only for a pass that is not the whole frame -
+         *   the solid and ghosted halves _renderGhosted composites, which
+         *   would otherwise each carry a band and fade one of them.
+         */
+        _drawFrame(ctx, displayWidth, displayHeight, overlays = true) {
             // Clear the full canvas in device pixels, independent of current transform
             ctx.save();
             ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -13431,7 +13543,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         colors, object, groups)) {
                     this.gpuDrewLastFrame = true;
                     this._invalidateSelectionPreview();
-                    this._paintOverlays(ctx, this._exportPxScale || 1, true);
+                    if (overlays) this._paintOverlays(ctx, this._exportPxScale || 1, true);
                     return;
                 }
             }
@@ -13483,7 +13595,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // A real frame supersedes any snapshot taken from an older one.
                 this._invalidateSelectionPreview();
                 // over the finished drawing, so it is never occluded
-                this._paintOverlays(ctx, this._exportPxScale || 1, true);
+                if (overlays) this._paintOverlays(ctx, this._exportPxScale || 1, true);
                 return;
             }
 
@@ -13520,7 +13632,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this._ensureRotated();
             } else if (deferRot) {
                 this._invalidateSelectionPreview();
-                this._paintOverlays(ctx, this._exportPxScale || 1, true);
+                if (overlays) this._paintOverlays(ctx, this._exportPxScale || 1, true);
                 return;
             }
 
@@ -14016,7 +14128,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 visibleOrder, numRendered, shadows, tints,
                 zValues, displayWidth, displayHeight, isPerspective,
                 clipCull, pxScale, baseLineWidthPixels, outlineWidthPx,
-                renderShadows, SELECTION_INK_EXTRA, pluginPrims,
+                renderShadows, SELECTION_INK_EXTRA, pluginPrims, overlays,
             });
         }
 

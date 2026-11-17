@@ -282,5 +282,42 @@ const o2 = {};
 if (seedOn(o2) || o2.sidechains) fail('a structure with no declared links had side chains switched on');
 else pass('a structure declaring no links opens exactly as it did');
 
+// ------------------------------------- 4. the same bond from a PDB's LINK record
+// A PDB says a covale with LINK, and a structure predicted with a crosslink or a
+// covalent inhibitor is written as one: the same SG-to-ligand bond, reaching the
+// same branch. Called as frameFromText calls it - with the PDB's struct_conn,
+// which it used to pass for a CIF alone.
+function pdbOf(withLink) {
+    const out = [];
+    if (withLink) {
+        out.push('LINK         SG  CYS A   3                 C1  LIG B   1     1555   1555  1.80');
+    }
+    let n = 1;
+    for (const row of AT) {
+        const f = row.split(' ');
+        const rec = f[0], el = f[2], name = f[3], comp = f[5], asym = f[6], seq = +f[8];
+        const [x, y, z] = [+f[10], +f[11], +f[12]];
+        out.push((rec === 'ATOM' ? 'ATOM  ' : 'HETATM') + String(n++).padStart(5) + ' '
+            + (name.length < 4 ? ' ' + name : name).padEnd(4) + ' ' + comp.padEnd(3) + ' ' + asym
+            + String(seq).padStart(4) + '    ' + x.toFixed(3).padStart(8) + y.toFixed(3).padStart(8)
+            + z.toFixed(3).padStart(8) + '  1.00 20.00          ' + el.padStart(2));
+    }
+    out.push('END');
+    return out.join('\n') + '\n';
+}
+function pdbFrame(text) {
+    const p = sb.parsePDB(text);
+    return sb.convertParsedToFrameData(p.models[0], p.modresMap, null, false,
+        p.conectMap, p.structConn, null);
+}
+const viaLink = pdbFrame(pdbOf(true)).covalentLinks || [];
+if (viaLink.length !== 1 || viaLink[0][2] !== 'SG' || viaLink[0][3] !== '') {
+    fail(`a PDB LINK from CYS SG to a ligand atom gave ${JSON.stringify(viaLink)}`
+        + ' - expected the one link the CIF row gives');
+} else pass('a PDB LINK record is the same link a CIF covale row is');
+if ((pdbFrame(pdbOf(false)).covalentLinks || []).length) {
+    fail('a PDB with no LINK record came back with a link');
+} else pass('a PDB with no LINK record declares none');
+
 console.log('covalent links: ' + (bad ? `FAILED (${bad})` : 'ok'));
 process.exit(bad ? 1 : 0);

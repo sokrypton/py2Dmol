@@ -76,7 +76,7 @@ if [[ "$LANE" == "all" || "$LANE" == "node" ]]; then
   # error, a missing file - prints a stack trace containing no such line, and
   # was reported as passing. tests/interaction.js died on startup for a whole
   # commit that way, and the suite said ALL GREEN.
-  for f in interaction smoke sequence copy_selection sidechain_chain covalent_links short_peptide na_frame align paint_trace cartoon_station station_faces math config msa_paired heatmap_resolve cyclic_partner cyclic_bench plugin_seam; do
+  for f in interaction smoke sequence copy_selection sidechain_chain covalent_links short_peptide chain_order unknown_nucleotides na_frame align paint_trace cartoon_station station_faces math config msa_paired heatmap_resolve cyclic_partner cyclic_bench plugin_seam; do
     out=$(node tests/$f.js 2>&1); rc=$?
     if (( rc != 0 )); then
       fail=1; print "NODE $f: exit $rc"
@@ -327,7 +327,7 @@ if [[ "$LANE" == "all" || "$LANE" == "ui" ]]; then
       sidechain_toggle mixed_sidechains session_elements station_restore nucleic_multi save_multi selection_panel minimal_input
       object_reload python_page python_multi style_per_object align_objects embed panel
       msa_paired_ui selection_shells mobile_layout notebook_narrow play_stop heatmap_maps heatmap_names heatmap_resize_paint
-      render_page frame_policy embed_follow slots session_append plddt_panel)
+      render_page frame_policy embed_follow strip_host strip_flash fullscreen_host slots session_append plddt_panel opacity_2d)
   pids=(); names=()
   for t in $UI; do
     ( run_probe $t ) & pids+=($!); names+=($t)
