@@ -165,6 +165,7 @@ scripts and the by-hand demonstrations; on anything else it is a question.
 | `junction_math.py` | tool | Geometry of the ligand sticks in the cartoon renderer, derived and checked. |
 | `junction_sp3.py` | tool | Can an sp3 (tetrahedral) junction be mitred the way a planar one is? |
 | `lift.js` | tool | LIFTING SHIPPED CODE OUT OF THE SOURCE, from however many files it lives in. |
+| `live_python.py` | node | A LIVE add() IN PYTHON COSTS THE SAME AT FRAME 12,000 AS AT 2,000. |
 | `live_stream.py` | ui | A LONG LIVE STREAM COSTS THE SAME PER add() AT FRAME 3,000 AS AT FRAME 500. |
 | `load_work.py` | gpu | WHAT LOADING A STRUCTURE COSTS, IN THINGS DONE RATHER THAN MILLISECONDS. |
 | `math.js` | node | The 3x3 linear algebra that replaced numeric.js. |

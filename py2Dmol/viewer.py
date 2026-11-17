@@ -1268,6 +1268,7 @@ class view:
 
         # Track sent frames and metadata to enable true incremental updates
         self._sent_frame_count = {}       # {"obj_name": num_frames_sent}
+        self._frame_colors_cache = {}     # id(obj) -> (frames, n scanned, {frame: colour})
         self._sent_metadata = {}          # {"obj_name": {metadata_dict}}
         self._live_seq = 0                # Monotonic sequence for deduplication
         self._mailbox_handle = None       # DisplayHandle for mailbox (persistence=False)
@@ -1722,10 +1723,27 @@ class view:
         # not travel by any route, and the call was silently lost on a live
         # viewer while working perfectly through show(). Compared as a whole
         # map by the change detection below, like every other field here.
-        frame_colors = {
-            str(i): f["color"] for i, f in enumerate(frames)
-            if isinstance(f, dict) and f.get("color") is not None
-        }
+        #
+        # 🔴 SCANNED ONCE PER FRAME, NOT ONCE PER add(). This runs on every
+        # live add(), and walking every frame made add() n cost n: 0.10 ms
+        # an add() at 2,000 frames and 0.38 at 10,000 here, and seconds per
+        # thousand adds on Colab by 18,000 (the ProteinEBM notebook). The scan
+        # is kept per object and resumed from the last frame it counted - which
+        # it re-reads, because replace() swaps that one - and starts over for
+        # a different frames list, a shorter one, or after set_color(frame=),
+        # the one thing that changes a frame already counted.
+        cache = self._frame_colors_cache.get(id(obj))
+        if cache is None or cache[0] is not frames or cache[1] > len(frames):
+            start, frame_colors = 0, {}
+        else:
+            start, frame_colors = max(0, cache[1] - 1), cache[2]
+            frame_colors.pop(str(start), None)
+        for i in range(start, len(frames)):
+            f = frames[i]
+            if isinstance(f, dict) and f.get("color") is not None:
+                frame_colors[str(i)] = f["color"]
+        self._frame_colors_cache[id(obj)] = (frames, len(frames), frame_colors)
+        frame_colors = dict(frame_colors)
         if frame_colors:
             current_metadata["frame_colors"] = frame_colors
         # ...and what this object does when the timeline runs past its
@@ -3952,6 +3970,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # Legacy format still works
             viewer.set_color({"frames": {0: "red"}})
         """
+        # Any branch below may rewrite a frame's colour (frame=, a {frame: ...}
+        # spec, a removal), so the live path's frame-colour scan starts over.
+        self._frame_colors_cache.clear()
         # Find the object
         if name is None:
             # Use last object

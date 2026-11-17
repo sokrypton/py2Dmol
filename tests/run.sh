@@ -132,6 +132,14 @@ if [[ "$LANE" == "all" || "$LANE" == "node" ]]; then
     fail=1; print "NODE config_reads:"; python3 tests/config_reads.py 2>&1 | grep '^FAIL' | head -3
   fi
 
+  # ...and a live add() in Python does not walk the frames already there: the
+  # kernel half of a long sampler stream (tests/live_stream.py is the page's).
+  if python3 tests/live_python.py >/dev/null 2>&1; then
+    print "node live_python: ok"
+  else
+    fail=1; print "NODE live_python:"; python3 tests/live_python.py 2>&1 | grep '^FAIL' | head -3
+  fi
+
   # ...and a ribose-bearing cofactor is a LIGAND, not a nucleotide. SAM, ATP
   # and NAD all carry one, and the structural test that keeps 1EHZ's modified
   # bases in its chain collapsed them onto a single position - twenty-seven
