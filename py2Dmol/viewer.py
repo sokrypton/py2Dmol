@@ -1742,6 +1742,39 @@ class view:
             current_metadata["center"] = obj["center"]
         return current_metadata
 
+    def _live_post_js(self, op: str, args_js: str) -> str:
+        """The JavaScript that carries one live update to the viewer's iframe.
+
+        BroadcastChannel does not retain, so a post made before the viewer's
+        iframe opened its channel is gone. On a notebook reopen every output
+        iframe loads at once and an update cell - a kilobyte - routinely beats
+        the viewer's half megabyte, which is how a reopened live session came
+        back empty. So the viewer announces itself with viewerReady and what
+        the cells hold is posted again on hearing it.
+
+        🔴 ONE CHANNEL PER VIEWER PER DOCUMENT, NOT ONE PER add(). Each update
+        used to open its own channel and keep it alive with a listener, so a
+        document running these scripts held one open channel - and that
+        update's frames - for every add() ever made, and BroadcastChannel
+        delivers each post to every OTHER open channel of the same name, so
+        add() number n paid for the n-1 before it. A sampler streaming tens of
+        thousands of frames (the ProteinEBM notebook) is exactly that.
+        `window.__py2dmolTx[vid]` is the one channel, and `held` is what it
+        replays: with persistence=False only the latest update - the mailbox
+        is one cell, overwritten, so a reopen can replay nothing older - and
+        with persistence=True every update, each being its own cell.
+        """
+        keep_all = "true" if self._persistence else "false"
+        return (
+            'try{const T=(window.__py2dmolTx=window.__py2dmolTx||{});let t=T[vid];'
+            'if(!t){t=T[vid]={ch:new BroadcastChannel("py2dmol_"+vid),held:new Map()};'
+            'const tt=t;t.ch.onmessage=(e)=>{if(e.data&&e.data.operation==="viewerReady"){'
+            'for(const k of [...tt.held.keys()].sort((a,b)=>a-b))tt.ch.postMessage(tt.held.get(k));}};}'
+            f'const msg={{operation:"{op}",args:{args_js},seq:p.seq}};'
+            f'if(!{keep_all})t.held.clear();t.held.set(p.seq,msg);t.ch.postMessage(msg);'
+            '}catch(e){}'
+        )
+
     def _send_incremental_update(self) -> None:
         """
         Send incremental state update to viewer (for add() operations).
@@ -1911,18 +1944,8 @@ class view:
             f'const m=p.meta||p.changed_meta||{{}};'
             f'const vw=p.viewer||null;'
             f'const vid="{viewer_id}";'
-            # ...AND ANSWER A LATER ANNOUNCEMENT. BroadcastChannel does not
-            # retain, so a post made before the viewer's iframe opened its
-            # channel is gone. On a notebook reopen every output iframe loads
-            # at once and this one - a kilobyte - routinely beats the viewer's
-            # half megabyte, which is how a reopened live session came back
-            # empty. The viewer announces itself with viewerReady; this cell
-            # holds its payload and posts it again on hearing that. The channel
-            # is kept alive by the handler on it.
-            f'try{{const ch=new BroadcastChannel("py2dmol_"+vid);'
-            f'const send=()=>ch.postMessage({{operation:"{OP_INCREMENTAL_UPDATE}",args:[f,m,vw],seq:p.seq}});'
-            f'ch.onmessage=(e)=>{{if(e.data&&e.data.operation==="viewerReady")send();}};'
-            f'send();}}catch(e){{}}'
+            # ...AND ANSWER A LATER ANNOUNCEMENT - see _live_post_js.
+            + self._live_post_js(OP_INCREMENTAL_UPDATE, "[f,m,vw]") +
             f'if(window.py2dmol_viewers&&window.py2dmol_viewers[vid]){{window.py2dmol_viewers[vid].handleIncrementalStateUpdate(f,m,p.seq,vw);}}'
             f'}})();'
         )
@@ -1993,10 +2016,7 @@ class view:
             f'const vid="{viewer_id}";'
             # ...and answers viewerReady the same way - see the note in
             # _send_incremental_update above.
-            f'try{{const ch=new BroadcastChannel("py2dmol_"+vid);'
-            f'const send=()=>ch.postMessage({{operation:"{OP_REPLACE_FRAME}",args:[f,m,obj],seq:p.seq}});'
-            f'ch.onmessage=(e)=>{{if(e.data&&e.data.operation==="viewerReady")send();}};'
-            f'send();}}catch(e){{}}'
+            + self._live_post_js(OP_REPLACE_FRAME, "[f,m,obj]") +
             f'if(window.py2dmol_viewers&&window.py2dmol_viewers[vid]){{window.py2dmol_viewers[vid].handleReplaceFrame(f,m,obj,p.seq);}}'
             f'}})();'
         )

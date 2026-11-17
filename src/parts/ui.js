@@ -1772,6 +1772,17 @@ const applyMetadataToObject = (obj, meta) => {
     return needsRerender;
 };
 
+let scatterRefreshPending = false;
+const scheduleScatterRefresh = () => {
+    if (scatterRefreshPending) return;
+    scatterRefreshPending = true;
+    requestAnimationFrame(() => {
+        scatterRefreshPending = false;
+        // shows or hides the box, and refreshes the data when it shows
+        renderer.updateScatterContainerVisibility();
+    });
+};
+
 const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject, seq = null, viewerBlock = null) => {
     /**
      * Processes incremental updates sent from Python.
@@ -1836,10 +1847,14 @@ const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject
             window.Heatmap.syncToDrawn(renderer);
         }
 
-        // Update scatter plot if frames were added (may have scatter data)
+        // Update scatter plot if frames were added (may have scatter data) -
+        // ONCE PER DRAWN FRAME, not once per add(). A refresh rebuilds every
+        // point and redraws them all, and this ran it twice an add (the
+        // visibility call refreshes again): O(frames) per add(), which a
+        // sampler streaming one add() a step turns quadratic. Several adds
+        // landing between two frames now cost one refresh.
         if (renderer.scatterRenderer && renderer.currentObjectName) {
-            renderer.updateScatterData(renderer.currentObjectName);
-            renderer.updateScatterContainerVisibility();
+            scheduleScatterRefresh();
         }
 
         // Update UI controls to show/hide play button based on frame count

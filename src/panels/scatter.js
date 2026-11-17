@@ -11,6 +11,15 @@
 (function () {
 'use strict';
 
+// [min, max] by a loop: the same answer as Math.min(...a) / Math.max(...a),
+// NaN included, without spreading an array into arguments - which throws once
+// the array is longer than the call stack allows (~100k points).
+function rangeOf(a) {
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < a.length; i++) { lo = Math.min(lo, a[i]); hi = Math.max(hi, a[i]); }
+    return [lo, hi];
+}
+
 // ============================================================================
 // SCATTER PLOT VIEWER CLASS
 // ============================================================================
@@ -51,7 +60,9 @@ class ScatterPlotViewer {
             this.frameChangeHandler = (e) => {
                 if (e.detail && e.detail.frameIndex !== undefined) {
                     this.currentFrameIndex = e.detail.frameIndex;
-                    this.render();
+                    // next frame, coalesced: a live add() changes frame once
+                    // per frame added, and a draw is every point
+                    this.scheduleRender();
                 }
             };
             document.addEventListener('py2dmol-frame-change', this.frameChangeHandler);
@@ -73,10 +84,11 @@ class ScatterPlotViewer {
         }
 
         // Calculate data ranges with 5% padding
-        this.xMin = Math.min(...xData);
-        this.xMax = Math.max(...xData);
-        this.yMin = Math.min(...yData);
-        this.yMax = Math.max(...yData);
+        // A LOOP, NOT Math.min(...xData): spreading an array into arguments
+        // throws past ~100k points (the call stack), and a live trajectory
+        // gets there. Pairwise Math.min keeps the spread's answer, NaN and all.
+        [this.xMin, this.xMax] = rangeOf(xData);
+        [this.yMin, this.yMax] = rangeOf(yData);
 
         const xRange = this.xMax - this.xMin;
         const yRange = this.yMax - this.yMin;
@@ -114,8 +126,19 @@ class ScatterPlotViewer {
         this.xData.push(x);
         this.yData.push(y);
 
+        // THE RAW RANGE IS KEPT, so a new point extends it rather than a walk
+        // of every point recomputing it - a step counter is always past the end,
+        // so that walk ran on every add() of a trajectory. Valid only for the
+        // arrays it was measured on, one point ago; anything else re-measures.
+        const n = this.xData.length;
+        const r = this._raw;
+        const fresh = r && r.xd === this.xData && r.yd === this.yData && r.n === n - 1;
+        const xr = fresh ? [Math.min(r.x[0], x), Math.max(r.x[1], x)] : rangeOf(this.xData);
+        const yr = fresh ? [Math.min(r.y[0], y), Math.max(r.y[1], y)] : rangeOf(this.yData);
+        this._raw = { xd: this.xData, yd: this.yData, n, x: xr, y: yr };
+
         // Update ranges if needed
-        if (this.xData.length === 1) {
+        if (n === 1) {
             // First point - initialize ranges with padding
             this.xMin = x - 0.5;
             this.xMax = x + 0.5;
@@ -126,11 +149,8 @@ class ScatterPlotViewer {
             const needsUpdate = x < this.xMin || x > this.xMax || y < this.yMin || y > this.yMax;
 
             if (needsUpdate) {
-                // Recalculate ranges from all data
-                const xMin = Math.min(...this.xData);
-                const xMax = Math.max(...this.xData);
-                const yMin = Math.min(...this.yData);
-                const yMax = Math.max(...this.yData);
+                const [xMin, xMax] = xr;
+                const [yMin, yMax] = yr;
 
                 const xRange = xMax - xMin;
                 const yRange = yMax - yMin;
@@ -154,7 +174,10 @@ class ScatterPlotViewer {
             }
         }
 
-        this.render(true); // Force recalculation when adding points (data changed)
+        // ONE DRAW PER FRAME, not one per point: a draw is every point, and a
+        // live trajectory adds a point per add(). Several landing between two
+        // frames are drawn once.
+        this.scheduleRender(true);
     }
 
     // Convert data coordinates to canvas coordinates
@@ -250,6 +273,19 @@ class ScatterPlotViewer {
         const base = cssMin / 320; // grow with canvas CSS size
         const clamped = Math.min(Math.max(base, 0.7), 1.6); // avoid extremes
         return this.scale * clamped;
+    }
+
+    /** A render on the next frame; any number of asks before it are one draw. */
+    scheduleRender(forceRecalculate = false) {
+        this._pendingForce = this._pendingForce || forceRecalculate;
+        if (this._renderPending) return;
+        this._renderPending = true;
+        requestAnimationFrame(() => {
+            this._renderPending = false;
+            const f = this._pendingForce;
+            this._pendingForce = false;
+            this.render(f);
+        });
     }
 
     render(forceRecalculate = false) {

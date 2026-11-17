@@ -53,3 +53,4 @@ _*.html
 # this repo does keep are .cif and .pdb, and there is no .png it wants.
 *.png
 /notes.txt
+_livestream/

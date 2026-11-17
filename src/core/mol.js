@@ -5412,39 +5412,136 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         _recomputeObjectStats(object, moveCamera = true) {
             if (!object || !object.frames) return;
-            // Recompute global center and extent across all frames (handles overlay/non-overlay)
+            // 🔴 THE CENTRE, SPREAD AND EXTENT OF EVERY FRAME, ON EVERY addFrame -
+            // AND IT WAS A WALK OVER EVERY POSITION OF EVERY FRAME, two Vec3s a
+            // point. So a live trajectory paid O(frames) per add() and O(frames^2)
+            // in all: measured on the ProteinEBM notebook's pattern (34 CA, one
+            // add() per Langevin step) at 4.3 ms an add by 10,000 frames, part of
+            // an add() that reached 30 ms by 20,000 - and the sampler produces
+            // faster than that, so the page fell behind until the tab died.
+            //
+            // Each frame is summarised ONCE (sum, sum of squares, a bounding
+            // sphere), cached against its coords array, which nothing edits in
+            // place. The centre and the spread are exact sums of those. The
+            // EXTENT stays exact too: a frame's sphere bounds its farthest point
+            // from any centre, so only frames whose bound beats the best distance
+            // found so far are walked - and the frame that held the extent last
+            // time is walked first, which on a trajectory means almost no others.
+            const sums = this._frameSums || (this._frameSums = new WeakMap());
+            const summaryOf = (co) => {
+                let s = sums.get(co);
+                if (s && s.n === co.length) return s;
+                let sx = 0, sy = 0, sz = 0, s2 = 0;
+                let lx = Infinity, ly = Infinity, lz = Infinity, hx = -Infinity, hy = -Infinity, hz = -Infinity;
+                for (let i = 0; i < co.length; i++) {
+                    const c = co[i]; const x = c[0], y = c[1], z = c[2];
+                    sx += x; sy += y; sz += z; s2 += x * x + y * y + z * z;
+                    if (x < lx) lx = x; if (x > hx) hx = x;
+                    if (y < ly) ly = y; if (y > hy) hy = y;
+                    if (z < lz) lz = z; if (z > hz) hz = z;
+                }
+                const bx = (lx + hx) / 2, by = (ly + hy) / 2, bz = (lz + hz) / 2;
+                let r2 = 0;
+                for (let i = 0; i < co.length; i++) {
+                    const c = co[i];
+                    const dx = c[0] - bx, dy = c[1] - by, dz = c[2] - bz;
+                    const d = dx * dx + dy * dy + dz * dz;
+                    if (d > r2) r2 = d;
+                }
+                s = { co, n: co.length, sx, sy, sz, s2, bx, by, bz, r: Math.sqrt(r2) };
+                sums.set(co, s);
+                return s;
+            };
+            // ...AND THE SUMS RUN ON. A trajectory is appended to, so the totals
+            // of the frames already counted carry over and only the new ones are
+            // summarised. Anything else - a new frames array, a frame popped by
+            // replaceFrame, a list that got shorter - starts again from zero.
+            // The frames array is only ever replaced, emptied, popped or pushed
+            // (grep `frames.`), so "same array, longer, last counted frame still
+            // in place" means appended.
+            const F = object.frames;
+            let acc = object._statsAcc;
+            const ok = acc && acc.frames === F && acc.n <= F.length
+                && (acc.n === 0 || (F[acc.n - 1] && F[acc.n - 1].coords) === acc.lastCo);
+            if (!ok) {
+                acc = object._statsAcc = { frames: F, n: 0, live: [], lastCo: undefined,
+                                           tx: 0, ty: 0, tz: 0, s2: 0, total: 0 };
+            }
+            for (let i = acc.n; i < F.length; i++) {
+                const co = F[i] && F[i].coords;
+                acc.lastCo = co;
+                if (!co || !co.length) continue;
+                const s = summaryOf(co);
+                acc.live.push(s);
+                acc.tx += s.sx; acc.ty += s.sy; acc.tz += s.sz; acc.s2 += s.s2; acc.total += s.n;
+            }
+            acc.n = F.length;
+            const live = acc.live;
+            const totalCount = acc.total, tx = acc.tx, ty = acc.ty, tz = acc.tz;
             let globalCenter = new Vec3(0, 0, 0);
-            let totalCount = 0;
-            for (const frame of object.frames) {
-                if (frame && frame.coords) {
-                    for (let i = 0; i < frame.coords.length; i++) {
-                        const c = frame.coords[i];
-                        globalCenter = globalCenter.add(new Vec3(c[0], c[1], c[2]));
-                        totalCount++;
-                    }
-                }
-            }
-            if (totalCount > 0) {
-                globalCenter = globalCenter.mul(1 / totalCount);
-            }
+            if (totalCount > 0) globalCenter = new Vec3(tx / totalCount, ty / totalCount, tz / totalCount);
+            const gx = globalCenter.x, gy = globalCenter.y, gz = globalCenter.z;
 
-            // Recalculate maxExtent and standard deviation using the global center
+            // spread: sum |p - c|^2 = sum|p|^2 - 2 c.sum p + N |c|^2, from the totals
+            const cc = gx * gx + gy * gy + gz * gz;
+            let sumDistSq = acc.s2 - 2 * (gx * tx + gy * ty + gz * tz) + totalCount * cc;
+            if (sumDistSq < 0) sumDistSq = 0;
+
+            // extent: exact, walking only frames whose bound can still win
             let maxDistSq = 0;
-            let sumDistSq = 0;
-            let positionCount = 0;
-            for (const frame of object.frames) {
-                if (frame && frame.coords) {
-                    for (let i = 0; i < frame.coords.length; i++) {
-                        const c = frame.coords[i];
-                        const coordVec = new Vec3(c[0], c[1], c[2]);
-                        const centeredCoord = coordVec.sub(globalCenter);
-                        const distSq = centeredCoord.dot(centeredCoord);
-                        if (distSq > maxDistSq) maxDistSq = distSq;
-                        sumDistSq += distSq;
-                        positionCount++;
+            const walk = (co) => {
+                for (let i = 0; i < co.length; i++) {
+                    const c = co[i];
+                    const dx = c[0] - gx, dy = c[1] - gy, dz = c[2] - gz;
+                    const d = dx * dx + dy * dy + dz * dz;
+                    if (d > maxDistSq) maxDistSq = d;
+                }
+            };
+            // 🔴 ...AND ON AN APPEND IT MAY BE GENEROUS BY UP TO 0.2%, NOT EXACT.
+            // The farthest point from a MOVED centre needs every point again -
+            // a trajectory's frames all reach about as far, so no bound prunes
+            // them - and that was the last O(frames) cost of an add(): 2 ms at
+            // 20,000 CA-only frames. Measured exactly once at a reference centre
+            // (M), the farthest point is at most M + drift from the new one, and
+            // the frames since are walked exactly; when the drift passes 0.1% of
+            // M it is measured exactly again - and since the exact value is at
+            // least M - drift, the answer is never more than 0.2% generous. Each add() moves the centre about
+            // 1/N, so that is rare and grows rarer. Anything but an append - a
+            // load, a pop, a new array - is exact, because `acc` starts over.
+            const ref = acc.ref;
+            const drift = ref ? Math.sqrt((gx - ref.cx) ** 2 + (gy - ref.cy) ** 2 + (gz - ref.cz) ** 2) : Infinity;
+            if (ref && drift <= 0.001 * ref.M) {
+                // M stays the exact farthest distance from the REFERENCE centre:
+                // each frame is folded into it once, as it arrives.
+                let m2 = ref.M * ref.M;
+                for (let k = ref.n; k < live.length; k++) {
+                    const co = live[k].co;
+                    for (let i = 0; i < co.length; i++) {
+                        const c = co[i];
+                        const dx = c[0] - ref.cx, dy = c[1] - ref.cy, dz = c[2] - ref.cz;
+                        const d = dx * dx + dy * dy + dz * dz;
+                        if (d > m2) m2 = d;
                     }
                 }
+                ref.M = Math.sqrt(m2);
+                ref.n = live.length;
+                maxDistSq = (ref.M + drift) * (ref.M + drift);
+            } else {
+                const lastBest = object._extentSum;
+                if (lastBest && live.includes(lastBest)) walk(lastBest.co);
+                for (let k = 0; k < live.length; k++) {
+                    const s = live[k];
+                    if (s === lastBest) continue;
+                    const dx = s.bx - gx, dy = s.by - gy, dz = s.bz - gz;
+                    const ub = Math.sqrt(dx * dx + dy * dy + dz * dz) + s.r;
+                    if (ub * ub <= maxDistSq) continue;
+                    const before = maxDistSq;
+                    walk(s.co);
+                    if (maxDistSq > before) object._extentSum = s;
+                }
+                acc.ref = { cx: gx, cy: gy, cz: gz, M: Math.sqrt(maxDistSq), n: live.length };
             }
+            const positionCount = totalCount;
             object.maxExtent = Math.sqrt(maxDistSq);
             // Calculate standard deviation: sqrt(mean of squared distances)
             object.stdDev = positionCount > 0 ? Math.sqrt(sumDistSq / positionCount) : 0;
@@ -6007,7 +6104,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // ...the object's own frame, not the timeline position
                 this.scatterRenderer.currentFrameIndex =
                     this._parkedFrameIndex(this.currentObjectName);
-                this.scatterRenderer.render();
+                // The marker moves now; the redraw, which is every point, waits
+                // for the next frame. A live add() lands here once per frame
+                // added, and several between two frames are one draw.
+                if (this.scatterRenderer.scheduleRender) this.scatterRenderer.scheduleRender();
+                else this.scatterRenderer.render();
             }
         }
 

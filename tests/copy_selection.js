@@ -272,6 +272,10 @@ test('every per-object key is in the field list or excluded on purpose', () => {
         '_lastPlddtFrame', '_lastPaeFrame',
         // recomputed for the copy from its own coordinates
         'center',
+        // _recomputeObjectStats' running sums over the frames and the frame
+        // that held the extent: caches of the geometry, rebuilt from scratch
+        // for any frames array they were not measured on
+        '_statsAcc', '_extentSum',
         // the scatter panel's own configuration: not keyed by position, and
         // it names columns of data the copy does not carry
         'scatterConfig',
