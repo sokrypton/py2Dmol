@@ -124,8 +124,15 @@ for name, line in sorted(opened.items()):
 
 # ...and the other direction, which is only untidy rather than broken: a file
 # shipped and never opened is dead weight in every install.
+# Files read by something other than viewer.py, named with who reads them.
+OTHER_READERS = {
+    "../agent/agent_plugin.json": "cisternal's plugin_app, for `py2dmol plugin install`",
+}
 for name in sorted(shipped - set(opened)):
-    print(f"  unused      {name}  (shipped, never opened)")
+    if name in OTHER_READERS:
+        print(f"  ok          {name}  (read by {OTHER_READERS[name]})")
+    else:
+        print(f"  unused      {name}  (shipped, never opened)")
 
 if not opened:
     bad.append("no _resource_text(...) calls found at all - this"

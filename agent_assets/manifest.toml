@@ -1,0 +1,60 @@
+# py2Dmol's agent plugin: skills, agents and the MCP server, exported by cisternal.
+#
+#   py2dmol plugin repo-bundle   writes plugin/ + .claude-plugin/marketplace.json (committed)
+#   cisternal assets snapshot    writes py2Dmol/agent/agent_plugin.json (shipped in the wheel)
+#   py2dmol plugin install       installs from that snapshot
+#
+# Skills and agents need neither py2Dmol nor cisternal on the installing machine. The MCP
+# server runs through uvx, so it needs only uv: `uvx --from py2Dmol[screenshot]==<version>
+# --python 3.13 py2dmol-mcp`.
+#
+# 🔴 --python 3.13 IS NOT DECORATION. Measured: on a machine whose Python is 3.12, uvx
+# resolves the marker-gated extra (cisternal; python_version >= "3.13") to NOTHING, so the
+# server would start without cisternal and exit 2. Pinning the interpreter makes uv fetch a
+# managed 3.13 instead. resolve_mcp_launch builds `uvx --from <spec> <command...>`, so the
+# flag goes at the front of `command`.
+
+[plugin]
+name = "py2dmol"
+version = "2.0.0"  # keep equal to py2Dmol/__init__.py __version__ (tests/agent_spec.py)
+description = "Protein structure viewer for agents: inspect structures, validate view specs, render interactive HTML and PNG/SVG images, write draw plugins"
+skills_delivered_by_plugin = true
+
+[plugin.mcp]
+command = ["--python", "3.13", "py2dmol-mcp"]
+launch = "uvx"
+uvx_from = "py2Dmol[screenshot]=={version}"
+
+[[plugin.skills]]
+name = "using-py2Dmol"
+path = "agent_assets/skills/using-py2Dmol/SKILL.md"
+
+[[plugin.skills]]
+name = "augmenting-views"
+path = "agent_assets/skills/augmenting-views/SKILL.md"
+
+[[plugin.skills]]
+name = "developing-py2Dmol-plugins"
+path = "agent_assets/skills/developing-py2Dmol-plugins/SKILL.md"
+
+[[plugin.skills]]
+name = "embedding-py2Dmol"
+path = "agent_assets/skills/embedding-py2Dmol/SKILL.md"
+
+[[plugin.agents]]
+name = "py2dmol-view-builder"
+path = "agent_assets/agents/py2dmol-view-builder.md"
+description = "Turns a request about a structure into a validated py2Dmol view spec, then renders and checks it"
+tools = []  # inherit: plugin MCP tools are mcp__plugin_py2dmol_py2dmol__<name>, so bare names would match nothing
+
+[[plugin.agents]]
+name = "py2dmol-plugin-developer"
+path = "agent_assets/agents/py2dmol-plugin-developer.md"
+description = "Writes and debugs a py2Dmol draw plugin until plugin_check is clean and the picture is right"
+tools = []  # inherit: plugin MCP tools are mcp__plugin_py2dmol_py2dmol__<name>, so bare names would match nothing
+
+[[plugin.agents]]
+name = "py2dmol-figure-critic"
+path = "agent_assets/agents/py2dmol-figure-critic.md"
+description = "Looks at a rendered py2Dmol image, judges whether it shows what was asked, and edits the spec until it does"
+tools = []  # inherit: plugin MCP tools are mcp__plugin_py2dmol_py2dmol__<name>, so bare names would match nothing
